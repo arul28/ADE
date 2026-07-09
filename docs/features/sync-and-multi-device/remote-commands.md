@@ -429,6 +429,16 @@ A handful have more logic:
   only the returned session handle and summary, not the `initialInput`
   text, so reconnect replay does not leak the user's prompt into the
   runtime-side ledger.
+- **`work.listExternalSessions` / `work.importExternalSession`** — list and
+  import provider-native Claude, Codex, Cursor, Droid, and OpenCode CLI
+  sessions through the runtime's external-session service. Import forwards the
+  full service result: CLI results carry the new `sessionId` / `ptyId` plus a
+  persisted `TerminalSessionSummary` when available; chat results carry the
+  new `chatSessionId` plus the required persisted `AgentChatSessionSummary`.
+  Controllers use those summaries for immediate navigation rather than waiting
+  for the next sync/session-list refresh. Provider storage, cwd validation, and
+  process launch remain host-side; see
+  [External Session Import](../terminals-and-sessions/external-session-import.md).
 - **`work.sendToSession`** — sends text to an existing durable Work
   CLI session. If the PTY is live, the runtime writes into it; if the
   process ended and the session is resumable, the runtime starts the

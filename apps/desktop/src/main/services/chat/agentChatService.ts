@@ -154,6 +154,7 @@ import type {
   AgentChatImportedFrom,
   AgentChatImportExternalSessionArgs,
   AgentChatImportExternalSessionResult,
+  AgentChatImportProvider,
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
@@ -22376,6 +22377,23 @@ export function createAgentChatService(args: {
     }
   };
 
+  const persistedImportedChatResult = (
+    managed: ManagedChatSession,
+    provider: AgentChatImportProvider,
+  ): AgentChatImportExternalSessionResult => {
+    const summaryRow = sessionService.get(managed.session.id);
+    if (!summaryRow) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_READ_FAILED",
+        `Imported ${provider === "claude" ? "Claude" : "Codex"} chat was not persisted.`,
+      );
+    }
+    return {
+      chatSessionId: managed.session.id,
+      chatSummary: summarizeSessionRow(summaryRow),
+    };
+  };
+
   const importClaudeExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
     laneWorktreePath: string,
@@ -22473,7 +22491,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return { chatSessionId: managed.session.id };
+      return persistedImportedChatResult(managed, "claude");
     } catch (error) {
       if (createdSessionId) {
         await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
@@ -22622,7 +22640,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return { chatSessionId: managed.session.id };
+      return persistedImportedChatResult(managed, "codex");
     } catch (error) {
       if (createdSessionId && forkedProviderThreadId) {
         const managed = managedSessions.get(createdSessionId);

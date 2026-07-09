@@ -3862,6 +3862,8 @@ struct ExternalSessionImportResult: Codable, Equatable {
   var ptyId: String?
   var laneId: String?
   var chatSessionId: String?
+  var session: TerminalSessionSummary?
+  var chatSummary: AgentChatSessionSummary?
 }
 
 struct SyncScalarBytes: Codable, Equatable {

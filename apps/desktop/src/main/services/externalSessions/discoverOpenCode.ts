@@ -8,6 +8,7 @@ import {
   asString,
   cleanSessionTitle,
   clipExternalSessionText,
+  cwdIsInScope,
   normalizeExternalSessionLimit,
   recordWithFile,
   resolveHomeDir,
@@ -25,6 +26,7 @@ export async function discoverOpenCodeSessions(
   const executable = resolveOpenCodeBinaryPath();
   if (!executable) return [];
   const cwd = args.cwd?.trim() || args.projectRoot?.trim() || resolveHomeDir(args);
+  const requestedLimit = args.scopeRoots?.length ? Math.max(limit, 1000) : limit;
   const env: NodeJS.ProcessEnv = { ...process.env, ...(args.env ?? {}), NO_COLOR: "1" };
   delete env.FORCE_COLOR;
 
@@ -32,7 +34,7 @@ export async function discoverOpenCodeSessions(
   try {
     const result = await execFileAsync(
       executable,
-      ["session", "list", "--format", "json", "--max-count", String(limit)],
+      ["session", "list", "--pure", "--format", "json", "--max-count", String(requestedLimit)],
       {
         cwd: path.resolve(cwd),
         encoding: "utf8",
@@ -43,30 +45,36 @@ export async function discoverOpenCodeSessions(
       },
     );
     stdout = String(result.stdout ?? "");
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error(`OpenCode session discovery failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   const jsonStart = stdout.indexOf("[");
-  if (jsonStart < 0) return [];
+  if (jsonStart < 0) {
+    throw new Error("OpenCode session discovery returned no JSON session list.");
+  }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout.slice(jsonStart));
-  } catch {
-    return [];
+  } catch (error) {
+    throw new Error(`OpenCode session discovery returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    throw new Error("OpenCode session discovery returned an invalid session list.");
+  }
 
   const records: ExternalSessionDiscoveryRecord[] = [];
   for (const row of parsed) {
     const record = asRecord(row);
     const id = asString(record?.id) ?? asString(record?.sessionID) ?? asString(record?.sessionId);
     if (!record || !id) continue;
-    const rowCwd = asString(record.directory) ?? asString(record.cwd) ?? cwd;
+    const rowCwd = asString(record.directory) ?? asString(record.cwd);
+    if (!cwdIsInScope(rowCwd, args.scopeRoots)) continue;
     const title = cleanSessionTitle(asString(record.title)) ?? cleanSessionTitle(asString(record.name));
     const preview = clipExternalSessionText(
       asString(record.summary) ?? asString(record.preview) ?? asString(record.snippet),
     );
+    const updatedAt = asEpochMs(record.updated) ?? asEpochMs(record.updatedAt);
     records.push(recordWithFile({
       provider: "opencode",
       id,
@@ -74,9 +82,10 @@ export async function discoverOpenCodeSessions(
       title,
       preview,
       createdAt: asEpochMs(record.created) ?? asEpochMs(record.createdAt),
-      updatedAt: asEpochMs(record.updated) ?? asEpochMs(record.updatedAt),
+      updatedAt,
       messageCount: typeof record.messageCount === "number" ? record.messageCount : null,
       filePath: null,
+      sourceMtimeMs: updatedAt,
     }));
   }
 

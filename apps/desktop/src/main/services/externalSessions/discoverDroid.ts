@@ -4,11 +4,10 @@ import {
   asRecord,
   asString,
   cleanSessionTitle,
-  countJsonlLinesCheap,
+  countJsonlUserMessagesCheap,
   cwdIsInScope,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
-  previewFromRecords,
   readJsonlRecords,
   recordWithFile,
   resolveHomeDir,
@@ -57,14 +56,22 @@ export async function discoverDroidSessions(
     const cwd = asString(first.cwd);
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const firstUserText = firstUserTextFromRecords(jsonl);
+    const firstMessageTimestamp = jsonl
+      .map((row) => asRecord(row))
+      .find((row) => asString(row?.type) === "message" && (
+        asEpochMs(row?.timestamp) != null
+        || asEpochMs(asRecord(row?.message)?.timestamp) != null
+      ));
     records.push(recordWithFile({
       provider: "droid",
       id,
       cwd,
       title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
-      preview: firstUserText ?? previewFromRecords(jsonl),
-      createdAt: asEpochMs(first.timestamp),
-      messageCount: countJsonlLinesCheap(candidate.filePath),
+      preview: firstUserText,
+      createdAt: asEpochMs(first.timestamp)
+        ?? asEpochMs(firstMessageTimestamp?.timestamp)
+        ?? asEpochMs(asRecord(firstMessageTimestamp?.message)?.timestamp),
+      messageCount: countJsonlUserMessagesCheap(candidate.filePath, "droid"),
       filePath: candidate.filePath,
       sourceMtimeMs: candidate.mtimeMs,
     }));

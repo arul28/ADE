@@ -163,6 +163,70 @@ private final class IntentCommandRecorder: ADEIntentCommandBridge {
 }
 
 final class ADETests: XCTestCase {
+  func testExternalSessionModelsDecodeOlderHostPayloads() throws {
+    let summaryJson = #"{"provider":"claude","id":"external-1"}"#
+    let summary = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(summaryJson.utf8))
+
+    XCTAssertEqual(summary.provider, "claude")
+    XCTAssertEqual(summary.id, "external-1")
+    XCTAssertFalse(summary.alreadyImported)
+    XCTAssertFalse(summary.possiblyActive)
+    XCTAssertEqual(summary.capabilities, ExternalSessionCapabilities())
+
+    let resultJson = #"{"kind":"cli","sessionId":"ade-session-1","ptyId":"pty-1","laneId":"lane-1"}"#
+    let result = try JSONDecoder().decode(ExternalSessionImportResult.self, from: Data(resultJson.utf8))
+
+    XCTAssertEqual(result.kind, "cli")
+    XCTAssertEqual(result.sessionId, "ade-session-1")
+    XCTAssertNil(result.session)
+    XCTAssertNil(result.chatSummary)
+  }
+
+  func testExternalSessionActionsHonorCrossFolderCapabilities() {
+    let summary = ExternalSessionSummary(
+      provider: "claude",
+      id: "external-1",
+      cwd: "/tmp/other-project",
+      cwdMatchesRequestedLane: false,
+      capabilities: ExternalSessionCapabilities(
+        resumeInPlace: true,
+        resumeInDifferentCwd: false,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true
+      )
+    )
+
+    let actions = workExternalSessionActions(for: summary)
+
+    XCTAssertEqual(actions.map(\.id), ["fork-as-chat", "fork-into-lane", "resume-in-place"])
+    XCTAssertEqual(actions.filter(\.isPrimary).map(\.id), ["fork-as-chat"])
+    XCTAssertEqual(actions.first(where: { $0.id == "resume-in-place" })?.mode, "resume")
+  }
+
+  func testExternalSessionActionsOpenExistingInsteadOfReimporting() {
+    let summary = ExternalSessionSummary(
+      provider: "codex",
+      id: "external-2",
+      alreadyImported: true,
+      importedSessionRef: ExternalSessionImportedRef(kind: " CHAT ", sessionId: " chat-1 "),
+      cwdMatchesRequestedLane: true,
+      capabilities: ExternalSessionCapabilities(
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true
+      )
+    )
+
+    let actions = workExternalSessionActions(for: summary)
+
+    XCTAssertEqual(actions.map(\.id), ["open-existing", "fork-as-chat", "fork-into-lane"])
+    XCTAssertEqual(actions.first?.importedSessionRef, ExternalSessionImportedRef(kind: "chat", sessionId: "chat-1"))
+    XCTAssertFalse(actions.contains(where: { $0.mode == "resume" }))
+  }
+
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {
     let encodedPayload = "H4sIAAAAAAAAE6tWKkhMScnMS1eyUkqkECjVAgB1YfDxTgAAAA=="
     let envelope = """

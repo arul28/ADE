@@ -3575,19 +3575,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.importExternalSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseImportExternalSessionArgs(payload);
     const result = await resolveExternalSessionsService(args).importExternalSession(parsed);
-    if (result.kind === "cli") {
-      return {
-        kind: "cli",
-        sessionId: result.sessionId,
-        ptyId: result.ptyId,
-        laneId: result.laneId,
-      } satisfies SyncImportExternalSessionResult;
-    }
-    return {
-      kind: "chat",
-      chatSessionId: result.chatSessionId,
-      laneId: result.laneId,
-    } satisfies SyncImportExternalSessionResult;
+    return result satisfies SyncImportExternalSessionResult;
   });
   register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseSendToSessionArgs(payload);

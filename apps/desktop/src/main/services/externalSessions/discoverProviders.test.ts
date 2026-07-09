@@ -1,6 +1,9 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { discoverClaudeSessions } from "./discoverClaude";
@@ -9,6 +12,10 @@ import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import { claudeProjectSlugForCwd, slashEscapedCwd } from "./discoveryUtils";
+
+type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 let root: string;
 let previousHome: string | undefined;
@@ -48,20 +55,51 @@ afterEach(() => {
 });
 
 describe("external session provider discovery", () => {
-  it("discovers Claude sessions, recovers cwd, and uses the first user message as preview", async () => {
+  it("discovers Claude sessions without exposing local command wrappers", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");
     fs.mkdirSync(cwd, { recursive: true });
     const id = "11111111-1111-4111-8111-111111111111";
     writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`), [
-      { type: "mode", sessionId: id },
+      { type: "mode", sessionId: id, cwd, entrypoint: "cli" },
       {
-        type: "message",
+        type: "user",
         sessionId: id,
         cwd,
         timestamp: "2026-07-06T10:00:00.000Z",
-        message: { role: "user", content: [{ type: "text", text: "ADE session guidance.\n\nUser request: Fix login redirect" }] },
+        isMeta: true,
+        message: { role: "user", content: [{ type: "text", text: "<local-command-caveat>Caveat: local commands are synthetic</local-command-caveat>" }] },
       },
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        isMeta: true,
+        message: { role: "user", content: [{ type: "text", text: "<command-name>/model</command-name><command-args>opus</command-args>" }] },
+      },
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        isMeta: true,
+        message: { role: "user", content: [{ type: "text", text: "<local-command-stdout>Set model to opus</local-command-stdout>" }] },
+      },
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        timestamp: "2026-07-06T10:01:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "this is a test message" }] },
+      },
+      { type: "assistant", sessionId: id, cwd, message: { role: "assistant", content: "Understood." } },
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        timestamp: "2026-07-06T10:02:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "this is a test message" }] },
+      },
+      { type: "ai-title", sessionId: id, aiTitle: "Test message" },
     ]);
 
     const sessions = await discoverClaudeSessions({ homeDir, limit: 10 });
@@ -71,11 +109,36 @@ describe("external session provider discovery", () => {
       provider: "claude",
       id,
       cwd,
-      title: null,
-      preview: "Fix login redirect",
+      title: "Test message",
+      preview: "this is a test message",
       createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
     });
     expect(sessions[0]?.messageCount).toBe(2);
+  });
+
+  it("excludes Claude SDK sessions without starving older resumable CLI results", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const sdkId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const cliId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const projectDir = path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd));
+    const sdkPath = path.join(projectDir, `${sdkId}.jsonl`);
+    const cliPath = path.join(projectDir, `${cliId}.jsonl`);
+    writeJsonl(sdkPath, [
+      { type: "system", sessionId: sdkId, cwd, entrypoint: "sdk-ts" },
+      { type: "user", sessionId: sdkId, cwd, message: { role: "user", content: "newer SDK row" } },
+    ]);
+    writeJsonl(cliPath, [
+      { type: "system", sessionId: cliId, cwd, entrypoint: "cli" },
+      { type: "user", sessionId: cliId, cwd, message: { role: "user", content: "older CLI row" } },
+    ]);
+    fs.utimesSync(cliPath, new Date("2026-07-05T10:00:00.000Z"), new Date("2026-07-05T10:00:00.000Z"));
+    fs.utimesSync(sdkPath, new Date("2026-07-06T10:00:00.000Z"), new Date("2026-07-06T10:00:00.000Z"));
+
+    const sessions = await discoverClaudeSessions({ homeDir, limit: 1 });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ id: cliId, preview: "older CLI row" });
+    expect(sessions.some((session) => session.id === sdkId)).toBe(false);
   });
 
   it("limits Claude content reads to the newest stat candidates", async () => {
@@ -118,14 +181,17 @@ describe("external session provider discovery", () => {
     writeJsonl(path.join(homeDir, ".codex", "session_index.jsonl"), [
       { id, thread_name: "Investigate flaky test", updated_at: "2026-07-06T11:00:00.000Z" },
     ]);
-    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T10-00-00-${id}.jsonl`), [
+    const rolloutPath = path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T10-00-00-${id}.jsonl`);
+    writeJsonl(rolloutPath, [
       {
         timestamp: "2026-07-06T10:00:00.000Z",
         type: "session_meta",
-        payload: { id, session_id: id, cwd, timestamp: "2026-07-06T10:00:00.000Z" },
+        payload: { id, session_id: id, cwd, timestamp: "2026-07-06T10:00:00.000Z", source: "cli", originator: "codex-tui" },
       },
-      { timestamp: "2026-07-06T10:01:00.000Z", type: "event_msg", payload: { type: "message", role: "user", message: { content: "please fix flakes" } } },
+      { timestamp: "2026-07-06T10:00:30.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>synthetic</environment_context>" }] } },
+      { timestamp: "2026-07-06T10:01:00.000Z", type: "event_msg", payload: { type: "user_message", message: "please fix flakes" } },
     ]);
+    fs.utimesSync(rolloutPath, new Date("2026-07-06T10:30:00.000Z"), new Date("2026-07-06T10:30:00.000Z"));
 
     const sessions = await discoverCodexSessions({ homeDir, limit: 10 });
 
@@ -137,6 +203,7 @@ describe("external session provider discovery", () => {
       title: "Investigate flaky test",
       preview: "please fix flakes",
       updatedAt: Date.parse("2026-07-06T11:00:00.000Z"),
+      messageCount: 1,
     });
   });
 
@@ -163,6 +230,30 @@ describe("external session provider discovery", () => {
       title: null,
       preview: "do not use this as a title",
     });
+  });
+
+  it("does not fall back to synthetic Codex rows when canonical user rows are only notices", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "77777777-7777-4777-8777-777777777777";
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T13-00-00-${id}.jsonl`), [
+      {
+        timestamp: "2026-07-06T13:00:00.000Z",
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      {
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "synthetic environment" }] },
+      },
+      {
+        type: "event_msg",
+        payload: { type: "user_message", message: "<system-reminder>transport only</system-reminder>" },
+      },
+    ]);
+
+    const [session] = await discoverCodexSessions({ homeDir, limit: 10 });
+    expect(session).toMatchObject({ id, preview: null, messageCount: 0 });
   });
 
   it("discovers Cursor transcripts and resolves cwd from the project slug when possible", async () => {
@@ -195,13 +286,54 @@ describe("external session provider discovery", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("discovers current Cursor store.db sessions and merges legacy transcript details", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "cursor-project");
+    const hash = createHash("md5").update(cwd).digest("hex");
+    const agentId = "66666666-6666-4666-8666-666666666666";
+    const projectDir = path.join(homeDir, ".cursor", "projects", "trusted-project");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, ".workspace-trusted"), JSON.stringify({ workspacePath: cwd }), "utf8");
+    const storePath = path.join(homeDir, ".cursor", "chats", hash, agentId, "store.db");
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    const db = new DatabaseSync(storePath);
+    try {
+      db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      const meta = Buffer.from(JSON.stringify({
+        agentId,
+        name: "Fix Cursor import",
+        createdAt: "2026-07-06T10:00:00.000Z",
+      }), "utf8").toString("hex");
+      db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(meta);
+    } finally {
+      db.close();
+    }
+    writeJsonl(path.join(projectDir, "agent-transcripts", agentId, `${agentId}.jsonl`), [
+      { role: "user", message: { content: [{ type: "text", text: "Preserve the transcript preview" }] } },
+    ]);
+
+    const sessions = await discoverCursorSessions({ homeDir, scopeRoots: [cwd], limit: 10 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      provider: "cursor",
+      id: agentId,
+      cwd,
+      title: "Fix Cursor import",
+      preview: "Preserve the transcript preview",
+      createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
+      messageCount: 1,
+    });
+  });
+
   it("discovers Droid sessions from Factory storage", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "droid-repo");
     const id = "44444444-4444-4444-8444-444444444444";
     writeJsonl(path.join(homeDir, ".factory", "sessions", slashEscapedCwd(cwd), `${id}.jsonl`), [
       { type: "session_start", id, title: "New Session", cwd },
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "Factory task title" }] } },
+      { type: "message", message: { role: "assistant", content: "untimestamped setup" } },
+      { type: "message", timestamp: "2026-07-06T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Factory task title" }] } },
     ]);
 
     const sessions = await discoverDroidSessions({ homeDir, limit: 10 });
@@ -213,6 +345,8 @@ describe("external session provider discovery", () => {
       cwd,
       title: null,
       preview: "Factory task title",
+      createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
+      messageCount: 1,
     });
   });
 
@@ -231,7 +365,7 @@ describe("external session provider discovery", () => {
     const scriptPath = path.join(binDir, "opencode");
     fs.writeFileSync(
       scriptPath,
-      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","summary":"Use OpenCode to map the issue","created":1783332000000,"updated":1783332060000,"messageCount":3},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","preview":"Placeholder title should not win","created":1783331000000,"updated":1783331060000,"messageCount":1}]'\n`,
+      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","created":1783332000000,"updated":1783332060000},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","created":1783331000000,"updated":1783331060000}]'\n`,
       "utf8",
     );
     fs.chmodSync(scriptPath, 0o755);
@@ -246,16 +380,20 @@ describe("external session provider discovery", () => {
       id: "open-1",
       cwd,
       title: "OpenCode task",
-      preview: "Use OpenCode to map the issue",
-      messageCount: 3,
+      preview: null,
+      messageCount: null,
     });
     expect(sessions[1]).toMatchObject({
       provider: "opencode",
       id: "open-2",
       cwd,
       title: null,
-      preview: "Placeholder title should not win",
-      messageCount: 1,
+      preview: null,
+      messageCount: null,
     });
+
+    fs.writeFileSync(scriptPath, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n", "utf8");
+    await expect(discoverOpenCodeSessions({ homeDir, cwd, limit: 10 }))
+      .rejects.toThrow(/no JSON session list/i);
   });
 });

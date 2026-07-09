@@ -5,11 +5,10 @@ import {
   asRecord,
   asString,
   cleanSessionTitle,
-  countJsonlLinesCheap,
+  countJsonlUserMessagesCheap,
   cwdIsInScope,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
-  previewFromRecords,
   readFilePrefix,
   readFileSuffix,
   readJsonlRecords,
@@ -43,6 +42,7 @@ type CodexSessionMeta = {
 type CodexSessionCandidate = ExternalSessionFileCandidate<{ meta?: CodexSessionMeta | null }>;
 
 const CODEX_PROJECT_SCOPE_SCAN_CEILING = 2000;
+const CODEX_RECENT_SCAN_FLOOR = 1000;
 
 function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
   const map = new Map<string, CodexIndexEntry>();
@@ -116,11 +116,48 @@ function collectRecentCodexSessionCandidates(root: string, limit: number): Codex
           const candidate = sessionFileCandidate(path.join(dayDir, entry.name), {});
           if (candidate) candidates.push(candidate);
         }
-        if (candidates.length >= limit) return sortFileCandidatesByMtime(candidates, limit);
       }
     }
   }
   return sortFileCandidatesByMtime(candidates, limit);
+}
+
+function codexHomeDir(args: ExternalSessionDiscoveryArgs): string {
+  const env = args.env ?? process.env;
+  const configured = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
+  return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
+}
+
+function isImportableCodexSession(meta: CodexSessionMeta): boolean {
+  const source = asString(meta.payload.source)?.toLowerCase() ?? null;
+  const originator = asString(meta.payload.originator)?.toLowerCase() ?? null;
+  const agentRole = asString(meta.payload.agent_role) ?? asString(meta.payload.agentRole);
+  if (agentRole) return false;
+  if (source === "exec" || source === "vscode") return false;
+  if (source && source !== "cli" && source !== "user_shell") return false;
+  if (!originator) return true;
+  return !(
+    originator === "ade"
+    || originator === "ade_desktop"
+    || originator === "codex desktop"
+    || originator === "codex_exec"
+    || originator.startsWith("codex_sdk")
+    || originator.startsWith("ade-title")
+  );
+}
+
+function firstCodexUserText(records: unknown[]): string | null {
+  const canonical = records.filter((item) => {
+    const record = asRecord(item);
+    const payload = asRecord(record?.payload);
+    if (asString(record?.type)?.toLowerCase() !== "event_msg") return false;
+    const type = asString(payload?.type)?.toLowerCase();
+    const role = asString(payload?.role)?.toLowerCase();
+    return type === "user_message" || (type === "message" && role === "user");
+  });
+  return canonical.length
+    ? firstUserTextFromRecords(canonical)
+    : firstUserTextFromRecords(records);
 }
 
 function collectProjectScopedCodexSessionCandidates(
@@ -184,15 +221,16 @@ export async function discoverCodexSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
-  const codexDir = path.join(resolveHomeDir(args), ".codex");
+  const codexDir = codexHomeDir(args);
   const sessionsDir = path.join(codexDir, "sessions");
   const index = readCodexIndex(path.join(codexDir, "session_index.jsonl"));
   const recordsById = new Map<string, ExternalSessionDiscoveryRecord>();
   if (!fs.existsSync(sessionsDir)) return [];
 
+  const scanLimit = Math.max(CODEX_RECENT_SCAN_FLOOR, limit * 20);
   const candidates = args.scopeRoots?.length
-    ? collectProjectScopedCodexSessionCandidates(sessionsDir, limit, args.scopeRoots, args.logger)
-    : collectRecentCodexSessionCandidates(sessionsDir, limit);
+    ? collectProjectScopedCodexSessionCandidates(sessionsDir, scanLimit, args.scopeRoots, args.logger)
+    : collectRecentCodexSessionCandidates(sessionsDir, scanLimit);
 
   for (const candidate of candidates) {
     const filePath = candidate.filePath;
@@ -219,20 +257,22 @@ export async function discoverCodexSessions(
     const payload = candidate.meta?.payload ?? asRecord(first?.payload);
     const type = asString(first?.type);
     if (type !== "session_meta" || !payload) continue;
+    const meta = candidate.meta ?? readCodexSessionMeta(filePath);
+    if (!meta || !isImportableCodexSession(meta)) continue;
     const id = candidate.meta?.id ?? asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
     if (!id || recordsById.has(id)) continue;
     const indexed = index.get(id);
-    const firstUserText = firstUserTextFromRecords(jsonl);
+    const firstUserText = firstCodexUserText(jsonl);
     const title = candidate.meta?.title ?? titleFromCodexPayload(payload, indexed);
     recordsById.set(id, recordWithFile({
       provider: "codex",
       id,
       cwd: candidate.meta?.cwd ?? asString(payload.cwd),
       title,
-      preview: firstUserText ?? previewFromRecords(jsonl),
+      preview: firstUserText,
       createdAt: candidate.meta?.createdAt ?? asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
-      updatedAt: indexed?.updatedAt ?? candidate.mtimeMs,
-      messageCount: countJsonlLinesCheap(filePath),
+      updatedAt: Math.max(indexed?.updatedAt ?? 0, candidate.mtimeMs),
+      messageCount: countJsonlUserMessagesCheap(filePath, "codex"),
       filePath,
       sourceMtimeMs: candidate.mtimeMs,
     }));

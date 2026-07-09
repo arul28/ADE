@@ -369,6 +369,7 @@ describe("createSyncRemoteCommandService", () => {
       sessionId: "session-1",
       ptyId: "pty-1",
       laneId: "lane-1",
+      session: { id: "session-1", laneId: "lane-1", title: "Persisted CLI" },
     });
     const { service } = createService({
       externalSessionsService: { list: vi.fn(), importExternalSession },
@@ -404,6 +405,7 @@ describe("createSyncRemoteCommandService", () => {
       sessionId: "session-1",
       ptyId: "pty-1",
       laneId: "lane-1",
+      session: { id: "session-1", laneId: "lane-1", title: "Persisted CLI" },
     });
   });
 
@@ -412,6 +414,7 @@ describe("createSyncRemoteCommandService", () => {
       kind: "chat",
       chatSessionId: "chat-1",
       laneId: "lane-1",
+      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
     });
     const { service } = createService({
       externalSessionsService: { list: vi.fn(), importExternalSession },
@@ -429,7 +432,71 @@ describe("createSyncRemoteCommandService", () => {
       kind: "chat",
       chatSessionId: "chat-1",
       laneId: "lane-1",
+      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
     });
+  });
+
+  it("routes every supported provider import affordance without narrowing the provider contract", async () => {
+    const imports = [
+      { provider: "claude", target: "cli", mode: "resume" },
+      { provider: "claude", target: "cli", mode: "fork" },
+      { provider: "claude", target: "chat", mode: "resume" },
+      { provider: "claude", target: "chat", mode: "fork" },
+      { provider: "codex", target: "cli", mode: "resume" },
+      { provider: "codex", target: "cli", mode: "fork" },
+      { provider: "codex", target: "chat", mode: "resume" },
+      { provider: "codex", target: "chat", mode: "fork" },
+      { provider: "cursor", target: "cli", mode: "resume" },
+      { provider: "droid", target: "cli", mode: "resume" },
+      { provider: "droid", target: "cli", mode: "fork" },
+      { provider: "opencode", target: "cli", mode: "resume" },
+      { provider: "opencode", target: "cli", mode: "fork" },
+    ] as const;
+    const importExternalSession = vi.fn(async (args: (typeof imports)[number] & { sessionId: string; laneId: string }) => (
+      args.target === "chat"
+        ? {
+            kind: "chat" as const,
+            chatSessionId: `chat-${args.provider}-${args.mode}`,
+            laneId: args.laneId,
+            chatSummary: {
+              sessionId: `chat-${args.provider}-${args.mode}`,
+              laneId: args.laneId,
+              title: "Ready chat",
+            },
+          }
+        : {
+            kind: "cli" as const,
+            sessionId: `cli-${args.provider}-${args.mode}`,
+            ptyId: `pty-${args.provider}-${args.mode}`,
+            laneId: args.laneId,
+            session: {
+              id: `cli-${args.provider}-${args.mode}`,
+              laneId: args.laneId,
+              title: "Ready CLI",
+            },
+          }
+    ));
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession },
+    });
+
+    for (const entry of imports) {
+      const result = await service.execute(makePayload("work.importExternalSession", {
+        ...entry,
+        sessionId: `external-${entry.provider}`,
+        laneId: "lane-1",
+      }));
+      expect(result).toHaveProperty("kind", entry.target === "chat" ? "chat" : "cli");
+      expect(result).toHaveProperty(entry.target === "chat" ? "chatSummary" : "session");
+    }
+
+    expect(importExternalSession.mock.calls.map(([args]) => args)).toEqual(
+      imports.map((entry) => ({
+        ...entry,
+        sessionId: `external-${entry.provider}`,
+        laneId: "lane-1",
+      })),
+    );
   });
 
   it("rejects invalid work.importExternalSession payloads", async () => {

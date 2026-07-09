@@ -358,8 +358,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   building provider argv/env so Agent Skill roots and
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware. External-session imports share
   the desktop external-session service and DTOs: list returns provider
-  summaries and import returns either a tracked CLI PTY id or a native ADE
-  chat id. See
+  summaries, while import returns the created ids plus the persisted
+  `TerminalSessionSummary` or `AgentChatSessionSummary`. Controllers install
+  that summary before navigating, avoiding a race with replicated/session-list
+  state. See
   [External Session Import](../terminals-and-sessions/external-session-import.md)
   for the provider storage formats, host/runtime requirements, and mobile
   testing constraints.
@@ -884,7 +886,7 @@ feature detail lives in
 | Command | Policy | Purpose |
 |---|---|---|
 | `work.listExternalSessions` | `viewerAllowed: true` | Returns `ExternalSessionSummary[]` from the runtime's external-session service. Payload mirrors `ExternalSessionListArgs` (`providers`, `laneId`, `cwd`, `scope`, `limit`). |
-| `work.importExternalSession` | `viewerAllowed: true`, `queueable: true` | Imports one external session into a lane as either `target: "cli"` (`ExternalSessionImportResult.kind = "cli"`, with `sessionId`/`ptyId`) or `target: "chat"` (`kind = "chat"`, with `chatSessionId`). Payload mirrors `ExternalSessionImportArgs` (`provider`, `sessionId`, `laneId`, `target`, `mode`, optional `model`/`permissionMode`). |
+| `work.importExternalSession` | `viewerAllowed: true`, `queueable: true` | Imports one external session into a lane as either `target: "cli"` (`ExternalSessionImportResult.kind = "cli"`, with `sessionId`/`ptyId` and, when available, persisted `session`) or `target: "chat"` (`kind = "chat"`, with `chatSessionId` and required persisted `chatSummary`). Payload mirrors `ExternalSessionImportArgs` (`provider`, `sessionId`, `laneId`, `target`, `mode`, optional `model`/`permissionMode`). |
 
 These commands are viewer-allowed for the same reason as
 `work.startCliSession`: a paired phone or desktop controller is already a

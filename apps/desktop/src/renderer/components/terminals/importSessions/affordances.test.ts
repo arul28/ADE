@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { importAffordancesFor, shortenCwd } from "./affordances";
+import { sessionHeading } from "./sessionPresentation";
 import type { ExternalSessionCapabilities, ExternalSessionSummary } from "./contract";
 
 const NO_CAPS: ExternalSessionCapabilities = {
@@ -115,11 +116,9 @@ describe("importAffordancesFor", () => {
     );
     expect(affs.map((a) => a.kind)).toEqual(["fork-into-lane", "resume-in-place"]);
     expect(affs[0]).toMatchObject({ mode: "fork", hint: expect.stringMatching(/another folder/i) });
-    // The foreign folder is carried on `foreignCwd` (rendered as an inline
-    // caption), not baked into the now-consistent "Open as CLI session" label.
     expect(affs[1]).toMatchObject({
       mode: "resume",
-      label: "Open as CLI session",
+      label: "Continue in original folder",
       foreignCwd: "/Users/dev/other-project",
     });
   });
@@ -134,7 +133,7 @@ describe("importAffordancesFor", () => {
     );
     expect(affs.map((a) => a.kind)).toEqual(["resume-in-place"]);
     expect(affs[0]?.foreignCwd).toBe("/Users/dev/other-project");
-    expect(affs[0]?.label).toBe("Open as CLI session");
+    expect(affs[0]?.label).toBe("Continue in original folder");
     expect(affs[0]?.mode).toBe("resume");
   });
 
@@ -157,29 +156,34 @@ describe("importAffordancesFor", () => {
     expect(affs[0]?.disabledReason).toContain("Cursor");
   });
 
-  it("chat import works regardless of cwd, alongside a disabled cli resume", () => {
+  it("cross-folder Claude only offers a chat copy, never a misleading continuation", () => {
     const affs = importAffordancesFor(
-      session({ provider: "claude", cwdMatchesRequestedLane: false, capabilities: { importToChat: true } }),
+      session({
+        provider: "claude",
+        cwdMatchesRequestedLane: false,
+        capabilities: { importToChat: true, forkIntoDifferentCwd: true },
+      }),
     );
-    expect(affs.map((a) => a.kind)).toEqual(["open-as-chat", "fork-as-chat", "resume-here"]);
-    expect(affs.find((a) => a.kind === "resume-here")?.enabled).toBe(false);
+    expect(affs.map((a) => a.kind)).toEqual(["fork-as-chat", "fork-into-lane"]);
+    expect(affs[0]).toMatchObject({ label: "Copy as ADE chat", mode: "fork", hero: true });
   });
 
   it("no capabilities at all, cwd matches: yields nothing", () => {
     expect(importAffordancesFor(session({ cwdMatchesRequestedLane: true, capabilities: {} }))).toEqual([]);
   });
 
-  it("labels are drawn only from the consistent {ADE chat | CLI session} × {Open | Fork} set", () => {
+  it("uses explicit continue/copy labels, including original-folder continuation", () => {
     const summaries = [
       session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
       session({ cwdMatchesRequestedLane: false, cwd: "/Users/dev/other", capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } }),
       session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
     ];
     const allowed = new Set([
-      "Open as ADE chat",
-      "Fork as ADE chat",
-      "Open as CLI session",
-      "Fork as CLI session",
+      "Continue as ADE chat",
+      "Copy as ADE chat",
+      "Continue as CLI",
+      "Copy as CLI",
+      "Continue in original folder",
     ]);
     for (const summary of summaries) {
       for (const aff of importAffordancesFor(summary)) {
@@ -224,5 +228,16 @@ describe("shortenCwd", () => {
   it("falls back to a readable label when the path is missing", () => {
     expect(shortenCwd("")).toBe("its original folder");
     expect(shortenCwd(null)).toBe("its original folder");
+  });
+});
+
+describe("sessionHeading", () => {
+  it("keeps an untitled session's prompt as preview instead of duplicating it as the title", () => {
+    expect(sessionHeading(session({
+      title: null,
+      preview: "this is a test message",
+      cwd: "/Users/dev/ADE",
+      updatedAt: null,
+    }))).toBe("ADE");
   });
 });

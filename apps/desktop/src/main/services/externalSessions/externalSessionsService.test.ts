@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PtyCreateArgs, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSessionSummary, PtyCreateArgs, TerminalSessionSummary } from "../../../shared/types";
 import { createExternalSessionsService } from "./externalSessionsService";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
@@ -24,6 +24,21 @@ function writeJsonl(filePath: string, rows: unknown[]): void {
 
 function makeLogger() {
   return { warn: vi.fn(), info: vi.fn() };
+}
+
+function makeImportedChatSummary(sessionId: string): AgentChatSessionSummary {
+  return {
+    sessionId,
+    laneId: "lane-1",
+    provider: "claude",
+    model: "sonnet",
+    status: "idle",
+    startedAt: "2026-07-06T10:00:00.000Z",
+    endedAt: null,
+    lastActivityAt: "2026-07-06T10:00:00.000Z",
+    lastOutputPreview: null,
+    summary: null,
+  };
 }
 
 beforeEach(() => {
@@ -637,7 +652,10 @@ describe("externalSessionsService", () => {
       },
     ]);
     const chatImporter = {
-      importExternalChatSession: vi.fn(async () => ({ chatSessionId: "chat-import" })),
+      importExternalChatSession: vi.fn(async () => ({
+        chatSessionId: "chat-import",
+        chatSummary: makeImportedChatSummary("chat-import"),
+      })),
     };
     const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-import", ptyId: "pty-import", pid: 456 }));
     const service = createExternalSessionsService({
@@ -658,7 +676,7 @@ describe("externalSessionsService", () => {
       target: "cli",
       mode: "resume",
       enforceLaneScopeCwd: laneCwd,
-    })).rejects.toThrow(/not permitted/i);
+    })).rejects.toThrow(/not found or is not resumable/i);
     await expect(service.importExternalSession({
       provider: "codex",
       sessionId: outsideCodexId,
@@ -709,7 +727,12 @@ describe("externalSessionsService", () => {
       target: "chat",
       mode: "resume",
       enforceLaneScopeCwd: laneCwd,
-    })).resolves.toEqual({ kind: "chat", chatSessionId: "chat-import", laneId: "lane-1" });
+    })).resolves.toEqual({
+      kind: "chat",
+      chatSessionId: "chat-import",
+      laneId: "lane-1",
+      chatSummary: makeImportedChatSummary("chat-import"),
+    });
     expect(create).toHaveBeenCalledTimes(2);
     expect(chatImporter.importExternalChatSession).toHaveBeenCalledWith(expect.objectContaining({
       provider: "claude",

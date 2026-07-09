@@ -1567,6 +1567,7 @@ export type AgentChatImportExternalSessionArgs = {
 
 export type AgentChatImportExternalSessionResult = {
   chatSessionId: string;
+  chatSummary: AgentChatSessionSummary;
 };
 
 /**

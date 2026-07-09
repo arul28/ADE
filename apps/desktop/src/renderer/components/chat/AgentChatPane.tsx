@@ -11039,6 +11039,7 @@ export function AgentChatPane({
           laneName={
             availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId
           }
+          lanes={availableLanes ?? lanes}
           onImported={onImportedSession}
           onOpenExisting={onOpenExistingImportedSession}
         />
