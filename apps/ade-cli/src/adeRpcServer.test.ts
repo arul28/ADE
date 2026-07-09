@@ -2459,21 +2459,58 @@ describe("adeRpcServer", () => {
       closeLinearIssueOnMerge: true,
     });
 
-    const drafted = await callTool(handler, "create_pr_from_lane", {
+    const defaulted = await callTool(handler, "create_pr_from_lane", {
       laneId: "lane-1",
       baseBranch: "main",
     });
-    expect(drafted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      baseBranch: "main",
-      closeLinearIssueOnMerge: true,
-    });
+    expect(defaulted?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.draftDescription).not.toHaveBeenCalled();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",
-      title: "Drafted PR",
-      body: "Drafted body",
+      title: "Lane 1 -> main",
+      body: "",
+      draft: false,
+      closeLinearIssueOnMerge: true,
+    });
+
+    (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
+      {
+        id: "primary",
+        name: "Primary",
+        laneType: "primary",
+        parentLaneId: null,
+        baseRef: "main",
+        branchRef: "main",
+        archivedAt: null,
+      },
+      {
+        id: "parent-lane",
+        name: "Parent",
+        laneType: "worktree",
+        parentLaneId: null,
+        baseRef: "main",
+        branchRef: "feature/parent",
+        archivedAt: null,
+      },
+      {
+        id: "child-lane",
+        name: "Child",
+        laneType: "worktree",
+        parentLaneId: "parent-lane",
+        baseRef: "main",
+        branchRef: "feature/child",
+        archivedAt: null,
+      },
+    ]);
+    const stackedDefaulted = await callTool(handler, "create_pr_from_lane", {
+      laneId: "child-lane",
+    });
+    expect(stackedDefaulted?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
+      laneId: "child-lane",
+      title: "Child -> Parent",
+      body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
     });

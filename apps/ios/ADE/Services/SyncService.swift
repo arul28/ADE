@@ -5688,6 +5688,22 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "work.runQuickCommand", args: args)
   }
 
+  func startClaudeLoginTerminal(laneId: String) async throws -> StartCliSessionResult {
+    try await sendDecodableCommand(
+      action: "work.runQuickCommand",
+      args: [
+        "laneId": laneId,
+        "title": "Claude login",
+        "startupCommand": "claude auth login",
+        "toolType": "shell",
+        "tracked": true,
+        "cols": 100,
+        "rows": 28,
+      ],
+      as: StartCliSessionResult.self
+    )
+  }
+
   func startCliSession(
     laneId: String,
     provider: String,

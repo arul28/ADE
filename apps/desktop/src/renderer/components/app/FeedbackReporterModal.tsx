@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
@@ -17,6 +16,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
 import type { GitCommitSummary } from "../../../shared/types/git";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -262,10 +262,7 @@ function NewReportTab({
   hasGithubToken: boolean;
   onSubmitted: () => void;
 }) {
-  const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
-  }, [navigate]);
+  const openProviderSignIn = useOpenProviderSignIn();
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
@@ -658,7 +655,7 @@ function NewReportTab({
             }}
             surfaceKey="feedback-reporter"
             availableModelIds={availableModelIds}
-            onOpenSignIn={openAiProvidersSettings}
+            onOpenSignIn={openProviderSignIn}
           />
           <ReasoningEffortPicker
             modelId={modelId}

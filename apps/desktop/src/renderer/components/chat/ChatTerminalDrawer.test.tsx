@@ -3,7 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
+import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -115,18 +115,6 @@ describe("ChatTerminalDrawer", () => {
       expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-once:pty-once");
     });
     expect(screen.getAllByText(/^Terminal \d+$/)).toHaveLength(1);
-  });
-
-  it("toggles the terminal drawer open and closed", () => {
-    const onToggle = vi.fn();
-    const view = render(<ChatTerminalToggle open={false} onToggle={onToggle} />);
-
-    fireEvent.click(screen.getByTitle("Open terminal"));
-    expect(onToggle).toHaveBeenCalledTimes(1);
-
-    view.rerender(<ChatTerminalToggle open onToggle={onToggle} />);
-    fireEvent.click(screen.getByTitle("Close terminal"));
-    expect(onToggle).toHaveBeenCalledTimes(2);
   });
 
   it("does not restore terminal tabs while the drawer is closed", async () => {

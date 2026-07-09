@@ -652,8 +652,6 @@ function CliSessionSurface({
   sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
-  onToggleTerminalPane,
-  terminalPaneOpen,
 }: {
   session: TerminalSessionSummary & { ptyId: string };
   lanes: LaneSummary[];
@@ -670,8 +668,6 @@ function CliSessionSurface({
   sessionsPaneCount?: number;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
-  onToggleTerminalPane?: () => void;
-  terminalPaneOpen?: boolean;
 }) {
   const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId);
   const supportsSplit = layoutVariant !== "grid-tile";
@@ -691,8 +687,6 @@ function CliSessionSurface({
           sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onToggleTerminalPane={onToggleTerminalPane}
-          terminalPaneOpen={terminalPaneOpen}
           onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
           prPaneOpen={prPaneOpen}
         />
@@ -828,8 +822,6 @@ function SessionSurface({
           sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onToggleTerminalPane={onToggleTerminalPane}
-          terminalPaneOpen={terminalPaneOpen}
         />
       );
     }

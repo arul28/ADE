@@ -466,7 +466,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
   });
 
-  it("opens and closes the Work Terminal sidebar from session headers", async () => {
+  it("opens and closes the Work Terminal sidebar from the Work surface", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },

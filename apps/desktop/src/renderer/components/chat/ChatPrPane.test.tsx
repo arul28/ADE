@@ -233,7 +233,7 @@ describe("ChatPrPane", () => {
 
     render(
       <MemoryRouter>
-        <ChatPrPane laneId="lane-1" branchName="feature/pr-pane" chatModelId="openai/gpt-5" />
+        <ChatPrPane laneId="lane-1" branchName="feature/pr-pane" />
       </MemoryRouter>,
     );
 
@@ -290,7 +290,7 @@ describe("ChatPrPane", () => {
 
     const { rerender } = render(
       <MemoryRouter>
-        <ChatPrPane laneId="lane-1" branchName="feature/pr-pane" chatModelId="openai/gpt-5" />
+        <ChatPrPane laneId="lane-1" branchName="feature/pr-pane" />
       </MemoryRouter>,
     );
 
@@ -298,7 +298,7 @@ describe("ChatPrPane", () => {
 
     rerender(
       <MemoryRouter>
-        <ChatPrPane laneId="lane-2" branchName="feature/pr-pane-2" chatModelId="openai/gpt-5" />
+        <ChatPrPane laneId="lane-2" branchName="feature/pr-pane-2" />
       </MemoryRouter>,
     );
 

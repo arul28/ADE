@@ -447,8 +447,8 @@ export type DraftPrDescriptionArgs = {
   closeLinearIssueOnMerge?: boolean;
   /**
    * When true, surface real AI failures to the caller (throw) instead of silently
-   * returning the deterministic template. Used by the in-chat "AI draft" button so
-   * the user sees why it failed rather than getting a stub.
+   * returning the deterministic template. Used by explicit AI-draft callers that
+   * need a hard failure instead of a stub.
    */
   requireAi?: boolean;
 };

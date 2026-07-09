@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createDynamicCursorCliModelDescriptor, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import {
+  createDynamicCursorCliModelDescriptor,
+  createDynamicOpenCodeModelDescriptor,
+  type ModelDescriptor,
+} from "../../../../shared/modelRegistry";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 
 vi.mock("@lobehub/icons", () => {
@@ -673,7 +677,30 @@ describe("ModelPicker", () => {
     expect(banner).toBeTruthy();
     expect(banner.getAttribute("data-provider-family")).toBe("anthropic");
     await user.click(banner);
-    expect(onOpenSignIn).toHaveBeenCalledOnce();
+    expect(onOpenSignIn).toHaveBeenCalledWith("anthropic");
+    expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("passes row auth type when opening sign-in for unavailable Anthropic models", async () => {
+    const user = userEvent.setup();
+    const anthropicApiKeyModel = createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "anthropic",
+      openCodeModelId: "claude-sonnet-5",
+      displayName: "Claude Sonnet via API key",
+    });
+    const onOpenSignIn = vi.fn();
+    renderPicker({
+      value: anthropicApiKeyModel.id,
+      models: [anthropicApiKeyModel],
+      availableModelIds: [],
+      onOpenSignIn,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await user.click(screen.getByRole("button", { name: /Sign in/i }));
+
+    expect(anthropicApiKeyModel.family).toBe("anthropic");
+    expect(onOpenSignIn).toHaveBeenCalledWith("anthropic", ["api-key"]);
     expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
   });
 

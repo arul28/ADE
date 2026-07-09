@@ -6,12 +6,12 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { AiFeaturesSection } from "./AiFeaturesSection";
 
 const modelPickerProps = vi.hoisted(() =>
-  [] as Array<{ surfaceKey: string; onOpenSignIn?: () => void }>,
+  [] as Array<{ surfaceKey: string; onOpenSignIn?: (family?: unknown) => void }>,
 );
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => {
   return {
-    ModelPicker: (props: { surfaceKey: string; onOpenSignIn?: () => void }) => {
+    ModelPicker: (props: { surfaceKey: string; onOpenSignIn?: (family?: unknown) => void }) => {
       modelPickerProps.push(props);
       return (
         <button type="button" onClick={props.onOpenSignIn}>

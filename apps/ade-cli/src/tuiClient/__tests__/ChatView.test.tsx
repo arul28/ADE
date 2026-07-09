@@ -12,6 +12,7 @@ import {
   renderChatVisibleSelectionRows,
   renderChatVisibleSelectionRowsFromRows,
   selectedTextFromChatRows,
+  workFileDiffKey,
   workGroupExpandKey,
 } from "../components/ChatView";
 import { aggregateChatBlocks } from "../aggregate";
@@ -1240,6 +1241,16 @@ describe("ChatView", () => {
     const expanded = renderEvents(events, { width: 120, expanded: true });
     expect(expanded).toContain("early.ts");
     expect(expanded).toContain("recent.ts");
+    expect(expanded).toContain("diff");
+
+    const rows = renderChatVisibleSelectionRows({
+      events,
+      notices: [],
+      activeSession: session,
+      width: 120,
+      expandedLineIds: new Set([workGroupExpandKey(chatEventLineId(events[0]!, 0))]),
+    });
+    expect(rows.some((row) => row.actionId === workFileDiffKey(chatEventLineId(events[0]!, 0), "f1"))).toBe(true);
   });
 
   it("tags a collapsed work-group header with an expandable click-target id", () => {

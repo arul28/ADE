@@ -101,7 +101,7 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   intent?: "rescue-unstaged";
 }> = [
   { k: "n", label: "new chat", slashCommand: "/new chat", glyph: "✦", glyphColorKind: "additive" },
-  { k: "o", label: "open / create PR", slashCommand: "/pr open", detail: "draft when missing", glyph: "↗", glyphColorKind: "navigation" },
+  { k: "o", label: "open / create PR", slashCommand: "/pr open", detail: "create when missing", glyph: "↗", glyphColorKind: "navigation" },
   { k: "a", label: "stage all", slashCommand: "/stage all", glyph: "+", glyphColorKind: "additive" },
   {
     k: "u",

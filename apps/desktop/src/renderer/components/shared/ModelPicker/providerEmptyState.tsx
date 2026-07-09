@@ -1,5 +1,5 @@
-import { Gear, ArrowSquareOut } from "@phosphor-icons/react";
-import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import { Gear, ArrowSquareOut, Terminal } from "@phosphor-icons/react";
+import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { cn } from "../../ui/cn";
 
@@ -20,8 +20,8 @@ type ProviderCopy = {
 const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   anthropic: {
     title: "Sign in to Claude",
-    body: "Install the Claude CLI and sign in, or set an Anthropic API key in Settings.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    body: "Open a Claude login terminal on the primary lane, then complete the browser sign-in.",
+    primary: { label: "Login to Claude", action: { kind: "open-settings" } },
     secondary: {
       label: "Claude Code docs",
       action: { kind: "open-external", url: "https://docs.claude.com/en/docs/agents-and-tools/claude-code/setup" },
@@ -95,12 +95,12 @@ export type ProviderEmptyStateProps =
   | {
       family: ProviderFamily;
       mode?: "default" | "discovery-empty";
-      onOpenSignIn?: () => void;
+      onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
     }
   | {
       mode: "opencode-required";
       family: "opencode" | "ollama" | "lmstudio";
-      onOpenSignIn?: () => void;
+      onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
     };
 
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
@@ -154,7 +154,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
 
 export type ProviderSetupBannerProps = {
   family: ProviderFamily;
-  onOpenSignIn?: () => void;
+  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
 };
 
 /**
@@ -168,12 +168,13 @@ export type ProviderSetupBannerProps = {
 export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBannerProps) {
   if (!onOpenSignIn) return null;
   const label = PROVIDER_DISPLAY_LABELS[family] ?? family;
+  const claude = family === "anthropic";
   return (
     <button
       type="button"
       data-model-picker-setup-banner="true"
       data-provider-family={family}
-      onClick={onOpenSignIn}
+      onClick={() => onOpenSignIn(family)}
       className={cn(
         "group sticky top-0 z-[6] mx-0.5 mb-1 flex items-center justify-between gap-2 rounded-md px-2 py-1.5",
         "border border-white/[0.06] bg-white/[0.025] backdrop-blur",
@@ -182,8 +183,12 @@ export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBanne
       )}
     >
       <span className="inline-flex items-center gap-1.5">
-        <Gear size={11} weight="bold" className="opacity-70 group-hover:opacity-100" />
-        <span>{`Set up ${label}`}</span>
+        {claude ? (
+          <Terminal size={11} weight="bold" className="opacity-70 group-hover:opacity-100" />
+        ) : (
+          <Gear size={11} weight="bold" className="opacity-70 group-hover:opacity-100" />
+        )}
+        <span>{claude ? "Login to Claude" : `Set up ${label}`}</span>
       </span>
       <ArrowSquareOut size={10} weight="bold" className="opacity-60 group-hover:opacity-100" />
     </button>
@@ -220,7 +225,7 @@ export function ProviderEmptyState(props: ProviderEmptyStateProps) {
         {copy.primary ? (
           <button
             type="button"
-            onClick={() => dispatchAction(copy.primary!.action, onOpenSignIn)}
+            onClick={() => dispatchAction(copy.primary!.action, () => onOpenSignIn?.(family))}
             className={cn(
               "inline-flex h-6 items-center rounded-md border border-violet-400/30 bg-violet-500/[0.12] px-2.5",
               "text-[10px] font-semibold uppercase tracking-wide text-violet-100",

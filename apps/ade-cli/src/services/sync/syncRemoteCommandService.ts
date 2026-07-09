@@ -3467,7 +3467,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     return await args.ptyService.create({
       laneId: parsed.laneId,
       title: parsed.title,
-      ...(parsed.toolType === "shell" || !parsed.startupCommand ? {} : { startupCommand: parsed.startupCommand }),
+      ...(parsed.startupCommand ? { startupCommand: parsed.startupCommand } : {}),
       tracked: parsed.tracked ?? true,
       cols: parsed.cols ?? 120,
       rows: parsed.rows ?? 36,

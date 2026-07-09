@@ -38,6 +38,7 @@ export type FileChangeEntry = {
   status: WorkToolStatus;
   additions: number;
   deletions: number;
+  diff: string;
   deleted?: boolean;
 };
 
@@ -282,6 +283,7 @@ function appendFileChangeEvent(
     existing.kind = event.kind;
     existing.additions = additions;
     existing.deletions = deletions;
+    existing.diff = event.diff;
     if (deleted) existing.deleted = true;
     return;
   }
@@ -292,6 +294,7 @@ function appendFileChangeEvent(
     status,
     additions,
     deletions,
+    diff: event.diff,
   };
   if (deleted) entry.deleted = true;
   block.entries.push(entry);

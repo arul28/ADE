@@ -1027,6 +1027,7 @@ struct WorkChatSessionView: View {
             currentProvider: chatSummaryContext.provider,
             currentReasoningEffort: chatSummaryContext.reasoningEffort,
             currentCodexFastMode: chatSummaryContext.effectiveFastMode,
+            lanes: lanes,
             isBusy: modelUpdateInFlight,
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in

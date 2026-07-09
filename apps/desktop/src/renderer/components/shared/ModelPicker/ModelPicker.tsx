@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
+  type AuthType,
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
@@ -38,7 +39,7 @@ export type ModelPickerProps = {
   filter?: (model: ModelDescriptor) => boolean;
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onOpenSignIn?: () => void;
+  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   constrainToAvailableModelIds?: boolean;
   fastModeActive?: boolean;
@@ -265,9 +266,13 @@ export const ModelPicker = memo(function ModelPicker({
     setOpen(false);
   }, []);
 
-  const handleOpenSignIn = useCallback(() => {
+  const handleOpenSignIn = useCallback((family?: ProviderFamily, authTypes?: readonly AuthType[]) => {
     setOpen(false);
-    onOpenSignIn?.();
+    if (authTypes == null) {
+      onOpenSignIn?.(family);
+      return;
+    }
+    onOpenSignIn?.(family, authTypes);
   }, [onOpenSignIn]);
 
   const triggerFastSupported =

@@ -9,6 +9,83 @@ type RevealTerminalRequest = {
   label: string;
 };
 
+type ClaudeLoginTerminalCreated = RevealTerminalRequest & {
+  laneId: string;
+};
+
+type WorkNavigate = (path: string) => void;
+
+async function resolveClaudeLoginLaneId(laneId?: string | null): Promise<string> {
+  if (laneId) return laneId;
+  const listLanes = window.ade?.lanes?.list;
+  const availableLanes = typeof listLanes === "function" ? await listLanes({
+    includeArchived: false,
+    includeStatus: false,
+  }) : [];
+  const primaryLane = availableLanes.find((lane) => lane.laneType === "primary") ?? null;
+  const resolvedLaneId = primaryLane?.id ?? availableLanes[0]?.id ?? null;
+  if (!resolvedLaneId) {
+    throw new Error("No active lane is available for this project.");
+  }
+  return resolvedLaneId;
+}
+
+export async function createClaudeLoginTerminal({
+  laneId,
+  chatSessionId,
+}: {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+} = {}): Promise<ClaudeLoginTerminalCreated> {
+  if (!window.ade?.pty?.create) {
+    throw new Error("Terminal sessions are not available in this ADE runtime.");
+  }
+  const resolvedLaneId = await resolveClaudeLoginLaneId(laneId);
+  const created = await window.ade.pty.create({
+    laneId: resolvedLaneId,
+    ...(chatSessionId ? { chatSessionId } : {}),
+    cols: 100,
+    rows: 28,
+    title: "Claude login",
+    tracked: true,
+    toolType: "shell",
+    startupCommand: CLAUDE_AUTH_LOGIN_COMMAND,
+  });
+  return {
+    laneId: resolvedLaneId,
+    terminalId: created.sessionId,
+    ptyId: created.ptyId,
+    label: "Claude login",
+  };
+}
+
+export function revealTerminalSessionInWork(
+  navigate: WorkNavigate,
+  terminal: { terminalId: string; laneId: string },
+  delayMs = 80,
+): void {
+  navigate("/work");
+  window.setTimeout(() => {
+    window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+      detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+    }));
+  }, delayMs);
+}
+
+export async function createClaudeLoginTerminalInWork({
+  navigate,
+  laneId,
+  chatSessionId,
+}: {
+  navigate: WorkNavigate;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+}): Promise<ClaudeLoginTerminalCreated> {
+  const terminal = await createClaudeLoginTerminal({ laneId, chatSessionId });
+  revealTerminalSessionInWork(navigate, terminal);
+  return terminal;
+}
+
 function dismissedKey(storageKey: string): string {
   return `ade.claudeLoginPrompt.dismissed.v1:${storageKey}`;
 }
@@ -43,6 +120,8 @@ export function ClaudeLoginPromptButton({
   laneId,
   chatSessionId,
   onRevealTerminal,
+  onTerminalCreated,
+  dismissible = true,
   className,
 }: {
   visible: boolean;
@@ -50,6 +129,8 @@ export function ClaudeLoginPromptButton({
   laneId?: string | null;
   chatSessionId?: string | null;
   onRevealTerminal?: (terminal: RevealTerminalRequest) => void;
+  onTerminalCreated?: (terminal: ClaudeLoginTerminalCreated) => void;
+  dismissible?: boolean;
   className?: string;
 }) {
   const [dismissed, setDismissed] = useState(() => readDismissed(storageKey));
@@ -78,39 +159,12 @@ export function ClaudeLoginPromptButton({
     setOpening(true);
     setError(null);
     void (async () => {
-      let resolvedLaneId = laneId ?? null;
-      if (!resolvedLaneId) {
-        const listLanes = window.ade?.lanes?.list;
-        const availableLanes = typeof listLanes === "function" ? await listLanes({
-          includeArchived: false,
-          includeStatus: false,
-        }) : [];
-        resolvedLaneId = availableLanes[0]?.id ?? null;
-      }
-      if (!resolvedLaneId) {
-        throw new Error("No active lane is available for this project.");
-      }
-
-      const created = await window.ade.pty.create({
-        laneId: resolvedLaneId,
-        ...(chatSessionId ? { chatSessionId } : {}),
-        cols: 100,
-        rows: 28,
-        title: "Claude login",
-        tracked: true,
-        toolType: "shell",
-        startupCommand: CLAUDE_AUTH_LOGIN_COMMAND,
-      });
-
-      const reveal = {
-        terminalId: created.sessionId,
-        ptyId: created.ptyId,
-        label: "Claude login",
-      };
+      const reveal = await createClaudeLoginTerminal({ laneId, chatSessionId });
       onRevealTerminal?.(reveal);
+      onTerminalCreated?.(reveal);
       if (!chatSessionId) {
         window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-          detail: { sessionId: created.sessionId, laneId: resolvedLaneId },
+          detail: { sessionId: reveal.terminalId, laneId: reveal.laneId },
         }));
       }
     })()
@@ -118,9 +172,9 @@ export function ClaudeLoginPromptButton({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setOpening(false));
-  }, [chatSessionId, laneId, onRevealTerminal, opening]);
+  }, [chatSessionId, laneId, onRevealTerminal, onTerminalCreated, opening]);
 
-  if (!visible || dismissed) return null;
+  if (!visible || (dismissible && dismissed)) return null;
 
   return (
     <div className={cn("relative inline-flex shrink-0 items-center", className)}>
@@ -136,15 +190,17 @@ export function ClaudeLoginPromptButton({
           {opening ? <SpinnerGap size={12} className="animate-spin" aria-hidden /> : <Terminal size={12} weight="bold" aria-hidden />}
           <span className="whitespace-nowrap">Login to Claude</span>
         </button>
-        <button
-          type="button"
-          onClick={dismiss}
-          className="inline-flex h-full w-5 items-center justify-center border-l border-[#d97757]/25 text-[#ffd7c2]/65 transition-colors hover:bg-[#d97757]/18 hover:text-[#ffe4d5]"
-          aria-label="Dismiss Claude login prompt"
-          title="Dismiss"
-        >
-          <X size={10} weight="bold" aria-hidden />
-        </button>
+        {dismissible ? (
+          <button
+            type="button"
+            onClick={dismiss}
+            className="inline-flex h-full w-5 items-center justify-center border-l border-[#d97757]/25 text-[#ffd7c2]/65 transition-colors hover:bg-[#d97757]/18 hover:text-[#ffe4d5]"
+            aria-label="Dismiss Claude login prompt"
+            title="Dismiss"
+          >
+            <X size={10} weight="bold" aria-hidden />
+          </button>
+        ) : null}
       </div>
       {error ? (
         <span className="absolute right-0 top-[calc(100%+4px)] z-20 max-w-[16rem] rounded-md border border-red-400/20 bg-red-950/90 px-2 py-1 text-right text-[10px] text-red-100 shadow-lg">

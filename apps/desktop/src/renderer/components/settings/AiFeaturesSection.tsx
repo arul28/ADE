@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type {
   AiFeatureKey,
   AiConfig,
@@ -17,6 +16,7 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
+import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 
 type FeatureInfo = {
   key: AiFeatureKey;
@@ -120,10 +120,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 export function AiFeaturesSection() {
-  const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
-  }, [navigate]);
+  const openProviderSignIn = useOpenProviderSignIn();
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -444,7 +441,7 @@ export function AiFeaturesSection() {
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
                     surfaceKey={`ai-feature-${feature.key}`}
                     availableModelIds={availableModelIds}
-                    onOpenSignIn={openAiProvidersSettings}
+                    onOpenSignIn={openProviderSignIn}
                     disabled={!enabled}
                   />
                   <ReasoningEffortPicker
@@ -552,7 +549,7 @@ export function AiFeaturesSection() {
                 }}
                 surfaceKey="ai-feature-chat-auto-title"
                 availableModelIds={availableModelIds}
-                onOpenSignIn={openAiProvidersSettings}
+                onOpenSignIn={openProviderSignIn}
                 disabled={!chatAutoTitleEnabled}
               />
               <ReasoningEffortPicker

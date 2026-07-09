@@ -782,6 +782,7 @@ struct WorkNewChatScreen: View {
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
+        lanes: lanes,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option

@@ -521,11 +521,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
       <div
         className={cn(
-          "flex shrink-0 items-center overflow-x-auto border-b border-white/[0.06] bg-black/10",
-          isPanel ? "h-8" : "h-6",
+          "flex shrink-0 items-stretch overflow-x-auto border-b border-white/[0.07] bg-[var(--color-surface-recessed)] px-1",
+          isPanel ? "h-9" : "h-7",
         )}
       >
-        <div className="flex min-w-0 items-center gap-0 overflow-x-auto scrollbar-none">
+        <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none">
           {tabs.map((tab) => {
             const appControlTone = appControlTabState && appControlTabState.terminalSessionId === tab.sessionId
               ? appControlTabState.tone
@@ -535,11 +535,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               <div
                 key={tab.id}
                 className={cn(
-                  "group relative flex shrink-0 items-center gap-1 border-r border-white/[0.04] px-2 font-mono text-[10px] transition-colors",
-                  isPanel ? "h-8" : "h-6",
+                  "group relative flex shrink-0 items-center gap-1 rounded-t-md border border-transparent px-2 font-mono text-[10px] transition-colors",
+                  isPanel ? "h-9" : "h-7",
                   isActive
-                    ? "bg-white/[0.06] text-fg/85"
-                    : "bg-transparent text-fg/35 hover:bg-white/[0.03] hover:text-fg/60",
+                    ? "border-white/[0.07] border-b-transparent bg-black/[0.18] text-fg/85"
+                    : "bg-transparent text-fg/38 hover:bg-white/[0.035] hover:text-fg/65",
                   appControlTone ? "pl-4" : null,
                 )}
                 title={appControlTone ? appControlTabState?.title : undefined}
@@ -603,8 +603,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           type="button"
           onClick={() => { void createTab(); }}
           className={cn(
-            "mx-1 flex shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-white/30 transition-colors hover:bg-white/[0.04] hover:text-white/60",
-            isPanel ? "h-7 w-7" : "h-6 w-6",
+            "my-1 ml-1 flex shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.025] text-white/34 transition-colors hover:bg-white/[0.055] hover:text-white/65 disabled:cursor-default disabled:opacity-45",
+            isPanel ? "h-7 w-7" : "h-5 w-5",
           )}
           title="New terminal"
           disabled={creatingTab}
@@ -625,8 +625,17 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
             className="h-full w-full"
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-4 font-mono text-[11px] text-muted-fg">
-            {emptyMessage}
+          <div className="flex h-full items-center justify-center px-4">
+            <button
+              type="button"
+              onClick={() => { void createTab(); }}
+              disabled={creatingTab}
+              title={emptyMessage}
+              className="inline-flex h-8 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.035] px-3 font-sans text-[12px] font-medium text-fg/72 transition-colors hover:border-violet-400/24 hover:bg-violet-500/[0.08] hover:text-fg disabled:cursor-default disabled:opacity-45"
+            >
+              <Plus size={13} weight="bold" />
+              <span>New terminal</span>
+            </button>
           </div>
         )}
       </div>

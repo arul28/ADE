@@ -37,7 +37,7 @@ describe("ProviderEmptyState", () => {
     expect(screen.getByText("Connect Cursor")).toBeTruthy();
     expect(screen.getByText(/Add a Cursor API key/i)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
-    expect(onOpenSignIn).toHaveBeenCalledOnce();
+    expect(onOpenSignIn).toHaveBeenCalledWith("cursor");
     await userEvent.click(screen.getByRole("button", { name: /Get Cursor API key/i }));
     expect(openExternalCalls).toContain("https://cursor.com/dashboard/api");
   });
@@ -99,7 +99,7 @@ describe("ProviderEmptyState", () => {
       const onOpenSignIn = vi.fn();
       render(<ProviderEmptyState mode="opencode-required" family="ollama" onOpenSignIn={onOpenSignIn} />);
       await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
-      expect(onOpenSignIn).toHaveBeenCalledOnce();
+      expect(onOpenSignIn).toHaveBeenCalledWith("ollama");
       await userEvent.click(screen.getByRole("button", { name: /OpenCode site/i }));
       expect(openExternalCalls).toContain("https://opencode.ai/");
     });
@@ -120,7 +120,7 @@ describe("ProviderSetupBanner", () => {
     const banner = screen.getByRole("button", { name: /Set up Cursor/i });
     expect(banner).toBeTruthy();
     await userEvent.click(banner);
-    expect(onOpenSignIn).toHaveBeenCalledOnce();
+    expect(onOpenSignIn).toHaveBeenCalledWith("cursor");
   });
 
   it("uses Droid label for the 'factory' family", () => {
@@ -130,7 +130,7 @@ describe("ProviderSetupBanner", () => {
 
   it("uses Claude label for the 'anthropic' family", () => {
     render(<ProviderSetupBanner family="anthropic" onOpenSignIn={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /Set up Claude/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Login to Claude/i })).toBeTruthy();
   });
 
   it("uses OpenAI Codex label for the 'openai' family", () => {

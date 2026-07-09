@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import type {
@@ -16,7 +16,6 @@ import type {
 } from "../../../shared/types";
 import {
   buildLinearPrReference,
-  buildLinearPrTitle,
   ensureLinearPrReference,
 } from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -535,7 +534,7 @@ export function CreatePrModal({
   const [normalBaseBranch, setNormalBaseBranch] = React.useState("");
   const [normalCloseLinearIssueOnMerge, setNormalCloseLinearIssueOnMerge] = React.useState(true);
   const normalBaseBranchDefaultRef = React.useRef("");
-  const normalLinearTitleDefaultRef = React.useRef("");
+  const normalTitleDefaultRef = React.useRef("");
   const normalLinearBodyDefaultRef = React.useRef("");
 
   // Queue PRs
@@ -544,9 +543,8 @@ export function CreatePrModal({
   const [queueDragLaneId, setQueueDragLaneId] = React.useState<string | null>(null);
   const [queueTargetBranch, setQueueTargetBranch] = React.useState("");
 
-  // Body & AI draft
+  // Body
   const [normalBody, setNormalBody] = React.useState("");
-  const [drafting, setDrafting] = React.useState(false);
 
   // Integration PR
   const [integrationSources, setIntegrationSources] = React.useState<string[]>([]);
@@ -561,8 +559,6 @@ export function CreatePrModal({
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [laneSyncLoadingById, setLaneSyncLoadingById] = React.useState<Record<string, boolean>>({});
   const [knownPrs, setKnownPrs] = React.useState<PrSummary[]>([]);
-
-  const [draftError, setDraftError] = React.useState<string | null>(null);
 
   // Available branches for target-branch dropdowns
   const [availableBranches, setAvailableBranches] = React.useState<GitBranchSummary[]>([]);
@@ -620,24 +616,6 @@ export function CreatePrModal({
     return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, integrationBaseBranch]);
 
-  const handleDraftAI = async (laneId: string) => {
-    setDrafting(true);
-    setDraftError(null);
-    try {
-      const result = await window.ade.prs.draftDescription({ laneId });
-      if (mode === "normal") {
-        const lane = lanes.find((entry) => entry.id === laneId) ?? null;
-        const issue = lane?.linearIssue ?? null;
-        setNormalTitle(issue && !result.title.includes(issue.identifier) ? buildLinearPrTitle(issue) : result.title);
-        setNormalBody(issue ? ensureLinearPrReference(result.body, issue, normalCloseLinearIssueOnMerge, { preserveExisting: false }) : result.body);
-      }
-    } catch (err: unknown) {
-      setDraftError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDrafting(false);
-    }
-  };
-
   // Execute
   const [busy, setBusy] = React.useState(false);
   const [execError, setExecError] = React.useState<string | null>(null);
@@ -666,7 +644,7 @@ export function CreatePrModal({
       setNormalTitle("");
       setNormalDraft(false);
       setNormalCloseLinearIssueOnMerge(true);
-      normalLinearTitleDefaultRef.current = "";
+      normalTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
       setQueueLaneIds([]);
       setQueueDraft(false);
@@ -676,8 +654,6 @@ export function CreatePrModal({
       setExecError(null);
       setResults(null);
       setNormalBody("");
-      setDrafting(false);
-      setDraftError(null);
       setIntegrationSources([]);
       setIntegrationBaseBranch("");
       setIntegrationMergeIntoLaneId("");
@@ -753,37 +729,30 @@ export function CreatePrModal({
     [lanes, normalLaneId],
   );
   const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+  const normalTargetLabel = React.useMemo(() => {
+    const targetBranch = branchNameFromRef(normalBaseBranch.trim() || primaryLane?.branchRef || "main");
+    const targetLane = lanes.find((lane) => branchNameFromRef(lane.branchRef) === targetBranch);
+    return targetLane?.name ?? (targetBranch || "target");
+  }, [lanes, normalBaseBranch, primaryLane?.branchRef]);
+  const normalDefaultTitle = React.useMemo(() => {
+    if (!selectedNormalLane) return "";
+    return `${selectedNormalLane.name} -> ${normalTargetLabel}`;
+  }, [normalTargetLabel, selectedNormalLane]);
 
   React.useEffect(() => {
     if (!open) return;
     if (!selectedNormalLinearIssue) {
       // Lane no longer has a linked Linear issue — clear any auto-generated
-      // title/body fragments and reset the close-on-merge toggle so stale
+      // body fragments and reset the close-on-merge toggle so stale
       // Linear-flavored values don't follow the user to a non-Linear lane.
-      const previousAutoTitle = normalLinearTitleDefaultRef.current;
-      setNormalTitle((current) =>
-        previousAutoTitle && current.trim() === previousAutoTitle.trim() ? "" : current,
-      );
       const previousAutoBody = normalLinearBodyDefaultRef.current;
       setNormalBody((current) =>
         previousAutoBody && current.trim() === previousAutoBody.trim() ? "" : current,
       );
       setNormalCloseLinearIssueOnMerge(true);
-      normalLinearTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
       return;
     }
-
-    const nextTitle = buildLinearPrTitle(selectedNormalLinearIssue);
-    setNormalTitle((current) => {
-      const previousAutoTitle = normalLinearTitleDefaultRef.current;
-      if (!current.trim() || (previousAutoTitle && current === previousAutoTitle)) {
-        normalLinearTitleDefaultRef.current = nextTitle;
-        return nextTitle;
-      }
-      normalLinearTitleDefaultRef.current = nextTitle;
-      return current;
-    });
 
     const nextBody = `${buildLinearPrReference(selectedNormalLinearIssue, normalCloseLinearIssueOnMerge)}\n`;
     setNormalBody((current) => {
@@ -796,6 +765,19 @@ export function CreatePrModal({
       return ensureLinearPrReference(current, selectedNormalLinearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false });
     });
   }, [open, normalCloseLinearIssueOnMerge, selectedNormalLinearIssue]);
+
+  React.useEffect(() => {
+    if (!open || !normalDefaultTitle) return;
+    setNormalTitle((current) => {
+      const previousDefault = normalTitleDefaultRef.current;
+      if (!current.trim() || (previousDefault && current === previousDefault)) {
+        normalTitleDefaultRef.current = normalDefaultTitle;
+        return normalDefaultTitle;
+      }
+      normalTitleDefaultRef.current = normalDefaultTitle;
+      return current;
+    });
+  }, [normalDefaultTitle, open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -904,9 +886,7 @@ export function CreatePrModal({
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
         const linearIssue = lane?.linearIssue ?? null;
-        const title = linearIssue && !normalTitle.trim()
-          ? buildLinearPrTitle(linearIssue)
-          : normalTitle || lane?.name || "PR";
+        const title = normalTitle.trim() || normalDefaultTitle || lane?.name || "PR";
         const body = linearIssue
           ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
           : normalBody;
@@ -1043,13 +1023,11 @@ export function CreatePrModal({
 
   const goToStep2 = () => {
     setExecError(null);
-    setDraftError(null);
     setNumericStep(2);
   };
 
   const goBackToStep1 = () => {
     setExecError(null);
-    setDraftError(null);
     setNumericStep(1);
   };
 
@@ -1985,7 +1963,7 @@ export function CreatePrModal({
                         value={normalTitle}
                         onChange={(e) => setNormalTitle(e.target.value)}
                         style={inputStyle}
-                        placeholder="Auto-generated from lane name"
+                        placeholder={normalDefaultTitle || "Source lane -> target"}
                         data-tour="prs.createModal.title"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
@@ -1993,42 +1971,7 @@ export function CreatePrModal({
                     </div>
 
                     <div>
-                      <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginBottom: 8,
-                      }}>
-                        <span style={{ ...labelStyle, marginBottom: 0 }}>DESCRIPTION</span>
-                        <button
-                          disabled={!normalLaneId || drafting}
-                          onClick={() => void handleDraftAI(normalLaneId)}
-                          style={{
-                            background: "transparent",
-                            border: `1px solid ${C.accentBorder}`,
-                            borderRadius: 0,
-                            color: (!normalLaneId || drafting) ? C.textDisabled : C.accent,
-                            fontFamily: "var(--font-sans)",
-                            fontSize: 10,
-                            fontWeight: 700,
-                            textTransform: "uppercase" as const,
-                            letterSpacing: "1px",
-                            padding: "6px 12px",
-                            cursor: (!normalLaneId || drafting) ? "not-allowed" : "pointer",
-                            opacity: (!normalLaneId || drafting) ? 0.5 : 1,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }}
-                        >
-                          {drafting ? (
-                            <CircleNotch size={12} className="animate-spin" />
-                          ) : (
-                            <Sparkle size={12} weight="fill" />
-                          )}
-                          {drafting ? "DRAFTING..." : "DRAFT DESCRIPTION"}
-                        </button>
-                      </div>
+                      <span style={labelStyle}>DESCRIPTION</span>
                       <textarea
                         value={normalBody}
                         onChange={(e) => setNormalBody(e.target.value)}
@@ -2285,10 +2228,6 @@ export function CreatePrModal({
                       onOpenRebase={openRebaseTab}
                     />
                   </>
-                )}
-
-                {draftError && (
-                  <div style={errorBannerStyle}>Draft failed: {draftError}</div>
                 )}
 
                 {execError && (
