@@ -742,14 +742,6 @@ struct WorkChatSessionView: View {
             await onSelectRuntimeMode(mode)
           }
         },
-        onToggleCodexFastMode: !chatSummaryContext.isAvailable ? nil : { enabled in
-          pendingCodexFastMode = enabled
-          runComposerSettingMutation(onFailure: {
-            pendingCodexFastMode = nil
-          }) {
-            await onSelectCodexFastMode(enabled)
-          }
-        },
         onSend: onSend,
         onSent: {
           scrollToLatest(proxy, animated: true)
@@ -1034,8 +1026,9 @@ struct WorkChatSessionView: View {
             currentModelId: currentModelId,
             currentProvider: chatSummaryContext.provider,
             currentReasoningEffort: chatSummaryContext.reasoningEffort,
+            currentCodexFastMode: chatSummaryContext.effectiveFastMode,
             isBusy: modelUpdateInFlight,
-            onSelect: { option, pickedReasoning, _ in
+            onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
                 defer { modelUpdateInFlight = false }
@@ -1050,7 +1043,9 @@ struct WorkChatSessionView: View {
                   await onSelectEffort(nextReasoning)
                 }
                 guard !Task.isCancelled else { return }
-                modelPickerPresented = false
+                if option.supportsCodexFastMode || chatSummaryContext.effectiveFastMode != pickedFastMode {
+                  _ = await onSelectCodexFastMode(option.supportsCodexFastMode ? pickedFastMode : false)
+                }
               }
             }
           )
@@ -1636,7 +1631,6 @@ private struct WorkChatComposerCard: View {
   let onInterrupt: @MainActor () async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onToggleCodexFastMode: ((Bool) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
@@ -1659,7 +1653,6 @@ private struct WorkChatComposerCard: View {
       onInterrupt: onInterrupt,
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
-      onToggleCodexFastMode: onToggleCodexFastMode,
       onSend: onSend,
       onSent: onSent
     )
@@ -1696,7 +1689,6 @@ private struct WorkChatComposerDraftInput: View {
   let onInterrupt: @MainActor () async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onToggleCodexFastMode: ((Bool) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
@@ -1751,8 +1743,7 @@ private struct WorkChatComposerDraftInput: View {
             settingsMutationInFlight: settingsMutationInFlight,
             codexFastModeOverride: codexFastModeOverride,
             onOpenModelPicker: onOpenModelPicker,
-            onSelectRuntimeMode: onSelectRuntimeMode,
-            onToggleCodexFastMode: onToggleCodexFastMode
+            onSelectRuntimeMode: onSelectRuntimeMode
           )
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)

@@ -516,8 +516,9 @@ private enum WorkPreviewData {
     currentModelId: WorkPreviewData.chatSummary.model,
     currentProvider: WorkPreviewData.chatSummary.provider,
     currentReasoningEffort: WorkPreviewData.chatSummary.reasoningEffort ?? "",
+    currentCodexFastMode: WorkPreviewData.chatSummary.effectiveFastMode,
     isBusy: false,
-    onSelect: { _, _, _ in }
+    onSelect: { _, _, _, _ in }
   )
   .environmentObject(WorkPreviewData.syncService)
 }

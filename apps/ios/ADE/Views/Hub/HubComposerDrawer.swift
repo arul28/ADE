@@ -182,11 +182,9 @@ struct HubInlineComposer: View {
     return LaneColorPalette.displayColor(forHex: lane.color)
   }
 
-  /// Fast mode only applies to in-app chat sessions on fast-tier models — the
-  /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
-  /// value we send) is gated on both. The live picker option can only *add*
-  /// support; the catalog/allow-list fallback still shows the toggle for a
-  /// known-fast model whose option ships empty `serviceTiers`.
+  /// Fast mode only applies to in-app chat sessions on fast-tier models. The
+  /// picker owns the control, but launch still gates the submitted value on the
+  /// resolved session interface and model support.
   private var fastModeSupported: Bool {
     guard sessionMode == .chat else { return false }
     if let option = selectedModelOption,
@@ -325,17 +323,18 @@ struct HubInlineComposer: View {
         currentModelId: modelId,
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
+        currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         isBusy: false,
-        onSelect: { option, pickedReasoning, runtimeProvider in
+        onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
             ? hubNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
           reasoningEffort = pickedReasoning ?? ""
+          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
           runtimeMode = workDefaultRuntimeMode(provider: provider)
-          modelPickerPresented = false
         }
       )
       .environmentObject(syncService)
@@ -674,12 +673,9 @@ struct HubInlineComposer: View {
                 modeOptions: workRuntimeModeOptions(provider: provider),
                 modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
                 isCollapsed: isControlsCollapsed,
-                fastModeSupported: fastModeSupported,
                 fastModeEnabled: codexFastMode,
-                settingsMutationInFlight: busy,
                 onOpenModelPicker: { modelPickerPresented = true },
-                onSelectMode: { runtimeMode = $0 },
-                onToggleFastMode: { codexFastMode = $0 }
+                onSelectMode: { runtimeMode = $0 }
               )
               .padding(.trailing, 4)
             }

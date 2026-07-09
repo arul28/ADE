@@ -646,12 +646,9 @@ struct WorkNewChatScreen: View {
     syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
-  /// Fast mode only applies to in-app chat sessions on fast-tier models — the
-  /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
-  /// value we send) is gated on both. The picker's option can only *add* support
-  /// (a live host-advertised fast tier the curated catalog may miss); it never
-  /// suppresses the catalog/allow-list fallback, so a known-fast model whose
-  /// option ships empty `serviceTiers` still shows the toggle.
+  /// Fast mode only applies to in-app chat sessions on fast-tier models. The
+  /// picker owns the control, but launch still gates the submitted value on the
+  /// resolved session interface and model support.
   private var fastModeSupported: Bool {
     guard sessionMode == .chat else { return false }
     if let option = selectedModelOption,
@@ -783,9 +780,10 @@ struct WorkNewChatScreen: View {
         currentModelId: modelId,
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
+        currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         isBusy: false,
-        onSelect: { option, pickedReasoning, runtimeProvider in
+        onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
@@ -793,7 +791,7 @@ struct WorkNewChatScreen: View {
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
           reasoningEffort = pickedReasoning ?? ""
           runtimeMode = workDefaultRuntimeMode(provider: provider)
-          modelPickerPresented = false
+          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
         }
       )
     }
@@ -914,7 +912,6 @@ struct WorkNewChatScreen: View {
       canUploadAttachments: canUploadAttachments,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
-      fastModeSupported: fastModeSupported,
       codexFastMode: $codexFastMode,
       onOpenModelPicker: { modelPickerPresented = true },
       onSubmit: submit(openingMessage:attachments:)
@@ -1319,7 +1316,6 @@ private struct WorkNewChatComposerBar: View {
   let canUploadAttachments: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
-  let fastModeSupported: Bool
   @Binding var codexFastMode: Bool
   let onOpenModelPicker: () -> Void
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
@@ -1415,12 +1411,9 @@ private struct WorkNewChatComposerBar: View {
               modeOptions: runtimeOptions,
               modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
               isCollapsed: isControlsCollapsed,
-              fastModeSupported: fastModeSupported,
               fastModeEnabled: codexFastMode,
-              settingsMutationInFlight: busy,
               onOpenModelPicker: onOpenModelPicker,
-              onSelectMode: { runtimeMode = $0 },
-              onToggleFastMode: { codexFastMode = $0 }
+              onSelectMode: { runtimeMode = $0 }
             )
             .padding(.trailing, 4)
           }

@@ -17,45 +17,54 @@ struct WorkModelPickerSheet: View {
   let currentModelId: String
   let currentProvider: String
   let currentReasoningEffort: String
+  let currentCodexFastMode: Bool
   let availableModelIds: [String]?
   let cursorAvailabilityMode: WorkCursorAvailabilityMode
   let isBusy: Bool
-  let onSelect: (WorkModelOption, String?, String) -> Void
+  let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
     currentModelId: String,
     currentProvider: String,
     currentReasoningEffort: String = "",
+    currentCodexFastMode: Bool = false,
     availableModelIds: [String]? = nil,
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     isBusy: Bool,
-    onSelect: @escaping (WorkModelOption, String?, String) -> Void
+    onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
+    self.currentCodexFastMode = currentCodexFastMode
     self.availableModelIds = availableModelIds
     self.cursorAvailabilityMode = cursorAvailabilityMode
     self.isBusy = isBusy
     self.onSelect = onSelect
+    _selectedModelId = State(initialValue: currentModelId)
+    _selectedRuntimeProvider = State(initialValue: currentProvider)
+    _selectedReasoningEffort = State(initialValue: currentReasoningEffort)
+    _selectedCodexFastMode = State(initialValue: currentCodexFastMode)
   }
 
   @StateObject private var picker = ModelPickerStore()
   @State private var selection: ModelPickerRailSelection = .favorites
-	  @State private var searchText: String = ""
-	  @State private var liveCatalog: [WorkModelCatalogGroup]?
-	  @State private var isLoadingCatalog = false
-	  @State private var didPickInitialSelection = false
-	  @State private var selectedProviderTabKey: String?
-	  /// Model card awaiting a reasoning tier before the picker commits.
-	  @State private var pendingModelId: String?
+  @State private var searchText: String = ""
+  @State private var liveCatalog: [WorkModelCatalogGroup]?
+  @State private var isLoadingCatalog = false
+  @State private var didPickInitialSelection = false
+  @State private var selectedProviderTabKey: String?
+  @State private var selectedModelId: String
+  @State private var selectedRuntimeProvider: String
+  @State private var selectedReasoningEffort: String
+  @State private var selectedCodexFastMode: Bool
 
-	  private var catalog: [WorkModelCatalogGroup] {
-	    if let liveCatalog {
-	      return scopedCatalog(liveCatalog)
-	    }
-	    return []
-	  }
+  private var catalog: [WorkModelCatalogGroup] {
+    if let liveCatalog {
+      return scopedCatalog(liveCatalog)
+    }
+    return []
+  }
 
   private var flattenedModels: [WorkModelOption] {
     var seen = Set<String>()
@@ -107,10 +116,7 @@ struct WorkModelPickerSheet: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        if pendingModelId != nil {
-          pendingReasoningBanner
-        }
-        searchBar
+        topControlBar
         if isLoadingCatalog && catalog.isEmpty {
           loadingState
         } else if catalog.isEmpty {
@@ -118,69 +124,59 @@ struct WorkModelPickerSheet: View {
         } else {
           Divider().overlay(ADEColor.glassBorder)
           HStack(spacing: 0) {
-	            ModelPickerRail(
+            ModelPickerRail(
               entries: railEntries,
               selected: effectiveSelection,
               favoritesCount: picker.favorites.count,
               recentsCount: picker.recents.count,
-	              onSelect: { next in
-	                selection = next
-	                selectedProviderTabKey = nil
-	                pendingModelId = nil
-	                if case .providerGroup(let key, _) = next {
-	                  Task { await refreshCatalog(for: key) }
-	                }
-	              }
-	            )
+              onSelect: { next in
+                selection = next
+                selectedProviderTabKey = nil
+                if case .providerGroup(let key, _) = next {
+                  Task { await refreshCatalog(for: key) }
+                }
+              }
+            )
             Divider().overlay(ADEColor.glassBorder)
             ModelPickerContentPane(
               selection: effectiveSelection,
               isSearching: isSearching,
               searchText: searchText,
               models: visibleModels,
-	              groupedRows: groupedRows,
-	              providerTabs: providerTabs,
-	              selectedProviderTabKey: selectedProviderTabKey,
-	              currentModelId: currentModelId,
-              currentReasoningEffort: currentReasoningEffort,
-              pendingModelId: pendingModelId,
+              groupedRows: groupedRows,
+              providerTabs: providerTabs,
+              selectedProviderTabKey: selectedProviderTabKey,
+              selectedModelId: selectedModelId,
+              selectedReasoningEffort: selectedReasoningEffort,
+              selectedCodexFastMode: selectedCodexFastMode,
               favorites: picker.favorites,
               isBusy: isBusy,
-	              onHighlight: { model in pendingModelId = model.id },
-	              onSelect: { model, effort in commit(model: model, effort: effort) },
-	              onSelectProviderTab: { selectedProviderTabKey = $0 },
+              onSelect: { model in select(model: model) },
+              onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
+              onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
+              onSelectProviderTab: { selectedProviderTabKey = $0 },
               onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) }
             )
           }
+          Divider().overlay(ADEColor.glassBorder)
+          currentModelBar
         }
       }
       .adeScreenBackground()
-      .navigationTitle("Select Model")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .font(.subheadline.weight(.semibold))
-          }
-          .accessibilityLabel("Close")
-        }
-      }
+      .toolbar(.hidden, for: .navigationBar)
     }
     .presentationDetents([.large])
     .presentationDragIndicator(.visible)
     .onAppear {
       picker.load(syncService: syncService)
     }
-	    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
-	      await loadLiveCatalog()
-	      pickInitialSelectionIfNeeded()
-	      if case .providerGroup(let key, _) = selection {
-	        await refreshCatalog(for: key)
-	      }
-	    }
+    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
+      await loadLiveCatalog()
+      pickInitialSelectionIfNeeded()
+      if case .providerGroup(let key, _) = selection {
+        await refreshCatalog(for: key)
+      }
+    }
   }
 
   /// Falls back to the first available provider entry only when the user's
@@ -256,10 +252,10 @@ struct WorkModelPickerSheet: View {
       case .recents:
         let lookup = modelById
         pool = picker.recents.compactMap { lookup[$0] }
-	      case .providerGroup(let key, _):
-	        let group = catalog.first(where: { $0.key == key })
-	        let providers = filteredProviders(for: group)
-	        pool = providers.flatMap { $0.models }
+      case .providerGroup(let key, _):
+        let group = catalog.first(where: { $0.key == key })
+        let providers = filteredProviders(for: group)
+        pool = providers.flatMap { $0.models }
       }
     }
 
@@ -287,23 +283,23 @@ struct WorkModelPickerSheet: View {
     }
   }
 
-	  private var providerTabs: [WorkModelProvider] {
-	    guard !isSearching else { return [] }
-	    guard case .providerGroup(let key, _) = effectiveSelection else { return [] }
-	    return catalog.first(where: { $0.key == key })?.providers.filter { !$0.models.isEmpty } ?? []
-	  }
+  private var providerTabs: [WorkModelProvider] {
+    guard !isSearching else { return [] }
+    guard case .providerGroup(let key, _) = effectiveSelection else { return [] }
+    return catalog.first(where: { $0.key == key })?.providers.filter { !$0.models.isEmpty } ?? []
+  }
 
-	  private func filteredProviders(for group: WorkModelCatalogGroup?) -> [WorkModelProvider] {
-	    guard let group else { return [] }
-	    let providers = group.providers.filter { !$0.models.isEmpty }
-	    guard providers.count > 1 else { return providers }
-	    let activeKey = selectedProviderTabKey
-	      ?? providers.first(where: { provider in provider.models.contains(where: { workModelIdsEquivalent($0.id, currentModelId) }) })?.key
-	      ?? providers.first(where: { provider in provider.models.contains(where: { $0.isAvailable }) })?.key
-	      ?? providers.first?.key
-	    guard let activeKey else { return providers }
-	    return providers.filter { $0.key == activeKey }
-	  }
+  private func filteredProviders(for group: WorkModelCatalogGroup?) -> [WorkModelProvider] {
+    guard let group else { return [] }
+    let providers = group.providers.filter { !$0.models.isEmpty }
+    guard providers.count > 1 else { return providers }
+    let activeKey = selectedProviderTabKey
+      ?? providers.first(where: { provider in provider.models.contains(where: { workModelIdsEquivalent($0.id, selectedModelId) }) })?.key
+      ?? providers.first(where: { provider in provider.models.contains(where: { $0.isAvailable }) })?.key
+      ?? providers.first?.key
+    guard let activeKey else { return providers }
+    return providers.filter { $0.key == activeKey }
+  }
 
   private func catalogGroupContaining(modelId: String) -> String? {
     for group in catalog {
@@ -338,66 +334,67 @@ struct WorkModelPickerSheet: View {
   // MARK: Subviews
 
   @ViewBuilder
-  private var pendingReasoningBanner: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "brain.head.profile")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.accent)
-      Text("Pick reasoning level")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Spacer(minLength: 0)
-      if let pendingModelId, let model = modelById[pendingModelId] {
-        Text(model.displayName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
+  private var topControlBar: some View {
+    HStack(spacing: 10) {
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Search models…", text: $searchText)
+          .textFieldStyle(.plain)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(.never)
+        if !searchText.isEmpty {
+          Button {
+            searchText = ""
+          } label: {
+            Image(systemName: "xmark.circle.fill")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Clear search")
+        }
       }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+
+      Button {
+        dismiss()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.subheadline.weight(.bold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 38, height: 38)
+          .background(ADEColor.surfaceBackground.opacity(0.62), in: Circle())
+          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Close")
     }
     .padding(.horizontal, 14)
-    .padding(.top, 10)
-    .padding(.bottom, 4)
+    .padding(.top, 12)
+    .padding(.bottom, 8)
   }
 
   @ViewBuilder
-  private var searchBar: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "magnifyingglass")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textMuted)
-      TextField("Search models…", text: $searchText)
-        .textFieldStyle(.plain)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textPrimary)
-        .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
-        .onChange(of: searchText) { _, newValue in
-          if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            pendingModelId = nil
-          }
-        }
-      if !searchText.isEmpty {
-        Button {
-          searchText = ""
-        } label: {
-          Image(systemName: "xmark.circle.fill")
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Clear search")
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+  private var currentModelBar: some View {
+    ModelPickerCurrentModelBar(
+      model: selectedModel,
+      provider: selectedModel.map(runtimeProvider(for:)) ?? selectedRuntimeProvider,
+      reasoningEffort: selectedReasoningEffort,
+      fastModeEnabled: selectedCodexFastMode
     )
     .padding(.horizontal, 14)
-    .padding(.top, 10)
-    .padding(.bottom, 8)
+    .padding(.vertical, 9)
+    .background(ADEColor.recessedBackground.opacity(0.32))
   }
 
   @ViewBuilder
@@ -434,94 +431,155 @@ struct WorkModelPickerSheet: View {
     .frame(maxWidth: .infinity)
   }
 
+  private var selectedModel: WorkModelOption? {
+    modelById.first(where: { workModelIdsEquivalent($0.key, selectedModelId) })?.value
+  }
+
   // MARK: Behavior
 
-	  @MainActor
-	  private func loadLiveCatalog() async {
-	    isLoadingCatalog = true
-	    defer { isLoadingCatalog = false }
+  @MainActor
+  private func loadLiveCatalog() async {
+    isLoadingCatalog = true
+    defer { isLoadingCatalog = false }
 
-	    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
+    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
       liveCatalog = workModelCatalogGroups(
         hostCatalog: cached,
         currentModelId: currentModelId,
         currentProvider: currentProvider
       )
-	    }
+    }
 
-	    do {
-	      let hostCatalog = try await syncService.getChatModelCatalog(
-	        mode: "cached",
-	        cursorSource: cursorCatalogSource()
-	      )
+    do {
+      let hostCatalog = try await syncService.getChatModelCatalog(
+        mode: "cached",
+        cursorSource: cursorCatalogSource()
+      )
       guard !Task.isCancelled else { return }
-	      apply(hostCatalog: hostCatalog)
-	    } catch {
-	      guard !Task.isCancelled else { return }
-	    }
-	  }
+      apply(hostCatalog: hostCatalog)
+    } catch {
+      guard !Task.isCancelled else { return }
+    }
+  }
 
-	  @MainActor
-	  private func refreshCatalog(for groupKey: String) async {
-	    let refreshProvider: String?
-	    switch groupKey {
-	    case "opencode", "cursor", "droid", "lmstudio", "ollama":
-	      refreshProvider = groupKey
-	    default:
-	      refreshProvider = nil
-	    }
-		    guard let refreshProvider else { return }
-		    do {
-		      let hostCatalog = try await syncService.getChatModelCatalog(
-		        mode: "refresh-stale",
-		        refreshProvider: refreshProvider,
-		        cursorSource: cursorCatalogSource(for: refreshProvider)
-		      )
-	      guard !Task.isCancelled else { return }
-	      apply(hostCatalog: hostCatalog)
-	      if hostCatalog.stale == true {
-	        let freshCatalog = try await syncService.getChatModelCatalog(
-	          mode: "force",
-	          refreshProvider: refreshProvider,
-	          cursorSource: cursorCatalogSource(for: refreshProvider)
-	        )
-	        guard !Task.isCancelled else { return }
-	        apply(hostCatalog: freshCatalog)
-	      }
-		    } catch {
-		      // Keep stale catalog visible.
-		    }
-		  }
+  @MainActor
+  private func refreshCatalog(for groupKey: String) async {
+    let refreshProvider: String?
+    switch groupKey {
+    case "opencode", "cursor", "droid", "lmstudio", "ollama":
+      refreshProvider = groupKey
+    default:
+      refreshProvider = nil
+    }
+    guard let refreshProvider else { return }
+    do {
+      let hostCatalog = try await syncService.getChatModelCatalog(
+        mode: "refresh-stale",
+        refreshProvider: refreshProvider,
+        cursorSource: cursorCatalogSource(for: refreshProvider)
+      )
+      guard !Task.isCancelled else { return }
+      apply(hostCatalog: hostCatalog)
+      if hostCatalog.stale == true {
+        let freshCatalog = try await syncService.getChatModelCatalog(
+          mode: "force",
+          refreshProvider: refreshProvider,
+          cursorSource: cursorCatalogSource(for: refreshProvider)
+        )
+        guard !Task.isCancelled else { return }
+        apply(hostCatalog: freshCatalog)
+      }
+    } catch {
+      // Keep stale catalog visible.
+    }
+  }
 
-	  @MainActor
-	  private func apply(hostCatalog: AgentChatModelCatalog) {
-	    liveCatalog = workModelCatalogGroups(
-	      hostCatalog: hostCatalog,
-	      currentModelId: currentModelId,
-	      currentProvider: currentProvider
-	    )
-	  }
+  @MainActor
+  private func apply(hostCatalog: AgentChatModelCatalog) {
+    liveCatalog = workModelCatalogGroups(
+      hostCatalog: hostCatalog,
+      currentModelId: currentModelId,
+      currentProvider: currentProvider
+    )
+  }
 
-	  private func commit(model: WorkModelOption, effort: String?) {
-	    guard model.isAvailable else { return }
-    let normalizedEffort = effort?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased() ?? ""
-    let normalizedCurrentEffort = currentReasoningEffort
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-    let nextEffort: String? = normalizedEffort.isEmpty ? nil : normalizedEffort
-    let effortChanged = (nextEffort ?? "") != normalizedCurrentEffort
-    let isNoOp = workModelIdsEquivalent(model.id, currentModelId) && !effortChanged
+  private func select(model: WorkModelOption) {
+    guard model.isAvailable else { return }
 
-    pendingModelId = nil
-    if isNoOp {
-      dismiss()
-      return
+    let changedModel = !workModelIdsEquivalent(model.id, selectedModelId)
+    selectedModelId = model.id
+    selectedRuntimeProvider = runtimeProvider(for: model)
+    if changedModel {
+      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
+      selectedCodexFastMode = false
+    } else if !modelSupportsReasoningEffort(model, selectedReasoningEffort) {
+      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
+    }
+    if !model.supportsCodexFastMode {
+      selectedCodexFastMode = false
     }
 
     picker.pushRecent(model.id, syncService: syncService)
-    onSelect(model, nextEffort, runtimeProvider(for: model))
+    emitSelection(model)
+  }
+
+  private func select(reasoningEffort: String, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+      selectedCodexFastMode = false
+    }
+    selectedReasoningEffort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    picker.pushRecent(model.id, syncService: syncService)
+    emitSelection(model)
+  }
+
+  private func select(fastMode enabled: Bool, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
+    }
+    selectedCodexFastMode = model.supportsCodexFastMode ? enabled : false
+    picker.pushRecent(model.id, syncService: syncService)
+    emitSelection(model)
+  }
+
+  private func emitSelection(_ model: WorkModelOption) {
+    let normalizedEffort = selectedReasoningEffort
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let effortPayload = normalizedEffort.isEmpty ? nil : normalizedEffort
+    onSelect(
+      model,
+      effortPayload,
+      runtimeProvider(for: model),
+      model.supportsCodexFastMode ? selectedCodexFastMode : false
+    )
+  }
+
+  private func defaultReasoningEffort(for model: WorkModelOption) -> String? {
+    let tiers = supportedReasoningTiers(for: model)
+    guard !tiers.isEmpty else { return nil }
+    if tiers.contains("medium") { return "medium" }
+    return tiers[tiers.count / 2]
+  }
+
+  private func modelSupportsReasoningEffort(_ model: WorkModelOption, _ effort: String) -> Bool {
+    let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !normalized.isEmpty else { return false }
+    return supportedReasoningTiers(for: model).contains(normalized)
+  }
+
+  private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
+    var seen = Set<String>()
+    return model.reasoningEfforts.compactMap { effort in
+      let tier = effort.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard !tier.isEmpty, seen.insert(tier).inserted else { return nil }
+      return tier
+    }
   }
 }
 
@@ -587,7 +645,7 @@ struct ModelPickerRail: View {
       .padding(.vertical, 8)
       .padding(.horizontal, 5)
     }
-    .frame(width: 52)
+    .frame(width: 60)
     .background(ADEColor.recessedBackground.opacity(0.35))
   }
 
@@ -608,14 +666,6 @@ struct ModelPickerRail: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
               .stroke(isActive ? Color.white.opacity(0.06) : Color.clear, lineWidth: 0.8)
           )
-          .overlay(alignment: .trailing) {
-            if isActive {
-              RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(ADEColor.accent.opacity(0.85))
-                .frame(width: 2, height: 20)
-                .offset(x: 2)
-            }
-          }
         if let badge = badgeCount(for: entry), badge > 0 {
           Text("\(badge)")
             .font(.system(size: 8, weight: .bold))
@@ -693,13 +743,14 @@ struct ModelPickerContentPane: View {
   let groupedRows: [ModelPickerRowGroup]
   let providerTabs: [WorkModelProvider]
   let selectedProviderTabKey: String?
-  let currentModelId: String
-  let currentReasoningEffort: String
-  let pendingModelId: String?
+  let selectedModelId: String
+  let selectedReasoningEffort: String
+  let selectedCodexFastMode: Bool
   let favorites: [String]
   let isBusy: Bool
-  let onHighlight: (WorkModelOption) -> Void
-  let onSelect: (WorkModelOption, String?) -> Void
+  let onSelect: (WorkModelOption) -> Void
+  let onSelectReasoning: (WorkModelOption, String) -> Void
+  let onToggleFastMode: (WorkModelOption, Bool) -> Void
   let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
 
@@ -745,14 +796,14 @@ struct ModelPickerContentPane: View {
                     model: model,
                     style: rowStyle,
                     catalogGroupKey: catalogGroupKey,
-                    isSessionActive: workModelIdsEquivalent(model.id, currentModelId),
-                    isPending: pendingModelId.map { workModelIdsEquivalent(model.id, $0) } ?? false,
-                    hasPendingSelection: pendingModelId != nil,
+                    isSelected: workModelIdsEquivalent(model.id, selectedModelId),
                     isFavorite: favoritesSet.contains(model.id),
                     isBusy: isBusy,
-                    currentReasoningEffort: currentReasoningEffort,
-                    onHighlight: { onHighlight(model) },
-                    onSelect: { effort in onSelect(model, effort) },
+                    selectedReasoningEffort: selectedReasoningEffort,
+                    selectedCodexFastMode: selectedCodexFastMode,
+                    onSelect: { onSelect(model) },
+                    onSelectReasoning: { effort in onSelectReasoning(model, effort) },
+                    onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
                     onToggleFavorite: { onToggleFavorite(model.id) }
                   )
                 }
@@ -798,7 +849,7 @@ struct ModelPickerContentPane: View {
   private var activeProviderTabKey: String? {
     selectedProviderTabKey
       ?? providerTabs.first(where: { tab in
-        tab.models.contains { workModelIdsEquivalent($0.id, currentModelId) }
+        tab.models.contains { workModelIdsEquivalent($0.id, selectedModelId) }
       })?.key
       ?? providerTabs.first(where: { tab in
         tab.models.contains(where: { $0.isAvailable })
@@ -808,26 +859,33 @@ struct ModelPickerContentPane: View {
 
   @ViewBuilder
   private var header: some View {
-    HStack(alignment: .center, spacing: 8) {
-      headerLeadingIcon
-      Text(headerTitle)
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Spacer()
+    ZStack {
+      HStack(spacing: 7) {
+        headerLeadingIcon
+        Text(headerTitle)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+      }
+
       if !models.isEmpty {
-        Text("\(models.count)")
-          .font(.caption.weight(.bold))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(
-            Capsule(style: .continuous)
-              .fill(ADEColor.recessedBackground.opacity(0.5))
-          )
+        HStack {
+          Spacer()
+          Text("\(models.count)")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+              Capsule(style: .continuous)
+                .fill(ADEColor.recessedBackground.opacity(0.5))
+            )
+        }
       }
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 6)
+    .padding(.top, 10)
+    .padding(.bottom, 8)
   }
 
   @ViewBuilder
@@ -933,22 +991,18 @@ struct ModelPickerListRow: View {
   let model: WorkModelOption
   let style: ModelPickerRowStyle
   let catalogGroupKey: String?
-  let isSessionActive: Bool
-  let isPending: Bool
-  let hasPendingSelection: Bool
+  let isSelected: Bool
   let isFavorite: Bool
   let isBusy: Bool
-  let currentReasoningEffort: String
-  let onHighlight: () -> Void
-  let onSelect: (String?) -> Void
+  let selectedReasoningEffort: String
+  let selectedCodexFastMode: Bool
+  let onSelect: () -> Void
+  let onSelectReasoning: (String) -> Void
+  let onToggleFastMode: (Bool) -> Void
   let onToggleFavorite: () -> Void
 
   private var isHighlighted: Bool {
-    isPending || (isSessionActive && !hasPendingSelection)
-  }
-
-  private var showsSessionActiveBadge: Bool {
-    isSessionActive && !hasPendingSelection
+    isSelected
   }
 
   private var rowLogoProvider: String {
@@ -967,11 +1021,7 @@ struct ModelPickerListRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Button {
-        if supportedTiers.isEmpty {
-          onSelect(nil)
-        } else {
-          onHighlight()
-        }
+        onSelect()
       } label: {
         Group {
           switch style {
@@ -987,9 +1037,16 @@ struct ModelPickerListRow: View {
       .buttonStyle(.plain)
       .disabled(isBusy || !model.isAvailable)
 
-      if !supportedTiers.isEmpty {
-        reasoningPills(tiers: supportedTiers)
-          .padding(.top, style == .detailed ? 6 : 4)
+      if isHighlighted && shouldShowSelectedControls {
+        VStack(alignment: .leading, spacing: 8) {
+          if !supportedTiers.isEmpty {
+            reasoningPills(tiers: supportedTiers)
+          }
+          if model.supportsCodexFastMode {
+            fastModeToggle
+          }
+        }
+        .padding(.top, style == .detailed ? 8 : 6)
       }
     }
     .padding(.horizontal, style == .compact ? 10 : 11)
@@ -1000,9 +1057,13 @@ struct ModelPickerListRow: View {
     )
     .overlay(
       RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .stroke(isHighlighted ? ADEColor.accent.opacity(isPending ? 0.45 : 0.32) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
+        .stroke(isHighlighted ? ADEColor.accent.opacity(0.42) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
     )
     .contentShape(Rectangle())
+  }
+
+  private var shouldShowSelectedControls: Bool {
+    !supportedTiers.isEmpty || model.supportsCodexFastMode
   }
 
   @ViewBuilder
@@ -1020,19 +1081,10 @@ struct ModelPickerListRow: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
-        Text(providerLabel(rowLogoProvider))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted.opacity(0.85))
-          .lineLimit(1)
       }
       Spacer(minLength: 4)
-      if showsSessionActiveBadge {
-        Image(systemName: "checkmark")
-          .font(.caption.weight(.bold))
-          .foregroundStyle(ADEColor.accent)
-      }
     }
-    .accessibilityLabel("\(model.displayName), \(providerLabel(rowLogoProvider))\(showsSessionActiveBadge ? ". Currently selected." : isPending ? ". Pick a reasoning level." : "")")
+    .accessibilityLabel("\(model.displayName)\(isSelected ? ". Selected." : "")")
   }
 
   @ViewBuilder
@@ -1045,31 +1097,15 @@ struct ModelPickerListRow: View {
         size: 20
       )
       VStack(alignment: .leading, spacing: 1) {
-        HStack(spacing: 6) {
-          Text(model.displayName)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
-            .lineLimit(1)
-          if showsSessionActiveBadge {
-            Text("active")
-              .font(.caption2.weight(.bold))
-              .tracking(0.3)
-              .foregroundStyle(ADEColor.accent)
-              .padding(.horizontal, 5)
-              .padding(.vertical, 2)
-              .background(ADEColor.accent.opacity(0.15), in: Capsule())
-          }
-        }
+        Text(model.displayName)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
+          .lineLimit(1)
       }
       Spacer(minLength: 6)
       favoriteButton
-      if showsSessionActiveBadge {
-        Image(systemName: "checkmark")
-          .font(.subheadline.weight(.bold))
-          .foregroundStyle(ADEColor.accent)
-      }
     }
-    .accessibilityLabel("\(model.displayName)\(showsSessionActiveBadge ? ". Currently selected." : isPending ? ". Pick a reasoning level." : "")")
+    .accessibilityLabel("\(model.displayName)\(isSelected ? ". Selected." : "")")
   }
 
   @ViewBuilder
@@ -1089,16 +1125,16 @@ struct ModelPickerListRow: View {
 
   @ViewBuilder
   private func reasoningPills(tiers: [String]) -> some View {
-    let normalizedCurrent = currentReasoningEffort
+    let normalizedCurrent = selectedReasoningEffort
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 6) {
         ForEach(tiers, id: \.self) { tier in
           let normalized = tier.lowercased()
-          let isActiveTier = showsSessionActiveBadge && normalized == normalizedCurrent
+          let isActiveTier = normalized == normalizedCurrent
           Button {
-            onSelect(normalized)
+            onSelectReasoning(normalized)
           } label: {
             Text(reasoningLabel(for: tier))
               .font(.caption.weight(.semibold))
@@ -1108,7 +1144,7 @@ struct ModelPickerListRow: View {
               .padding(.vertical, 7)
               .background(
                 Capsule(style: .continuous)
-                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(isPending ? 0.75 : 0.5))
+                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55))
               )
               .overlay(
                 Capsule(style: .continuous)
@@ -1116,12 +1152,36 @@ struct ModelPickerListRow: View {
               )
           }
           .buttonStyle(.plain)
-          .disabled(isBusy || !model.isAvailable || !isPending)
+          .disabled(isBusy || !model.isAvailable)
           .accessibilityLabel("\(model.displayName) · reasoning \(reasoningLabel(for: tier))")
           .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
     }
+  }
+
+  @ViewBuilder
+  private var fastModeToggle: some View {
+    Toggle(isOn: Binding(
+      get: { selectedCodexFastMode },
+      set: { onToggleFastMode($0) }
+    )) {
+      HStack(spacing: 7) {
+        Image(systemName: "bolt.fill")
+          .font(.caption.weight(.bold))
+          .foregroundStyle(selectedCodexFastMode ? ADEColor.warning : ADEColor.textMuted)
+        Text("Fast mode")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(selectedCodexFastMode ? "On" : "Off")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .toggleStyle(.switch)
+    .tint(ADEColor.warning)
+    .disabled(isBusy || !model.isAvailable)
+    .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
 
   private func reasoningLabel(for tier: String) -> String {
@@ -1131,6 +1191,82 @@ struct ModelPickerListRow: View {
     case "ultracode": return "Ultracode"
     default: return tier.capitalized
     }
+  }
+}
+
+struct ModelPickerCurrentModelBar: View {
+  let model: WorkModelOption?
+  let provider: String
+  let reasoningEffort: String
+  let fastModeEnabled: Bool
+
+  private var logoProvider: String {
+    model?.provider ?? provider
+  }
+
+  private var reasoningLabel: String {
+    workReasoningChipLabel(reasoningEffort) ?? "Default"
+  }
+
+  var body: some View {
+    HStack(spacing: 9) {
+      WorkProviderBareLogo(
+        provider: logoProvider,
+        fallbackSymbol: providerIcon(logoProvider),
+        tint: providerTint(logoProvider),
+        size: 18
+      )
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Current model")
+          .font(.caption2.weight(.bold))
+          .tracking(0.4)
+          .foregroundStyle(ADEColor.textMuted)
+        Text(model?.displayName ?? "Pick a model")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 6)
+
+      HStack(spacing: 6) {
+        Text(reasoningLabel)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+
+        HStack(spacing: 3) {
+          Image(systemName: "bolt.fill")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
+          Text(fastModeStatusLabel)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .background(ADEColor.surfaceBackground.opacity(0.46), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+      )
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Current model \(model?.displayName ?? "none"), reasoning \(reasoningLabel), \(fastModeAccessibilityLabel)")
+  }
+
+  private var fastModeStatusLabel: String {
+    if fastModeEnabled { return "Fast on" }
+    if model?.supportsCodexFastMode == true { return "Fast off" }
+    return "No fast"
+  }
+
+  private var fastModeAccessibilityLabel: String {
+    if fastModeEnabled { return "fast mode on" }
+    if model?.supportsCodexFastMode == true { return "fast mode off" }
+    return "fast mode unavailable"
   }
 }
 
