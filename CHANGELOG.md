@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.16] - 2026-07-08
+
+### Changed
+
+- Improved chat peer-message normalization, handoff notes, Codex goal state, and subagent activity parity across desktop, ADE Code, and mobile.
+- Improved iOS Work and Linear flows with refreshed mobile-created sessions, restored start-chat keyboard focus, and more reliable Linear backlog loading.
+
+### Fixed
+
+- Fixed packaged desktop Cursor SDK worker startup by resolving the worker through the packaged Node path.
+- Fixed relay-backed chat streaming backpressure so busy remote sessions are less likely to drop or stall output.
+- Kept App Clip release metadata and deployment settings aligned for App Store validation.
+
 ## [1.2.15] - 2026-07-08
 
 ### Added
@@ -597,7 +610,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.15...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.16...HEAD
+[1.2.16]: https://github.com/arul28/ADE/compare/v1.2.15...v1.2.16
 [1.2.15]: https://github.com/arul28/ADE/compare/v1.2.14...v1.2.15
 [1.2.14]: https://github.com/arul28/ADE/compare/v1.2.13...v1.2.14
 [1.2.13]: https://github.com/arul28/ADE/compare/v1.2.12...v1.2.13

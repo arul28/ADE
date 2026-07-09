@@ -1,0 +1,23 @@
+---
+title: "v1.2.16"
+description: "Release notes for ADE v1.2.16 - July 8, 2026"
+---
+
+v1.2.16 improves chat handoff reliability across ADE surfaces, fixes packaged Cursor SDK startup on macOS, and tightens mobile Work, Linear, relay streaming, and App Clip release readiness.
+
+---
+
+## Desktop and CLI
+
+- **Chat peer messaging parity.** ADE now normalizes chat peer messages, handoff notes, Codex goal state, and subagent activity so desktop, ADE Code, and mobile render the same agent progress and handoff context.
+- **Packaged Cursor SDK startup.** Installed desktop builds now resolve the Cursor SDK worker through the packaged Node path, avoiding startup failures that only appear outside development.
+- **Relay chat streaming backpressure.** Relay-backed chat streams now handle downstream pressure more safely, reducing dropped or stalled output during busy remote sessions.
+
+---
+
+## iOS
+
+- **Mobile-created session refresh.** Work lanes refresh after sessions are created from iOS, so the mobile Work list catches up without manual navigation or a desktop-side nudge.
+- **Linear backlog loading.** The mobile Linear pane now loads backlog issues more reliably and keeps its issue list state consistent while paging.
+- **Start-chat focus polish.** The mobile start-chat flow restores keyboard focus behavior so users can begin typing without fighting the composer.
+- **App Clip release readiness.** App Clip packaging metadata and deployment settings remain aligned with the parent app for App Store validation.
