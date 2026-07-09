@@ -126,6 +126,11 @@ function createRuntime() {
       clearToken: vi.fn(async () => ({ tokenStored: false })),
     } as any,
     usageTrackingService: {
+      getAdeUsageStats: vi.fn(async () => ({
+        generatedAt: "2026-07-09T12:00:00.000Z",
+        preset: "7d",
+        daily: [],
+      })),
       getUsageSnapshot: vi.fn(() => ({ available: true, entries: [] })),
       forceRefresh: vi.fn(async () => ({ available: true, entries: [] })),
       poll: vi.fn(async () => ({ available: true, entries: [] })),
@@ -669,7 +674,11 @@ function createRuntime() {
   };
 }
 
-async function initialize(handler: ReturnType<typeof createAdeRpcRequestHandler>, identity?: Record<string, unknown>) {
+async function initialize(
+  handler: ReturnType<typeof createAdeRpcRequestHandler>,
+  identity?: Record<string, unknown>,
+  params: Record<string, unknown> = {},
+) {
   const requestedRole = typeof identity?.role === "string" ? identity.role : null;
   const validRole = requestedRole === "cto"
     || requestedRole === "orchestrator"
@@ -685,7 +694,7 @@ async function initialize(handler: ReturnType<typeof createAdeRpcRequestHandler>
       jsonrpc: "2.0",
       id: 1,
       method: "ade/initialize",
-      params: identity ? { identity } : {}
+      params: identity ? { ...params, identity } : params,
     });
   } finally {
     if (validRole) {
@@ -2578,6 +2587,12 @@ describe("adeRpcServer", () => {
       input: expect.stringContaining("scalar sessionId"),
     });
 
+    const usageActions = await callTool(handler, "list_ade_actions", { domain: "usage" });
+    expect(usageActions?.isError).toBeUndefined();
+    expect(usageActions.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ domain: "usage", action: "getAdeUsageStats", name: "usage.getAdeUsageStats" }),
+    );
+
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
@@ -2696,6 +2711,46 @@ describe("adeRpcServer", () => {
     });
     expect(preview.structuredContent.result).toBe("data:image/png;base64,AAAA");
 
+    const usageStats = await callTool(handler, "run_ade_action", {
+      domain: "usage",
+      action: "getAdeUsageStats",
+      args: { preset: "7d" },
+    });
+    expect(usageStats?.isError).toBeUndefined();
+    expect(fixture.runtime.usageTrackingService.getAdeUsageStats).toHaveBeenCalledWith({ preset: "7d" });
+    expect(usageStats.structuredContent.result).toMatchObject({ preset: "7d", daily: [] });
+
+  });
+
+  it("records normalized ADE Code actions without recording terminal keystrokes", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(
+      handler,
+      { callerId: "ade-code:test", role: "cto" },
+      { clientName: "ade-code" },
+    );
+
+    await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "delete",
+      args: { laneId: "lane-1" },
+    });
+    await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { terminalId: "session-1", data: "y\n" },
+    });
+
+    const usageEventCalls = (fixture.runtime.db.run as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: unknown[]) => typeof call[0] === "string" && call[0].includes("insert into usage_events"),
+    );
+    expect(usageEventCalls).toHaveLength(1);
+    expect(usageEventCalls[0]?.[1]).toEqual(expect.arrayContaining(["tui", "lanes.delete", "lane"]));
+    expect(fixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      terminalId: "session-1",
+      data: "y\n",
+    });
   });
 
   it("routes Linear attach/detach/list and the issue write-bridge through run_ade_action", async () => {
@@ -3607,6 +3662,10 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({ name: "action-lane", baseBranch: "origin/main" })
+    );
+    expect(fixture.runtime.db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into usage_events"),
+      expect.arrayContaining(["lanes.create"]),
     );
   });
 

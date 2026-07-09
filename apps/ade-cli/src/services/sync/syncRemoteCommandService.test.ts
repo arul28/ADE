@@ -33,6 +33,7 @@ function createService(options?: {
   syncPinStore?: Record<string, unknown>;
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   isCloudRelayEnabled?: () => boolean;
+  usageTrackingService?: Record<string, unknown>;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -76,6 +77,7 @@ function createService(options?: {
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
+    ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -98,6 +100,25 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
+    const getAdeUsageStats = vi.fn().mockResolvedValue({ generatedAt: "2026-07-09T12:00:00.000Z", daily: [] });
+    const { service } = createService({ usageTrackingService: { getAdeUsageStats } });
+
+    expect(service.getDescriptor("usage.getAdeStats")).toEqual({
+      action: "usage.getAdeStats",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    await expect(service.execute(makePayload("usage.getAdeStats", { preset: "year" }))).resolves.toEqual({
+      generatedAt: "2026-07-09T12:00:00.000Z",
+      daily: [],
+    });
+    expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "year" });
+    await expect(service.execute(makePayload("usage.getAdeStats", { preset: "decade" }))).rejects.toThrow(
+      "usage.getAdeStats preset must be today, 7d, 30d, year, or all.",
+    );
+  });
+
   it("registers sync.getWebPairingInfo and returns the configured browser pairing info", async () => {
     const syncPinStore = {
       getPin: vi.fn(() => "428193"),

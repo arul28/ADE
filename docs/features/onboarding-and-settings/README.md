@@ -257,11 +257,32 @@ Renderer — settings:
   `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
   — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
-  for today / 7d / 30d / all-time stats and calls
-  `window.ade.usage.refresh()` for explicit refresh. This is a read-only
-  stats dashboard: local AI runtime token and estimated-cost scans plus
-  GitHub-backed PR, commit, and code movement totals. It does not write
-  new usage records.
+  for today / 7d / 30d / year / all-time stats and calls
+  `window.ade.usage.refresh()` for explicit refresh. The first render is
+  stale-while-revalidate: cached provider/GitHub data and live project-DB
+  aggregates return immediately while expensive provider-ledger and `gh`
+  scans refresh in the background. The dashboard combines deduplicated local
+  provider tokens, ADE AI calls, sessions, lane/code movement, artifacts,
+  automations, workers, GitHub activity, and client-surface activity.
+- `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
+  live quota snapshot plus the retrospective `getAdeUsageStats` projection.
+  It returns cached provider/GitHub results and current DB aggregates without
+  awaiting expensive scans, exposes freshness metadata, and coalesces stale
+  provider/GitHub revalidation in the background.
+- `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
+  project database and owns the low-volume `usage_events` ledger. Only
+  successful, meaningful user mutations are recorded; read/poll IPC is
+  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, and paired
+  web commands are attributed as `desktop`, `tui`, `mobile`, and `web`.
+  `usage_events` is local-only (excluded from CRR replication) because every
+  controller action is recorded once on the runtime that executes it.
+- `apps/desktop/src/shared/types/usage.ts` — shared range, daily-point,
+  freshness, aggregate, and client-attribution contracts. Supported presets
+  are today, 7d, 30d, year, and all time.
+- `apps/desktop/src/renderer/components/usage/UsageActivityCarousel.tsx` —
+  reusable animated activity/token/code/client-mix carousel. It persists the
+  selected chart and day/week/month/year range, appears in Settings > Stats,
+  and renders directly below the empty Work composer on desktop and web.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
@@ -422,9 +443,9 @@ changing rather than which service backs it:
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Stats | `AdeUsageSection.tsx` | Local runtime token / cost summaries and GitHub-backed PR, commit, and code movement totals. Deep links from `?tab=usage` and `?tab=stats` land here. |
+| Stats | `AdeUsageSection.tsx`, `UsageActivityCarousel.tsx` | Fast cached local-provider, project-DB, GitHub, and cross-client activity with animated day/week/month/year charts. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
-> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`). Settings > Stats is the retrospective local AI + GitHub activity dashboard.
+> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`). Settings > Stats is the retrospective cross-client ADE activity dashboard.
 
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias

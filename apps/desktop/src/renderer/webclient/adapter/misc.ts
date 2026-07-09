@@ -327,7 +327,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     iosSimulator: createNativeUnavailableNamespace() as AdeNamespace<"iosSimulator">,
     appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: createNativeUnavailableNamespace() as AdeNamespace<"builtInBrowser">,
-    usage: createUsageStubs(),
+    usage: createUsageStubs(call),
     review: createReviewStubs(),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
@@ -470,8 +470,11 @@ function createNativeUnavailableNamespace(): Record<string, unknown> {
   };
 }
 
-function createUsageStubs(): Partial<Window["ade"]["usage"]> {
+function createUsageStubs(
+  call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>,
+): Partial<Window["ade"]["usage"]> {
   return {
+    getAdeStats: (args = {}) => call("usage.getAdeStats", args, null),
     getSummary: async () => null,
     listSessions: async () => [],
   } as Partial<Window["ade"]["usage"]>;

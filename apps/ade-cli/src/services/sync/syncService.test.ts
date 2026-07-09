@@ -78,6 +78,37 @@ describe("createSyncService", () => {
     }
   });
 
+  it("forwards the usage service to the paired-client remote command surface", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-usage-stats-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const getAdeUsageStats = vi.fn(async () => ({
+      generatedAt: "2026-07-09T12:00:00.000Z",
+      preset: "year",
+      daily: [],
+    }));
+    const service = createService(db, projectRoot, {
+      usageTrackingService: { getAdeUsageStats } as any,
+    });
+
+    try {
+      expect(service.getRemoteCommandDescriptor("usage.getAdeStats")).toEqual({
+        action: "usage.getAdeStats",
+        scope: "project",
+        policy: { viewerAllowed: true },
+      });
+      await expect(service.executeRemoteCommand({
+        commandId: "cmd-usage-stats",
+        action: "usage.getAdeStats",
+        args: { preset: "year" },
+      })).resolves.toMatchObject({ preset: "year", daily: [] });
+      expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "year" });
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
   it("keeps the local device registry when connectToBrain fails before handshake", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-connect-fail-");
     cleanupRoots.push(projectRoot);

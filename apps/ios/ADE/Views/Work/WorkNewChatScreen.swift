@@ -686,6 +686,15 @@ struct WorkNewChatScreen: View {
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
 
+      // Kept outside the scroll view so lane selection can scroll away while
+      // the activity card stays pinned immediately above the composer. The
+      // keyboard lifts the composer without coupling it to chart scrolling.
+      WorkUsageActivityCarousel()
+        .environmentObject(syncService)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
+        .fixedSize(horizontal: false, vertical: true)
+
       if let autoCreateStatus, busy {
         HStack(spacing: 8) {
           ProgressView().controlSize(.mini)

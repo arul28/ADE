@@ -180,6 +180,8 @@ apps/ios/
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub),
+│   │   │                            # WorkUsageActivityCarousel (fixed
+│   │   │                            #   cross-client new-chat charts),
 │   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
@@ -1240,6 +1242,12 @@ against them instead of relying on hardcoded mobile assumptions. A
 runtime that disables a command via policy change is immediately
 reflected in the phone's UI on the next descriptor read.
 
+`usage.getAdeStats` is a viewer-allowed project command shared by iOS and the
+web client. It returns the same stale-while-revalidate snapshot used by desktop
+Stats, including daily points and `desktop` / `mobile` / `tui` / `web` client
+attribution. The phone uses it only for the fixed Work new-chat carousel; it
+does not duplicate the full desktop Stats page.
+
 ## Implementation status (phone specifics)
 
 | Component | Status |
@@ -1254,7 +1262,7 @@ reflected in the phone's UI on the next descriptor read.
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |

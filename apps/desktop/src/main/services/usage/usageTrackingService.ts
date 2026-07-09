@@ -11,6 +11,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
+import type { AdeDb } from "../state/kvDb";
 import type {
   AdeUsageDailyPoint,
   AdeUsageModelSummary,
@@ -29,6 +30,7 @@ import type {
   UsageProviderMessage,
   UsageSnapshot,
 } from "../../../shared/types";
+import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
   decodeOpenCodeRegistryId,
@@ -74,6 +76,10 @@ import {
   scanOpenClawLogs,
   scanOpenCodeLogs,
 } from "./ledgers/localUsageLedgers";
+import {
+  collectAdeDatabaseUsageStats,
+  type AdeDatabaseUsageStats,
+} from "./usageStatsStore";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -880,81 +886,53 @@ function aggregateCosts(
   const thirtyDayStart = new Date(todayStart);
   thirtyDayStart.setDate(thirtyDayStart.getDate() - 29);
   const thirtyDaysAgo = thirtyDayStart.getTime();
+  const yearStart = new Date(todayStart);
+  yearStart.setDate(yearStart.getDate() - 364);
+  const yearAgo = yearStart.getTime();
 
-  let last30dCostUsd = 0;
-  let todayCostUsd = 0;
-  let sevenDayCostUsd = 0;
-  let allCostUsd = 0;
-  const allBreakdown: TokenBreakdown = {};
-  const thirtyDayBreakdown: TokenBreakdown = {};
-  const todayBreakdown: TokenBreakdown = {};
-  const sevenDayBreakdown: TokenBreakdown = {};
-  const allDailyTokens: DailyTokenBreakdown = {};
-  const thirtyDayDailyTokens: DailyTokenBreakdown = {};
-  const todayDailyTokens: DailyTokenBreakdown = {};
-  const sevenDayDailyTokens: DailyTokenBreakdown = {};
-  const allDailyModelTokens: DailyModelTokenBreakdown = {};
-  const thirtyDayDailyModelTokens: DailyModelTokenBreakdown = {};
-  const todayDailyModelTokens: DailyModelTokenBreakdown = {};
-  const sevenDayDailyModelTokens: DailyModelTokenBreakdown = {};
+  const starts: Record<AdeUsageRangePreset, number | null> = {
+    today: todayStartMs,
+    "7d": sevenDaysAgo,
+    "30d": thirtyDaysAgo,
+    year: yearAgo,
+    all: null,
+  };
+  const accumulators = Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, {
+    costUsd: 0,
+    tokenBreakdown: {} as TokenBreakdown,
+    dailyTokens: {} as DailyTokenBreakdown,
+    dailyModelTokens: {} as DailyModelTokenBreakdown,
+  }])) as Record<AdeUsageRangePreset, {
+    costUsd: number;
+    tokenBreakdown: TokenBreakdown;
+    dailyTokens: DailyTokenBreakdown;
+    dailyModelTokens: DailyModelTokenBreakdown;
+  }>;
 
   for (const entry of entries) {
     const cost = calculateTokenEntryCost(entry);
-    allCostUsd += cost;
-    addTokenBreakdownEntry(allBreakdown, entry);
-    addDailyTokenEntry(allDailyTokens, entry);
-    addDailyModelTokenEntry(allDailyModelTokens, entry);
-
-    if (entry.timestamp >= thirtyDaysAgo) {
-      last30dCostUsd += cost;
-      addTokenBreakdownEntry(thirtyDayBreakdown, entry);
-      addDailyTokenEntry(thirtyDayDailyTokens, entry);
-      addDailyModelTokenEntry(thirtyDayDailyModelTokens, entry);
-    }
-    if (entry.timestamp >= todayStartMs) {
-      todayCostUsd += cost;
-      addTokenBreakdownEntry(todayBreakdown, entry);
-      addDailyTokenEntry(todayDailyTokens, entry);
-      addDailyModelTokenEntry(todayDailyModelTokens, entry);
-    }
-
-    if (entry.timestamp >= sevenDaysAgo) {
-      sevenDayCostUsd += cost;
-      addTokenBreakdownEntry(sevenDayBreakdown, entry);
-      addDailyTokenEntry(sevenDayDailyTokens, entry);
-      addDailyModelTokenEntry(sevenDayDailyModelTokens, entry);
+    for (const preset of ADE_USAGE_RANGE_PRESETS) {
+      const startMs = starts[preset];
+      if (startMs != null && entry.timestamp < startMs) continue;
+      const accumulator = accumulators[preset];
+      accumulator.costUsd += cost;
+      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
+      addDailyTokenEntry(accumulator.dailyTokens, entry);
+      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
     }
   }
 
+  const roundedCost = (preset: AdeUsageRangePreset) => Math.round(accumulators[preset].costUsd * 100) / 100;
+
   return {
     provider,
-    last30dCostUsd: Math.round(last30dCostUsd * 100) / 100,
-    todayCostUsd: Math.round(todayCostUsd * 100) / 100,
-    costUsdByPreset: {
-      today: Math.round(todayCostUsd * 100) / 100,
-      "7d": Math.round(sevenDayCostUsd * 100) / 100,
-      "30d": Math.round(last30dCostUsd * 100) / 100,
-      all: Math.round(allCostUsd * 100) / 100,
-    },
-    tokenBreakdown: thirtyDayBreakdown,
-    tokenBreakdownByPreset: {
-      today: todayBreakdown,
-      "7d": sevenDayBreakdown,
-      "30d": thirtyDayBreakdown,
-      all: allBreakdown,
-    },
-    dailyTokenBreakdownByPreset: {
-      today: todayDailyModelTokens,
-      "7d": sevenDayDailyModelTokens,
-      "30d": thirtyDayDailyModelTokens,
-      all: allDailyModelTokens,
-    },
-    dailyTokensByPreset: {
-      today: todayDailyTokens,
-      "7d": sevenDayDailyTokens,
-      "30d": thirtyDayDailyTokens,
-      all: allDailyTokens,
-    },
+    last30dCostUsd: roundedCost("30d"),
+    todayCostUsd: roundedCost("today"),
+    costUsdByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, roundedCost(preset)])),
+    tokenBreakdown: accumulators["30d"].tokenBreakdown,
+    tokenBreakdownByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].tokenBreakdown])),
+    dailyTokenBreakdownByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyModelTokens])),
+    dailyTokensByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyTokens])),
   };
 }
 
@@ -989,10 +967,7 @@ function startOfLocalDayOffsetIso(nowMs: number, daysBack: number): string {
 }
 
 function normalizePreset(value: unknown): AdeUsageRangePreset {
-  if (value === "today" || value === "7d" || value === "30d" || value === "all") {
-    return value;
-  }
-  return "7d";
+  return isAdeUsageRangePreset(value) ? value : "7d";
 }
 
 function validIsoOrNull(value: string | null | undefined): string | null {
@@ -1019,6 +994,8 @@ function resolveAdeUsageRange(args: GetAdeUsageStatsArgs | undefined, nowMs: num
       return { preset, since: startOfLocalDayIso(untilMs), until };
     case "30d":
       return { preset, since: startOfLocalDayOffsetIso(untilMs, 29), until };
+    case "year":
+      return { preset, since: startOfLocalDayOffsetIso(untilMs, 364), until };
     case "all":
       return { preset, since: null, until };
     case "7d":
@@ -1232,7 +1209,7 @@ function makeDailySkeleton(range: ResolvedAdeUsageRange, nowMs: number): AdeUsag
   const maxDays =
     range.preset === "today" ? 1 :
     range.preset === "7d" ? 7 :
-    range.preset === "all" ? 90 :
+    range.preset === "year" || range.preset === "all" ? 365 :
     30;
   const startMs = range.since
     ? Math.max(Date.parse(range.since), untilMs - (maxDays - 1) * 86_400_000)
@@ -1627,22 +1604,49 @@ function mergeGithubDaily(points: AdeUsageDailyPoint[], githubStats: GitHubActiv
   for (const row of githubStats.daily) {
     const point = byDate.get(row.date);
     if (!point) continue;
-    point.commits += toNonNegativeInt(row.commits);
-    point.prs += toNonNegativeInt(row.prs);
-    point.insertions += toNonNegativeInt(row.insertions);
-    point.deletions += toNonNegativeInt(row.deletions);
-    point.filesChanged += toNonNegativeInt(row.filesChanged);
+    point.commits = Math.max(point.commits, toNonNegativeInt(row.commits));
+    point.prs = Math.max(point.prs, toNonNegativeInt(row.prs));
+    point.insertions = Math.max(point.insertions, toNonNegativeInt(row.insertions));
+    point.deletions = Math.max(point.deletions, toNonNegativeInt(row.deletions));
+    point.filesChanged = Math.max(point.filesChanged, toNonNegativeInt(row.filesChanged));
+  }
+}
+
+function mergeDatabaseDaily(points: AdeUsageDailyPoint[], databaseStats: AdeDatabaseUsageStats | null | undefined): void {
+  if (!databaseStats) return;
+  const byDate = new Map(points.map((point) => [point.date, point]));
+  for (const row of databaseStats.daily) {
+    const point = byDate.get(row.date);
+    if (!point) continue;
+    // Provider ledgers are the authoritative token source when present. The
+    // ADE DB log is a subset of those calls, so use it only as a gap-filler.
+    if (point.totalTokens === 0 && toNonNegativeInt(row.totalTokens) > 0) {
+      point.inputTokens = toNonNegativeInt(row.inputTokens);
+      point.outputTokens = toNonNegativeInt(row.outputTokens);
+      point.totalTokens = toNonNegativeInt(row.totalTokens);
+    }
+    point.sessions += toNonNegativeInt(row.sessions);
+    point.durationMs = toNonNegativeInt(point.durationMs) + toNonNegativeInt(row.durationMs);
+    point.interactions = toNonNegativeInt(point.interactions) + toNonNegativeInt(row.interactions);
+    point.clients = { ...(point.clients ?? {}), ...(row.clients ?? {}) };
+    point.commits = Math.max(point.commits, toNonNegativeInt(row.commits));
+    point.prs = Math.max(point.prs, toNonNegativeInt(row.prs));
+    point.insertions = Math.max(point.insertions, toNonNegativeInt(row.insertions));
+    point.deletions = Math.max(point.deletions, toNonNegativeInt(row.deletions));
+    point.filesChanged = Math.max(point.filesChanged, toNonNegativeInt(row.filesChanged));
   }
 }
 
 function collectAdeUsageStats({
   snapshot,
   githubStats,
+  databaseStats,
   args,
   nowMs = Date.now(),
 }: {
   snapshot: UsageSnapshot;
   githubStats?: GitHubActivityStats | null;
+  databaseStats?: AdeDatabaseUsageStats | null;
   args?: GetAdeUsageStatsArgs;
   nowMs?: number;
 }): AdeUsageStats {
@@ -1656,13 +1660,16 @@ function collectAdeUsageStats({
   mergeSnapshotDailyTokens(runtimeDaily, snapshot.costs, range, exactProviderRange);
   const resolvedGithubStats = githubStats ?? EMPTY_GITHUB_STATS;
   mergeGithubDaily(runtimeDaily, resolvedGithubStats);
-
+  mergeDatabaseDaily(runtimeDaily, databaseStats);
+  const dbSummary = databaseStats?.summary;
+  const trackedAdeTokens = toNonNegativeInt(dbSummary?.trackedAdeTokens);
+  const totalTokens = fallbackObserved.totalTokens > 0 ? fallbackObserved.totalTokens : trackedAdeTokens;
   const fallback: AdeUsageStats = {
     generatedAt: new Date(nowMs).toISOString(),
     range,
     summary: {
-      totalTokens: fallbackObserved.totalTokens,
-      tokenTotalSource: "provider_logs",
+      totalTokens,
+      tokenTotalSource: fallbackObserved.totalTokens > 0 ? "provider_logs" : "ade_db",
       observedProviderTokens: fallbackObserved.totalTokens,
       observedProviderInputTokens: fallbackObserved.inputTokens,
       observedProviderOutputTokens: fallbackObserved.outputTokens,
@@ -1679,44 +1686,50 @@ function collectAdeUsageStats({
       adeRuntimeCostTodayUsd: 0,
       adeTotalTokens: 0,
       adeTotalCostRangeUsd: 0,
-      trackedAdeTokens: 0,
-      trackedAdeInputTokens: 0,
-      trackedAdeOutputTokens: 0,
-      trackedAdeCalls: 0,
-      trackedAdeDurationMs: 0,
+      trackedAdeTokens,
+      trackedAdeInputTokens: toNonNegativeInt(dbSummary?.trackedAdeInputTokens),
+      trackedAdeOutputTokens: toNonNegativeInt(dbSummary?.trackedAdeOutputTokens),
+      trackedAdeCalls: toNonNegativeInt(dbSummary?.trackedAdeCalls),
+      trackedAdeDurationMs: toNonNegativeInt(dbSummary?.trackedAdeDurationMs),
       workerTokens: 0,
       workerCostUsd: 0,
-      chatSessions: 0,
-      terminalSessions: 0,
-      activeLanes: 0,
-      lanesCreated: 0,
-      lanesArchived: 0,
+      chatSessions: toNonNegativeInt(dbSummary?.chatSessions),
+      terminalSessions: toNonNegativeInt(dbSummary?.terminalSessions),
+      activeLanes: toNonNegativeInt(dbSummary?.activeLanes),
+      lanesCreated: toNonNegativeInt(dbSummary?.lanesCreated),
+      lanesArchived: toNonNegativeInt(dbSummary?.lanesArchived),
       lanesDeleted: 0,
-      commitsCreated: resolvedGithubStats.commitsCreated,
-      pushOperations: 0,
-      prLandings: resolvedGithubStats.prsMerged,
-      prsTracked: resolvedGithubStats.prsTracked,
+      commitsCreated: Math.max(resolvedGithubStats.commitsCreated, toNonNegativeInt(dbSummary?.commitsCreated)),
+      pushOperations: toNonNegativeInt(dbSummary?.pushOperations),
+      prLandings: Math.max(resolvedGithubStats.prsMerged, toNonNegativeInt(dbSummary?.prLandings)),
+      prsTracked: Math.max(resolvedGithubStats.prsTracked, toNonNegativeInt(dbSummary?.prLandings)),
       prsOpen: resolvedGithubStats.prsOpen,
-      prsMerged: resolvedGithubStats.prsMerged,
+      prsMerged: Math.max(resolvedGithubStats.prsMerged, toNonNegativeInt(dbSummary?.prLandings)),
       prsClosed: resolvedGithubStats.prsClosed,
       prAdditions: resolvedGithubStats.prAdditions,
       prDeletions: resolvedGithubStats.prDeletions,
-      filesChanged: resolvedGithubStats.filesChanged,
-      insertions: resolvedGithubStats.prAdditions,
-      deletions: resolvedGithubStats.prDeletions,
-      artifactsCaptured: 0,
-      automationRuns: 0,
-      workerRuns: 0,
+      filesChanged: Math.max(resolvedGithubStats.filesChanged, toNonNegativeInt(dbSummary?.filesChanged)),
+      insertions: Math.max(resolvedGithubStats.prAdditions, toNonNegativeInt(dbSummary?.insertions)),
+      deletions: Math.max(resolvedGithubStats.prDeletions, toNonNegativeInt(dbSummary?.deletions)),
+      artifactsCaptured: toNonNegativeInt(dbSummary?.artifactsCaptured),
+      automationRuns: toNonNegativeInt(dbSummary?.automationRuns),
+      workerRuns: toNonNegativeInt(dbSummary?.workerRuns),
+      totalInteractions: toNonNegativeInt(dbSummary?.totalInteractions),
+      activeDays: toNonNegativeInt(dbSummary?.activeDays),
+      currentStreakDays: toNonNegativeInt(dbSummary?.currentStreakDays),
+      longestStreakDays: toNonNegativeInt(dbSummary?.longestStreakDays),
+      longestSessionMs: toNonNegativeInt(dbSummary?.longestSessionMs),
     },
     providers,
     models,
-    adeProviders: [],
-    adeModels: [],
-    agentProviders: [],
-    agentModels: [],
-    features: [],
-    lanes: [],
-    activities: [],
+    adeProviders: databaseStats?.providers ?? [],
+    adeModels: databaseStats?.models ?? [],
+    agentProviders: databaseStats?.agentProviders ?? [],
+    agentModels: databaseStats?.agentModels ?? [],
+    features: databaseStats?.features ?? [],
+    lanes: databaseStats?.lanes ?? [],
+    activities: databaseStats?.activities ?? [],
+    clients: databaseStats?.clients ?? [],
     daily: runtimeDaily,
     github: {
       repo: resolvedGithubStats.repo,
@@ -1724,7 +1737,11 @@ function collectAdeUsageStats({
       lastFetchedAt: resolvedGithubStats.fetchedAt,
       error: resolvedGithubStats.error,
     },
-    sourceNotes: [],
+    sourceNotes: [
+      "Provider totals are deduplicated from local provider ledgers.",
+      "ADE sessions, code movement, and client activity come from the project database.",
+      ...(resolvedGithubStats.available ? ["GitHub commit and pull request activity is cached separately."] : []),
+    ],
   };
 
   return fallback;
@@ -1955,6 +1972,7 @@ type UsageTrackingDependencies = {
   scanCopilotLogs?: () => Promise<TokenEntry[]>;
   scanGeminiLogs?: () => Promise<TokenEntry[]>;
   scanGitHubStats?: (range: ResolvedAdeUsageRange) => Promise<GitHubActivityStats>;
+  collectDatabaseStats?: (range: ResolvedAdeUsageRange) => AdeDatabaseUsageStats | null;
 };
 
 type PollOptions = {
@@ -1967,12 +1985,14 @@ export function createUsageTrackingService({
   onUpdate,
   dependencies,
   projectRoot,
+  db,
 }: {
   logger: Logger;
   pollIntervalMs?: number;
   onUpdate?: (snapshot: UsageSnapshot) => void;
   dependencies?: UsageTrackingDependencies;
   projectRoot?: string | null;
+  db?: AdeDb | null;
 }) {
   const pollIntervalMs = Math.max(
     MIN_POLL_INTERVAL_MS,
@@ -1980,10 +2000,12 @@ export function createUsageTrackingService({
   );
 
   let lastSnapshot: UsageSnapshot | null = readCachedUsageSnapshot(logger);
-  const cachedSnapshotMs = lastSnapshot ? Date.parse(lastSnapshot.lastPolledAt) : Number.NaN;
-  let costCacheTimestamp = Number.isFinite(cachedSnapshotMs) ? cachedSnapshotMs : 0;
   let cachedCosts: CostSnapshot[] = lastSnapshot?.costs ?? [];
   let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
+  const cachedCostTimestampIso = lastSnapshot?.costsLastPolledAt
+    ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? lastSnapshot?.lastPolledAt : null);
+  const cachedCostTimestampMs = cachedCostTimestampIso ? Date.parse(cachedCostTimestampIso) : Number.NaN;
+  let costCacheTimestamp = Number.isFinite(cachedCostTimestampMs) ? cachedCostTimestampMs : 0;
   let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = lastSnapshot?.dailyUsage7d ?? {};
   // Track the last poll that returned real windows per provider so carried-forward
   // (stale) data can still report when it was genuinely fresh.
@@ -1998,6 +2020,7 @@ export function createUsageTrackingService({
   }
   const githubStatsCache = new Map<string, { fetchedAtMs: number; stats: GitHubActivityStats }>();
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
+  const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollIncludesCosts = false;
@@ -2014,6 +2037,8 @@ export function createUsageTrackingService({
   const scanGeminiCostLogs = dependencies?.scanGeminiLogs ?? scanGeminiLogs;
   const scanGitHubStatsForRange = dependencies?.scanGitHubStats
     ?? ((range: ResolvedAdeUsageRange) => scanGithubActivityStats(projectRoot, range));
+  const collectDatabaseStatsForRange = dependencies?.collectDatabaseStats
+    ?? ((range: ResolvedAdeUsageRange) => collectAdeDatabaseUsageStats(db, range));
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -2033,7 +2058,7 @@ export function createUsageTrackingService({
 
   async function pollCosts(): Promise<{ costs: CostSnapshot[]; adeCosts: CostSnapshot[] }> {
     const now = Date.now();
-    if (now - costCacheTimestamp < COST_CACHE_TTL_MS && cachedCosts.length > 0) {
+    if (costCacheTimestamp > 0 && now - costCacheTimestamp < COST_CACHE_TTL_MS) {
       return cachedCostResult();
     }
 
@@ -2314,27 +2339,65 @@ export function createUsageTrackingService({
   }
 
   async function getAdeUsageStats(args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats> {
-    let snapshot = lastSnapshot;
-    if (inFlightPoll) {
-      snapshot = await inFlightPoll.catch(() => lastSnapshot ?? emptySnapshot());
+    const nowMs = Date.now();
+    const range = resolveAdeUsageRange(args, nowMs);
+    const exactRange = Boolean(args.since || args.until);
+    const cacheKey = githubStatsCacheKey(range, exactRange);
+    const githubCached = githubStatsCache.get(cacheKey)?.stats ?? null;
+    const snapshot = lastSnapshot ?? emptySnapshot();
+    const staleCosts = costCacheTimestamp === 0 || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS;
+    const providerNeedsRefresh = staleCosts;
+    const githubNeedsRefresh = !githubCached || nowMs - (githubStatsCache.get(cacheKey)?.fetchedAtMs ?? 0) > GITHUB_STATS_CACHE_TTL_MS;
+    if (providerNeedsRefresh || githubNeedsRefresh) {
+      refreshStatsInBackground(range, { provider: providerNeedsRefresh, github: githubNeedsRefresh }, exactRange);
     }
-    const staleCosts =
-      costCacheTimestamp === 0 ||
-      Date.now() - costCacheTimestamp > COST_CACHE_TTL_MS;
-    if (!snapshot || snapshot.costs.length === 0 || staleCosts) {
-      snapshot = await poll({ includeCosts: true }).catch(() => lastSnapshot ?? emptySnapshot());
-    }
-    const range = resolveAdeUsageRange(args, Date.now());
-    const githubStats = await getGithubStatsForRange(range);
-    return collectAdeUsageStats({
+    const stats = collectAdeUsageStats({
       snapshot,
-      githubStats,
+      githubStats: githubCached,
+      databaseStats: collectDatabaseStatsForRange(range),
       args,
+      nowMs,
     });
+    stats.freshness = {
+      state: providerNeedsRefresh || githubNeedsRefresh ? "refreshing" : "fresh",
+      providerUpdatedAt: snapshot.costsLastPolledAt ?? null,
+      githubUpdatedAt: githubCached?.fetchedAt ?? null,
+    };
+    return stats;
   }
 
-  async function getGithubStatsForRange(range: ResolvedAdeUsageRange): Promise<GitHubActivityStats> {
-    const cacheKey = `${range.preset}:${range.since ?? "all"}:${range.until}`;
+  function refreshStatsInBackground(
+    range: ResolvedAdeUsageRange,
+    requested: { provider: boolean; github: boolean },
+    exactRange = false,
+  ): void {
+    const key = githubStatsCacheKey(range, exactRange);
+    if (statsRefreshInFlight.has(key)) return;
+    const task = (async () => {
+      const work: Promise<unknown>[] = [];
+      if (requested.provider) work.push(poll({ includeCosts: true }));
+      if (requested.github) work.push(getGithubStatsForRange(range, exactRange));
+      await Promise.allSettled(work);
+    })().finally(() => {
+      statsRefreshInFlight.delete(key);
+    });
+    statsRefreshInFlight.set(key, task);
+  }
+
+  function githubStatsCacheKey(range: ResolvedAdeUsageRange, exactRange = false): string {
+    // Preset ranges move by milliseconds on every request. Keying on `until`
+    // made the old cache miss forever, so every Stats render launched `gh`.
+    // Calendar-day buckets preserve exact-range semantics while making normal
+    // day/week/month/year requests stable for the full cache TTL.
+    if (exactRange) {
+      return `${range.preset}:${range.since ?? "all"}:${range.until}`;
+    }
+    const untilDay = range.until.slice(0, 10);
+    return `${range.preset}:${range.since?.slice(0, 10) ?? "all"}:${untilDay}`;
+  }
+
+  async function getGithubStatsForRange(range: ResolvedAdeUsageRange, exactRange = false): Promise<GitHubActivityStats> {
+    const cacheKey = githubStatsCacheKey(range, exactRange);
     const cached = githubStatsCache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAtMs < GITHUB_STATS_CACHE_TTL_MS) {
       return cached.stats;

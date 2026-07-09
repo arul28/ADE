@@ -34,6 +34,10 @@
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import {
+  isAdeUsageRangePreset,
+  type AdeUsageRangePreset,
+} from "../shared/types";
+import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
@@ -2912,25 +2916,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ? ADE_DB_SNAPSHOT.usageSnapshot
       : BROWSER_MOCK_USAGE_SNAPSHOT;
 
-  const browserStatsRangeForPreset = (preset: "today" | "7d" | "30d" | "all") => {
+  const browserStatsRangeForPreset = (preset: AdeUsageRangePreset) => {
     const until = new Date();
     const start = new Date(until);
     start.setHours(0, 0, 0, 0);
     if (preset === "7d") start.setDate(start.getDate() - 6);
     if (preset === "30d") start.setDate(start.getDate() - 29);
+    if (preset === "year") start.setDate(start.getDate() - 364);
     return {
       preset,
       since: preset === "all" ? null : start.toISOString(),
       until: until.toISOString(),
     };
   };
-  const makeBrowserStatsDailySkeleton = (range: { preset: "today" | "7d" | "30d" | "all"; since: string | null; until: string }) => {
-    const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "all" ? 90 : 30;
+  const makeBrowserStatsDailySkeleton = (range: { preset: AdeUsageRangePreset; since: string | null; until: string }) => {
+    const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "30d" ? 30 : 365;
     const untilMs = Date.parse(range.until);
     const start = new Date(range.since ?? untilMs - (maxDays - 1) * 86_400_000);
     start.setHours(0, 0, 0, 0);
     return Array.from({ length: maxDays }, (_, index) => {
-      const date = new Date(start.getTime() + index * 86_400_000);
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
       return {
         date: date.toISOString().slice(0, 10),
         inputTokens: 0,
@@ -2945,7 +2951,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       };
     });
   };
-  const makeBrowserEmptyAdeUsageStats = (preset: "today" | "7d" | "30d" | "all"): any => {
+  const makeBrowserEmptyAdeUsageStats = (preset: AdeUsageRangePreset): any => {
     const range = browserStatsRangeForPreset(preset);
     return {
     generatedAt: now,
@@ -3024,10 +3030,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ? ADE_DB_SNAPSHOT.adeUsageStatsByPreset
       : {};
   const getBrowserAdeUsageStats = async (args?: { preset?: string }) => {
-    const preset =
-      args?.preset === "today" || args?.preset === "7d" || args?.preset === "30d" || args?.preset === "all"
-        ? args.preset
-        : "7d";
+    const preset = isAdeUsageRangePreset(args?.preset) ? args.preset : "7d";
     return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserEmptyAdeUsageStats(preset);
   };
 

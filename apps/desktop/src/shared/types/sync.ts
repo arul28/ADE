@@ -928,6 +928,7 @@ export type SyncSendToSessionArgs = {
 export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
+  | "usage.getAdeStats"
   | "lanes.list"
   | "lanes.listDeleteProgress"
   | "lanes.presence.announce"

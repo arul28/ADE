@@ -10336,6 +10336,29 @@ final class SyncService: ObservableObject {
     return try decoder.decode(T.self, from: data)
   }
 
+  /// Fetches the fast, cached cross-client activity snapshot exposed by the
+  /// paired desktop runtime. The host refreshes expensive provider/GitHub
+  /// sources in the background, so this request is safe on the new-chat path.
+  func fetchAdeUsageStats(preset: String) async throws -> MobileAdeUsageStats {
+    guard supportsRemoteAction("usage.getAdeStats") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Usage activity is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    return try await sendDecodableCommand(
+      action: "usage.getAdeStats",
+      args: ["preset": preset],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageStats.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],

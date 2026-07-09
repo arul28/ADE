@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  recordUsageInteraction,
+  usageClientSurfaceFromPeer,
+} from "../../../../desktop/src/main/services/usage/usageStatsStore";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
@@ -4011,6 +4015,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ? { ...payload, projectId: hostProjectId }
         : payload;
       const created = await executor.execute(routedPayload);
+      if (matchesHostProject) {
+        const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+          ? payload.args as Record<string, unknown>
+          : {};
+        recordUsageInteraction(args.db, {
+          projectId: hostProjectId,
+          client: usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform),
+          action: payload.action,
+          feature: payload.action.split(".", 1)[0] ?? "other",
+          sessionId: toOptionalString(commandArgs.sessionId),
+        });
+      }
       // Create-in-place (possibly into another project) adds a lane/chat row the
       // hub must see; nudge the roster (coalesced, no-op without subscribers).
       if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();

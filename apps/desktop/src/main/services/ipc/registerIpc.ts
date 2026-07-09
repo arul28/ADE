@@ -25,6 +25,7 @@ import {
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { runGit } from "../git/git";
 import type {
@@ -2028,6 +2029,21 @@ export function registerIpc({
           ]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
+          const usageAction = usageActionFromIpcChannel(channel);
+          if (isMeaningfulUsageAction(usageAction)) {
+            try {
+              const ctx = getCtx();
+              const payload = args.find((value) => value && typeof value === "object" && !Array.isArray(value)) as Record<string, unknown> | undefined;
+              recordUsageInteraction(ctx.db, {
+                projectId: ctx.projectId,
+                client: "desktop",
+                action: usageAction,
+                sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : null,
+              });
+            } catch {
+              // Global/project-selection IPC can run without an active context.
+            }
+          }
           if (traceIpcInvokes && (traceEveryIpcInvoke || durationMs >= 120)) {
             traceLogger?.info("ipc.invoke.done", {
               callId,

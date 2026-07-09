@@ -8,7 +8,7 @@ action against its in-process services, and replies with `command_ack`
 and then `command_result`.
 
 Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
-(~3,280 lines). The desktop tree's
+(~4,600 lines). The desktop tree's
 `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
 one-line re-export of the canonical module.
 
@@ -142,9 +142,16 @@ Listed in order of appearance in the registry. The hosted browser web
 client (`../web-client/README.md`) is a controller of this same registry,
 so read-heavy Work/chat/git/PR/history surfaces plus whole families
 (`terminal.*`, `rebase.*`, `history.*`, `github.*`, `projectConfig.*`,
-`ai.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
+`ai.*`, `usage.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
 over the wire. A controller only invokes an action the host advertises in
 `hello_ok.features.commandRouting.actions`.
+
+**Usage** (`usage.*`)
+- `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
+  or all time. Returns the same stale-while-revalidate aggregate used by
+  desktop Stats: provider tokens, project-DB activity, daily points, and
+  `desktop` / `mobile` / `tui` / `web` / `api` client attribution. It does
+  not replicate or return raw `usage_events` rows.
 
 **Lanes** (`lanes.*`)
 - `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`,
@@ -515,6 +522,7 @@ services:
   laneTemplateService?,
   rebaseSuggestionService?,
   autoRebaseService?,
+  usageTrackingService?,
   logger,
 }
 ```
