@@ -1,8 +1,13 @@
 # Computer Use
 
-ADE does not run computer-use itself. Agents drive computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run. ADE's only job is to **ingest** the resulting artifact (screenshot, video, trace, verification output, console log), link it to an owner (chat, lane, PR, Linear issue), and render it in the review drawer.
+ADE has two intentionally separate computer-use responsibilities:
 
-The previous control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. What remains is a thin broker backed by a single table.
+1. **Provider execution wiring.** On macOS, opted-in Codex sessions receive the signed standalone Codex Computer Use client as the canonical `computer_use` MCP server. This works in native Work chats and tracked Codex CLI sessions, including resume/fork paths.
+2. **Proof ingestion.** Any agent can intentionally register a screenshot, video, trace, verification output, or console log. ADE stores it, links it to an owner (chat, lane, PR, Linear issue), and renders it in the review drawer.
+
+Execution does not imply proof. ADE never passively promotes every Computer Use tool result into a durable artifact.
+
+The previous proof control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. The proof side is now a thin broker backed by a single table; direct Codex execution is the provider-native MCP path described below.
 
 See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof capture` / `attach` / `list`) and the drawer UI contract.
 
@@ -22,8 +27,16 @@ The desktop renderer is a viewer: it edits review state, navigates owners, and d
 - `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingestArtifacts`), listing (`listArtifacts`), review-state management (`reviewArtifact`), routing (`routeArtifact`), backend status (`getBackendStatus`). Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
 - `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities). Pure assembly layer over the broker.
 - `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
-- `agentBrowserArtifactAdapter.ts` — parses agent-browser payload shapes (screenshots, videos, traces, verification, console logs) into `ComputerUseArtifactInput[]`.
-- `syntheticToolResult.ts` — produces tool-result stubs during Claude compaction so a previously-executed tool response can be re-surfaced without re-running the tool.
+
+### Proof adapters
+
+- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — parses agent-browser payload shapes (screenshots, videos, traces, verification, console logs) into `ComputerUseArtifactInput[]`.
+
+### Direct Codex Computer Use
+
+- `apps/desktop/src/main/utils/codexComputerUse.ts` — resolves the standalone `SkyComputerUseClient`, requires explicit user opt-in, verifies its strict macOS code signature plus OpenAI team/bundle identifiers, and returns the MCP launch config.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — merges the resolved `computer_use` server into every Codex `thread/start` and `thread/resume` config and handles MCP tool/source events plus elicitation requests.
+- `apps/desktop/src/shared/cliLaunch.ts` — emits the equivalent `-c mcp_servers.computer_use.*` flags for tracked Codex CLI start/resume commands. `agentChatCliLaunch.ts`, `ptyService.ts`, and `externalSessionsService.ts` resolve the config at each launch/resume so a newly installed or disabled plugin is respected.
 
 Computer-use services that used to exist and were deleted on this branch:
 
@@ -107,7 +120,7 @@ Other paths are rejected.
 - Per-phase `evidenceRequirements` math and preflight coverage/readiness gates.
 - Settings > Computer Use panel.
 - Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
-- Separate tool delivery for computer use.
+- The old ADE-defined universal computer-use tool delivery. Codex now uses its provider-native MCP client instead.
 
 ## App Control bridge
 
@@ -124,8 +137,8 @@ See [`app-control.md`](./app-control.md) for the full surface (service, IPC, ren
 
 - [`app-control.md`](./app-control.md) — current App Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
 
-The three remaining detail docs describe the pre-rebuild control plane (Ghost OS readiness probe, policy matrix, phase-based coverage). They are retained for historical context but do not reflect the current shipping system.
+The backend doc begins with the current direct Codex integration, then retains the pre-rebuild Ghost OS / local-fallback catalog for historical context. The settings/readiness doc is historical.
 
-- [`backends.md`](./backends.md) — pre-rebuild backend catalog.
-- [`artifact-broker.md`](./artifact-broker.md) — pre-rebuild broker model, including the passive observer.
+- [`backends.md`](./backends.md) — direct Codex Computer Use execution plus the historical proof-backend catalog.
+- [`artifact-broker.md`](./artifact-broker.md) — current broker, storage, and ownership model, with the retired passive observer called out for context.
 - [`settings-and-readiness.md`](./settings-and-readiness.md) — pre-rebuild Settings > Computer Use panel.

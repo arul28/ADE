@@ -1,5 +1,6 @@
 import React from "react";
 import type { AiSettingsStatus } from "../../../shared/types";
+import { resolveModelDescriptor, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { ModelPicker } from "./ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
@@ -27,6 +28,18 @@ export function ReviewLaunchModelControls({
   className,
 }: ReviewLaunchModelControlsProps) {
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
+
+  const handleModelChange = React.useCallback((nextModelId: string) => {
+    const descriptor = resolveModelDescriptor(nextModelId);
+    const tiers = descriptor?.reasoningTiers ?? [];
+    const nextReasoning = selectSupportedReasoningEffort({
+      tiers,
+      preferred: reasoningEffort,
+      advertisedDefault: descriptor?.defaultReasoningEffort,
+    }) ?? "";
+    onModelChange(nextModelId);
+    if (nextReasoning !== reasoningEffort) onReasoningEffortChange(nextReasoning);
+  }, [onModelChange, onReasoningEffortChange, reasoningEffort]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -59,7 +72,7 @@ export function ReviewLaunchModelControls({
     <div className={cn("inline-flex items-center gap-1.5", className)}>
       <ModelPicker
         value={modelId}
-        onChange={onModelChange}
+        onChange={handleModelChange}
         surfaceKey="review-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}

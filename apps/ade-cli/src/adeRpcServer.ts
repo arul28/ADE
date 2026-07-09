@@ -69,6 +69,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
+import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -3535,6 +3536,7 @@ async function runTool(args: {
         fastMode,
         initialPrompt: initialInput,
         laneWorktreePath,
+        ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
       });
     })();
 

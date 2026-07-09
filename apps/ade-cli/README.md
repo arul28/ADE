@@ -319,16 +319,18 @@ ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
-ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
-ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
+ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
+ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade chat list --lane lane-id --include-automation --no-archived --text
-ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
 ade chat read session-id --limit 20 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
 ade chat wait session-id --for idle --timeout-ms 600000
+ade chat recover session-id --turn turn-id --action nudge        # wait | nudge | retry | resume
+ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait

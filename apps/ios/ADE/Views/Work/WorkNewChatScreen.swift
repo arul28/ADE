@@ -1266,7 +1266,7 @@ private func workDefaultNewChatModelId(provider: String) -> String {
     return defaultModel
   }
   switch workNormalizedNewChatProvider(provider) {
-  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
+  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-5"
   default: return "claude-sonnet-5"

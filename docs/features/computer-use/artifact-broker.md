@@ -7,9 +7,8 @@ The broker runs inside the ADE runtime (`ade serve`) that owns the project. Arti
 ## Source file map
 
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services.
-- `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — payload parser for agent-browser output.
+- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — payload parser for agent-browser output.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
-- `apps/desktop/src/main/services/computerUse/syntheticToolResult.ts` — Claude-compaction tool-result stubs.
 - `apps/desktop/src/shared/types/computerUseArtifacts.ts` (via `shared/types`) — `ComputerUseArtifactRecord`, `ComputerUseArtifactLink`, `ComputerUseArtifactInput`, `ComputerUseArtifactOwner`, `ComputerUseArtifactReviewState`, `ComputerUseArtifactWorkflowState`, `ComputerUseEventPayload`.
 - `apps/desktop/src/shared/proofArtifacts.ts` — `normalizeComputerUseArtifactKind`, `resolveReportArtifactKind`.
 

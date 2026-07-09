@@ -625,6 +625,12 @@ struct WorkModelPickerSheet: View {
   private func defaultReasoningEffort(for model: WorkModelOption) -> String? {
     let tiers = supportedReasoningTiers(for: model)
     guard !tiers.isEmpty else { return nil }
+    let advertisedDefault = model.defaultReasoningEffort?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if let advertisedDefault, tiers.contains(advertisedDefault) {
+      return advertisedDefault
+    }
     if tiers.contains("medium") { return "medium" }
     return tiers[tiers.count / 2]
   }
@@ -1191,6 +1197,9 @@ struct ModelPickerListRow: View {
         VStack(alignment: .leading, spacing: 8) {
           if !supportedTiers.isEmpty {
             reasoningPills(tiers: supportedTiers)
+            if selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ultra" {
+              ultraReasoningWarning
+            }
           }
           if model.supportsCodexFastMode {
             fastModeToggle
@@ -1371,13 +1380,21 @@ struct ModelPickerListRow: View {
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
 
-  private func reasoningLabel(for tier: String) -> String {
-    switch tier.lowercased() {
-    case "xhigh": return "XHigh"
-    case "max": return "Max"
-    case "ultracode": return "Ultracode"
-    default: return tier.capitalized
+  private var ultraReasoningWarning: some View {
+    Label {
+      Text("Ultra delegates to multiple agents and can use limits faster.")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    } icon: {
+      Image(systemName: "person.3.fill")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.warning)
     }
+    .accessibilityLabel("Ultra delegates to multiple agents and can use limits faster")
+  }
+
+  private func reasoningLabel(for tier: String) -> String {
+    workReasoningEffortDisplayName(tier)
   }
 }
 

@@ -25,6 +25,7 @@ import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
+import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import {
   commandArrayToLine,
   directShellLaunchForCommandLine,
@@ -364,6 +365,7 @@ function forkCommandFor(args: {
       {
         model: args.model,
         permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+        codexComputerUse: resolveCodexComputerUseMcpConfig(),
       },
     );
     return withCodexNoAltScreen(resume.replace(/\bresume\b/u, "fork"));
@@ -700,6 +702,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       ? buildTrackedCliResumeCommand(metadata, {
           model: importArgs.model,
           permissionMode: importArgs.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+          ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
         })
       : forkCommandFor({
           provider,

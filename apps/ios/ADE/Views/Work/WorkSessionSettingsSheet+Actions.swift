@@ -6,7 +6,10 @@ extension WorkSessionSettingsSheet {
   @MainActor
   func loadModels() async {
     do {
-      let loadedModels = try await syncService.listChatModels(provider: summary.provider)
+      let loadedModels = workPrioritizeGPT56ChatModels(
+        try await syncService.listChatModels(provider: summary.provider),
+        provider: summary.provider
+      )
       let scopedModels = summary.provider == "cursor"
         ? workFilterChatModelsForCursorAvailability(loadedModels, mode: .chat)
         : loadedModels
@@ -22,9 +25,7 @@ extension WorkSessionSettingsSheet {
         ?? ""
 
       selectedModelId = matchedModelId
-      if let selectedModel,
-         let reasoningEfforts = selectedModel.reasoningEfforts,
-         reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) == false {
+      if !workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) {
         selectedReasoningEffort = ""
       }
       errorMessage = nil

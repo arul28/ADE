@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 
 type LaneServiceForCliLaunch = Pick<
   ReturnType<typeof createLaneService>,
@@ -100,6 +101,7 @@ export async function launchAgentChatCli(
       : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
+    ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
   });
 
   const result = await deps.ptyService.create({

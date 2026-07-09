@@ -44,7 +44,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 }
 
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
-const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
 
 // CLI-wrapped Anthropic models (claude provider)
 export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
@@ -89,10 +89,11 @@ export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
 ];
 
 export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
-  { value: "low", label: "Low" },
+  { value: "low", label: "Light" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra High" },
+  { value: "ultra", label: "Ultra" },
 ];
 
 export function getThinkingLevels(provider: ModelProvider): ThinkingOption[] {

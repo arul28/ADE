@@ -125,7 +125,8 @@ struct LaneChatLaunchSheet: View {
             }
           }
 
-          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+          let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
+          if !reasoningEfforts.isEmpty {
             GlassSection(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
@@ -139,7 +140,7 @@ struct LaneChatLaunchSheet: View {
                   }
                   ForEach(reasoningEfforts) { effort in
                     LaneOptionButton(
-                      title: effort.effort.capitalized,
+                      title: workReasoningEffortDisplayName(effort.effort),
                       subtitle: effort.description,
                       systemImage: "brain",
                       isSelected: selectedReasoningEffort == effort.effort
@@ -202,7 +203,8 @@ struct LaneChatLaunchSheet: View {
         }
       }
       .onChange(of: selectedModelId) { _, _ in
-        if let efforts = selectedModel?.reasoningEfforts, !efforts.isEmpty {
+        let efforts = workVisibleReasoningEfforts(for: selectedModel)
+        if !efforts.isEmpty {
           if !efforts.contains(where: { $0.effort == selectedReasoningEffort }) {
             selectedReasoningEffort = ""
           }
@@ -238,7 +240,10 @@ struct LaneChatLaunchSheet: View {
   private func loadModels(resetSelection: Bool) async {
     let requestedProvider = provider
     do {
-      let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
+      let loadedModels = workPrioritizeGPT56ChatModels(
+        try await syncService.listChatModels(provider: requestedProvider),
+        provider: requestedProvider
+      )
       guard provider == requestedProvider else { return }
       models = loadedModels
       if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
@@ -271,7 +276,7 @@ struct LaneChatLaunchSheet: View {
         model: selectedModelId,
         reasoningEffort: {
           guard !selectedReasoningEffort.isEmpty else { return nil }
-          guard selectedModel?.reasoningEfforts?.contains(where: { $0.effort == selectedReasoningEffort }) == true else { return nil }
+          guard workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) else { return nil }
           return selectedReasoningEffort
         }()
       )

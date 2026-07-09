@@ -67,6 +67,7 @@ import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
+import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -746,24 +747,19 @@ function PermissionModePicker<Value extends string>({
                           setOpen(false);
                         }}
                         className={cn(
-                          "flex w-full items-start gap-2.5 px-3 py-2 text-left font-sans transition-colors",
+                          "flex w-full items-center gap-2.5 px-3 py-2 text-left font-sans transition-colors",
                           active ? tone.rowActive : "text-fg/72",
                           tone.rowHover,
                         )}
                         title={option.detail}
                       >
-                        <span className={cn("mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", tone.iconSurface)} aria-hidden>
+                        <span className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", tone.iconSurface)} aria-hidden>
                           <PermissionModeGlyph icon={option.icon} size={12} />
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[length:calc(var(--chat-font-size)*11/14)] font-semibold leading-4">
-                            {option.label}
-                          </span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*10/14)] leading-4 text-muted-fg/52">
-                            {option.detail}
-                          </span>
+                        <span className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*11/14)] font-semibold leading-4">
+                          {option.label}
                         </span>
-                        {active ? <Check size={12} weight="bold" className="mt-1 shrink-0 opacity-80" /> : null}
+                        {active ? <Check size={12} weight="bold" className="shrink-0 opacity-80" /> : null}
                       </button>
                     </li>
                   );
@@ -3178,6 +3174,12 @@ export function AgentChatComposer({
       attachment.type === "linear_issue"
     ),
   )?.issue ?? null;
+  const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
+  const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
+  const mcpElicitationUrl = typeof pendingInput?.providerMetadata?.url === "string"
+    && canOpenInAdeBrowser(pendingInput.providerMetadata.url)
+    ? pendingInput.providerMetadata.url
+    : null;
 
   return (
     <>
@@ -3295,10 +3297,15 @@ export function AgentChatComposer({
                 <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
                   {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {isMcpElicitation && mcpElicitationUrl ? (
+                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>
+                  ) : null}
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : isMcpElicitation ? "Allow once" : "Accept"}</button>
+                  {!isMcpElicitation || mcpElicitationSupportsPersistence ? (
+                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
+                  ) : null}
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
                 </div>
               </>
             ) : (

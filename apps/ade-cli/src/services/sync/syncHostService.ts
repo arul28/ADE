@@ -1142,12 +1142,164 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 
 export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
 export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
+const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
 // buffered event's key cannot be evicted while the event itself is still in
 // the ring buffer (which could double-assign a seq to the same event).
 const CHAT_EVENT_REPLAY_MAX_KEYS = 1_500;
 // Bound the number of sessions with live replay buffers (LRU-evicted).
 const CHAT_EVENT_REPLAY_MAX_SESSIONS = 64;
+
+function inlineImageDataUrlBytes(value: string | null | undefined): number | null {
+  if (!value || !/^data:image\//i.test(value.trim())) return null;
+  return Buffer.byteLength(value, "utf8");
+}
+
+function redactInlineImageDataUrlsForSync(
+  value: unknown,
+): { value: unknown; omittedBytes: number; changed: boolean } {
+  const seen = new WeakSet<object>();
+  const visit = (
+    candidate: unknown,
+    depth: number,
+  ): { value: unknown; omittedBytes: number; changed: boolean } => {
+    if (typeof candidate === "string") {
+      const bytes = inlineImageDataUrlBytes(candidate);
+      if (bytes == null || bytes <= SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+        return { value: candidate, omittedBytes: 0, changed: false };
+      }
+      return {
+        value: `[ADE] Inline image data omitted from mobile chat sync (${bytes} bytes).`,
+        omittedBytes: bytes,
+        changed: true,
+      };
+    }
+    if (!candidate || typeof candidate !== "object") {
+      return { value: candidate, omittedBytes: 0, changed: false };
+    }
+    if (depth >= 32) {
+      return {
+        value: "[ADE] Deep structured payload omitted from mobile chat sync.",
+        omittedBytes: 0,
+        changed: true,
+      };
+    }
+    if (seen.has(candidate)) {
+      return { value: "[Circular]", omittedBytes: 0, changed: true };
+    }
+
+    seen.add(candidate);
+    if (Array.isArray(candidate)) {
+      let omittedBytes = 0;
+      let changed = false;
+      const next = candidate.map((entry) => {
+        const result = visit(entry, depth + 1);
+        omittedBytes += result.omittedBytes;
+        changed ||= result.changed;
+        return result.value;
+      });
+      seen.delete(candidate);
+      return { value: changed ? next : candidate, omittedBytes, changed };
+    }
+
+    let omittedBytes = 0;
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(candidate)) {
+      const result = visit(entry, depth + 1);
+      next[key] = result.value;
+      omittedBytes += result.omittedBytes;
+      changed ||= result.changed;
+    }
+    seen.delete(candidate);
+    return { value: changed ? next : candidate, omittedBytes, changed };
+  };
+
+  return visit(value, 0);
+}
+
+function serializedSyncPayloadBytes(value: unknown): number {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+  try {
+    const serialized = JSON.stringify(value);
+    return Buffer.byteLength(serialized ?? String(value), "utf8");
+  } catch {
+    return Buffer.byteLength(String(value), "utf8");
+  }
+}
+
+/**
+ * Bound inline image payloads at the mobile-sync boundary. The agent chat
+ * service intentionally keeps the original envelope for desktop live
+ * previews; only WebSocket snapshots/events and their replay ring use this
+ * compact copy.
+ */
+export function compactChatEventEnvelopeForSync(
+  envelope: AgentChatEventEnvelope,
+): AgentChatEventEnvelope {
+  const event = envelope.event;
+  if (event.type === "tool_result") {
+    const redacted = redactInlineImageDataUrlsForSync(event.result);
+    if (!redacted.changed) return envelope;
+    const originalBytes = Math.max(
+      event.resultOriginalBytes ?? 0,
+      serializedSyncPayloadBytes(event.result),
+      redacted.omittedBytes,
+    );
+    return {
+      ...envelope,
+      event: {
+        ...event,
+        result: redacted.value,
+        resultOriginalBytes: originalBytes,
+        resultOmittedBytes: (event.resultOmittedBytes ?? 0) + redacted.omittedBytes,
+      },
+    };
+  }
+
+  if (event.type === "codex_image_generation") {
+    const resultBytes = inlineImageDataUrlBytes(event.result);
+    const savedPathIsInline = inlineImageDataUrlBytes(event.savedPath) != null;
+    if (resultBytes != null && resultBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+      return {
+        ...envelope,
+        event: {
+          ...event,
+          result: null,
+          ...(savedPathIsInline ? { savedPath: null } : {}),
+          resultOriginalBytes: resultBytes,
+          resultOmittedBytes: resultBytes,
+        },
+      };
+    }
+    if (savedPathIsInline) {
+      return { ...envelope, event: { ...event, savedPath: null } };
+    }
+    return envelope;
+  }
+
+  if (event.type === "codex_image_view") {
+    const urlBytes = inlineImageDataUrlBytes(event.url);
+    const pathIsInline = inlineImageDataUrlBytes(event.path) != null;
+    if (urlBytes != null && urlBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+      return {
+        ...envelope,
+        event: {
+          ...event,
+          url: null,
+          ...(pathIsInline ? { path: null } : {}),
+          urlOriginalBytes: urlBytes,
+          urlOmittedBytes: urlBytes,
+        },
+      };
+    }
+    if (pathIsInline) {
+      return { ...envelope, event: { ...event, path: null } };
+    }
+  }
+
+  return envelope;
+}
 
 export type ChatEventReplayBufferEntry = {
   seq: number;
@@ -1193,13 +1345,14 @@ export function recordChatEventInReplayBuffer(
     if (oldestKey == null) break;
     buffer.seqByKey.delete(oldestKey);
   }
+  const syncEvent = compactChatEventEnvelopeForSync(event);
   let bytes = 512;
   try {
-    bytes = JSON.stringify(event).length;
+    bytes = JSON.stringify(syncEvent).length;
   } catch {
     // keep the conservative default
   }
-  buffer.entries.push({ seq, bytes, event });
+  buffer.entries.push({ seq, bytes, event: syncEvent });
   buffer.totalBytes += bytes;
   while (
     buffer.entries.length > 0
@@ -3465,7 +3618,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
-    const sent = send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
+    const syncEvent = compactChatEventEnvelopeForSync(event);
+    const sent = send(peer.ws, "chat_event", { ...syncEvent, seq } satisfies SyncChatEventPayload);
     if (sent) markChatEventSent(peer, event);
     return sent ? "sent" : "failed";
   }
@@ -4885,6 +5039,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             : 0;
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
         }
+        events = events.map(compactChatEventEnvelopeForSync);
         peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,

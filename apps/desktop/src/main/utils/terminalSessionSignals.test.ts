@@ -373,6 +373,26 @@ describe("terminalSessionSignals", () => {
     });
   });
 
+  it("preserves Codex resume targets after quoted Computer Use config values with spaces", () => {
+    const command = buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread_computer_use_123",
+      launch: { permissionMode: "default" },
+    }, {
+      codexComputerUse: {
+        command: "/Applications/Codex Computer Use.app/Contents/MacOS/Sky Computer Use Client",
+        args: ["mcp", "--profile", "ADE Computer Use"],
+      },
+    });
+
+    expect(command).toContain("Codex Computer Use.app");
+    expect(parseTrackedCliResumeCommand(command, "codex")).toEqual({
+      provider: "codex",
+      targetId: "thread_computer_use_123",
+    });
+  });
+
   it("builds OpenCode run replay resume commands with question tool enabled", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "edit",

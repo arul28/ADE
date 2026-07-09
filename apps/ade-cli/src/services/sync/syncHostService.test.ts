@@ -23,6 +23,7 @@ import {
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
+  compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
   planChatEventResume,
@@ -2831,6 +2832,169 @@ describe("chat event replay buffer (resumable chat streams)", () => {
     // …while recent clients still resume.
     const plan = planChatEventResume(buffer, buffer.entries[0]!.seq);
     expect(plan.mode).toBe("replay");
+  });
+
+  it("compacts oversized inline images in sync envelopes without mutating desktop events", () => {
+    const imageDataUrl = `data:image/png;base64,${"A".repeat(80 * 1024)}`;
+    const generated: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-07-09T00:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "codex_image_generation",
+        itemId: "generated-image",
+        result: imageDataUrl,
+        savedPath: imageDataUrl,
+        status: "completed",
+      },
+    };
+    const viewed: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-07-09T00:00:01.000Z",
+      sequence: 2,
+      event: {
+        type: "codex_image_view",
+        itemId: "viewed-image",
+        url: imageDataUrl,
+        path: imageDataUrl,
+        status: "completed",
+      },
+    };
+
+    const compactedGenerated = compactChatEventEnvelopeForSync(generated);
+    const compactedViewed = compactChatEventEnvelopeForSync(viewed);
+
+    expect(compactedGenerated.event).toMatchObject({
+      type: "codex_image_generation",
+      result: null,
+      savedPath: null,
+      resultOriginalBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+      resultOmittedBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+    });
+    expect(compactedViewed.event).toMatchObject({
+      type: "codex_image_view",
+      url: null,
+      path: null,
+      urlOriginalBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+      urlOmittedBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+    });
+    expect(generated.event).toMatchObject({ result: imageDataUrl, savedPath: imageDataUrl });
+    expect(viewed.event).toMatchObject({ url: imageDataUrl, path: imageDataUrl });
+    expect(JSON.stringify(compactedGenerated)).not.toContain("A".repeat(1024));
+    expect(JSON.stringify(compactedViewed)).not.toContain("A".repeat(1024));
+  });
+
+  it("redacts nested tool-result images while preserving small and ordinary values", () => {
+    const largeImage = `data:image/png;base64,${"C".repeat(80 * 1024)}`;
+    const smallImage = "data:image/png;base64,AAAA";
+    const result = {
+      output: {
+        images: [largeImage, smallImage],
+        message: "generated two previews",
+      },
+      count: 2,
+    };
+    const desktopEnvelope: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-07-09T00:00:02.000Z",
+      sequence: 3,
+      event: {
+        type: "tool_result",
+        tool: "mcp__images__generate",
+        itemId: "tool-result-image",
+        result,
+        status: "completed",
+      },
+    };
+
+    const compacted = compactChatEventEnvelopeForSync(desktopEnvelope);
+    expect(compacted.event).toMatchObject({
+      type: "tool_result",
+      result: {
+        output: {
+          images: [
+            `[ADE] Inline image data omitted from mobile chat sync (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
+            smallImage,
+          ],
+          message: "generated two previews",
+        },
+        count: 2,
+      },
+      resultOriginalBytes: Buffer.byteLength(JSON.stringify(result), "utf8"),
+      resultOmittedBytes: Buffer.byteLength(largeImage, "utf8"),
+    });
+    expect(desktopEnvelope.event).toMatchObject({ result });
+    expect((desktopEnvelope.event as { result: unknown }).result).toBe(result);
+    expect(JSON.stringify(compacted)).not.toContain("C".repeat(1024));
+
+    const smallOnly: AgentChatEventEnvelope = {
+      ...desktopEnvelope,
+      sequence: 4,
+      event: {
+        type: "tool_result",
+        tool: "mcp__images__generate",
+        itemId: "tool-result-small-image",
+        result: { image: smallImage, message: "keep me" },
+        status: "completed",
+      },
+    };
+    expect(compactChatEventEnvelopeForSync(smallOnly)).toBe(smallOnly);
+  });
+
+  it("retains only compacted image envelopes in the mobile replay ring", () => {
+    const buffer = createChatEventReplayBuffer();
+    const imageDataUrl = `data:image/png;base64,${"B".repeat(900_000)}`;
+    const desktopEnvelope: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-07-09T00:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "codex_image_generation",
+        itemId: "droid-image",
+        result: imageDataUrl,
+        status: "completed",
+      },
+    };
+
+    expect(recordChatEventInReplayBuffer(buffer, desktopEnvelope)).toBe(1);
+    expect(buffer.entries).toHaveLength(1);
+    expect(buffer.totalBytes).toBeLessThan(2_000);
+    expect(buffer.entries[0]!.event.event).toMatchObject({
+      type: "codex_image_generation",
+      result: null,
+      resultOriginalBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+      resultOmittedBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+    });
+    expect(desktopEnvelope.event).toMatchObject({ result: imageDataUrl });
+  });
+
+  it("retains only redacted nested tool results in the mobile replay ring", () => {
+    const buffer = createChatEventReplayBuffer();
+    const imageDataUrl = `data:image/jpeg;base64,${"D".repeat(900_000)}`;
+    const result = { response: { content: [{ type: "image", data: imageDataUrl }] } };
+    const desktopEnvelope: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: "2026-07-09T00:00:03.000Z",
+      sequence: 1,
+      event: {
+        type: "tool_result",
+        tool: "mcp__computer__screenshot",
+        itemId: "nested-image-tool-result",
+        result,
+        status: "completed",
+      },
+    };
+
+    expect(recordChatEventInReplayBuffer(buffer, desktopEnvelope)).toBe(1);
+    expect(buffer.entries).toHaveLength(1);
+    expect(buffer.totalBytes).toBeLessThan(2_000);
+    expect(buffer.entries[0]!.event.event).toMatchObject({
+      type: "tool_result",
+      resultOmittedBytes: Buffer.byteLength(imageDataUrl, "utf8"),
+    });
+    expect(JSON.stringify(buffer.entries[0]!.event)).not.toContain("D".repeat(1024));
+    expect((desktopEnvelope.event as { result: unknown }).result).toBe(result);
+    expect(JSON.stringify(desktopEnvelope)).toContain("D".repeat(1024));
   });
 });
 

@@ -29,6 +29,11 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
 };
 
+export type CodexComputerUseCliConfig = {
+  command: string;
+  args?: readonly string[];
+};
+
 export type CleanShellLaunchFields = {
   command: string;
   args: string[];
@@ -306,6 +311,22 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   return "claude";
 }
 
+export function codexComputerUseMcpFlags(
+  config: CodexComputerUseCliConfig | null | undefined,
+): string[] {
+  const command = config?.command?.trim();
+  if (!command) return [];
+  const args = config?.args?.length ? [...config.args] : ["mcp"];
+  return [
+    "-c",
+    `mcp_servers.computer_use.command=${JSON.stringify(command)}`,
+    "-c",
+    `mcp_servers.computer_use.args=${JSON.stringify(args)}`,
+    "-c",
+    "mcp_servers.computer_use.enabled=true",
+  ];
+}
+
 function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPrompt = false): string {
   const launchInstruction = hasInitialPrompt
     ? [
@@ -355,6 +376,8 @@ export function buildTrackedCliStartupCommand(args: {
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
   laneWorktreePath?: string | null;
+  /** Signed standalone Computer Use MCP client selected by ADE's main process. */
+  codexComputerUse?: CodexComputerUseCliConfig | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -375,6 +398,8 @@ export function buildTrackedCliLaunchCommand(args: {
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
   laneWorktreePath?: string | null;
+  /** Signed standalone Computer Use MCP client selected by ADE's main process. */
+  codexComputerUse?: CodexComputerUseCliConfig | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = effectiveOrchestrationPermissionMode(args);
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -424,6 +449,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...codexServiceTierFlags(args.fastMode),
+      ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     const usePromptArg = codexModel === "gpt-5.3-codex";
@@ -824,6 +850,7 @@ export function buildTrackedCliResumeCommand(
     fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
     prompt?: string | null;
+    codexComputerUse?: CodexComputerUseCliConfig | null;
   } = {},
 ): string {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
@@ -857,6 +884,7 @@ export function buildTrackedCliResumeCommand(
       ...modelToCliFlag(model),
       ...codexReasoningEffortFlags(reasoningEffort),
       ...codexServiceTierFlags(fastMode),
+      ...codexComputerUseMcpFlags(overrides.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");

@@ -572,8 +572,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1265,8 +1265,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Start either a persistent ADE Work chat or a tracked provider CLI session
   with one command. This mirrors the desktop New Chat mode toggle.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
     $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "Review the diff"
 
@@ -1296,8 +1296,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --mode chat creates a persistent ADE Work chat.
     --mode cli starts a tracked provider CLI terminal.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
@@ -1514,8 +1514,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --no-archived --text
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
-    $ ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan my trip"
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
@@ -1527,12 +1527,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
+    $ ade chat recover <session> --turn <turn-id> --action nudge
+                                                    Recover a stalled Codex turn: wait, nudge, retry, or resume
+    $ ade chat models --provider codex --json       List models and supported reasoning tiers
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
     $ ade chat goal <session> --status paused       Update a Codex goal status
-    $ ade chat handoff <session> --model openai/gpt-5.5 --note "focus on tests"
+    $ ade chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
                                                     Start a new chat with an extra handoff note
-    $ ade chat fork <session> --model openai/gpt-5.5
+    $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Fork full provider history into a new chat
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
@@ -1553,7 +1556,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --provider <name>       claude | codex | cursor | droid | opencode.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
-                            Common tiers: minimal, low, medium, high, xhigh, max, ultracode.
+                            Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
@@ -1582,11 +1585,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Create a persistent ADE Work chat session with provider/model/runtime settings.
 
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort high --permissions plan
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "fix"
     $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
-    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.5 --prompt "Work this issue"
+    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
 
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
@@ -1595,7 +1598,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
-                            Common tiers: minimal, low, medium, high, xhigh, max, ultracode.
+                            Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --kickoff <text>        Alias for --prompt.
     --permissions <mode>    Alias for --permission-mode.
@@ -1628,6 +1631,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
     Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
     instead of a persistent Work chat.
 `,
+  "chat recover": `${ADE_BANNER}
+  Chat recovery
+
+  Recover a stalled Codex Work-chat turn using the same actions as the desktop
+  recovery card. The session and turn must still be the active Codex turn.
+
+    $ ade chat recover <session> --turn <turn-id> --action wait
+    $ ade chat recover <session> --turn <turn-id> --action nudge
+    $ ade chat recover <session> --turn <turn-id> --action retry
+    $ ade chat recover <session> --turn <turn-id> --action resume
+
+  Actions:
+    wait    Keep the current turn alive and restart its stalled-turn watchdog.
+    nudge   Steer a short status request into the current turn.
+    retry   Interrupt, then retry on the same Codex thread.
+    resume  Restart the app server, resume the thread, then retry the turn.
+`,
   agent: `${ADE_BANNER}
   Agent sessions
 
@@ -1635,7 +1655,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode cli --lane <lane> --provider codex --prompt "Fix the failing test"
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto
+    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto
     $ ade agent spawn --lane <lane> --context-file docs/context.md --prompt "continue"
     $ ade agent spawn --lane <lane> --tool=git --tool=files --prompt "review changes"
 
@@ -1660,7 +1680,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ade new chat --mode cli, which supports the desktop New Chat CLI mode and
   reasoning/fast launch settings. This command does not support reasoning effort.
 
-    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto --prompt "Fix the failing test"
+    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto --prompt "Fix the failing test"
     $ ade agent spawn --lane <lane> --provider claude --model claude-opus-4-8 --permissions plan --prompt "Review the diff"
 
   Flags:
@@ -2406,8 +2426,37 @@ type ToolClaimArgs = {
 
 type CodexGoalCliStatus = "active" | "paused" | "blocked" | "complete";
 
+type CodexRecoveryCliAction =
+  | "wait"
+  | "steer"
+  | "interrupt_retry_same_thread"
+  | "restart_resume_thread";
+
 function isCodexGoalCliStatus(value: string | null): value is CodexGoalCliStatus {
   return value === "active" || value === "paused" || value === "blocked" || value === "complete";
+}
+
+function normalizeCodexRecoveryCliAction(value: string | null): CodexRecoveryCliAction {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
+  if (normalized === "wait") return "wait";
+  if (normalized === "nudge" || normalized === "steer") return "steer";
+  if (
+    normalized === "retry"
+    || normalized === "interrupt_retry"
+    || normalized === "interrupt_retry_same_thread"
+  ) {
+    return "interrupt_retry_same_thread";
+  }
+  if (
+    normalized === "resume"
+    || normalized === "restart_resume"
+    || normalized === "restart_resume_thread"
+  ) {
+    return "restart_resume_thread";
+  }
+  throw new CliUsageError(
+    "chat recover --action must be wait, nudge, retry, or resume.",
+  );
 }
 
 function readToolClaimArgs(args: string[]): ToolClaimArgs {
@@ -6782,6 +6831,29 @@ function buildChatPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "recover" || sub === "recovery") {
+    const turnId = requireValue(readValue(args, ["--turn", "--turn-id"]), "turnId");
+    const action = normalizeCodexRecoveryCliAction(
+      readValue(args, ["--action", "--recovery-action"])
+        ?? firstStandalonePositional(args),
+    );
+    return {
+      kind: "execute",
+      label: "chat recover",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "recoverCodexTurn",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            turnId,
+            action,
+          }),
+        ),
+      ],
+    };
+  }
   if (sub === "goal" || sub === "codex-goal") {
     const clear = readFlag(args, ["--clear", "--delete", "--rm"]);
     const statusFlag = readValue(args, ["--status"]);
@@ -6957,7 +7029,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat delete",
       steps: [actionStep("result", "chat", "deleteSession", withSession())],
     };
-  if (sub === "models")
+  if (sub === "models") {
+    const provider = readValue(args, ["--provider"]);
     return {
       kind: "execute",
       label: "chat models",
@@ -6966,10 +7039,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "getAvailableModels",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, provider ? { provider } : {}),
         ),
       ],
     };
+  }
   if (sub === "slash")
     return {
       kind: "execute",
@@ -10052,7 +10126,7 @@ function automationsExampleText(): string {
       prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",
       modelConfig: {
         orchestratorModel: {
-          modelId: "openai/gpt-5.5",
+          modelId: "openai/gpt-5.6-sol",
           thinkingLevel: "xhigh",
         },
       },
@@ -10642,6 +10716,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "-t",
   "--additional-instructions",
   "--app",
+  "--action",
   "--app-bundle",
   "--arg",
   "--arg-json",
@@ -10772,6 +10847,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--question",
   "--reason",
   "--reasoning",
+  "--recovery-action",
   "--recent-limit",
   "--ref",
   "--require-dpop",
@@ -10822,6 +10898,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--terminal-id",
   "--thread",
   "--thread-id",
+  "--turn",
+  "--turn-id",
   "--timeout",
   "--timeout-ms",
   "--title",

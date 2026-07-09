@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getModelById, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 
 export type CtoModelSelection = {
@@ -15,10 +15,13 @@ export function pickReasoningEffort(
   modelId: string | null | undefined,
   preferred: string | null | undefined,
 ): string | null {
-  const tiers = modelId ? (getModelById(modelId)?.reasoningTiers ?? []) : [];
-  if (!tiers.length) return null;
-  if (preferred && tiers.includes(preferred)) return preferred;
-  return tiers.includes("medium") ? "medium" : tiers[0] ?? null;
+  const descriptor = modelId ? getModelById(modelId) : undefined;
+  const tiers = descriptor?.reasoningTiers ?? [];
+  return selectSupportedReasoningEffort({
+    tiers,
+    preferred,
+    advertisedDefault: descriptor?.defaultReasoningEffort,
+  });
 }
 
 /** Resolve a full model selection (provider/model/reasoning) from a model id. */

@@ -279,6 +279,8 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
@@ -6210,6 +6212,14 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.interrupt(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRecoverCodexTurn, async (
+    _event,
+    arg: AgentChatRecoverCodexTurnArgs,
+  ): Promise<AgentChatRecoverCodexTurnResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.recoverCodexTurn(arg);
   });
 
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

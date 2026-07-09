@@ -213,6 +213,10 @@ struct WorkChatSessionView: View {
   var personalAttachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
   var personalSessionUpdatesAvailable: Bool = true
+  /// Present only when the paired host advertises `chat.recoverCodexTurn`.
+  /// Keeping this optional prevents a new phone build from offering controls
+  /// that an older ADE brain cannot execute.
+  var onRecoverCodexTurn: (@MainActor (String, String, String) async throws -> String)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false

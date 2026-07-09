@@ -2000,6 +2000,63 @@ describe("ADE CLI", () => {
     });
   });
 
+  it.each([
+    ["wait", "wait"],
+    ["nudge", "steer"],
+    ["retry", "interrupt_retry_same_thread"],
+    ["resume", "restart_resume_thread"],
+  ] as const)("maps chat recovery action %s to %s", (cliAction, action) => {
+    const executePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "recover",
+      "chat-1",
+      "--turn",
+      "turn-1",
+      "--action",
+      cliAction,
+    ]));
+
+    expect(executePlan.label).toBe("chat recover");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "recoverCodexTurn",
+        args: {
+          sessionId: "chat-1",
+          turnId: "turn-1",
+          action,
+        },
+      },
+    });
+  });
+
+  it("rejects incomplete or unknown chat recovery requests", () => {
+    expect(() => buildCliPlan([
+      "chat", "recover", "chat-1", "--action", "wait",
+    ])).toThrow(/turnId/);
+    expect(() => buildCliPlan([
+      "chat", "recover", "chat-1", "--turn", "turn-1", "--action", "replace",
+    ])).toThrow(/wait, nudge, retry, or resume/);
+  });
+
+  it("filters the typed chat model inventory by provider", () => {
+    const executePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "models",
+      "--provider",
+      "codex",
+    ]));
+
+    expect(executePlan.label).toBe("chat models");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "getAvailableModels",
+        args: { provider: "codex" },
+      },
+    });
+  });
+
   it("builds chat message with an explicit routing kind", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",
@@ -3874,8 +3931,16 @@ describe("ADE CLI", () => {
     expect(chatHelp.text).toContain("ade chat message <session>");
     expect(chatHelp.text).toContain("ade chat steer <session>");
     expect(chatHelp.text).toContain("ade chat wait <session>");
+    expect(chatHelp.text).toContain("ade chat recover <session>");
+    expect(chatHelp.text).toContain("ade chat models --provider codex");
     expect(chatHelp.text).toContain("ade chat read <session>");
     expect(chatHelp.text).toContain("ade new chat --mode cli");
+
+    const chatRecoveryHelp = buildCliPlan(["help", "chat", "recover"]);
+    expect(chatRecoveryHelp.kind).toBe("help");
+    if (chatRecoveryHelp.kind !== "help") return;
+    expect(chatRecoveryHelp.text).toContain("same actions as the desktop");
+    expect(chatRecoveryHelp.text).toContain("--action resume");
 
     const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
     expect(agentSpawnHelp.kind).toBe("help");

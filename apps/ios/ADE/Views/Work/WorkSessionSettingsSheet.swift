@@ -190,7 +190,8 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
-          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+          let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
+          if !reasoningEfforts.isEmpty {
             GlassSection(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
                 ADEOptionButton(
@@ -204,7 +205,7 @@ struct WorkSessionSettingsSheet: View {
 
                 ForEach(reasoningEfforts) { effort in
                   ADEOptionButton(
-                    title: effort.effort.capitalized,
+                    title: workReasoningEffortDisplayName(effort.effort),
                     subtitle: effort.description,
                     systemImage: "brain.head.profile",
                     isSelected: selectedReasoningEffort == effort.effort
@@ -293,7 +294,8 @@ struct WorkSessionSettingsSheet: View {
         }
       }
       .onChange(of: selectedModelId) { _, _ in
-        if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+        let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
+        if !reasoningEfforts.isEmpty {
           if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
             selectedReasoningEffort = ""
           }

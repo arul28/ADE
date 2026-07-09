@@ -8,10 +8,12 @@ where the machinery lives.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/shared/modelRegistry.ts` | Single source of truth for model descriptors. Defines `MODEL_REGISTRY`, `ModelDescriptor`, resolution helpers. |
+| `apps/desktop/src/shared/modelRegistry.ts` | Single source of truth for model descriptors. Defines `MODEL_REGISTRY`, `ModelDescriptor`, model defaults (`defaultReasoningEffort`), and shared reasoning fallback/model-resolution helpers. |
 | `apps/desktop/src/shared/modelProfiles.ts` | Curated selection helpers (task routing, default pickers). |
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
+| `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
+| `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
@@ -29,7 +31,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
+| `codex` | Pinned `@openai/codex` 0.144.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -50,6 +52,7 @@ type ModelDescriptor = {
   maxOutputTokens: number;
   capabilities: { tools, vision, reasoning, streaming };
   reasoningTiers?: string[];
+  defaultReasoningEffort?: string; // runtime-recommended initial tier
   serviceTiers?: string[]; // optional provider service tiers, currently "fast"
   color: string;
   providerRoute: string;
@@ -101,6 +104,28 @@ rows. The basic Opus 4.7 row is also removed; its old aliases resolve
 to Opus 4.8, while `opus[1m]` / `opus-1m` still target Opus 4.7 1M.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
+
+### GPT-5.6 Codex models
+
+The OpenAI section is pinned in this order on every ADE model surface:
+
+1. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — default Codex model; 372k context; default effort `low`.
+2. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+3. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+
+GPT-5.5 remains selectable below them. Sol and Terra expose `low | medium |
+high | xhigh | ultra`; Luna exposes `low | medium | high | xhigh`. Desktop,
+ADE Code, and iOS label those values Light, Medium, High, Extra High, and
+Ultra. `ultra` is the multi-agent tier and carries a usage warning. Although a
+raw 0.144.0 app-server catalog may advertise `max`, Codex Desktop puts that
+tier behind a separate feature opt-in, so ADE filters it from the GPT-5.6
+picker ladder rather than presenting it as an ordinary level.
+
+`selectSupportedReasoningEffort()` centralizes fallback order: keep a valid
+explicit selection, then use the model's advertised default, then a valid
+surface fallback, then Medium/first tier. All desktop launch surfaces and
+handoffs use that helper; ADE Code and iOS mirror the same rule and prefer
+host-advertised model metadata over their static compatibility catalogs.
 
 ## Auth and credentials
 
@@ -157,8 +182,8 @@ values into the Codex app-server wire format at the JSON-RPC boundary:
 `on-request` -> `onRequest`, `untrusted` -> `unlessTrusted`,
 `on-failure` -> `onFailure`, and `workspace-write` -> `workspaceWrite`.
 Every `thread/start` and `thread/resume` call passes `{ model, cwd,
-reasoningEffort, ...codexPolicyArgs, ...codexServiceTierArgs(session),
-persistExtendedHistory: true }`. The return envelope is consumed by
+config: { model_reasoning_effort, mcp_servers? },
+...codexPolicyArgs, ...codexServiceTierArgs(session) }`. The return envelope is consumed by
 `applyCodexEffectiveThreadState`, which normalizes `approvalPolicy`,
 `sandbox` (including the camel-case aliases `readOnly` /
 `workspaceWrite` / `dangerFullAccess` that the server emits), and
@@ -174,6 +199,23 @@ policy override and the server's reading of `.codex/config.toml` wins
 over a stale persisted pair. Turns use the Codex-native `effort` key
 (`turn/start({ threadId, input, effort?, serviceTier? })`) instead of
 the lifecycle `reasoningEffort` name.
+
+The 0.144.0 server-request surface is handled in the same adapter. ADE answers
+`currentTime/read` with `{ currentTimeAt: <whole Unix seconds> }`.
+`mcpServer/elicitation/request` becomes the unified pending-input UI for form
+and URL modes; primitive/enum/multiselect fields are coerced back into the
+requested schema. `serverRequest/resolved` clears a pending card when the
+server resolves it elsewhere. Elicitations are never silently approved by
+full-auto mode, and `Always allow` is sent only when the request `_meta`
+explicitly permits persistent consent.
+
+On macOS, an explicitly enabled Codex Computer Use plugin/config adds the
+verified standalone `SkyComputerUseClient` under
+`config.mcp_servers.computer_use`. The merge is applied on fresh thread start,
+thread resume, recovery resume, and goal-control thread resume. Tracked Codex
+CLI launches/resumes receive equivalent `-c mcp_servers.computer_use.*`
+overrides. This bypasses host-process signing problems without weakening the
+MCP elicitation boundary; see [Computer-Use Backends](../computer-use/backends.md#codex-computer-use-current).
 
 For Codex and the other coding-agent paths, ADE's worktree guidance is
 write-scoped rather than read-scoped: the launched lane worktree is the
@@ -214,7 +256,7 @@ Parallel-model rows track Fast mode per slot
 fast-capable runs side-by-side can mix Fast and Standard turns. Codex
 discovery populates `serviceTiers` from app-server-reported
 `additionalSpeedTiers` / `serviceTiers` rows; the static registry
-pre-marks the GPT 5.4 / 5.5 Codex CLI entries. Cursor discovery
+pre-marks GPT-5.6 and older fast-capable Codex CLI entries. Cursor discovery
 populates `serviceTiers` from SDK/CLI parameters and folds CLI
 `*-fast` rows into their base descriptors as aliases. OpenCode maps Fast
 to the provider variant `fast` for both chat and Work CLI launches.
@@ -307,8 +349,9 @@ deny path made the model hesitate after a "denied" tool call.)
 5. The service resolves the correct adapter and spawns the runtime.
 
 For Claude, `resolveClaudeCliModel()` translates the descriptor into
-the CLI's expected model token. For Codex, `codexAppServerConfig.ts`
-builds the app-server startup options.
+the CLI's expected model token. For Codex, `agentChatService.ts` builds the
+app-server startup and thread configuration while `codexExecutable.ts` resolves
+the packaged/PATH binary.
 
 ## Model switching mid-session
 

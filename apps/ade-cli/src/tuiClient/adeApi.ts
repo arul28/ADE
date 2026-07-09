@@ -12,6 +12,8 @@ import type {
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -519,8 +521,9 @@ export async function createChatSession(args: {
         ? "auto"
         : provider === "droid"
           ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
-          : "gpt-5.5";
-  const reasoningEffort = args.reasoningEffort ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null);
+          : "gpt-5.6-sol";
+  const reasoningEffort = args.reasoningEffort
+    ?? (provider === "codex" ? descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {
     laneId: args.laneId,
     provider,
@@ -662,6 +665,17 @@ export async function respondToInput(args: {
 
 export async function interruptChat(connection: AdeCodeConnection, sessionId: string): Promise<void> {
   await connection.action("chat", "interrupt", { sessionId });
+}
+
+export async function recoverCodexTurn(
+  connection: AdeCodeConnection,
+  args: AgentChatRecoverCodexTurnArgs,
+): Promise<AgentChatRecoverCodexTurnResult> {
+  return await connection.action<AgentChatRecoverCodexTurnResult>(
+    "chat",
+    "recoverCodexTurn",
+    args,
+  );
 }
 
 /**

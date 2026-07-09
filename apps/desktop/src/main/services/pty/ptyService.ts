@@ -15,6 +15,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
@@ -3444,7 +3445,9 @@ export function createPtyService({
         : null);
     const metadataOverrides = provider === "cursor"
       ? { ...overrides, prompt: null }
-      : overrides;
+      : provider === "codex"
+        ? { ...overrides, codexComputerUse: resolveCodexComputerUseMcpConfig() }
+        : overrides;
     const metadataResumeCommand = metadata
       ? buildTrackedCliResumeCommand(metadata, metadataOverrides)
       : null;
@@ -4475,7 +4478,12 @@ export function createPtyService({
         }
 
         const resumeCommand = session.resumeMetadata
-          ? buildTrackedCliResumeCommand(session.resumeMetadata)
+          ? buildTrackedCliResumeCommand(
+              session.resumeMetadata,
+              session.resumeMetadata.provider === "codex"
+                ? { codexComputerUse: resolveCodexComputerUseMcpConfig() }
+                : {},
+            )
           : normalizeResumeCommand(session.resumeCommand, session.toolType);
         if (!resumeCommand) {
           throw new Error(`Chat CLI session '${chatSessionId}' has no resume command available.`);

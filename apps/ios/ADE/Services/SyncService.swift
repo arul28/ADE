@@ -7074,6 +7074,45 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func recoverCodexTurn(
+    sessionId: String,
+    turnId: String,
+    action: String
+  ) async throws -> AgentChatRecoverCodexTurnResult {
+    let supportedActions = Set([
+      "wait",
+      "steer",
+      "interrupt_retry_same_thread",
+      "restart_resume_thread",
+    ])
+    guard supportedActions.contains(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 24,
+        userInfo: [NSLocalizedDescriptionKey: "This Codex recovery action is not supported."]
+      )
+    }
+    guard supportsRemoteAction("chat.recoverCodexTurn") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [NSLocalizedDescriptionKey: "Recovery actions are not available on this machine version. Update ADE on the machine and reconnect."]
+      )
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: "chat.recoverCodexTurn",
+      payload: AgentChatRecoverCodexTurnRequest(
+        sessionId: sessionId,
+        turnId: turnId,
+        action: action
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatRecoverCodexTurnResult.self
+    )
+  }
+
   @discardableResult
   func steerChatSession(
     sessionId: String,

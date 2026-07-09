@@ -1136,7 +1136,10 @@ struct WorkSessionDestinationView: View {
       personalModelCatalogAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
       personalSessionUpdatesAvailable: !personalChat
-        || syncService.canInvokeRemoteAction("personalChats.updateSession")
+        || syncService.canInvokeRemoteAction("personalChats.updateSession"),
+      onRecoverCodexTurn: viewingSubagent || !syncService.supportsRemoteAction("chat.recoverCodexTurn")
+        ? nil
+        : recoverCodexTurn
     )
   }
 

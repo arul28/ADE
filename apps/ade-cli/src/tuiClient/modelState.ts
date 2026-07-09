@@ -20,7 +20,7 @@ import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
 import { normalizeProvider, providerLabel } from "./providerMetadata";
 
-export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+export const EFFORTS = ["low", "medium", "high", "xhigh", "ultra"];
 export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
 export const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 export const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
@@ -33,10 +33,10 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
   return {
     provider: "codex",
     interfaceMode: draftKind,
-    model: descriptor?.providerModelId ?? "gpt-5.5",
+    model: descriptor?.providerModelId ?? "gpt-5.6-sol",
     modelId: descriptor?.id ?? null,
-    displayName: descriptor?.displayName ?? "GPT-5.5",
-    reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
+    displayName: descriptor?.displayName ?? "GPT-5.6 Sol",
+    reasoningEffort: descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
     fastMode: false,
     permissionMode: "default",
     interactionMode: "default",
@@ -68,15 +68,23 @@ export function cliProviderForModelStateProvider(provider: AdeCodeProvider): Cli
 }
 
 function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
-  const efforts = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
   const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
+  const isGpt56CodexModel = provider === "codex" && /gpt-5\.6-(?:sol|terra|luna)/.test(modelId);
+  const efforts = model?.reasoningEfforts
+    ?.map((entry) => entry.effort)
+    .filter((effort) => Boolean(effort) && (!isGpt56CodexModel || effort !== "max")) ?? [];
+  const advertisedDefault = model?.defaultReasoningEffort?.trim().toLowerCase() ?? null;
   if (modelId.includes("fable") && efforts.includes("high")) return "high";
+  if (advertisedDefault && efforts.includes(advertisedDefault)) return advertisedDefault;
   if (efforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
   if (efforts.length) return efforts[0] ?? null;
   const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
   const descriptorEfforts = descriptor?.reasoningTiers ?? [];
   const descriptorId = `${descriptor?.id ?? ""} ${descriptor?.providerModelId ?? ""} ${descriptor?.displayName ?? ""}`.toLowerCase();
   if (descriptorId.includes("fable") && descriptorEfforts.includes("high")) return "high";
+  if (descriptor?.defaultReasoningEffort && descriptorEfforts.includes(descriptor.defaultReasoningEffort)) {
+    return descriptor.defaultReasoningEffort;
+  }
   if (descriptorEfforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
   if (descriptorEfforts.length) return descriptorEfforts[0] ?? null;
   return provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null;
@@ -147,12 +155,14 @@ export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCode
     ?? getDefaultModelDescriptor("codex");
   return {
     provider,
-    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.5",
+    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.6-sol",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
     reasoningEffort: descriptor?.id.includes("fable") && descriptor.reasoningTiers?.includes("high")
       ? "high"
-      : descriptor?.reasoningTiers?.[0] ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
+      : descriptor?.defaultReasoningEffort
+        ?? descriptor?.reasoningTiers?.[0]
+        ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
   };
 }
 
@@ -164,6 +174,7 @@ export function registryModelsForProvider(provider: AdeCodeProvider): AgentChatM
     displayName: descriptor.displayName,
     isDefault: descriptor.id === getDefaultModelDescriptor(provider)?.id,
     reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
+    defaultReasoningEffort: descriptor.defaultReasoningEffort ?? null,
     ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
     ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
     ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
@@ -273,10 +284,31 @@ export function resolveCursorCliModelForLaunch(
 export function modelReasoningEfforts(modelState: AdeCodeModelState, models: AgentChatModelInfo[]): string[] {
   const model = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
   const fromModel = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
-  if (fromModel.length) return fromModel;
   const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
-  if (descriptor?.reasoningTiers?.length) return descriptor.reasoningTiers;
+  const isGpt56CodexModel = modelState.provider === "codex"
+    && /gpt-5\.6-(?:sol|terra|luna)/i.test(`${descriptor?.providerModelId ?? ""} ${modelState.model}`);
+  const visibleEfforts = (efforts: string[]) => isGpt56CodexModel
+    ? efforts.filter((effort) => effort !== "max")
+    : efforts;
+  if (fromModel.length) return visibleEfforts(fromModel);
+  if (descriptor?.reasoningTiers?.length) return visibleEfforts(descriptor.reasoningTiers);
   return modelState.provider === "codex" ? EFFORTS : [];
+}
+
+export function reasoningEffortDisplayLabel(
+  effort: string | null | undefined,
+  modelState: Pick<AdeCodeModelState, "provider" | "model" | "modelId">,
+): string | null {
+  if (!effort) return null;
+  const isGpt56CodexModel = modelState.provider === "codex"
+    && /gpt-5\.6-(?:sol|terra|luna)/i.test(`${modelState.modelId ?? ""} ${modelState.model}`);
+  if (!isGpt56CodexModel) return effort;
+  if (effort === "low") return "Light";
+  if (effort === "medium") return "Medium";
+  if (effort === "high") return "High";
+  if (effort === "xhigh") return "Extra High";
+  if (effort === "ultra") return "Ultra";
+  return effort;
 }
 
 export function resolveCodexPreset(modelState: AdeCodeModelState): CodexPreset | "custom" {
@@ -493,8 +525,12 @@ export function buildSetupRows(args: {
     {
       kind: "reasoning",
       label: "Reasoning",
-      value: args.modelState.reasoningEffort ?? "none",
-      detail: efforts.length ? efforts.join(", ") : "not exposed by this model",
+      value: reasoningEffortDisplayLabel(args.modelState.reasoningEffort, args.modelState) ?? "none",
+      detail: args.modelState.reasoningEffort === "ultra"
+        ? "multi-agent · can use limits faster"
+        : efforts.length
+          ? efforts.map((effort) => reasoningEffortDisplayLabel(effort, args.modelState) ?? effort).join(", ")
+          : "not exposed by this model",
       disabled: !efforts.length,
       cyclable: true,
     },
