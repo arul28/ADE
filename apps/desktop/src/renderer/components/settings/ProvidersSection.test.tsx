@@ -2,6 +2,7 @@
 
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
@@ -179,6 +180,14 @@ function buildStatus(
   };
 }
 
+function renderProvidersSection() {
+  return render(
+    <MemoryRouter>
+      <ProvidersSection />
+    </MemoryRouter>,
+  );
+}
+
 describe("ProvidersSection", () => {
   const originalAde = globalThis.window.ade;
   let emitChatEvent: ((envelope: AgentChatEventEnvelope) => void) | null = null;
@@ -232,7 +241,7 @@ describe("ProvidersSection", () => {
   });
 
   it("refreshes provider status after an auth-related chat failure", async () => {
-    render(<ProvidersSection />);
+    renderProvidersSection();
     const ade = window.ade as any;
 
     await waitFor(() => {
@@ -268,7 +277,7 @@ describe("ProvidersSection", () => {
   });
 
   it("shows Ready while the bundled Claude runtime is authenticated", async () => {
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -288,7 +297,7 @@ describe("ProvidersSection", () => {
       claudeAuthReady: false,
     }));
 
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -300,7 +309,7 @@ describe("ProvidersSection", () => {
   });
 
   it("renders local runtime details and loaded local models", async () => {
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -326,7 +335,7 @@ describe("ProvidersSection", () => {
       }),
     );
 
-    const view = render(<ProvidersSection />);
+    const view = renderProvidersSection();
     const current = within(view.container);
 
     await waitFor(() => {
@@ -349,7 +358,7 @@ describe("ProvidersSection", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValue(["cursor"]);
 
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -392,7 +401,7 @@ describe("ProvidersSection", () => {
       verifiedAt: "2026-03-17T19:00:00.000Z",
     });
 
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -429,7 +438,7 @@ describe("ProvidersSection", () => {
     listApiKeysMock.mockReset();
     listApiKeysMock.mockResolvedValue(["cursor"]);
 
-    render(<ProvidersSection />);
+    renderProvidersSection();
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);

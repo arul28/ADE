@@ -463,7 +463,7 @@ describe("RunPage Advanced lane runtime drawer", () => {
     render(<RunPage />);
     fireEvent.click(screen.getByRole("button", { name: /open terminal/i }));
 
-    expect(await screen.findByText("Open a shell or run a command to attach a terminal.")).toBeTruthy();
+    expect((await screen.findAllByRole("button", { name: /new terminal/i })).length).toBeGreaterThan(0);
     expect(vi.mocked((window as unknown as { ade: { pty: { create: ReturnType<typeof vi.fn> } } }).ade.pty.create)).not.toHaveBeenCalled();
   });
 
