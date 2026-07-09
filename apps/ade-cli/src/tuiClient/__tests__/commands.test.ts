@@ -91,7 +91,7 @@ describe("commands", () => {
     }));
   });
 
-  it("routes Codex stalled-turn recovery to the ADE Code right pane", () => {
+  it("routes Codex stalled-turn recovery from Codex or orchestration-parent chats", () => {
     const parsed = parseCommand("/recover nudge turn-1");
     expect(parsed?.name).toBe("/recover");
     expect(parsed?.args).toBe("nudge turn-1");
@@ -100,7 +100,7 @@ describe("commands", () => {
       name: "/recover",
       description: "Recover the latest stalled Codex turn",
     }));
-    expect(paletteCommands("/rec", [], { provider: "claude" })).not.toContainEqual(expect.objectContaining({
+    expect(paletteCommands("/rec", [], { provider: "claude" })).toContainEqual(expect.objectContaining({
       name: "/recover",
     }));
   });

@@ -59,6 +59,7 @@ import {
   resolveDrawerPaneWidth,
   resolvePromptChatSubmitTarget,
   resolveTuiCodexRecoveryRequest,
+  resolveTuiCodexRecoveryTargetProvider,
   shouldHandlePendingQuestionKey,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
@@ -1273,6 +1274,32 @@ describe("interface draft setup", () => {
       sessionId: "child-chat",
     });
     expect(resolveTuiCodexRecoveryRequest({ input: "unknown", sessionId: "chat-1", events })).toBeNull();
+  });
+
+  it("gates recovery on the resolved Codex child instead of its visible Claude parent", () => {
+    const sessions = [
+      { sessionId: "parent-chat", provider: "claude" as const },
+      { sessionId: "child-chat", provider: "codex" as const },
+    ];
+
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "child-chat",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBe("codex");
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "parent-chat",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBe("claude");
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "child-not-yet-listed",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBeNull();
   });
 });
 

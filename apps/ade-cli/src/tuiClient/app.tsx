@@ -1698,7 +1698,7 @@ export function resolveTuiCodexRecoveryRequest(args: {
       envelope.event.type === "codex_turn_stalled" && envelope.event.turnId === explicitTurnId
     );
     const targetSessionId = matchingEnvelope?.event.type === "codex_turn_stalled"
-      ? matchingEnvelope.event.sourceSessionId ?? matchingEnvelope.sessionId
+      ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
       : args.sessionId;
     return { action, turnId: explicitTurnId, sessionId: targetSessionId };
   }
@@ -1708,10 +1708,24 @@ export function resolveTuiCodexRecoveryRequest(args: {
     return {
       action,
       turnId: envelope.event.turnId,
-      sessionId: envelope.event.sourceSessionId ?? envelope.sessionId,
+      sessionId: envelope.event.sourceSessionId?.trim() || envelope.sessionId,
     };
   }
   return null;
+}
+
+export function resolveTuiCodexRecoveryTargetProvider(args: {
+  targetSessionId: string;
+  visibleSessionId: string;
+  visibleProvider: AgentChatSessionSummary["provider"] | null | undefined;
+  sessions: ReadonlyArray<Pick<AgentChatSessionSummary, "sessionId" | "provider">>;
+}): AgentChatSessionSummary["provider"] | null {
+  const targetSession = args.sessions.find((session) => session.sessionId === args.targetSessionId);
+  if (targetSession) return targetSession.provider;
+  // An orchestration child may not have reached the TUI's session inventory yet.
+  // In that case the forwarded stalled event remains authoritative and the
+  // service performs the final Codex-provider validation.
+  return args.targetSessionId === args.visibleSessionId ? args.visibleProvider ?? null : null;
 }
 
 type ParsedAdeActionPayload =
@@ -9694,14 +9708,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         });
         return;
       }
-      if (activeSession?.provider !== "codex") {
-        setRightPane({
-          kind: "details",
-          title: "Codex recovery",
-          body: "/recover is only available for Codex chats.",
-        });
-        return;
-      }
       const request = resolveTuiCodexRecoveryRequest({
         input: args,
         sessionId,
@@ -9716,6 +9722,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             "",
             "The turn id is optional when this chat has a recent stalled-turn notice.",
           ].join("\n"),
+        });
+        return;
+      }
+      const targetProvider = resolveTuiCodexRecoveryTargetProvider({
+        targetSessionId: request.sessionId,
+        visibleSessionId: sessionId,
+        visibleProvider: activeSession?.provider,
+        sessions,
+      });
+      if (targetProvider && targetProvider !== "codex") {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: "/recover target is not a Codex chat.",
         });
         return;
       }

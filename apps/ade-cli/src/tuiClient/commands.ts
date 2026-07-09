@@ -73,7 +73,9 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/insights", description: "Generate Claude session insights through the active SDK session", placement: "chat", providers: ["claude"], category: "Model" },
   { name: "/fast", description: "Toggle Claude fast mode through the active SDK session", placement: "chat", argumentHint: "[on|off]", providers: ["claude"], category: "Model" },
   { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete]", providers: ["claude", "codex"], category: "Model" },
-  { name: "/recover", description: "Recover the latest stalled Codex turn", placement: "right", argumentHint: "<wait|nudge|retry|resume> [turn-id]", providers: ["codex"], category: "Chats" },
+  // A non-Codex orchestration parent can surface a stalled Codex child's event,
+  // so recovery availability is determined from that event's target session.
+  { name: "/recover", description: "Recover the latest stalled Codex turn", placement: "right", argumentHint: "<wait|nudge|retry|resume> [turn-id]", category: "Chats" },
   { name: "/diff", description: "Show active lane diff", placement: "right", category: "Lanes" },
   { name: "/log", description: "Show recent commits", placement: "right", category: "Lanes" },
   { name: "/reparent", description: "Move the active lane under another lane", placement: "right", argumentHint: "<parent-lane-id|parent-name> [stack-base-ref]", category: "Lanes" },
