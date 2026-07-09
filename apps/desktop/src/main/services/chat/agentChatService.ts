@@ -6651,6 +6651,7 @@ export function createAgentChatService(args: {
         taskId: event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         agentType: event.agentType ?? previous?.agentType,
+        label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
         description: event.description,
         status: "running",
@@ -6671,6 +6672,7 @@ export function createAgentChatService(args: {
         taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         agentType: event.agentType ?? previous?.agentType,
+        label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
         description: event.description?.trim() || previous?.description || "Subagent task",
         status: "running",
@@ -6698,6 +6700,7 @@ export function createAgentChatService(args: {
       taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
       agentId: event.agentId ?? previous?.agentId,
       agentType: event.agentType ?? previous?.agentType,
+      label: event.label?.trim() || previous?.label,
       parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
       description: previous?.description ?? event.summary ?? "",
       status,
@@ -9590,6 +9593,37 @@ export function createAgentChatService(args: {
 
   const markSessionIdleWithFreshCache = (managed: ManagedChatSession): void => {
     setSessionIdle(managed, { idleSinceAt: nowIso() });
+  };
+
+  const cursorDroidTurnStillActive = (managed: ManagedChatSession): boolean => {
+    const runtime = managed.runtime;
+    const runtimeBusy = (runtime?.kind === "cursor" || runtime?.kind === "droid")
+      && (runtime.busy || runtime.activeTurnId !== null);
+    const providerBusy = (managed.session.provider === "cursor" || managed.session.provider === "droid")
+      && managed.session.status === "active";
+    return Boolean(runtimeBusy || providerBusy);
+  };
+
+  const waitForCursorDroidTurnToSettleAfterInterrupt = async (
+    managed: ManagedChatSession,
+    sessionId: string,
+  ): Promise<void> => {
+    if (managed.session.provider !== "cursor" && managed.session.provider !== "droid") return;
+    const timeoutMs = 30_000;
+    const pollMs = 50;
+    const startedAt = Date.now();
+    while (cursorDroidTurnStillActive(managed)) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        logger.warn("agent_chat.interrupt_replace_settle_timeout", {
+          sessionId,
+          provider: managed.session.provider,
+          status: managed.session.status,
+          runtimeKind: managed.runtime?.kind ?? null,
+        });
+        throw new Error("Previous turn is still stopping. Try again once the chat is idle.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
   };
 
   const setSessionEnded = (managed: ManagedChatSession): void => {
@@ -26475,6 +26509,7 @@ export function createAgentChatService(args: {
 
     if (normalizedKind === "interrupt-replace") {
       await interrupt({ sessionId });
+      await waitForCursorDroidTurnToSettleAfterInterrupt(managed, sessionId);
       await sendMessage(
         {
           sessionId,

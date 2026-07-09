@@ -434,6 +434,15 @@ struct WorkChatSessionView: View {
     "chat-end"
   }
 
+  @ViewBuilder
+  var subagentOverviewSection: some View {
+    if selectedSubagentTaskId == nil && !subagentSnapshots.isEmpty {
+      WorkSubagentStrip(snapshots: subagentSnapshots)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .id("chat-subagents-strip")
+    }
+  }
+
   var hiddenTimelineCount: Int {
     timelinePresentation.hiddenCount
   }
@@ -620,10 +629,10 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
-      let runningSubagentCount = workSubagentRunningCount(subagentSnapshots)
+      let subagentCount = subagentSnapshots.count
       let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
       let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
-      let showsSubagentBadge = inputLockMessage == nil && runningSubagentCount > 0 && onOpenSubagents != nil
+      let showsSubagentBadge = inputLockMessage == nil && subagentCount > 0 && onOpenSubagents != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
       if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
         HStack(spacing: 8) {
@@ -631,7 +640,7 @@ struct WorkChatSessionView: View {
             WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
           }
           if showsSubagentBadge, let onOpenSubagents {
-            WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
+            WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
           }
           if showsPrBadge, let prBadge, let onOpenPrDetails {
             WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
@@ -758,6 +767,7 @@ struct WorkChatSessionView: View {
         ScrollView {
           VStack(alignment: .leading, spacing: 14) {
             sessionOverviewSection
+            subagentOverviewSection
             timelineSection(proxy: proxy)
             streamingStatusSection
 

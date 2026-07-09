@@ -2,7 +2,12 @@ import type {
   AgentChatEventEnvelope,
   TurnDiffSummary,
 } from "../../../shared/types";
-import { latestPlan, type ChatInfoPlan } from "../../../shared/chatSubagents";
+import {
+  latestPlan,
+  normalizeSubagentLifecycleEvent,
+  type ChatInfoPlan,
+  type NormalizedSubagentLifecycleEvent,
+} from "../../../shared/chatSubagents";
 
 export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
 export {
@@ -22,6 +27,9 @@ export type ChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;
   agentType?: string;
+  label?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
@@ -47,14 +55,7 @@ function compareIsoDesc(left: string, right: string): number {
   return Date.parse(right) - Date.parse(left);
 }
 
-type ChatSubagentEvent = Extract<
-  AgentChatEventEnvelope["event"],
-  { type: "subagent_started" | "subagent_progress" | "subagent_result" }
->;
-
-function isSubagentEvent(event: AgentChatEventEnvelope["event"]): event is ChatSubagentEvent {
-  return event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result";
-}
+type ChatSubagentEvent = NormalizedSubagentLifecycleEvent;
 
 function subagentIdentityKey(event: ChatSubagentEvent): string {
   return event.agentId ?? event.taskId;
@@ -67,8 +68,8 @@ function subagentParentKey(event: ChatSubagentEvent): string | null {
 function buildResolvedSubagentKeysByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
   const keysByParent = new Map<string, Set<string>>();
   for (const envelope of events) {
-    const event = envelope.event;
-    if (!isSubagentEvent(event)) continue;
+    const event = normalizeSubagentLifecycleEvent(envelope.event);
+    if (!event) continue;
     const parentKey = subagentParentKey(event);
     if (!parentKey) continue;
     const key = subagentIdentityKey(event);
@@ -149,13 +150,17 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   }
 
   for (const envelope of events) {
-    const event = envelope.event;
+    const event = normalizeSubagentLifecycleEvent(envelope.event);
+    if (!event) continue;
     if (event.type === "subagent_started") {
       const { key, existing } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
       snapshots.set(key, {
         taskId: event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
+        label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
@@ -179,6 +184,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
+        label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
@@ -202,6 +210,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
+        label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,
@@ -298,8 +309,9 @@ export function deriveSubagentTimeline(
 ): SubagentTimelineEntry[] {
   const entries: SubagentTimelineEntry[] = [];
   for (const envelope of events) {
-    const event = envelope.event;
-    if (event.type === "subagent_started" && event.taskId === taskId) {
+    const event = normalizeSubagentLifecycleEvent(envelope.event);
+    if (!event) continue;
+    if (event.type === "subagent_started" && (event.taskId === taskId || event.agentId === taskId)) {
       entries.push({
         timestamp: envelope.timestamp,
         type: "started",
@@ -307,7 +319,7 @@ export function deriveSubagentTimeline(
         lastToolName: null,
         status: null,
       });
-    } else if (event.type === "subagent_progress" && event.taskId === taskId) {
+    } else if (event.type === "subagent_progress" && (event.taskId === taskId || event.agentId === taskId)) {
       entries.push({
         timestamp: envelope.timestamp,
         type: "progress",
@@ -315,7 +327,7 @@ export function deriveSubagentTimeline(
         lastToolName: event.lastToolName ?? null,
         status: null,
       });
-    } else if (event.type === "subagent_result" && event.taskId === taskId) {
+    } else if (event.type === "subagent_result" && (event.taskId === taskId || event.agentId === taskId)) {
       entries.push({
         timestamp: envelope.timestamp,
         type: "result",

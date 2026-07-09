@@ -16,9 +16,9 @@ export type RuntimeEvent =
   | { type: "tool.started"; toolUseId: string; toolName: string; input: unknown; agentId?: string; parentToolUseId?: string | null; turnId?: string }
   | { type: "tool.completed"; toolUseId: string; toolName?: string; output: unknown; durationMs?: number | null; turnId?: string }
   | { type: "tool.failed"; toolUseId: string; toolName?: string; error: string; turnId?: string }
-  | { type: "subagent.started"; agentId: string; parentToolUseId?: string | null; agentType?: string; description?: string; background?: boolean; turnId?: string }
-  | { type: "subagent.progress"; agentId: string; parentToolUseId?: string | null; agentType?: string; text?: string; tokens?: number; lastToolName?: string; turnId?: string }
-  | { type: "subagent.completed"; agentId: string; parentToolUseId?: string | null; agentType?: string; summary: string; status?: "completed" | "failed" | "stopped"; usage?: RuntimeEventUsage; turnId?: string }
+  | { type: "subagent.started"; agentId: string; parentToolUseId?: string | null; agentType?: string; model?: string | null; reasoningEffort?: string | null; label?: string | null; description?: string; background?: boolean; turnId?: string }
+  | { type: "subagent.progress"; agentId: string; parentToolUseId?: string | null; agentType?: string; model?: string | null; reasoningEffort?: string | null; label?: string | null; text?: string; tokens?: number; lastToolName?: string; turnId?: string }
+  | { type: "subagent.completed"; agentId: string; parentToolUseId?: string | null; agentType?: string; model?: string | null; reasoningEffort?: string | null; label?: string | null; summary: string; status?: "completed" | "failed" | "stopped"; usage?: RuntimeEventUsage; turnId?: string }
   | { type: "teammate.idle"; teamName: string; teammateName: string; turnId?: string }
   | { type: "task.completed"; taskId: string; subject: string; teammateName?: string; teamName?: string; turnId?: string }
   | { type: "turn.completed"; turnId: string; stopReason: string; usage?: RuntimeEventUsage }
@@ -96,6 +96,9 @@ export function agentChatEventToRuntimeEvent(event: AgentChatEvent): RuntimeEven
       agentId: event.agentId ?? event.taskId,
       parentToolUseId: event.parentToolUseId ?? null,
       agentType: event.agentType,
+      model: event.model,
+      reasoningEffort: event.reasoningEffort,
+      label: event.label,
       description: event.description,
       background: event.background,
       turnId: event.turnId,
@@ -108,6 +111,9 @@ export function agentChatEventToRuntimeEvent(event: AgentChatEvent): RuntimeEven
       agentId: event.agentId ?? event.taskId,
       parentToolUseId: event.parentToolUseId ?? null,
       agentType: event.agentType,
+      model: event.model,
+      reasoningEffort: event.reasoningEffort,
+      label: event.label,
       text: event.summary,
       tokens: event.usage?.totalTokens,
       lastToolName: event.lastToolName,
@@ -121,6 +127,9 @@ export function agentChatEventToRuntimeEvent(event: AgentChatEvent): RuntimeEven
       agentId: event.agentId ?? event.taskId,
       parentToolUseId: event.parentToolUseId ?? null,
       agentType: event.agentType,
+      model: event.model,
+      reasoningEffort: event.reasoningEffort,
+      label: event.label,
       summary: event.finalSummary ?? event.summary,
       status: event.status,
       usage: event.usage,
@@ -188,6 +197,9 @@ export function runtimeEventToAgentChatEvent(event: RuntimeEvent): AgentChatEven
         agentId: event.agentId,
         parentToolUseId: event.parentToolUseId ?? null,
         agentType: event.agentType,
+        model: event.model,
+        reasoningEffort: event.reasoningEffort,
+        label: event.label,
         description: event.description,
         background: event.background,
         turnId: event.turnId,
@@ -198,6 +210,9 @@ export function runtimeEventToAgentChatEvent(event: RuntimeEvent): AgentChatEven
         agentId: event.agentId,
         parentToolUseId: event.parentToolUseId ?? null,
         agentType: event.agentType,
+        model: event.model,
+        reasoningEffort: event.reasoningEffort,
+        label: event.label,
         text: event.text,
         tokens: event.tokens,
         lastToolName: event.lastToolName,
@@ -209,6 +224,9 @@ export function runtimeEventToAgentChatEvent(event: RuntimeEvent): AgentChatEven
         agentId: event.agentId,
         parentToolUseId: event.parentToolUseId ?? null,
         agentType: event.agentType,
+        model: event.model,
+        reasoningEffort: event.reasoningEffort,
+        label: event.label,
         summary: event.summary,
         status: event.status,
         usage: event.usage,

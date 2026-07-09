@@ -680,6 +680,9 @@ export type AgentChatEvent =
       agentId: string;
       parentToolUseId?: string | null;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       description?: string;
       background?: boolean;
       turnId?: string;
@@ -689,6 +692,9 @@ export type AgentChatEvent =
       agentId: string;
       parentToolUseId?: string | null;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       text?: string;
       tokens?: number;
       lastToolName?: string;
@@ -699,6 +705,9 @@ export type AgentChatEvent =
       agentId: string;
       parentToolUseId?: string | null;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       summary: string;
       status?: "completed" | "failed" | "stopped";
       usage?: {
@@ -1215,6 +1224,7 @@ export type AgentChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;
   agentType?: string;
+  label?: string | null;
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";

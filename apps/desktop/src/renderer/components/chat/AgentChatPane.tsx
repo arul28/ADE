@@ -131,7 +131,6 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
-import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
@@ -9491,21 +9490,6 @@ export function AgentChatPane({
       <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
     </div>
   );
-  // Latest plan the runtime has proposed for this chat (plain scan — not a hook).
-  const latestPlanEvent = (() => {
-    for (let i = selectedEventsForDisplay.length - 1; i >= 0; i--) {
-      const evt = selectedEventsForDisplay[i]?.event;
-      if (evt && evt.type === "plan") return evt;
-    }
-    return null;
-  })();
-  // Re-present the runtime's plan in the info pane (Plan tab) — a calm, readable
-  // companion to the live inline plan card. We never author or mutate the plan.
-  const chatActionsPlanContent = latestPlanEvent ? (
-    <div className="min-h-0 flex-1 overflow-y-auto p-3">
-      <CodexPlanCard event={latestPlanEvent} />
-    </div>
-  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       tab={chatActionsTab}
@@ -9523,7 +9507,6 @@ export function AgentChatPane({
       ) : undefined}
       proofContent={proofTabContent}
       handoffContent={handoffTabContent}
-      planContent={chatActionsPlanContent}
       runContent={showWorkspaceChrome && laneId ? (
         <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
           <div>
@@ -10805,7 +10788,7 @@ export function AgentChatPane({
                       key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
                       events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
                       showStreamingIndicator={subagentView
-                        ? subagentTranscriptLoading && subagentEventsForDisplay.length === 0
+                        ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                         : turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"

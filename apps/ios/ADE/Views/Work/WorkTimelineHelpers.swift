@@ -2087,52 +2087,11 @@ private func eventCard(
         bullets: items,
         metadata: ["Tasks · \(progressLabel)"]
       )
-    case .subagentStarted(_, _, let agentType, _, let description, let background, let label, _, _, let turnId):
-      let title = background ? "Background agent started" : "Subagent started"
-      return WorkEventCardModel(
-        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
-        kind: "activity",
-        title: title,
-        icon: "person.2",
-        tint: .accent,
-        timestamp: envelope.timestamp,
-        body: nonEmptyWorkTimelineText(label)
-          ?? nonEmptyWorkTimelineText(agentType)
-          ?? nonEmptyWorkTimelineText(description),
-        bullets: [],
-        metadata: ["Agent started"]
-      )
-    case .subagentProgress(_, _, let agentType, _, let description, let summary, let toolName, let label, _, _, let turnId):
-      return WorkEventCardModel(
-        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
-        kind: "activity",
-        title: "Subagent running",
-        icon: "person.2.wave.2",
-        tint: .accent,
-        timestamp: envelope.timestamp,
-        body: nonEmptyWorkTimelineText(label)
-          ?? nonEmptyWorkTimelineText(agentType)
-          ?? nonEmptyWorkTimelineText(summary)
-          ?? nonEmptyWorkTimelineText(description)
-          ?? nonEmptyWorkTimelineText(toolName),
-        bullets: [],
-        metadata: ["Agent running"]
-      )
-    case .subagentResult(_, _, let agentType, _, let status, let summary, let label, _, _, let turnId):
-      let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
-      return WorkEventCardModel(
-        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
-        kind: "activity",
-        title: "Subagent \(normalized.lowercased())",
-        icon: status == "failed" ? "xmark.circle" : status == "stopped" ? "pause.circle" : "checkmark.circle",
-        tint: status == "failed" ? .danger : status == "stopped" ? .warning : .success,
-        timestamp: envelope.timestamp,
-        body: nonEmptyWorkTimelineText(label)
-          ?? nonEmptyWorkTimelineText(agentType)
-          ?? nonEmptyWorkTimelineText(summary),
-        bullets: [],
-        metadata: ["Agent \(normalized.lowercased())"]
-      )
+    case .subagentStarted, .subagentProgress, .subagentResult:
+      // Subagent lifecycle is represented by WorkSubagentStrip, the composer
+      // badge, and the Subagents drawer. Rendering every lifecycle envelope as
+      // a normal event card makes mobile chats look much longer than desktop.
+      return nil
     case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, let turnId, let error):
       let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
       return WorkEventCardModel(

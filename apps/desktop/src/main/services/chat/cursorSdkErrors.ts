@@ -1,4 +1,3 @@
-import type { LocalAgentStore } from "@cursor/sdk";
 import type { CursorSdkErrorDetail } from "./cursorSdkProtocol";
 import { classifyCursorSdkErrorText } from "./cursorSdkProtocol";
 
@@ -7,6 +6,16 @@ type CursorSdkRunLike = {
   id: string;
   requestId?: unknown;
   error?: unknown;
+};
+
+type CursorSdkRunStoreLike = {
+  runs?: {
+    get?(args: { agentId: string; runId: string }): Promise<{
+      error?: string | null;
+      requestId?: string | null;
+    } | null | undefined>;
+  };
+  getRun?(agentId: string, runId: string): Promise<unknown>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -159,20 +168,30 @@ export async function readCursorSdkRunFailureDetail(args: {
   run: CursorSdkRunLike | null;
   result?: unknown;
   extraDetail?: CursorSdkErrorDetail;
-  store?: LocalAgentStore | null;
+  store?: CursorSdkRunStoreLike | null;
   onStoreReadError?: (error: unknown, run: CursorSdkRunLike) => void;
 }): Promise<{ errorCode?: string; errorDetail?: CursorSdkErrorDetail }> {
   const { run, result, extraDetail, store, onStoreReadError } = args;
   const resultDetail = runResultErrorDetail(result);
   const runErrorDetail = sdkErrorDetail(run?.error);
   let storeDetail: CursorSdkErrorDetail | undefined;
-  if (run && store) {
+  const readRun = store?.runs?.get;
+  if (run && (readRun || store?.getRun)) {
     try {
-      const record = await store.runs.get({ agentId: run.agentId, runId: run.id });
+      const record = readRun
+        ? await readRun.call(store?.runs, { agentId: run.agentId, runId: run.id })
+        : await store?.getRun?.(run.agentId, run.id);
       if (record) {
+        const recordData = asRecord(record);
+        const errorMessage =
+          readStringField(recordData, "error")
+          ?? readStringField(recordData, "errorMessage");
+        const errorCode = readStringField(recordData, "errorCode");
+        const requestId = readStringField(recordData, "requestId");
         storeDetail = {
-          ...(record.error?.trim() ? { message: record.error.trim() } : {}),
-          ...(record.requestId?.trim() ? { requestId: record.requestId.trim() } : {}),
+          ...(errorMessage ? { message: errorMessage } : {}),
+          ...(errorCode ? { code: errorCode } : {}),
+          ...(requestId ? { requestId } : {}),
         };
       }
     } catch (error) {

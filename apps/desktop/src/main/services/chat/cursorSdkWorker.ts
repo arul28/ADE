@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type * as CursorSdkModuleTypes from "@cursor/sdk";
-import type { AgentOptions, LocalAgentStore, ModelSelection, SDKModel, SendOptions } from "@cursor/sdk";
+import type { AgentOptions, ModelSelection, SDKModel, SendOptions } from "@cursor/sdk";
 import type {
   CursorSdkAgentMode,
   CursorSdkCloudArtifactDescriptor,
@@ -44,13 +44,25 @@ type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
 type SdkRun = Awaited<ReturnType<SdkAgent["send"]>>;
 type SdkRunResult = Awaited<ReturnType<SdkRun["wait"]>>;
-type DisposableLocalAgentStore = LocalAgentStore & { dispose?: () => Promise<void> | void };
+type CursorSdkRunStoreLike = Parameters<typeof readCursorSdkRunFailureDetail>[0]["store"];
+type CursorSdkLocalPlatform = Awaited<ReturnType<CursorSdkModule["createAgentPlatform"]>>;
+type CursorSdkPlatformOptions = Parameters<CursorSdkModule["createAgentPlatform"]>[0];
+type AgentOptionsWithAdeMode = AgentOptions & {
+  mode?: CursorSdkAgentMode;
+  local?: NonNullable<AgentOptions["local"]> & {
+    enableAgentRetries?: boolean;
+  };
+};
+type SendOptionsWithAdeMode = SendOptions & {
+  mode?: CursorSdkAgentMode;
+};
 
 let sdkModule: CursorSdkModule | null = null;
 let initState: CursorSdkWorkerInit | null = null;
 let agent: SdkAgent | null = null;
 let currentRun: SdkRun | null = null;
-let localAgentStore: DisposableLocalAgentStore | null = null;
+let localAgentPlatform: CursorSdkLocalPlatform | null = null;
+let localAgentStore: CursorSdkRunStoreLike | null = null;
 let hookServer: net.Server | null = null;
 const hookWaiters = new Map<string, (decision: CursorSdkHookDecision) => void>();
 const cloudRuns = new Map<string, { run: SdkRun; agentId: string }>();
@@ -59,6 +71,10 @@ const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
 const activeRequests = new Map<string, CursorSdkWorkerRequest["type"]>();
 const reportedRequests = new Set<string>();
 let unhandledExitScheduled = false;
+
+function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
+  return store && typeof store === "object" ? store as CursorSdkRunStoreLike : null;
+}
 
 function post(message: CursorSdkWorkerResponse): void {
   if (process.send) {
@@ -187,14 +203,6 @@ async function getSdk(): Promise<CursorSdkModule> {
   return sdkModule;
 }
 
-async function openLocalAgentStore(init: CursorSdkWorkerInit): Promise<DisposableLocalAgentStore> {
-  const { SqliteLocalAgentStore } = await import("@cursor/sdk/sqlite");
-  return SqliteLocalAgentStore.open({
-    workspaceRef: init.laneRoot,
-    stateRoot: init.stateRoot,
-  });
-}
-
 function envFlag(value: string | undefined): boolean | null {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return null;
@@ -209,6 +217,11 @@ function shouldUseHttp1ForAgent(env: NodeJS.ProcessEnv = process.env): boolean {
 
 function cursorSdkAgentMode(policy: CursorSdkPermissionPolicy): CursorSdkAgentMode {
   return policy.chatMode === "agent" ? "agent" : "plan";
+}
+
+function cursorRunRequestId(run: unknown): string | undefined {
+  const value = run && typeof run === "object" ? (run as { requestId?: unknown }).requestId : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function removeSocketIfNeeded(socketPath: string): void {
@@ -398,21 +411,23 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   const hook = ensureCursorSdkUserHook({ userHomeDir: init.userHomeDir });
   await startHookServer(init);
   const sdk = await getSdk();
-  const { Agent, Cursor } = sdk;
-  localAgentStore = await openLocalAgentStore(init);
+  const platformOptions: CursorSdkPlatformOptions = {
+    workspaceRef: init.laneRoot,
+    stateRoot: init.stateRoot,
+  };
+  localAgentPlatform = await sdk.createAgentPlatform(platformOptions);
+  localAgentStore = asCursorSdkRunStoreLike(localAgentPlatform.store);
   const useHttp1ForAgent = shouldUseHttp1ForAgent();
-  Cursor.configure({ local: { store: localAgentStore, useHttp1ForAgent } });
   // Keep these fields aligned with Cursor's TypeScript SDK docs:
-  // local.cwd selects the workspace, local.store isolates durable ADE state,
+  // local.cwd selects the workspace, the platform isolates durable ADE state,
   // sandboxOptions is terminal policy, and hooks gate tool execution.
-  const agentOptions: AgentOptions = {
+  const agentOptions: AgentOptionsWithAdeMode = {
     apiKey: init.apiKey?.trim() || undefined,
     model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
     mode: cursorSdkAgentMode(init.policy),
     name: init.agentName ?? undefined,
     local: {
       cwd: init.laneRoot,
-      store: localAgentStore,
       settingSources: ["all"],
       sandboxOptions: { enabled: false },
       enableAgentRetries: true,
@@ -420,8 +435,8 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
     ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
   };
   agent = init.agentId?.trim()
-    ? await Agent.resume(init.agentId.trim(), agentOptions)
-    : await Agent.create(agentOptions);
+    ? await localAgentPlatform.resumeAgent(init.agentId.trim(), agentOptions)
+    : await localAgentPlatform.createAgent(agentOptions);
   post({
     type: "log",
     level: "debug",
@@ -432,7 +447,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       stateRoot: init.stateRoot,
       hookPath: hook.hooksPath,
       hookChanged: hook.changed,
-      localStore: "sqlite",
+      localStore: "platform",
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
     },
@@ -456,16 +471,15 @@ async function sendPrompt(payload: {
     : payload.promptText;
   const mode = payload.mode ?? cursorSdkAgentMode(initState.policy);
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
-  currentRun = await agent.send(message, {
+  const sendOptions: SendOptionsWithAdeMode = {
     model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
     mode,
     ...(idempotencyKey ? { idempotencyKey } : {}),
     local: { force: payload.force === true },
-  });
+  };
+  currentRun = await agent.send(message, sendOptions);
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
-  const sdkRequestId = typeof currentRun.requestId === "string" && currentRun.requestId.trim()
-    ? currentRun.requestId.trim()
-    : undefined;
+  const sdkRequestId = cursorRunRequestId(currentRun);
   post({
     type: "run_started",
     agentId: currentRun.agentId,
@@ -619,16 +633,7 @@ async function dispose(): Promise<void> {
     }
   }
   agent = null;
-  try {
-    sdkModule?.Cursor.configure({ local: { store: null, useHttp1ForAgent: null } });
-  } catch {
-    // ignore
-  }
-  try {
-    await localAgentStore?.dispose?.();
-  } catch {
-    // ignore
-  }
+  localAgentPlatform = null;
   localAgentStore = null;
   if (hookServer) {
     await new Promise<void>((resolve) => hookServer!.close(() => resolve())).catch(() => {});
@@ -647,7 +652,7 @@ async function handleCatalogRepositories(apiKey?: string | null): Promise<unknow
   return Cursor.repositories.list({ apiKey: apiKey?.trim() || undefined });
 }
 
-function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): AgentOptions {
+function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): AgentOptionsWithAdeMode {
   const repo: { url: string; startingRef?: string; prUrl?: string } = { url: payload.repoUrl };
   if (payload.startingRef?.trim()) repo.startingRef = payload.startingRef.trim();
   if (payload.prUrl?.trim()) repo.prUrl = payload.prUrl.trim();
@@ -664,7 +669,7 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
       : ({ type: payload.envType } as NonNullable<AgentOptions["cloud"]>["env"]);
   }
 
-  const options: AgentOptions = {
+  const options: AgentOptionsWithAdeMode = {
     apiKey: payload.apiKey?.trim() || undefined,
     name: payload.agentName?.trim() || undefined,
     cloud,
@@ -677,8 +682,8 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
   return options;
 }
 
-function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partial<AgentOptions> {
-  const options: Partial<AgentOptions> = {
+function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partial<AgentOptionsWithAdeMode> {
+  const options: Partial<AgentOptionsWithAdeMode> = {
     apiKey: payload.apiKey?.trim() || undefined,
   };
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
@@ -726,9 +731,7 @@ async function streamCloudRun(args: {
 }): Promise<unknown> {
   const { requestId, agentId, run } = args;
   const runId = run.id;
-  const sdkRequestId = typeof run.requestId === "string" && run.requestId.trim()
-    ? run.requestId.trim()
-    : undefined;
+  const sdkRequestId = cursorRunRequestId(run);
   cloudRuns.set(runId, { run, agentId });
   const statusOff = run.onDidChangeStatus((status) => {
     post({

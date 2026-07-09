@@ -2799,6 +2799,169 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testMakeWorkChatTranscriptDropsCodexSubagentChildThreadMessages() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "text",
+            "text": "Parent reply",
+            "messageId": "parent-message-1",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:01.000Z",
+          "sequence": 2,
+          "provenance": {
+            "messageId": "child-message-1",
+            "threadId": "child-thread-1",
+            "targetKind": "codex_subagent"
+          },
+          "event": {
+            "type": "text",
+            "text": "Child reply that belongs in the subagent transcript",
+            "messageId": "child-message-1",
+            "turnId": "turn-1"
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+
+    XCTAssertEqual(transcript.count, 1)
+    guard case .assistantText(let text, _, _) = transcript.first?.event else {
+      return XCTFail("Expected the parent assistant text to remain.")
+    }
+    XCTAssertEqual(text, "Parent reply")
+    XCTAssertEqual(buildWorkChatMessages(from: transcript).map(\.markdown), ["Parent reply"])
+  }
+
+  func testMakeWorkChatTranscriptDropsParentLinkedSubagentChildWork() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "subagent_started",
+            "taskId": "agent-1",
+            "agentId": "agent-1",
+            "parentToolUseId": "call_spawn_agent",
+            "description": "Inspect mobile timeline",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:01.000Z",
+          "sequence": 2,
+          "event": {
+            "type": "tool_call",
+            "tool": "functions.Read",
+            "args": { "file_path": "README.md" },
+            "itemId": "child-tool-1",
+            "parentItemId": "call_spawn_agent",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:02.000Z",
+          "sequence": 3,
+          "event": {
+            "type": "tool_result",
+            "tool": "functions.Read",
+            "result": { "content": "child output" },
+            "itemId": "child-tool-1",
+            "parentItemId": "call_spawn_agent",
+            "turnId": "turn-1",
+            "status": "completed"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:03.000Z",
+          "sequence": 4,
+          "event": {
+            "type": "approval_request",
+            "itemId": "child-tool-1",
+            "kind": "tool_call",
+            "description": "Approve child tool",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:04.000Z",
+          "sequence": 5,
+          "event": {
+            "type": "structured_question",
+            "question": "Pick a child option",
+            "itemId": "child-tool-1",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:05.000Z",
+          "sequence": 6,
+          "event": {
+            "type": "pending_input_resolved",
+            "itemId": "child-tool-1",
+            "resolution": "approved",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:06.000Z",
+          "sequence": 7,
+          "event": {
+            "type": "tool_call",
+            "tool": "functions.Read",
+            "args": { "file_path": "Package.swift" },
+            "itemId": "parent-tool-1",
+            "turnId": "turn-1"
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+
+    let toolItemIds = transcript.compactMap { envelope -> String? in
+      if case .toolCall(_, _, let itemId, _, _) = envelope.event { return itemId }
+      if case .toolResult(_, _, let itemId, _, _, _) = envelope.event { return itemId }
+      return nil
+    }
+    XCTAssertFalse(toolItemIds.contains("child-tool-1"))
+    XCTAssertTrue(toolItemIds.contains("parent-tool-1"))
+    XCTAssertFalse(transcript.contains(where: { envelope in
+      if case .approvalRequest(_, _, let itemId, _) = envelope.event { return itemId == "child-tool-1" }
+      if case .structuredQuestion(_, _, let itemId, _) = envelope.event { return itemId == "child-tool-1" }
+      if case .pendingInputResolved(let itemId, _, _) = envelope.event { return itemId == "child-tool-1" }
+      return false
+    }))
+    XCTAssertEqual(buildWorkSubagentSnapshots(from: transcript).first?.agentId, "agent-1")
+  }
+
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
     let json = """
     {
@@ -9245,7 +9408,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.durable, true)
   }
 
-  func testWorkTimelineBundlesTaskSubagentAndScheduledActivity() {
+  func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-1","description":"Inspect iOS transcript","turnId":"turn-1"}}
@@ -9264,12 +9427,14 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(activityBundles.count, 1)
+    XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
+    XCTAssertEqual(snapshot.subagentSnapshots.first?.description, "Inspect iOS transcript")
     XCTAssertEqual(activityBundles.first?.title, "Activity")
-    XCTAssertTrue(activityBundles.first?.body?.contains("3 activity updates") == true)
+    XCTAssertTrue(activityBundles.first?.body?.contains("2 activity updates") == true)
     XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
-    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(3) ?? []), [
+    XCTAssertFalse(activityBundles.first?.body?.contains("Inspect iOS transcript") == true)
+    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(2) ?? []), [
       "Tasks · 0/1 complete",
-      "Agent started",
       "Cron scheduled",
     ])
   }
@@ -9278,8 +9443,9 @@ final class ADETests: XCTestCase {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"First turn task","status":"in_progress"}]}}
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-1","description":"First turn agent","turnId":"turn-1"}}
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"todo_update","turnId":"turn-2","items":[{"id":"task-2","description":"Second turn task","status":"in_progress"}]}}
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:03.000Z","sequence":4,"event":{"type":"scheduled_work_update","id":"cron-2","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"Second turn cron","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"First turn cron","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:03.000Z","sequence":4,"event":{"type":"todo_update","turnId":"turn-2","items":[{"id":"task-2","description":"Second turn task","status":"in_progress"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:04.000Z","sequence":5,"event":{"type":"scheduled_work_update","id":"cron-2","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"Second turn cron","turnId":"turn-2"}}
     """
 
     let snapshot = buildWorkChatTimelineSnapshot(
@@ -9294,7 +9460,9 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(activityBundles.count, 2)
-    XCTAssertTrue(activityBundles[0].body?.contains("First turn agent") == true)
+    XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
+    XCTAssertTrue(activityBundles[0].body?.contains("First turn cron") == true)
+    XCTAssertFalse(activityBundles[0].body?.contains("First turn agent") == true)
     XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
   }
 
@@ -9358,6 +9526,91 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first?.latestSummary, "Parent turn completed before ADE received a final subagent status")
     XCTAssertEqual(workSubagentRunningCount(snapshots), 0)
     XCTAssertEqual(snapshots.first.map(workSubagentMeaningfulName), "Sagan")
+  }
+
+  func testWorkSubagentSnapshotsDecodeCanonicalDottedLifecycleEvents() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "subagent.started",
+            "agentId": "agent-1",
+            "agentType": "Kuhn",
+            "parentToolUseId": "call_spawn_agent",
+            "description": "Inspect provider parity",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:01.000Z",
+          "sequence": 2,
+          "event": {
+            "type": "subagent.progress",
+            "agentId": "agent-1",
+            "agentType": "Kuhn",
+            "parentToolUseId": "call_spawn_agent",
+            "text": "Reading runtime events",
+            "tokens": 42,
+            "lastToolName": "functions.Read",
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:02.000Z",
+          "sequence": 3,
+          "event": {
+            "type": "subagent.completed",
+            "agentId": "agent-1",
+            "agentType": "Kuhn",
+            "parentToolUseId": "call_spawn_agent",
+            "status": "completed",
+            "usage": { "totalTokens": 99, "toolUses": 3, "durationMs": 2000 },
+            "turnId": "turn-1"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-07T00:00:03.000Z",
+          "sequence": 4,
+          "event": {
+            "type": "subagent.progress",
+            "agentId": "agent-2",
+            "agentType": "Curie",
+            "parentToolUseId": "call_spawn_agent_2",
+            "lastToolName": "functions.Grep",
+            "turnId": "turn-1"
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+    let subagents = buildWorkSubagentSnapshots(from: transcript)
+
+    XCTAssertEqual(subagents.count, 2)
+    let completed = subagents.first { $0.taskId == "agent-1" }
+    XCTAssertEqual(completed?.agentType, "Kuhn")
+    XCTAssertEqual(completed?.parentToolUseId, "call_spawn_agent")
+    XCTAssertEqual(completed?.status, WorkSubagentSnapshot.Status.succeeded)
+    XCTAssertEqual(completed?.latestSummary, "Completed")
+    XCTAssertEqual(completed?.lastToolName, "functions.Read")
+
+    let progressOnly = subagents.first { $0.taskId == "agent-2" }
+    XCTAssertEqual(progressOnly?.agentType, "Curie")
+    XCTAssertEqual(progressOnly?.parentToolUseId, "call_spawn_agent_2")
+    XCTAssertEqual(progressOnly?.status, WorkSubagentSnapshot.Status.running)
+    XCTAssertEqual(progressOnly?.latestSummary, "functions.Grep")
+    XCTAssertEqual(progressOnly?.lastToolName, "functions.Grep")
   }
 
   func testWorkSubagentSnapshotsKeepHistoricalRemoteRosterAndMergeLocalDetails() {

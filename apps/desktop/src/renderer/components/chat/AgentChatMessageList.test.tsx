@@ -1877,6 +1877,100 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 
+  it("folds repeated subagent lifecycle events into unique full-width activity rows", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          label: "Laplace",
+          description: "Inspect the info pane",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_progress",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          label: "Laplace",
+          summary: "Mapping pane state",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-b",
+          agentId: "agent-b",
+          label: "Meitner",
+          description: "Inspect the thread",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          label: "Laplace",
+          status: "completed",
+          summary: "Pane mapped",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("Subagent updates");
+    expect(rendered.container.textContent).toContain("2 subagents");
+    expect(rendered.container.textContent).not.toContain("4 activity updates");
+    expect(rendered.container.innerHTML).toContain("w-full");
+  });
+
+  it("folds Codex parent placeholders into the resolved subagent row", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "call-spawn-1",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect the placeholder path",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-thread-1",
+          agentId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          label: "Sagan",
+          description: "Inspect the placeholder path",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const text = rendered.container.textContent ?? "";
+    expect(text).toContain("Sagan");
+    expect(text).not.toContain("2 subagents");
+    expect(text).not.toContain("Subagents spawned");
+    expect((text.match(/started/g) ?? []).length).toBe(1);
+  });
+
   it("renders an end-of-turn divider with tasks/agents and an inline files-changed panel", () => {
     const rendered = renderMessageList(
       [
@@ -1932,7 +2026,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     // The turn surfaces task progress as a compact activity row.
-    expect(rendered.container.textContent).toMatch(/task: Refine summary card/);
+    expect(rendered.container.textContent).toMatch(/Refine summary card/);
     expect(rendered.container.textContent).toMatch(/1\/2 complete/);
     expect(rendered.container.textContent).toMatch(/Inspect chat renderer/);
     expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
@@ -1951,7 +2045,9 @@ describe("AgentChatMessageList transcript rendering", () => {
   // "renders structured question blocks" tests removed: tested specific
   // CSS classes and rendering details that change with UI iterations.
 
-  it("renders completed Codex plan markdown without requiring expansion", () => {
+  it("renders completed Codex plan markdown without requiring expansion and opens chat info on card click", () => {
+    const openInfo = vi.fn();
+    window.addEventListener("ade:chat:open-info", openInfo);
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1970,11 +2066,16 @@ describe("AgentChatMessageList transcript rendering", () => {
           ].join("\n"),
         },
       },
-    ]);
+    ], { sessionId: "session-1" });
 
     expect(screen.getByText("Plan")).toBeTruthy();
     expect(screen.getByText("Inspect the app-server wiring.")).toBeTruthy();
     expect(screen.getByText("Patch the native plan handoff.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Plan/ }));
+    expect(openInfo).toHaveBeenCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({ sessionId: "session-1" }),
+    }));
+    window.removeEventListener("ade:chat:open-info", openInfo);
   });
 
   it("does not duplicate completed Codex plan markdown when structured steps exist", () => {
@@ -2231,7 +2332,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(rendered.container.textContent).toMatch(/task: Implement calmer transcript rows/);
+    expect(rendered.container.textContent).toMatch(/Implement calmer transcript rows/);
     expect(rendered.container.textContent).toMatch(/1\/2 complete/);
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
     expect(rendered.container.textContent).toMatch(/1 file changed/);
@@ -2242,7 +2343,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
-  it("shows the latest turn task rollup alongside model attribution", () => {
+  it("shows the latest turn task update alongside model attribution", () => {
     const rendered = renderMessageList([
       {
         sessionId: "session-1",
@@ -2267,8 +2368,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(rendered.container.textContent).toMatch(/task: Investigate Claude turn status/);
-    expect(rendered.container.textContent).toMatch(/1\/1 complete/);
+    expect(rendered.container.textContent).toMatch(/Investigate Claude turn status/);
+    expect(rendered.container.textContent).toMatch(/completed/);
     // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThanOrEqual(1);
   });

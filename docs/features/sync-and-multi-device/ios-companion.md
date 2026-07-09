@@ -104,7 +104,9 @@ apps/ios/
 │   │   │                            # bounce the URL to a paired host via the
 │   │   │                            # deeplinks.open sync command.
 │   ├── Models/
-│   │   └── RemoteModels.swift       # Codable structs mirroring shared types
+│   │   └── RemoteModels.swift       # Codable structs mirroring shared types,
+│   │                                # including legacy and dotted subagent
+│   │                                # lifecycle chat events
 │   ├── Resources/
 │   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
@@ -183,7 +185,9 @@ apps/ios/
 │   │   │                            #   tool-call / work-log / command /
 │   │   │                            #   file-change transcript cards plus
 │   │   │                            #   Chat Info schedule popup/sheet for
-│   │   │                            #   scheduled_work_update snapshots),
+│   │   │                            #   scheduled_work_update snapshots,
+│   │   │                            #   plus subagent strip / badge / drawer
+│   │   │                            #   parity for subagent lifecycle),
 │   │   │                            # WorkPlanComposerViews (plan-approval
 │   │   │                            #   strip + review sheet),
 │   │   │                            # WorkComposerTypedTriggers (UITextView
@@ -1359,6 +1363,15 @@ reflected in the phone's UI on the next descriptor read.
   provider action metadata (`query` / `queries`, `title`, `url`,
   `snippet`); Work keeps those in the enriched web-search tool card so
   URLs are visible without duplicating the same event as a second row.
+- **Subagent lifecycle is rendered as chat structure, not event spam.**
+  `RemoteModels.swift` accepts both legacy `subagent_started` /
+  `subagent_progress` / `subagent_result` events and the canonical dotted
+  `subagent.started` / `subagent.progress` / `subagent.completed` forms.
+  `WorkChatSessionView` surfaces the roster through the subagent overview
+  strip and composer badge, `WorkChatRichCardViews` owns the popup/drawer
+  presentation, and `WorkTimelineHelpers` suppresses individual lifecycle
+  cards so mobile chats match the desktop transcript instead of duplicating
+  every subagent tick.
 - **Long Work chats must keep row work and root polling cheap.** The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible

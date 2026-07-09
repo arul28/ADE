@@ -4,6 +4,7 @@ import {
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import { normalizeSubagentLifecycleEvent } from "../../../shared/chatSubagents";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -126,6 +127,29 @@ export type ChatTranscriptGroupedEnvelope = {
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
+type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
+
+type CollapseTranscriptContext = {
+  latestTodoItemsByTurn: Map<string, TodoUpdateTranscriptEvent["items"]>;
+};
+
+function todoSnapshotKey(turnId: string | null): string {
+  return turnId ?? "__global__";
+}
+
+function changedTodoItems(
+  previous: TodoUpdateTranscriptEvent["items"] | undefined,
+  next: TodoUpdateTranscriptEvent["items"],
+): TodoUpdateTranscriptEvent["items"] {
+  if (!previous) return next;
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  return next.filter((item) => {
+    const before = previousById.get(item.id);
+    return !before
+      || before.description !== item.description
+      || before.status !== item.status;
+  });
+}
 
 function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
   const hasIncomingSteps = incoming.steps.length > 0;
@@ -625,6 +649,7 @@ export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
   sequence: number,
+  context?: CollapseTranscriptContext,
 ): void {
   const { event } = envelope;
 
@@ -774,27 +799,14 @@ export function appendCollapsedChatTranscriptEvent(
 
   if (event.type === "todo_update") {
     const nextTurn = event.turnId ?? null;
-    if (nextTurn !== null) {
-      const matchIndex = [...rows]
-        .reverse()
-        .findIndex((candidate) =>
-          candidate.event.type === "todo_update"
-          && (candidate.event.turnId ?? null) === nextTurn,
-        );
-      if (matchIndex >= 0) {
-        const actualIndex = rows.length - 1 - matchIndex;
-        rows[actualIndex] = {
-          ...rows[actualIndex]!,
-          timestamp: envelope.timestamp,
-          event,
-        };
-        return;
-      }
-    }
+    const snapshotKey = todoSnapshotKey(nextTurn);
+    const displayItems = changedTodoItems(context?.latestTodoItemsByTurn.get(snapshotKey), event.items);
+    context?.latestTodoItemsByTurn.set(snapshotKey, event.items);
+    if (!displayItems.length) return;
     rows.push({
       key: buildRenderKey(envelope, sequence),
       timestamp: envelope.timestamp,
-      event,
+      event: displayItems.length === event.items.length ? event : { ...event, items: displayItems },
     });
     return;
   }
@@ -818,6 +830,16 @@ export function appendCollapsedChatTranscriptEvent(
         return;
       }
     }
+  }
+
+  const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
+  if (normalizedSubagentEvent && normalizedSubagentEvent !== event) {
+    rows.push({
+      key: buildRenderKey(envelope, sequence),
+      timestamp: envelope.timestamp,
+      event: normalizedSubagentEvent,
+    });
+    return;
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
@@ -883,8 +905,9 @@ export function appendCollapsedChatTranscriptEvent(
 
 export function collapseChatTranscriptEvents(events: AgentChatEventEnvelope[]): ChatTranscriptRenderEnvelope[] {
   const rows: ChatTranscriptRenderEnvelope[] = [];
+  const context: CollapseTranscriptContext = { latestTodoItemsByTurn: new Map() };
   for (let index = 0; index < events.length; index += 1) {
-    appendCollapsedChatTranscriptEvent(rows, events[index]!, index);
+    appendCollapsedChatTranscriptEvent(rows, events[index]!, index, context);
   }
   return rows;
 }
@@ -899,6 +922,10 @@ export function collapseChatTranscriptEventsIncremental(
   }
 
   if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
+    return collapseChatTranscriptEvents(events);
+  }
+
+  if (events.slice(previousEvents.length).some((envelope) => envelope.event.type === "todo_update")) {
     return collapseChatTranscriptEvents(events);
   }
 

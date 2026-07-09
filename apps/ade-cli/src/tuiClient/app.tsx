@@ -76,6 +76,7 @@ import {
   listTerminalSessions,
   listLanes,
   listPrsByLane,
+  messageChatSession,
   navigateDesktop,
   newestSession,
   normalizeChatTerminalSession,
@@ -8614,38 +8615,50 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice("Staged message — sends after the current turn.", "info");
       }
     };
-    const activeTurnVisible = (
-      (streamingBySessionIdRef.current[sessionId] === true)
-      || sessions.some((session) => session.sessionId === sessionId && session.status === "active")
-    );
-    if (activeTurnVisible) {
-      setSessionStreaming(sessionId, true);
+    const legacySendOrSteer = async (): Promise<void> => {
+      const activeTurnVisible = (
+        (streamingBySessionIdRef.current[sessionId] === true)
+        || sessions.some((session) => session.sessionId === sessionId && session.status === "active")
+      );
+      if (activeTurnVisible) {
+        try {
+          await steerActiveTurn();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/No active turn to steer/i.test(message)) throw error;
+          try {
+            await sendChatMessage(conn, sessionId, text, attachments);
+          } catch (sendError) {
+            const sendMessage = sendError instanceof Error ? sendError.message : String(sendError);
+            if (!/turn is already active|already active/i.test(sendMessage)) throw sendError;
+            await steerActiveTurn();
+          }
+        }
+        return;
+      }
       try {
-        await steerActiveTurn();
+        await sendChatMessage(conn, sessionId, text, attachments);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!/No active turn to steer/i.test(message)) throw error;
-        try {
-          await sendChatMessage(conn, sessionId, text, attachments);
-        } catch (sendError) {
-          const sendMessage = sendError instanceof Error ? sendError.message : String(sendError);
-          if (!/turn is already active|already active/i.test(sendMessage)) throw sendError;
+        if (/turn is already active|already active/i.test(message)) {
           await steerActiveTurn();
+          return;
         }
+        throw error;
       }
-      recordPromptHistoryForSession(sessionId, text);
-      await refreshState();
-      return;
-    }
+    };
     setSessionStreaming(sessionId, true);
     try {
-      await sendChatMessage(conn, sessionId, text, attachments);
+      const result = await messageChatSession(conn, sessionId, text, "auto", attachments);
+      if (result.delivery === "queued") {
+        addNotice("Staged message — sends after the current turn.", "info");
+      }
       recordPromptHistoryForSession(sessionId, text);
       await refreshState();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/turn is already active|already active/i.test(message)) {
-        await steerActiveTurn();
+      if (/messageSession is not available|unknown action|unknown ADE action|not found/i.test(message)) {
+        await legacySendOrSteer();
         recordPromptHistoryForSession(sessionId, text);
         await refreshState();
         return;
