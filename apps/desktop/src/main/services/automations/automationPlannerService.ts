@@ -678,7 +678,10 @@ function normalizeDraft(args: {
   const normalizedActions: AutomationAction[] = [];
   const MAX_TIMEOUT_MS = 30 * 60_000;
   const DEFAULT_TIMEOUT_MS = 5 * 60_000;
-  const draftActions = Array.isArray(args.draft.legacyActions)
+  // Prefer legacyActions only when it actually carries a chain: authors that
+  // populate `actions` while inheriting an empty legacyActions array (e.g.
+  // template drafts) must not have their chain shadowed by the empty array.
+  const draftActions = Array.isArray(args.draft.legacyActions) && args.draft.legacyActions.length > 0
     ? args.draft.legacyActions
     : Array.isArray((args.draft as any).actions)
       ? (args.draft as any).actions

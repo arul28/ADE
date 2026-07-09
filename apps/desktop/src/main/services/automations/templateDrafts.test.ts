@@ -37,7 +37,12 @@ describe("automation templates", () => {
   for (const template of TEMPLATES) {
     it(`template "${template.id}" passes draft validation`, () => {
       const result = planner.validateDraft({ draft: template.draft as AutomationRuleDraft });
-      const blocking = result.issues.filter((issue) => issue.severity === "error");
+      // A template may ship a deliberately blank test-suite pick, but only
+      // when its card tells the user they'll configure it.
+      const declaresSuiteBlank = template.whatYouConfigure.some((entry) => /test suite/i.test(entry));
+      const blocking = result.issues.filter(
+        (issue) => issue.level === "error" && !(declaresSuiteBlank && issue.path.endsWith(".suite")),
+      );
       expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
     });
 

@@ -33,7 +33,7 @@ export type AutomationTemplate = {
 
 const BASE: Pick<
   Omit<AutomationRuleDraft, "id">,
-  "enabled" | "mode" | "executor" | "reviewProfile" | "toolPalette" | "contextSources" | "outputs" | "verification" | "legacyActions"
+  "enabled" | "mode" | "executor" | "reviewProfile" | "toolPalette" | "contextSources" | "outputs" | "verification"
 > = {
   enabled: true,
   mode: "review",
@@ -43,7 +43,6 @@ const BASE: Pick<
   contextSources: [],
   outputs: { disposition: "comment-only", createArtifact: true },
   verification: { verifyBeforePublish: false, mode: "intervention" },
-  legacyActions: [],
 };
 
 const SONNET = { modelId: "anthropic/claude-sonnet-5", thinkingLevel: "medium" as const };
