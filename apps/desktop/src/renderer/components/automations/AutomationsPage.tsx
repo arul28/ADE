@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { AutomationsWorkspace } from "./AutomationsWorkspace";
 import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
+import { takeTemplateDraft } from "./templates/draftHandoff";
 
 type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
@@ -71,9 +72,16 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     console.info(`renderer.page ${JSON.stringify({ page: "automations" })}`);
   }, []);
 
-  // Templates screen navigates here with { draft } in location state to seed a new rule.
+  // The templates screen stashes its draft in the module mailbox (the tab
+  // host strips location.state — see templates/draftHandoff.ts). Keep the
+  // location.state read as a fallback for direct navigations outside the host.
   useEffect(() => {
     if (!active) return;
+    const stashed = takeTemplateDraft();
+    if (stashed) {
+      setPendingDraft(stashed);
+      return;
+    }
     const state = location.state as { draft?: AutomationRuleDraft } | null;
     if (state?.draft) {
       setPendingDraft(state.draft);

@@ -4,6 +4,7 @@ import type { AutomationRuleDraft } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { AutomationsProductionGate } from "./AutomationsPage";
 import { TemplateGallery } from "./templates/TemplateGallery";
+import { stashTemplateDraft } from "./templates/draftHandoff";
 
 export function AutomationsTemplatesPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
@@ -26,7 +27,10 @@ export function AutomationsTemplatesPage({ active = true }: { active?: boolean }
         <div className="flex-1 min-h-0 overflow-hidden">
           <TemplateGallery
             onUseTemplate={(draft) => {
-              navigate("/automations", { state: { draft: draft as AutomationRuleDraft } });
+              // The tab host strips location.state (see draftHandoff.ts), so
+              // the draft travels through the module mailbox instead.
+              stashTemplateDraft(draft as AutomationRuleDraft);
+              navigate("/automations");
             }}
           />
         </div>
