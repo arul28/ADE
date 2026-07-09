@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improved chat peer-message normalization, handoff notes, Codex goal state, and subagent activity parity across desktop, ADE Code, and mobile.
+- Improved session stale, stopped, waiting, and running state handling across desktop and iOS Work surfaces.
 - Improved iOS Work and Linear flows with refreshed mobile-created sessions, restored start-chat keyboard focus, and more reliable Linear backlog loading.
 
 ### Fixed
