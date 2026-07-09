@@ -209,6 +209,10 @@ struct WorkChatSessionView: View {
   /// still says idle while chat events are already streaming — without it
   /// the chat renders output with no stop button or working indicator.
   var liveTurnActiveHint: Bool? = nil
+  var isPersonalChat: Bool = false
+  var personalAttachmentsAvailable: Bool = true
+  var personalModelCatalogAvailable: Bool = true
+  var personalSessionUpdatesAvailable: Bool = true
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -724,7 +728,7 @@ struct WorkChatSessionView: View {
         composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
         canSend: canSend && !composerSettingMutationInFlight,
-        canUploadAttachments: isLive,
+        canUploadAttachments: isLive && (!isPersonalChat || personalAttachmentsAvailable),
         sending: sending && !sendWillQueue,
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
@@ -736,8 +740,16 @@ struct WorkChatSessionView: View {
         onInterrupt: {
           await runSessionAction(onInterrupt)
         },
-        onOpenModelPicker: !chatSummaryContext.isAvailable ? nil : { modelPickerPresented = true },
-        onSelectRuntimeMode: !chatSummaryContext.isAvailable ? nil : { mode in
+        onOpenModelPicker: !chatSummaryContext.isAvailable
+          || (isPersonalChat && (
+            !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
+          ))
+          ? nil
+          : { modelPickerPresented = true },
+        onSelectRuntimeMode: !chatSummaryContext.isAvailable
+          || (isPersonalChat && !personalSessionUpdatesAvailable)
+          ? nil
+          : { mode in
           runComposerSettingMutation {
             await onSelectRuntimeMode(mode)
           }
@@ -790,7 +802,8 @@ struct WorkChatSessionView: View {
               modelId: chatSummaryContext.currentModelId,
               modelLabel: chatSummaryContext.modelLabel,
               laneId: session.laneId,
-              requestedCwd: chatSummaryContext.requestedCwd
+              requestedCwd: chatSummaryContext.requestedCwd,
+              isPersonalChat: isPersonalChat
             )
           )
         }
@@ -1028,6 +1041,7 @@ struct WorkChatSessionView: View {
             currentReasoningEffort: chatSummaryContext.reasoningEffort,
             currentCodexFastMode: chatSummaryContext.effectiveFastMode,
             lanes: lanes,
+            commandScope: isPersonalChat ? .personal : .project,
             isBusy: modelUpdateInFlight,
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
@@ -1718,6 +1732,7 @@ private struct WorkChatComposerDraftInput: View {
         canCompose: canCompose,
         placeholder: composerPlaceholder,
         onPasteImages: { images in
+          guard canUploadAttachments else { return }
           workChatInputPasteImages(images, into: $inputAttachments)
         }
       )
@@ -1736,7 +1751,7 @@ private struct WorkChatComposerDraftInput: View {
         if !isDictating {
           WorkChatAttachmentAddButton(
             attachments: $inputAttachments,
-            disabled: !canCompose || settingsMutationInFlight
+            disabled: !canCompose || !canUploadAttachments || settingsMutationInFlight
           )
 
           WorkComposerChipStrip(

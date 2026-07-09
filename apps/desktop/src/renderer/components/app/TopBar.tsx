@@ -845,7 +845,13 @@ function ProjectTabIcon({
   );
 }
 
-export function TopBar() {
+export function TopBar({
+  standaloneChatsActive = false,
+  onCloseStandaloneChats,
+}: {
+  standaloneChatsActive?: boolean;
+  onCloseStandaloneChats?: () => void;
+} = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -1936,7 +1942,8 @@ export function TopBar() {
       >
         {openRemoteProjectTabs.length > 0 ||
         projectTabs.length > 0 ||
-        isNewTabOpen ? (
+        isNewTabOpen ||
+        standaloneChatsActive ? (
           <>
             {openRemoteProjectTabs.map((remoteTab) => {
               const isCurrentRemote = remoteBinding?.key === remoteTab.key;
@@ -2201,7 +2208,29 @@ export function TopBar() {
                 </div>
               );
             })}
-            {isNewTabOpen && (
+            {standaloneChatsActive ? (
+              <div
+                className={cn(
+                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
+                  "font-semibold transition-[background-color,color,border-color,box-shadow] duration-150",
+                )}
+                data-state="active"
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              >
+                <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
+                <button
+                  type="button"
+                  className="ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  data-variant="ghost"
+                  onClick={onCloseStandaloneChats}
+                  title="Close chats"
+                >
+                  <X size={12} weight="regular" />
+                </button>
+              </div>
+            ) : null}
+            {isNewTabOpen && !standaloneChatsActive && (
               <div
                 className={cn(
                   "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",

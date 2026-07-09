@@ -1030,7 +1030,7 @@ export type OrchestrationSessionFields = {
   orchestrationBundlePath?: string;
 };
 export type AgentChatIdentityKey = "cto";
-export type AgentChatSurface = "work" | "automation";
+export type AgentChatSurface = "work" | "automation" | "personal";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;

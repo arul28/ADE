@@ -121,6 +121,7 @@
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
+		F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000002 /* PersonalChatsScreen.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		AC2200000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
@@ -371,6 +372,7 @@
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
+		F40000000000000000000002 /* PersonalChatsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PersonalChatsScreen.swift; path = ADE/Views/PersonalChats/PersonalChatsScreen.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
 		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
@@ -584,6 +586,7 @@
 			children = (
 				02B9E655310A24835B5CFC3B /* Components */,
 				HB00000000000000000000F1 /* Hub */,
+				F40000000000000000000003 /* PersonalChats */,
 				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
@@ -608,6 +611,14 @@
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
 			);
 			name = Hub;
+			sourceTree = "<group>";
+		};
+		F40000000000000000000003 /* PersonalChats */ = {
+			isa = PBXGroup;
+			children = (
+				F40000000000000000000002 /* PersonalChatsScreen.swift */,
+			);
+			name = PersonalChats;
 			sourceTree = "<group>";
 		};
 		D30000000000000000000004 /* AttentionDrawer */ = {
@@ -1208,6 +1219,7 @@
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
+				F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */,
 				B10000000000000000000002 /* LaneAttachSheet.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
 				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,

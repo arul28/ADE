@@ -23,6 +23,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `$ADE_HOME/sock/ade.sock` | ADE brain local endpoint (POSIX). |
 | `\\.\pipe\ade-runtime` | ADE runtime named-pipe endpoint (Windows). |
 | `$ADE_HOME/projects.json` | Project catalog. |
+| `$ADE_HOME/personal-chats/` | Machine-owned projectless chat runtime state, hidden workspace, transcripts, and attachments. |
 | `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/agent-skills/` | Bundled, version-locked ADE agent skills. Desktop remote bootstrap uploads this beside the remote runtime; CLI launch then re-seeds ADE-managed skills into runtime-native home skill directories. |
@@ -182,6 +183,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get
 projects.list    projects.add      projects.remove   projects.touch
+personalChats.call                 personalChats.streamEvents
 runtimeEvents.subscribe   runtimeEvents.unsubscribe
 sync.getStatus            sync.refreshDiscovery
 sync.listDevices          sync.updateLocalDevice
@@ -195,6 +197,17 @@ sync.getRequireDpop       sync.setRequireDpop
 ```
 
 `runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
+
+`personalChats.call` dispatches the machine action registry advertised as
+`capabilities.personalChats` during initialization. It owns chats outside every
+project and includes lifecycle, model, input/approval, attachment, and personal
+terminal actions. Typed CLI commands use `ade chat … --personal`; use
+`ade chat actions --personal` and `ade chat action --personal <action>
+--input-json '{...}'` for the complete low-level registry. These commands require
+the machine brain (which can run headlessly without desktop UI) and also work
+through the `ade rpc --stdio` transport used by remote desktops. The one-shot
+global `--headless` mode is not supported because its in-process runtime exits
+with the command.
 
 **Project-scoped** — every other request must carry `params.projectId`. `ade/actions/call` (and the legacy ADE action / tool catalog underneath it) is dispatched into the per-project `ProjectScope` returned by `ProjectScopeRegistry.get(projectId)`.
 
@@ -266,6 +279,11 @@ ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --
 ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431
+ade chat list --personal --text
+ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
+ade chat steer personal-session-id --personal --text "focus on the tradeoffs"
+ade chat actions --personal --text
+ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
 ade linear comment "Pushed a fix; CI running"          # write back through the attached runtime
 ade linear set-state ENG-431 <state-id>

@@ -2205,6 +2205,189 @@ describe("ADE CLI", () => {
     ).toThrow(/Use either --include-archived or --no-archived/);
   });
 
+  it("builds complete machine-only personal chat plans without project registration", async () => {
+    const list = expectExecutePlan(buildCliPlan([
+      "chat",
+      "list",
+      "--personal",
+      "--no-archived",
+    ]));
+    expect(list).toMatchObject({
+      machineOnly: true,
+      label: "personal chat list",
+      formatter: "chat-list",
+      steps: [{
+        method: "personalChats.call",
+        params: { action: "list", args: { includeArchived: false } },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(list)).toBe(false);
+
+    const create = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--prompt",
+      "Plan a trip",
+    ]));
+    expect(create.steps).toEqual([{
+      key: "result",
+      method: "personalChats.call",
+      params: {
+        action: "create",
+        args: {
+          provider: "codex",
+          model: "openai/gpt-5.5",
+          modelId: "openai/gpt-5.5",
+          title: null,
+          reasoningEffort: null,
+          permissionMode: null,
+          kickoffText: "Plan a trip",
+        },
+      },
+    }]);
+
+    const send = expectExecutePlan(buildCliPlan([
+      "chat",
+      "send",
+      "personal-1",
+      "--personal",
+      "--text",
+      "hello",
+    ]));
+    expect(send.steps[0]).toMatchObject({
+      method: "personalChats.call",
+      params: {
+        action: "send",
+        args: { sessionId: "personal-1", text: "hello" },
+      },
+    });
+
+    const actions = expectStaticPlan(buildCliPlan(["chat", "actions", "--personal"]));
+    expect(actions.value).toMatchObject({
+      actions: expect.arrayContaining([
+        expect.objectContaining({ name: "personalChats.create" }),
+        expect.objectContaining({ name: "personalChats.saveTempAttachment" }),
+        expect.objectContaining({ name: "personalChats.terminalDispose" }),
+      ]),
+    });
+    expect(formatOutput(actions.value, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    }, actions.formatter)).toContain(
+      "ade chat action --personal <action>",
+    );
+
+    const rawTerminalDispose = expectExecutePlan(buildCliPlan([
+      "chat",
+      "action",
+      "--personal",
+      "terminalDispose",
+      "--input-json",
+      '{"ptyId":"pty-1","sessionId":"terminal-1"}',
+    ]));
+    expect(rawTerminalDispose.steps[0]).toEqual({
+      key: "result",
+      method: "personalChats.call",
+      params: {
+        action: "terminalDispose",
+        args: { ptyId: "pty-1", sessionId: "terminal-1" },
+      },
+    });
+
+    const steer = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "personal-1",
+      "--personal",
+      "--text",
+      "focus",
+      "--image-url",
+      "https://example.test/image.png",
+    ]));
+    expect(steer.steps[0]).toMatchObject({
+      params: {
+        action: "steer",
+        args: {
+          sessionId: "personal-1",
+          text: "focus",
+          attachments: [{
+            type: "image-url",
+            url: "https://example.test/image.png",
+            path: "https://example.test/image.png",
+          }],
+        },
+      },
+    });
+
+    const models = expectExecutePlan(buildCliPlan([
+      "chat",
+      "models",
+      "--personal",
+      "--provider",
+      "codex",
+    ]));
+    expect(models.steps[0]).toMatchObject({
+      params: { action: "models", args: { provider: "codex" } },
+    });
+
+    const update = expectExecutePlan(buildCliPlan([
+      "chat",
+      "update",
+      "personal-1",
+      "--personal",
+      "--title",
+      "Trip planning",
+      "--reasoning-effort",
+      "high",
+      "--fast",
+    ]));
+    expect(update.steps[0]).toMatchObject({
+      params: {
+        action: "updateSession",
+        args: {
+          sessionId: "personal-1",
+          title: "Trip planning",
+          reasoningEffort: "high",
+          fastMode: true,
+        },
+      },
+    });
+
+    expect(() => buildCliPlan([
+      "chat",
+      "list",
+      "--personal",
+      "--lane",
+      "lane-1",
+    ])).toThrow(/cannot be combined with --lane/);
+    expect(() => buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "codex",
+    ])).toThrow(/model is required/);
+    expect(() => buildCliPlan([
+      "chat",
+      "action",
+      "--personal",
+      "not-real",
+    ])).toThrow(/Unknown personal chat action/);
+    await expect(runCli([
+      "--headless",
+      "chat",
+      "list",
+      "--personal",
+    ])).rejects.toThrow(/require the machine-owned ADE brain/);
+  });
+
   it("requires a chat session id for chat show", () => {
     expect(() => buildCliPlan(["chat", "show"])).toThrow(
       /sessionId is required/,

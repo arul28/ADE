@@ -3133,6 +3133,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     platform: "darwin",
   };
 
+  const browserMockPersonalChats: any[] = [];
+
   (window as any).ade = {
     app: {
       ping: resolved("pong" as const),
@@ -4454,6 +4456,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       getDelta: resolvedArg(null),
       onChanged: noop,
+    },
+    personalChats: {
+      call: async ({ action, args = {} }: any) => {
+        let result: any = null;
+        if (action === "list") result = [...browserMockPersonalChats];
+        if (action === "modelCatalog") result = { groups: [], fetchedAt: new Date().toISOString() };
+        if (action === "models") result = [];
+        if (action === "create") {
+          const now = new Date().toISOString();
+          result = {
+            sessionId: `personal-browser-${Date.now()}`,
+            title: args.title ?? null,
+            goal: null,
+            summary: null,
+            lastOutputPreview: null,
+            provider: args.provider ?? "codex",
+            model: args.model ?? DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+            modelId: args.modelId ?? DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+            status: "idle",
+            surface: "personal",
+            permissionMode: args.permissionMode ?? "default",
+            reasoningEffort: args.reasoningEffort ?? null,
+            fastMode: args.fastMode === true,
+            createdAt: now,
+            updatedAt: now,
+            lastActivityAt: now,
+          };
+          browserMockPersonalChats.unshift(result);
+        }
+        if (action === "getSummary") result = browserMockPersonalChats.find((chat) => chat.sessionId === args.sessionId) ?? null;
+        if (action === "getEventHistory") result = { sessionId: args.sessionId ?? "", events: [], truncated: false, sessionFound: true };
+        if (action === "getEventHistoryPage") result = { sessionId: args.sessionId ?? "", events: [], nextBeforeOffset: null, hasMore: false };
+        if (action === "updateSession") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) Object.assign(chat, args, { updatedAt: new Date().toISOString() });
+          result = chat ?? null;
+        }
+        if (action === "terminalCreate") {
+          const id = `personal-terminal-${Date.now()}`;
+          result = { ptyId: id, sessionId: id, pid: null };
+        }
+        if (action === "terminalWrite") result = { ok: true };
+        if (action === "terminalResize") result = { ok: true, cols: args.cols, rows: args.rows };
+        if (action === "terminalDispose") result = { disposed: true, reason: "disposed" };
+        if (action === "archive" || action === "delete") {
+          const index = browserMockPersonalChats.findIndex((chat) => chat.sessionId === args.sessionId);
+          if (index >= 0) browserMockPersonalChats.splice(index, 1);
+          result = { ok: true };
+        }
+        return { action, result };
+      },
+      streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
     },
     agentChat: {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),

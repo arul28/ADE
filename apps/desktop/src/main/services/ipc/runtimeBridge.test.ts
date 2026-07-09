@@ -1122,6 +1122,61 @@ describe("registerRuntimeBridge", () => {
       { retryOnConnectionError: false },
     );
   });
+
+  it("routes personal chat calls through the local machine runtime without a project", async () => {
+    const callSync = vi.fn().mockResolvedValue({ action: "list", result: [] });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callSync } as any,
+      getWindowSession: () => ({ windowId: 7, project: null, binding: null }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.personalChatsCall)?.(eventForSender(), {
+        action: "list",
+        args: { includeArchived: false },
+      }),
+    ).resolves.toEqual({ action: "list", result: [] });
+    expect(callSync).toHaveBeenCalledWith("personalChats.call", {
+      action: "list",
+      args: { includeArchived: false },
+    });
+    expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
+  });
+
+  it("routes personal chat event polling to the bound remote machine", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallMachineForTargetMock.mockResolvedValue({ events: [], nextCursor: 12, hasMore: false });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/remote", displayName: "Remote" } as any,
+        binding: {
+          kind: "remote",
+          key: "remote:target-1:project-1",
+          targetId: "target-1",
+          projectId: "project-1",
+          rootPath: "/remote",
+          displayName: "Remote",
+          runtimeName: "Remote",
+        },
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.personalChatsStreamEvents)?.(eventForSender(), { cursor: 12, limit: 50 }),
+    ).resolves.toEqual({ events: [], nextCursor: 12, hasMore: false });
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "personalChats.streamEvents",
+      { cursor: 12, limit: 50 },
+      {},
+    );
+    expect(remoteRegistryGetMock).toHaveBeenCalledWith("target-1");
+  });
 });
 
 describe("registerIpc sync bridge", () => {

@@ -1141,6 +1141,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/automations": "tab-tint-automations",
       "/cto": "tab-tint-cto",
       "/settings": "tab-tint-settings",
+      "/chats": "tab-tint-work",
     };
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
@@ -1233,7 +1234,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
     >
       <div className="shrink-0 relative z-20">
-        <TopBar />
+        <TopBar
+          standaloneChatsActive={showWelcome && location.pathname === "/chats"}
+          onCloseStandaloneChats={() => navigate("/work", { replace: true })}
+        />
       </div>
 
       {!hideSidebar && projectMissing && project?.rootPath ? (

@@ -79,6 +79,8 @@ export const IPC = {
   localRuntimeCallAction: "ade.localRuntime.callAction",
   localRuntimeCallSync: "ade.localRuntime.callSync",
   localRuntimeStreamEvents: "ade.localRuntime.streamEvents",
+  personalChatsCall: "ade.personalChats.call",
+  personalChatsStreamEvents: "ade.personalChats.streamEvents",
   runtimeEvent: "ade.runtime.event",
   projectStateGetSnapshot: "ade.project.state.getSnapshot",
   projectStateInitializeOrRepair: "ade.project.state.initializeOrRepair",

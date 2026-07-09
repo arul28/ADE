@@ -14,10 +14,12 @@ export function ProjectPicker({
   projects,
   machineName,
   onPick,
+  onOpenChats,
 }: {
   projects: SyncMobileProjectSummary[];
   machineName: string | null;
   onPick: (project: SyncMobileProjectSummary) => void;
+  onOpenChats: () => void;
 }) {
   const sorted = [...projects].sort((left, right) => {
     if (left.isOpen !== right.isOpen) return left.isOpen ? -1 : 1;
@@ -31,6 +33,25 @@ export function ProjectPicker({
       subtitle={machineName ? `Projects on ${machineName}.` : "Pick a project to open."}
       width={520}
     >
+      <button
+        type="button"
+        onClick={onOpenChats}
+        style={recessedStyle({
+          display: "grid",
+          gap: 3,
+          textAlign: "left",
+          cursor: "pointer",
+          border: "1px solid color-mix(in srgb, var(--color-accent) 35%, transparent)",
+          background: "color-mix(in srgb, var(--color-accent) 9%, transparent)",
+        })}
+      >
+        <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
+          Chat without a project
+        </span>
+        <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>
+          Use any ADE agent for writing, research, planning, and everyday questions.
+        </span>
+      </button>
       {sorted.length === 0 ? (
         <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>
           This machine has no projects yet. Open a project in ADE desktop, then refresh.

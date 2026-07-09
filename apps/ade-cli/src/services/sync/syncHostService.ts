@@ -36,6 +36,7 @@ import type {
   LaneSummary,
   PtyDataEvent,
   PtyExitEvent,
+  PersonalChatScopeContract,
   SyncBrainStatusPayload,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
@@ -603,6 +604,10 @@ type SyncHostServiceArgs = {
   ptyService: ReturnType<typeof createPtyService>;
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  personalChatScope?: Pick<
+    PersonalChatScopeContract,
+    "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
+  >;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
@@ -1268,6 +1273,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     agentChatService: args.agentChatService,
+    personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
@@ -4402,12 +4408,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
-    const projectScope = resolveSyncHostInboundProjectScope(
-      envelope.type,
-      envelope.projectId,
-      args.projectId,
-      hostProjectIdAliases,
-    );
+    const envelopePayload = safeObjectValue(envelope.payload);
+    const personalChatEnvelope =
+      (envelope.type === "chat_subscribe" || envelope.type === "chat_unsubscribe")
+      && envelopePayload?.chatScope === "personal";
+    const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
+      ? { ok: true, projectId: null, usedSingleProjectFallback: false }
+      : resolveSyncHostInboundProjectScope(
+          envelope.type,
+          envelope.projectId,
+          args.projectId,
+          hostProjectIdAliases,
+        );
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       return;
@@ -4727,6 +4739,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
+        const personalChatRequested = payload?.chatScope === "personal";
 
         // Cross-project "quick look": a payload targeting a registered FOREIGN
         // project is served read-only from that project's `.ade` transcript
@@ -4738,7 +4751,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // including in the pump: a rejected scope must not register a live
         // subscription at all, or the periodic pump would stream the ACTIVE
         // project's transcript for the same session id after the empty ack.
-        const foreignScope = resolveForeignChatScope(payload, sessionId);
+        const personalTranscriptPath = personalChatRequested
+          ? await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null
+          : null;
+        const foreignScope = personalChatRequested
+          ? personalTranscriptPath
+            ? { kind: "foreign" as const, transcriptPath: personalTranscriptPath }
+            : { kind: "rejected" as const }
+          : resolveForeignChatScope(payload, sessionId);
         const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
         if (foreignScope.kind === "rejected") {
           peer.subscribedChatSessionIds.delete(sessionId);
@@ -4764,6 +4784,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Foreign quick-looks have no live agent chat service here, so they
         // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
+          if (personalChatRequested) {
+            const turnActive = await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false);
+            return typeof turnActive === "boolean" ? { turnActive } : {};
+          }
           if (foreignScope.kind !== "local") return {};
           const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};

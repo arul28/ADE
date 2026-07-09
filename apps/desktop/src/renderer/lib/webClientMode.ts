@@ -20,4 +20,4 @@ export function isWebClientMode(): boolean {
 }
 
 /** The only tab routes the web client surfaces (mission: Work, Lanes, Files, PRs). */
-export const WEB_CLIENT_TAB_PATHS = new Set(["/work", "/lanes", "/files", "/prs"]);
+export const WEB_CLIENT_TAB_PATHS = new Set(["/work", "/lanes", "/files", "/prs", "/chats"]);

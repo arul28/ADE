@@ -581,6 +581,16 @@ export class RemoteConnectionService {
     }
   }
 
+  /** Call a machine-scoped runtime RPC that does not require a project. */
+  async callMachineMethod<T = unknown>(
+    targetId: string,
+    method: string,
+    params: Record<string, unknown> = {},
+  ): Promise<T> {
+    const target = this.requireTargetForImplicitUse(targetId);
+    return (await this.callMachine(target, method, params)) as T;
+  }
+
   dispose(): void {
     this.stopAutoconnect();
     this.pool.dispose();

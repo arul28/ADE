@@ -101,6 +101,7 @@ iOS compatibility tests in the same branch.
 | Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
+| Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
 
 Two devices in the same cluster do **not** have identical `.ade/`
 folders. Git gives them the same tracked scaffold; sync gives them the
@@ -184,11 +185,16 @@ Runtime support files outside `services/sync/`:
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
   reset stale cursors when a daemon restarts or history was evicted.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
-  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, and project-scoped
-  `ade/actions/call`. Runtime-event subscribe replies include the gap
+  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, project-scoped
+  `ade/actions/call`, and project-independent `personalChats.call` /
+  `personalChats.streamEvents`. Runtime-event subscribe replies include the gap
   fields above; `projects.list` resolves host-side icons under a connect-path
   budget (64 icons / 12 MB per call) so large project registries cannot stall
   remote desktop or mobile catalog setup just to inline artwork.
+- `apps/ade-cli/src/services/personalChats/personalChatScope.ts` — lazy
+  machine-owned personal runtime injected into both sync ingress paths. It
+  validates personal session ownership and exposes the durable transcript path
+  and active-turn state used by `chatScope: "personal"` subscriptions.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
@@ -255,7 +261,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   streamed read-only (byte-capped tail snapshot plus a disk-tailing live
   pump, tracked per peer in `foreignChatTranscriptPaths`) with no runtime
   boot; the presence of the provider is what flips the advertised
-  `crossProjectChat` hello feature flag.
+  `crossProjectChat` hello feature flag. An injected `personalChatScope` adds
+  the separate `personalChats` hello feature and resolves chat subscriptions
+  that explicitly carry `chatScope: "personal"`; it never infers personal
+  scope from a missing project id.
 - `rosterBuilder.ts` — builds the machine-wide all-projects session roster
   (`SyncRosterProject[]`) consumed by the Hub: agent chats, their attached
   shell rows, and **standalone CLI (tracked terminal) sessions — live and
@@ -306,7 +315,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   fallback over a stale address still won't destroy a pairing it can't
   attribute), and serves
   project catalog plus runtime-scoped project actions so a phone can
-  add/open/create/clone/remove a project even from the project-home state.
+  add/open/create/clone/remove a project even from the project-home state. It
+  receives the same `PersonalChatScope`, advertises the same capability/action
+  descriptors, and can execute personal commands before any project host is
+  active.
   It also answers `command` envelopes: when no project host owns the peer
   (host restarting, or blocked by a conflicting sync listener) it replies
   immediately with a `command_result` carrying
@@ -378,6 +390,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   override and forward it to the runtime lane service so controllers can
   pick a specific branch to stack onto instead of always using the
   selected parent lane's branch.
+  The `personalChats.*` family is registered from the shared
+  `PERSONAL_CHAT_ACTIONS` allowlist with `scope: "runtime"`; the executor calls
+  `PersonalChatScope` directly instead of looking up the current project.
+  Only `personalChats.send` is queueable. A queued create is prohibited because
+  it cannot return a stable optimistic session id and replay could duplicate a
+  conversation.
   `lanes.create` calls that omit `baseBranch` / `startPoint` /
   `parentLaneId` (hub-composer auto-create, the mobile create sheet's
   default) resolve a **remote-first default base** on the host before
@@ -493,8 +511,8 @@ The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
 `SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
 `SyncStartCliSessionResult` — the external session aliases
-`SyncListExternalSessionsArgs` / `SyncImportExternalSessionArgs`, and so on)
-live in
+`SyncListExternalSessionsArgs` / `SyncImportExternalSessionArgs`, and the
+runtime-scoped `PersonalChatRemoteCommandAction`s) live in
 `apps/desktop/src/shared/types/sync.ts`. The CLI launcher's
 provider-to-argv translation is shared with the desktop Work tab
 through `apps/desktop/src/shared/cliLaunch.ts`.

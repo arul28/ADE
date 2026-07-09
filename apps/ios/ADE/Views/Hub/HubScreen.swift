@@ -41,6 +41,7 @@ struct HubScreen: View {
   // only overlay the local roster when it still matches the project being rendered.
   @State private var activeRosterProjectId: String?
   @State private var hubProjectPresentations: [HubProjectPresentation] = []
+  @State private var personalChatsPresented = false
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -55,14 +56,19 @@ struct HubScreen: View {
   }
 
   var body: some View {
-    ZStack(alignment: .top) {
-      HubBackground()
-      if openChatTarget != nil {
-        HubCoverParkingSurface()
-      } else if isNoMachineBlankState {
-        HubNoMachineState()
-      } else {
-        connectedHub
+    NavigationStack {
+      ZStack(alignment: .top) {
+        HubBackground()
+        if openChatTarget != nil {
+          HubCoverParkingSurface()
+        } else if isNoMachineBlankState {
+          HubNoMachineState()
+        } else {
+          connectedHub
+        }
+      }
+      .navigationDestination(isPresented: $personalChatsPresented) {
+        PersonalChatsScreen()
       }
     }
     .sheet(isPresented: $addProjectSheetPresented) {
@@ -120,6 +126,15 @@ struct HubScreen: View {
       HubTopBar(onAdd: { addProjectSheetPresented = true })
       ScrollView {
         LazyVStack(spacing: 12) {
+          HubPersonalChatsCard(
+            count: syncService.personalChatSessions.filter { $0.archivedAt == nil }.count,
+            attentionCount: syncService.personalChatSessions.filter {
+              $0.archivedAt == nil && ($0.awaitingInput == true || $0.status == "awaiting-input")
+            }.count,
+            isAvailable: syncService.supportsPersonalChats,
+            onOpen: { personalChatsPresented = true }
+          )
+
           if !canShowProjects {
             HubConnectingCard()
           } else if syncService.projects.isEmpty {

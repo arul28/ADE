@@ -4007,6 +4007,42 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testPersonalChatsStayLocallyActionGatedOnPartialHost() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "personalChats.list",
+            "scope": "runtime",
+            "policy": [
+              "viewerAllowed": true,
+              "queueable": false,
+            ],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertTrue(service.supportsPersonalChats)
+    XCTAssertTrue(service.supportsRemoteAction("personalChats.list"))
+    XCTAssertFalse(service.supportsRemoteAction("personalChats.create"))
+    XCTAssertFalse(service.canInvokeRemoteAction("personalChats.create"))
+  }
+
+  @MainActor
   func testSyncServiceRejectsMismatchedHelloBeforeApplyingProjectCatalog() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     service.seedRemoteProjectCatalogForTesting([
@@ -6736,6 +6772,144 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(queued.count, 1)
     XCTAssertEqual(queued.first?.kind, "command")
     XCTAssertEqual(queued.first?.action, "chat.send")
+  }
+
+  @MainActor
+  func testPersonalChatSendQueuesWithoutFallingBackToActiveProject() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.send",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.setPersonalChatScope(sessionId: "personal-1")
+    service.disconnect()
+
+    let delivery = try await service.sendChatMessage(sessionId: "personal-1", text: "projectless prompt")
+
+    XCTAssertEqual(delivery, .queued(steerId: nil))
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.action, "personalChats.send")
+    XCTAssertNil(queued.first?.projectId)
+    XCTAssertNil(queued.first?.projectRootPath)
+    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
+  }
+
+  @MainActor
+  func testPersonalChatCreateRemainsLiveOnlyAndNeverQueuesOffline() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.create",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+
+    XCTAssertFalse(service.canInvokeRemoteAction("personalChats.create"))
+    do {
+      _ = try await service.createPersonalChat(
+        provider: "claude",
+        model: "claude-sonnet-5",
+        kickoffText: "Do not duplicate this chat"
+      )
+      XCTFail("Expected projectless chat creation to require a live machine.")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "This action requires a live connection to the machine.")
+    }
+    XCTAssertEqual(service.pendingOperationCount, 0)
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+    XCTAssertTrue(service.personalChatSessions.isEmpty)
+  }
+
+  func testRemoteCommandDescriptorDecodesRuntimeScope() throws {
+    let data = Data(#"{"action":"personalChats.list","scope":"runtime","policy":{"viewerAllowed":true,"queueable":false}}"#.utf8)
+    let descriptor = try JSONDecoder().decode(SyncRemoteCommandDescriptor.self, from: data)
+
+    XCTAssertEqual(descriptor.action, "personalChats.list")
+    XCTAssertEqual(descriptor.scope, "runtime")
+    XCTAssertEqual(descriptor.policy.queueable, false)
+  }
+
+  @MainActor
+  func testPersonalChatSubscriptionCarriesRuntimeScope() async throws {
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+    service.setPersonalChatScope(sessionId: "personal-stream")
+
+    try await service.subscribeToChatEvents(sessionId: "personal-stream")
+
+    let payload = try XCTUnwrap(service.chatSubscriptionPayloads().first)
+    XCTAssertEqual(payload["sessionId"] as? String, "personal-stream")
+    XCTAssertEqual(payload["chatScope"] as? String, "personal")
+    XCTAssertNil(payload["projectId"])
+    XCTAssertNil(payload["projectRootPath"])
+  }
+
+  @MainActor
+  func testPersonalChatMapsProjectHistoryCapabilitiesToRuntimeActionNames() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.read",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.getEventHistory",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.getEventHistoryPage",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setPersonalChatScope(sessionId: "personal-history")
+
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getTranscript", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: "personal-history"))
   }
 
   @MainActor

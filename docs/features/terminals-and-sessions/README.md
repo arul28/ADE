@@ -22,6 +22,13 @@ failure is surfaced to the caller instead of being retried against the
 desktop process. The same source files run on both paths. Remote-bound windows
 now rely on the same terminal/session APIs as local windows.
 
+Projectless personal chat has a deliberately narrower terminal path. Its
+compact Terminal button creates a PTY through `PersonalChatScope` in the
+machine's personal scratch workspace, records ownership in that scope, and
+streams PTY events through `personalChats.streamEvents`. It does not expose the
+project Work terminal/session inventory or accept an arbitrary lane/cwd. See
+[Personal chats](../personal-chats/README.md).
+
 These services are large and have been repeatedly rewritten:
 `ptyService.ts`, `sessionService.ts`, and `processService.ts`. Treat
 them as fragile and re-read whenever wiring changes.

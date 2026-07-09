@@ -113,6 +113,7 @@ type BrowserTabTargetArgs = {
 
 type BrowserProjectScopeArgs = {
   projectRoot?: string | null;
+  profileScope?: "global";
 };
 
 type BuiltInBrowserEventPayload = {
@@ -165,6 +166,8 @@ type BrowserWebviewElement = HTMLElement & {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
+  /** Override the project browser profile. `null` selects the machine-wide profile. */
+  projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
@@ -720,11 +723,15 @@ async function cropBrowserScreenshot(
 
 export function ChatBuiltInBrowserPanel({
   sessionId,
+  projectRootOverride,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
 }: ChatBuiltInBrowserPanelProps) {
-  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const projectRoot = projectRootOverride === undefined
+    ? activeProjectRoot
+    : projectRootOverride;
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
   const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());
@@ -755,12 +762,16 @@ export function ChatBuiltInBrowserPanel({
   const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
   const browserScope = useMemo<BrowserProjectScopeArgs>(
-    () => (projectRoot ? { projectRoot } : {}),
-    [projectRoot],
+    () => (projectRootOverride === null
+      ? { profileScope: "global" }
+      : projectRoot
+        ? { projectRoot }
+        : {}),
+    [projectRoot, projectRootOverride],
   );
   const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BrowserProjectScopeArgs => (
-    (projectRoot ? { ...args, projectRoot } : args) as T & BrowserProjectScopeArgs
-  ), [projectRoot]);
+    ({ ...args, ...browserScope }) as T & BrowserProjectScopeArgs
+  ), [browserScope]);
   const syncBrowserInputSuppressedState = useCallback(() => {
     setBrowserInputSuppressed(browserInputSuppressedRef.current || browserOverlayOccludedRef.current);
   }, []);

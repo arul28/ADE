@@ -106,6 +106,82 @@ struct HubConnectionPill: View {
   }
 }
 
+/// Machine-scoped conversations live beside projects, not inside a synthetic
+/// project card. Keeping this entry prominent makes the no-project workflow
+/// discoverable while preserving the Hub as its single mobile entry point.
+struct HubPersonalChatsCard: View {
+  let count: Int
+  let attentionCount: Int
+  let isAvailable: Bool
+  let onOpen: () -> Void
+
+  private var accessibilityLabel: String {
+    guard isAvailable else { return "Chats, unavailable" }
+    let countLabel = "\(count) conversation\(count == 1 ? "" : "s")"
+    guard attentionCount > 0 else { return "Chats, \(countLabel)" }
+    return "Chats, \(countLabel), \(attentionCount) chat\(attentionCount == 1 ? "" : "s") need\(attentionCount == 1 ? "s" : "") your input"
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(spacing: 14) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 13, style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [ADEColor.accent.opacity(0.34), ADEColor.purpleAccent.opacity(0.18)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+          Image(systemName: "bubble.left.and.bubble.right.fill")
+            .font(.system(size: 19, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+        .frame(width: 46, height: 46)
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 7) {
+            Text("Chats")
+              .font(.system(.headline, design: .rounded).weight(.bold))
+              .foregroundStyle(ADEColor.textPrimary)
+            if attentionCount > 0 {
+              Text("\(attentionCount)")
+                .font(.caption2.bold().monospacedDigit())
+                .foregroundStyle(ADEColor.pageBackground)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(ADEColor.warning, in: Capsule())
+            }
+          }
+          Text(isAvailable
+            ? (count == 0 ? "Ask anything — no project needed" : "\(count) conversation\(count == 1 ? "" : "s") · no project needed")
+            : "Update ADE on this machine to enable chats")
+            .font(.system(.caption, design: .rounded))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+
+        Spacer(minLength: 8)
+        Image(systemName: isAvailable ? "chevron.right" : "arrow.triangle.2.circlepath")
+          .font(.system(size: 13, weight: .bold))
+          .foregroundStyle(isAvailable ? ADEColor.textMuted : ADEColor.warning)
+      }
+      .padding(14)
+      .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .stroke(ADEColor.accent.opacity(isAvailable ? 0.32 : 0.14), lineWidth: 1)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(!isAvailable)
+    .accessibilityLabel(accessibilityLabel)
+    .accessibilityHint(isAvailable ? "Opens conversations that are not linked to a project." : "Update ADE on the paired machine to enable chats.")
+  }
+}
+
 // MARK: - Project card
 
 struct HubProjectPresentation: Equatable, Identifiable {

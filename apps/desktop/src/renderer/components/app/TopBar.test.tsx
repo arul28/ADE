@@ -340,6 +340,19 @@ describe("TopBar", () => {
     });
   });
 
+  it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
+    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
+    const onClose = vi.fn();
+
+    render(<TopBar standaloneChatsActive onCloseStandaloneChats={onClose} />);
+
+    expect(screen.getByText("Chats")).toBeTruthy();
+    const closeButton = screen.getByTitle("Close chats");
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(closeButton);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("keeps the phone sync drawer open before a project is open", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 

@@ -95,6 +95,7 @@ export function WebShell({
   onPairNew,
   onForgetEnv,
   onSwitchProject,
+  onOpenChats,
   children,
 }: {
   status: AdeSyncClientStatus;
@@ -106,6 +107,7 @@ export function WebShell({
   onPairNew: () => void;
   onForgetEnv: (environment: WebClientEnvironmentRecord) => void;
   onSwitchProject: (project: SyncMobileProjectSummary) => void;
+  onOpenChats: () => void;
   children: React.ReactNode;
 }) {
   const tone = connectionTone(status.state);
@@ -259,6 +261,14 @@ export function WebShell({
           </button>
           {projectMenu ? (
             <div style={menuStyle}>
+              <button
+                type="button"
+                style={menuItemStyle}
+                onClick={() => { onOpenChats(); setProjectMenu(false); }}
+              >
+                Chat without a project
+              </button>
+              <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
               <div style={{ padding: "4px 8px 6px", color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
                 Projects
               </div>

@@ -86,6 +86,9 @@ const SettingsPage = React.lazy(() =>
 const WorkspaceGraphPage = React.lazy(() =>
   import("../graph/WorkspaceGraphPage").then((m) => ({ default: m.WorkspaceGraphPage }))
 );
+const PersonalChatsPage = React.lazy(() =>
+  import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
+);
 const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
@@ -704,6 +707,7 @@ function ProjectTabHost() {
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
+  const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   const activeBinding = !showWelcome && activeProject?.rootPath
     ? bindingForProject(activeProject, activeProjectBinding)
@@ -747,6 +751,7 @@ function ProjectTabHost() {
   }, [activeSurfaceKey]);
 
   React.useEffect(() => {
+    if (isPersonalChatsRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -770,7 +775,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -860,7 +865,7 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  if (!activeProject || showWelcome || mountedProjects.length === 0) {
+  if (!isPersonalChatsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
         <RunPage />
@@ -896,7 +901,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={surfaceKey === activeSurfaceKey}
+            active={!isPersonalChatsRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -904,6 +909,13 @@ function ProjectTabHost() {
           />
         );
       })}
+      {isPersonalChatsRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <PersonalChatsPage standalone={showWelcome || !activeProject} />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {transitionLabel ? <ProjectTransitionVeil label={transitionLabel} /> : null}
     </div>
   );

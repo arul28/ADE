@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type {
   AgentChatEventEnvelope,
   CrsqlChangeRow,
+  PersonalChatAction,
+  PersonalChatScopeContract,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
@@ -453,6 +455,134 @@ describe("buildChangesetBatchPayload", () => {
 });
 
 describe("brain project actions fallback handler", () => {
+  it("serves personal commands and chat streams with zero projects", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const transcriptPath = path.join(projectRoot, "personal-chat.jsonl");
+    fs.writeFileSync(transcriptPath, "");
+    const credentialStore = new EncryptedFileCredentialStore({
+      secretsDir,
+      keyMaterialProvider: () => null,
+    });
+    credentialStore.setSync("test.bootstrap", "bootstrap-token");
+    const personalChatScope: PersonalChatScopeContract = {
+      capabilities: vi.fn(() => ({
+        version: 1 as const,
+        actions: ["list", "terminalCreate", "saveTempAttachment"],
+      })),
+      call: vi.fn(async (action: unknown) => ({
+        action: action as PersonalChatAction,
+        result: action === "getEventHistory"
+          ? { events: [], truncated: false }
+          : [{ sessionId: "personal-1", surface: "personal" }],
+      })),
+      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false })),
+      transcriptPath: vi.fn(async () => transcriptPath),
+      isTurnActive: vi.fn(async () => true),
+    };
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(async () => ({ ok: false, message: "No projects." })),
+      },
+      bootstrapCredentialStore: credentialStore,
+      bootstrapTokenKey: "test.bootstrap",
+      pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
+      pinPath: path.join(secretsDir, "sync-pin.json"),
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      pollIntervalMs: 100,
+      personalChatScope,
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", () => resolve());
+        server.once("error", reject);
+      });
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      sendHello(client, "bootstrap-token");
+      const hello = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "personal fallback hello",
+      );
+      expect(hello.payload).toMatchObject({
+        projects: [],
+        features: {
+          commandRouting: {
+            actions: expect.arrayContaining([
+              expect.objectContaining({ action: "personalChats.list", scope: "runtime" }),
+              expect.objectContaining({ action: "personalChats.terminalCreate", scope: "runtime" }),
+              expect.objectContaining({ action: "personalChats.streamEvents", scope: "runtime" }),
+            ]),
+          },
+        },
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "personal-list-request",
+        payload: {
+          commandId: "personal-list",
+          action: "personalChats.list",
+          args: {},
+        },
+      }));
+      const result = await waitForEnvelope(envelopes, "command_result", "personal-list-request");
+      expect(result.payload).toMatchObject({
+        commandId: "personal-list",
+        ok: true,
+        result: [{ sessionId: "personal-1", surface: "personal" }],
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "personal-subscribe",
+        payload: { sessionId: "personal-1", chatScope: "personal" },
+      }));
+      const snapshot = await waitForEnvelope(envelopes, "chat_subscribe", "personal-subscribe");
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "personal-1",
+        events: [],
+        turnActive: true,
+      });
+      const event: AgentChatEventEnvelope = {
+        sessionId: "personal-1",
+        timestamp: "2026-07-09T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "hello from fallback" },
+      };
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(event)}\n`);
+      const streamed = await waitForValue(
+        () => envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as AgentChatEventEnvelope).event.type === "text"
+        ),
+        "personal fallback chat event",
+      );
+      expect(streamed.payload).toMatchObject({ sessionId: "personal-1", sequence: 1 });
+    } finally {
+      try { client?.close(); } catch {}
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("does not send a second switch result if post-response project completion fails", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");

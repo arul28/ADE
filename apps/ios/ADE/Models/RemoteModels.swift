@@ -2757,6 +2757,9 @@ struct SyncRemoteCommandPolicy: Codable, Equatable {
 struct SyncRemoteCommandDescriptor: Codable, Equatable, Identifiable {
   var id: String { action }
   var action: String
+  /// Runtime-scoped actions deliberately carry no project id. Optional keeps
+  /// decoding compatible with older hosts, which are treated as project-scoped.
+  var scope: String? = nil
   var policy: SyncRemoteCommandPolicy
 }
 

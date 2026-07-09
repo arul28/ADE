@@ -49,7 +49,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
 const PENDING_TARGET_KEY = "ade-web:pending-target";
 const APP_ROUTE_ROOTS = [
   "/work", "/lanes", "/files", "/prs", "/review", "/history",
-  "/automations", "/cto", "/settings", "/graph", "/project",
+  "/automations", "/cto", "/settings", "/graph", "/project", "/chats",
 ];
 
 function isAppRoute(pathname: string): boolean {
@@ -145,6 +145,17 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     setPhase({ kind: "ready", AppRoot });
   }, [client]);
 
+  const enterChats = useCallback(async (catalogSeed?: SyncMobileProjectSummary[]) => {
+    if (!adapterRef.current) {
+      adapterRef.current = await loadAdapter(client, catalogSeed);
+    }
+    window.ade = adapterRef.current.ade;
+    adapterRef.current.bindProject(null);
+    window.history.replaceState(null, "", "/chats");
+    const AppRoot = await loadAppRoot();
+    setPhase({ kind: "ready", AppRoot });
+  }, [client]);
+
   const afterConnect = useCallback(async () => {
     const activeEnv = (await client.listEnvironments()).find((environment) => environment.envId === client.getStatus().selectedEnvId) ?? null;
     let projects: SyncMobileProjectSummary[] = [];
@@ -154,6 +165,11 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
       projects = [];
     }
     setCatalog(projects);
+
+    if (window.location.pathname === "/chats") {
+      await enterChats(projects);
+      return;
+    }
 
     const activeProjectId = client.getStatus().activeProjectId;
     const chosen =
@@ -167,7 +183,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     } else {
       setPhase({ kind: "project-picker", projects });
     }
-  }, [client, enterProject]);
+  }, [client, enterChats, enterProject]);
 
   const connectTo = useCallback(async (environment: WebClientEnvironmentRecord) => {
     setPhase({ kind: "connecting", name: environment.machineName });
@@ -307,6 +323,12 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
               setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
             });
           }}
+          onOpenChats={() => {
+            setPhase({ kind: "connecting", name: "Chats" });
+            void enterChats(phase.projects).catch((error) => {
+              setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
+            });
+          }}
         />
       );
     case "error":
@@ -341,6 +363,10 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
           onPairNew={onPairNew}
           onForgetEnv={onForgetEnv}
           onSwitchProject={onSwitchProject}
+          onOpenChats={() => {
+            window.history.pushState(null, "", "/chats");
+            window.dispatchEvent(new PopStateEvent("popstate"));
+          }}
         >
           <AppRoot />
         </WebShell>

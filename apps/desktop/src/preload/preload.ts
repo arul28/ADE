@@ -594,6 +594,10 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
+  PersonalChatCallArgs,
+  PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
@@ -3593,6 +3597,16 @@ contextBridge.exposeInMainWorld("ade", {
       }
       return result;
     },
+  },
+  personalChats: {
+    call: async (
+      request: PersonalChatCallArgs,
+    ): Promise<PersonalChatCallResponse> =>
+      ipcRenderer.invoke(IPC.personalChatsCall, request),
+    streamEvents: async (
+      request: PersonalChatStreamEventsArgs = {},
+    ): Promise<PersonalChatStreamEventsResult> =>
+      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request),
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>

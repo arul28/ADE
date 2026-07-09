@@ -65,12 +65,16 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
-  `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
+  `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
   sync sub-protocols, and local browser-only state. `misc.ts` routes
   `window.ade.usage.getAdeStats` through the viewer-allowed
   `usage.getAdeStats` command so the reused empty-Work activity carousel shows
   the runtime's cached cross-client aggregate instead of an empty native stub.
+  `personalChats.ts` invokes
+  runtime-scoped `personalChats.*` actions with `requireProject: false`, adds
+  explicit `chatScope: "personal"` transcript subscriptions, dedupes their
+  events, and provides the cursor stream consumed by the shared Chats page.
 
 Browser shell and routes:
 
@@ -79,7 +83,8 @@ Browser shell and routes:
   `WebClientRoot`.
 - `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
   sequence, saved-machine reconnect, pair flow, project picker, adapter load,
-  pending `/open` target stash, and project binding.
+  pending `/open` target stash, project binding, and projectless `/chats`
+  routing before a project is selected.
 - `apps/desktop/src/renderer/webclient/shell/PairFlow.tsx` - pairing-link
   parser, PIN entry, device name, manual `wss://` endpoint override, and
   hosted-page reachability errors.
@@ -99,7 +104,7 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/lib/webClientMode.ts` - `isWebClientMode()` reads
   the `window.__adeWebClient` flag the bootstrap stamps before the App module
   loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
-  (`/work`, `/lanes`, `/files`, `/prs`). Desktop-only chrome
+  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). Desktop-only chrome
   (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
@@ -310,6 +315,9 @@ adapter then refreshes through the appropriate remote command or sub-protocol:
   `terminal_input`, and `terminal_resize`.
 - Projects: `project_catalog`, `project_catalog_request`,
   `project_switch_request`, and `project_switch_result`.
+- Personal chats: runtime-scoped `personalChats.*` commands plus
+  `chat_subscribe` / `chat_event` carrying `chatScope: "personal"`. These are
+  not inferred from, or stored in, the selected project's changeset stream.
 
 Browser-local persistence is limited to UI state and pairing state:
 `envStore.ts` stores paired environments in IndexedDB, and
@@ -394,6 +402,8 @@ Ops checks after deploy:
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
 - No ADE Browser, app control, computer use, or iOS Simulator surface.
+  Projectless Chats therefore shows its runtime-backed Terminal control but not
+  the desktop-only Browser button/profile.
 - No local file watcher. File-change events are synthesized from
   changeset-driven invalidation and are coarser than desktop chokidar events.
 - Some progress/live updates are invalidation-triggered snapshots rather than
@@ -405,6 +415,8 @@ Ops checks after deploy:
 
 ## Cross-links
 
+- [Personal chats](../personal-chats/README.md) - machine-scoped projectless
+  chat storage, command surface, transcript scope, and shared UI contract.
 - [Sync and multi-device](../sync-and-multi-device/README.md) - shared sync
   protocol, pairing, DPoP, project catalog, remote commands, and relay.
 - [Deeplinks](../deeplinks/README.md) - canonical `ade://` and
