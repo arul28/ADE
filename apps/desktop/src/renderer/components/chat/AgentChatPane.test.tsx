@@ -1266,8 +1266,9 @@ describe("AgentChatPane companion drawers", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
     await waitFor(() => {
-      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
+      expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
+    expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
   });
 
   it("does not reopen chat actions after tasks arrive while the Agents tab is already open", async () => {
