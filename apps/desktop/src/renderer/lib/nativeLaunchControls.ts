@@ -326,11 +326,11 @@ export type ClaudePermissionOption = {
 };
 
 export const CLAUDE_PERMISSION_OPTIONS: ClaudePermissionOption[] = [
-  { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools." },
+  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools." },
   { value: "auto", label: "Auto", detail: "Claude judges each tool call." },
   { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt." },
   { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning." },
-  { value: "bypassPermissions", label: "Bypass permissions", detail: "Skip every Claude permission prompt for this chat." },
+  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat." },
 ];
 
 export const CODEX_PERMISSION_PRESETS = [

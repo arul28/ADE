@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, GearSix, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, ShieldCheck, ShieldWarning, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -50,7 +50,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
+import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
 import type { ContextUsageViewModel } from "./usage/contextUsageModel";
 import {
@@ -468,25 +468,6 @@ function buildSlashCommands(
   return result;
 }
 
-type ClaudeModeTone = "green" | "amber" | "blue" | "purple" | "red";
-
-type ClaudeModeOption = {
-  value: AgentChatClaudePermissionMode;
-  label: string;
-  detail: string;
-  tone: ClaudeModeTone;
-};
-
-function composerPermissionLabel(label: string): string {
-  const SHORT: Record<string, string> = {
-    "Ask permissions": "Ask",
-    "Accept edits": "Edits",
-    "Bypass permissions": "Bypass",
-    "Plan mode": "Plan",
-  };
-  return SHORT[label] ?? label;
-}
-
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
 // The model name is the priority control: it keeps a readable floor and only
 // shrinks after the permission/fast labels collapse and the reasoning picker
@@ -537,60 +518,265 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
-const CLAUDE_MODE_OPTIONS: ClaudeModeOption[] = [
-  { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green" },
-  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you.", tone: "amber" },
-  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "blue" },
-  { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple" },
-  { value: "bypassPermissions", label: "Bypass permissions", detail: "Skip every Claude permission prompt for this chat.", tone: "red" },
-];
+type PermissionModeTone = "green" | "amber" | "blue" | "purple" | "red" | "slate";
+type PermissionModeIconKind = "manual" | "auto" | "edit" | "plan" | "full" | "config" | "agent" | "agi";
 
-const CLAUDE_MODE_TONE_STYLES: Record<
-  ClaudeModeTone,
+type PermissionModePickerOption<Value extends string = string> = {
+  value: Value;
+  label: string;
+  triggerLabel?: string;
+  detail: string;
+  tone: PermissionModeTone;
+  icon: PermissionModeIconKind;
+};
+
+const PERMISSION_MODE_TONE_STYLES: Record<
+  PermissionModeTone,
   {
-    activeBg: string;
-    activeText: string;
-    activeBorder: string;
     dot: string;
-    hoverBg: string;
+    trigger: string;
+    iconSurface: string;
+    rowActive: string;
+    rowHover: string;
   }
 > = {
   green: {
-    activeBg: "bg-emerald-500/12",
-    activeText: "text-emerald-200",
-    activeBorder: "border-emerald-500/35",
     dot: "bg-emerald-400",
-    hoverBg: "hover:bg-emerald-500/10 hover:text-emerald-100",
+    trigger: "border-emerald-400/24 bg-emerald-500/[0.08] text-emerald-100",
+    iconSurface: "border-emerald-300/20 bg-emerald-500/[0.12] text-emerald-200",
+    rowActive: "bg-emerald-500/[0.12] text-emerald-50",
+    rowHover: "hover:bg-emerald-500/[0.08] hover:text-emerald-50",
   },
   amber: {
-    activeBg: "bg-amber-500/12",
-    activeText: "text-amber-200",
-    activeBorder: "border-amber-500/35",
     dot: "bg-amber-400",
-    hoverBg: "hover:bg-amber-500/10 hover:text-amber-100",
+    trigger: "border-amber-300/22 bg-amber-500/[0.08] text-amber-100",
+    iconSurface: "border-amber-300/20 bg-amber-500/[0.12] text-amber-200",
+    rowActive: "bg-amber-500/[0.12] text-amber-50",
+    rowHover: "hover:bg-amber-500/[0.08] hover:text-amber-50",
   },
   blue: {
-    activeBg: "bg-sky-500/14",
-    activeText: "text-sky-200",
-    activeBorder: "border-sky-500/35",
     dot: "bg-sky-400",
-    hoverBg: "hover:bg-sky-500/10 hover:text-sky-100",
+    trigger: "border-sky-300/22 bg-sky-500/[0.08] text-sky-100",
+    iconSurface: "border-sky-300/20 bg-sky-500/[0.12] text-sky-200",
+    rowActive: "bg-sky-500/[0.12] text-sky-50",
+    rowHover: "hover:bg-sky-500/[0.08] hover:text-sky-50",
   },
   purple: {
-    activeBg: "bg-violet-500/14",
-    activeText: "text-violet-200",
-    activeBorder: "border-violet-500/35",
     dot: "bg-violet-400",
-    hoverBg: "hover:bg-violet-500/10 hover:text-violet-100",
+    trigger: "border-violet-300/24 bg-violet-500/[0.09] text-violet-100",
+    iconSurface: "border-violet-300/20 bg-violet-500/[0.14] text-violet-200",
+    rowActive: "bg-violet-500/[0.14] text-violet-50",
+    rowHover: "hover:bg-violet-500/[0.08] hover:text-violet-50",
   },
   red: {
-    activeBg: "bg-red-500/14",
-    activeText: "text-red-200",
-    activeBorder: "border-red-500/35",
     dot: "bg-red-400",
-    hoverBg: "hover:bg-red-500/10 hover:text-red-100",
+    trigger: "border-red-300/24 bg-red-500/[0.09] text-red-100",
+    iconSurface: "border-red-300/20 bg-red-500/[0.14] text-red-200",
+    rowActive: "bg-red-500/[0.14] text-red-50",
+    rowHover: "hover:bg-red-500/[0.08] hover:text-red-50",
+  },
+  slate: {
+    dot: "bg-slate-300",
+    trigger: "border-white/[0.08] bg-white/[0.045] text-fg/80",
+    iconSurface: "border-white/[0.08] bg-white/[0.06] text-fg/72",
+    rowActive: "bg-white/[0.08] text-fg/90",
+    rowHover: "hover:bg-white/[0.055] hover:text-fg/90",
   },
 };
+
+const CLAUDE_MODE_OPTIONS: Array<PermissionModePickerOption<AgentChatClaudePermissionMode>> = [
+  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green", icon: "manual" },
+  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you.", tone: "amber", icon: "auto" },
+  { value: "acceptEdits", label: "Accept edits", triggerLabel: "Edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "amber", icon: "edit" },
+  { value: "plan", label: "Plan mode", triggerLabel: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple", icon: "plan" },
+  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat.", tone: "red", icon: "full" },
+];
+
+function PermissionModeGlyph({
+  icon,
+  size = 11,
+  className,
+}: {
+  icon: PermissionModeIconKind;
+  size?: number;
+  className?: string;
+}) {
+  switch (icon) {
+    case "manual":
+      return <ShieldCheck size={size} weight="fill" className={className} />;
+    case "auto":
+      return <Lightning size={size} weight="fill" className={className} />;
+    case "edit":
+      return <PencilSimple size={size} weight="fill" className={className} />;
+    case "plan":
+      return <Strategy size={size} weight="fill" className={className} />;
+    case "full":
+      return <ShieldWarning size={size} weight="fill" className={className} />;
+    case "config":
+      return <GearSix size={size} weight="fill" className={className} />;
+    case "agent":
+      return <Desktop size={size} weight="fill" className={className} />;
+    case "agi":
+      return <RocketLaunch size={size} weight="fill" className={className} />;
+  }
+}
+
+function PermissionModePicker<Value extends string>({
+  ariaLabel,
+  selectedValue,
+  options,
+  disabled,
+  onSelect,
+  title,
+}: {
+  ariaLabel: string;
+  selectedValue: Value;
+  options: Array<PermissionModePickerOption<Value>>;
+  disabled?: boolean;
+  onSelect?: (value: Value) => void;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const selectedOption = options.find((option) => option.value === selectedValue) ?? options[0];
+  const selectedTone = PERMISSION_MODE_TONE_STYLES[selectedOption?.tone ?? "slate"];
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (event: MouseEvent) => {
+      if (ref.current?.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-permission-mode-picker-dropdown]")) return;
+      setOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  if (!selectedOption) return null;
+
+  const triggerTitle = title ?? selectedOption.detail;
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        data-state={open ? "open" : "closed"}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={disabled || !onSelect}
+        onClick={() => {
+          if (disabled || !onSelect) return;
+          setOpen((current) => !current);
+        }}
+        className={cn(
+          COMPOSER_PERMISSION_TRIGGER_CLASS,
+          selectedTone.trigger,
+          open && "ring-1 ring-white/[0.06]",
+          (disabled || !onSelect) && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+        )}
+        title={triggerTitle}
+      >
+        <span className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border", selectedTone.iconSurface)} aria-hidden>
+          <PermissionModeGlyph icon={selectedOption.icon} size={9} />
+        </span>
+        <span className="ade-chat-composer-permission-label truncate font-medium leading-none">
+          {selectedOption.triggerLabel ?? selectedOption.label}
+        </span>
+        <CaretDown
+          size={10}
+          weight="bold"
+          className={cn(
+            "ade-chat-composer-permission-chevron shrink-0 text-current/65 transition-transform duration-150",
+            open && "rotate-180 text-current/90",
+          )}
+        />
+      </button>
+      {open && ref.current ? createPortal(
+        (() => {
+          const rect = ref.current.getBoundingClientRect();
+          const width = 284;
+          const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+          return (
+            <div
+              role="listbox"
+              aria-label={ariaLabel}
+              data-permission-mode-picker-dropdown
+              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={{
+                left,
+                bottom: Math.max(8, window.innerHeight - rect.top + 8),
+                width,
+              }}
+            >
+              <div className="flex items-center gap-2 border-b border-white/[0.05] px-3 py-2">
+                <span className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", selectedTone.iconSurface)} aria-hidden>
+                  <PermissionModeGlyph icon={selectedOption.icon} size={12} />
+                </span>
+                <div className="min-w-0">
+                  <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                    Mode
+                  </div>
+                  <div className="truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
+                    {selectedOption.label}
+                  </div>
+                </div>
+              </div>
+              <ul className="py-1">
+                {options.map((option) => {
+                  const active = option.value === selectedValue;
+                  const tone = PERMISSION_MODE_TONE_STYLES[option.tone];
+                  return (
+                    <li key={option.value}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-label={option.label}
+                        aria-selected={active}
+                        onClick={() => {
+                          onSelect?.(option.value);
+                          setOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-start gap-2.5 px-3 py-2 text-left font-sans transition-colors",
+                          active ? tone.rowActive : "text-fg/72",
+                          tone.rowHover,
+                        )}
+                        title={option.detail}
+                      >
+                        <span className={cn("mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", tone.iconSurface)} aria-hidden>
+                          <PermissionModeGlyph icon={option.icon} size={12} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[length:calc(var(--chat-font-size)*11/14)] font-semibold leading-4">
+                            {option.label}
+                          </span>
+                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*10/14)] leading-4 text-muted-fg/52">
+                            {option.detail}
+                          </span>
+                        </span>
+                        {active ? <Check size={12} weight="bold" className="mt-1 shrink-0 opacity-80" /> : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })(),
+        document.body,
+      ) : null}
+    </div>
+  );
+}
 
 type CodexPermissionPreset = "default" | "edit" | "plan" | "full-auto" | "config-toml" | "custom";
 
@@ -607,33 +793,50 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
-function safetyDotClass(safety: "safe" | "semi-auto" | "full-auto" | "danger" | "custom"): string {
-  switch (safety) {
-    case "safe":
-      return "bg-emerald-400/80";
-    case "semi-auto":
-      return "bg-amber-400/80";
+function codexPermissionPickerOption(option: PermissionOption): PermissionModePickerOption<Exclude<CodexPermissionPreset, "custom">> {
+  switch (option.value) {
+    case "default":
+      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
+    case "edit":
+      return { value: "edit", label: option.label, triggerLabel: "Edit", detail: option.detail, tone: "amber", icon: "edit" };
+    case "plan":
+      return { value: "plan", label: option.label, triggerLabel: "Plan", detail: option.detail, tone: "purple", icon: "plan" };
     case "full-auto":
-    case "danger":
-      return "bg-red-400/80";
-    case "custom":
-      return "bg-violet-400/80";
+      return { value: "full-auto", label: option.label, triggerLabel: "Full", detail: option.detail, tone: "red", icon: "full" };
+    case "config-toml":
+      return { value: "config-toml", label: option.label, triggerLabel: "Config", detail: option.detail, tone: "slate", icon: "config" };
+    default:
+      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
   }
 }
 
-const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
-  { value: "plan", label: "Plan" },
-  { value: "edit", label: "Edit" },
-  { value: "full-auto", label: "Full auto" },
-  { value: "config-toml", label: "Config" },
+function cursorPermissionPickerOption(value: string, label: string): PermissionModePickerOption<string> {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "plan") {
+    return { value, label, triggerLabel: label, detail: "Read-only planning mode.", tone: "purple", icon: "plan" };
+  }
+  if (normalized === "ask" || normalized === "edit") {
+    return { value, label, triggerLabel: label, detail: "Read-only Q&A mode.", tone: "green", icon: "manual" };
+  }
+  if (normalized === "full-auto" || normalized === "force" || normalized === "yolo") {
+    return { value, label, triggerLabel: label, detail: "Highest access mode for Cursor Agent.", tone: "red", icon: "full" };
+  }
+  return { value, label, triggerLabel: label, detail: "Cursor Agent's normal approval flow.", tone: "green", icon: "agent" };
+}
+
+const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpenCodePermissionMode>> = [
+  { value: "plan", label: "Plan", detail: "Read-only plan agent.", tone: "purple", icon: "plan" },
+  { value: "edit", label: "Edit", detail: "Allow edits; ask for the rest.", tone: "amber", icon: "edit" },
+  { value: "full-auto", label: "Full auto", detail: "Allow configured OpenCode tools.", tone: "red", icon: "full" },
+  { value: "config-toml", label: "Config", detail: "Use OpenCode config files.", tone: "slate", icon: "config" },
 ];
 
-const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; label: string; detail: string }> = [
-  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning." },
-  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
-  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
-  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
-  { value: "agi", label: "AGI (orchestrator)", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel." },
+const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> = [
+  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning.", tone: "green", icon: "manual" },
+  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations.", tone: "green", icon: "edit" },
+  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs.", tone: "amber", icon: "auto" },
+  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces.", tone: "red", icon: "full" },
+  { value: "agi", label: "AGI (orchestrator)", triggerLabel: "AGI", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel.", tone: "purple", icon: "agi" },
 ];
 
 function cursorModeLabel(modeId: string): string {
@@ -1115,10 +1318,6 @@ export function AgentChatComposer({
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
 
-  const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
-  const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
-  const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
-  const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
@@ -2245,50 +2444,6 @@ export function AgentChatComposer({
     parallelControlSlot,
   ]);
   useEffect(() => {
-    if (!codexPresetPickerOpen) return;
-    const handleClick = (event: MouseEvent) => {
-      if (!codexPresetPickerRef.current) return;
-      if (codexPresetPickerRef.current.contains(event.target as Node)) return;
-      const target = event.target as Element | null;
-      if (target?.closest?.("[data-codex-preset-picker-dropdown]")) return;
-      setCodexPresetPickerOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setCodexPresetPickerOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handleClick);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [codexPresetPickerOpen]);
-
-  useEffect(() => {
-    if (!claudeModePickerOpen) return;
-    const handleClick = (event: MouseEvent) => {
-      if (!claudeModePickerRef.current) return;
-      if (claudeModePickerRef.current.contains(event.target as Node)) return;
-      const target = event.target as Element | null;
-      if (target?.closest?.("[data-claude-mode-picker-dropdown]")) return;
-      setClaudeModePickerOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setClaudeModePickerOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handleClick);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [claudeModePickerOpen]);
-
-  useEffect(() => {
     if (!issueContextMenuOpen) return;
     const handleClick = (event: MouseEvent) => {
       if (issueContextButtonRef.current?.contains(event.target as Node)) return;
@@ -2349,7 +2504,6 @@ export function AgentChatComposer({
     if (sp === "claude") {
       const selectedOption =
         CLAUDE_MODE_OPTIONS.find((option) => option.value === claudeSelectionMode) ?? CLAUDE_MODE_OPTIONS[0];
-      const selectedTone = CLAUDE_MODE_TONE_STYLES[selectedOption.tone];
       const applyClaudeMode = (mode: AgentChatClaudePermissionMode) => {
         if (parallelControlSlot) {
           if (mode === "plan") {
@@ -2375,227 +2529,56 @@ export function AgentChatComposer({
       };
       return (
         <div className={cn("flex flex-wrap gap-2", plainComposerToolbarChrome ? "items-center" : "items-start")}>
-          <div ref={claudeModePickerRef} className="relative">
-            <button
-              type="button"
-              data-state={claudeModePickerOpen ? "open" : "closed"}
-              aria-haspopup="listbox"
-              aria-expanded={claudeModePickerOpen}
-              aria-label="Claude permission mode"
-              disabled={nativeControlsDisabled}
-              onClick={() => {
-                if (nativeControlsDisabled) return;
-                setClaudeModePickerOpen((open) => !open);
-              }}
-              className={cn(
-                COMPOSER_PERMISSION_TRIGGER_CLASS,
-                claudeModePickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-                nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
-              )}
-              title={selectedOption.detail}
-            >
-              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
-              <span className="ade-chat-composer-permission-label truncate font-medium leading-none">{composerPermissionLabel(selectedOption.label)}</span>
-              <CaretDown
-                size={10}
-                weight="bold"
-                className={cn(
-                  "ade-chat-composer-permission-chevron shrink-0 text-muted-fg/60 transition-transform duration-150",
-                  claudeModePickerOpen && "rotate-180 text-fg/80",
-                )}
-              />
-            </button>
-            {claudeModePickerOpen && claudeModePickerRef.current ? createPortal(
-              (() => {
-                const rect = claudeModePickerRef.current.getBoundingClientRect();
-                return (
-                  <div
-                    role="listbox"
-                    aria-label="Claude permission mode"
-                    data-claude-mode-picker-dropdown
-                    className="fixed z-[100] w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                    style={{
-                      left: rect.left,
-                      bottom: window.innerHeight - rect.top + 8,
-                    }}
-                  >
-                    <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
-                      Mode
-                    </div>
-                    <ul className="py-1">
-                      {CLAUDE_MODE_OPTIONS.map((option) => {
-                        const tone = CLAUDE_MODE_TONE_STYLES[option.tone];
-                        const active = option.value === claudeSelectionMode;
-                        return (
-                          <li key={option.value}>
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={active}
-                              onClick={() => {
-                                applyClaudeMode(option.value);
-                                setClaudeModePickerOpen(false);
-                              }}
-                              className={cn(
-                                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                                active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
-                                tone.hoverBg,
-                              )}
-                              title={option.detail}
-                            >
-                              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden />
-                              <span className="flex-1 truncate leading-none">{option.label}</span>
-                              {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                );
-              })(),
-              document.body,
-            ) : null}
-          </div>
+          <PermissionModePicker
+            ariaLabel="Claude permission mode"
+            selectedValue={selectedOption.value}
+            options={CLAUDE_MODE_OPTIONS}
+            disabled={nativeControlsDisabled}
+            onSelect={applyClaudeMode}
+          />
         </div>
       );
     }
 
     if (sp === "codex") {
-      const activePreset = codexPresetOptions.find((option) => option.value === codexPreset);
-      const presetLabel = codexPreset === "custom"
-        ? "Custom"
-        : activePreset?.label ?? "Plan";
+      const codexModeOptions = codexPresetOptions.map(codexPermissionPickerOption);
+      const codexCustomOption: PermissionModePickerOption<CodexPermissionPreset> = {
+        value: "custom",
+        label: "Custom",
+        detail: codexCustomSummary ?? "Custom Codex approval/sandbox combination.",
+        tone: "slate",
+        icon: "config",
+      };
+      const pickerOptions: Array<PermissionModePickerOption<CodexPermissionPreset>> = codexPreset === "custom"
+        ? [...codexModeOptions, codexCustomOption]
+        : codexModeOptions;
       return (
-        <div ref={codexPresetPickerRef} className="relative">
-          <button
-            type="button"
-            data-state={codexPresetPickerOpen ? "open" : "closed"}
-            aria-haspopup="listbox"
-            aria-expanded={codexPresetPickerOpen}
-            aria-label="Codex approval preset"
-            disabled={nativeControlsDisabled}
-            onClick={() => {
-              if (nativeControlsDisabled) return;
-              setCodexPresetPickerOpen((open) => !open);
-            }}
-            className={cn(
-              COMPOSER_PERMISSION_TRIGGER_CLASS,
-              codexPresetPickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-              nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
-            )}
-            title={activePreset?.detail ?? codexCustomSummary ?? "Codex approval preset"}
-          >
-            {activePreset ? (
-              <span
-                className={cn("h-1.5 w-1.5 shrink-0 rounded-full", safetyDotClass(activePreset.safety))}
-                aria-hidden
-              />
-            ) : (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-fg/40" aria-hidden />
-            )}
-            <span className="ade-chat-composer-permission-label truncate font-medium leading-none">{presetLabel}</span>
-            <CaretDown
-              size={10}
-              weight="bold"
-              className={cn(
-                "ade-chat-composer-permission-chevron shrink-0 text-muted-fg/60 transition-transform duration-150",
-                codexPresetPickerOpen && "rotate-180 text-fg/80",
-              )}
-            />
-          </button>
-          {codexPresetPickerOpen && codexPresetPickerRef.current ? createPortal(
-            (() => {
-              const rect = codexPresetPickerRef.current.getBoundingClientRect();
-              return (
-                <div
-                  role="listbox"
-                  aria-label="Codex approval preset"
-                  data-codex-preset-picker-dropdown
-                  className="fixed z-[100] w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={{
-                    left: rect.left,
-                    bottom: window.innerHeight - rect.top + 8,
-                  }}
-                >
-                  <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
-                    Preset
-                  </div>
-                  <ul className="py-1">
-                    {codexPresetOptions.map((option) => {
-                      const active = codexPreset === option.value;
-                      const colors = safetyColors(option.safety);
-                      return (
-                        <li key={option.value}>
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={active}
-                            onClick={() => {
-                              applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">);
-                              setCodexPresetPickerOpen(false);
-                            }}
-                            className={cn(
-                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                              active ? `${colors.activeBg} text-fg/88` : "text-fg/72 hover:bg-white/[0.04]",
-                            )}
-                            title={option.detail}
-                          >
-                            <span className="flex-1 truncate leading-none">{option.label}</span>
-                            {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
-                          </button>
-                        </li>
-                      );
-                    })}
-                    {codexPreset === "custom" ? (
-                      <li>
-                        <div
-                          className="flex w-full items-center gap-2 px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] bg-white/[0.06] text-fg/88"
-                          title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
-                        >
-                          <span className="flex-1 truncate leading-none">Custom</span>
-                          <Check size={10} weight="bold" className="opacity-80" />
-                        </div>
-                      </li>
-                    ) : null}
-                  </ul>
-                </div>
-              );
-            })(),
-            document.body,
-          ) : null}
-        </div>
+        <PermissionModePicker
+          ariaLabel="Codex permission mode"
+          selectedValue={codexPreset}
+          options={pickerOptions}
+          disabled={nativeControlsDisabled}
+          onSelect={(preset) => {
+            if (preset === "custom") return;
+            applyCodexPreset(preset);
+          }}
+          title={pickerOptions.find((option) => option.value === codexPreset)?.detail ?? codexCustomSummary ?? "Codex permission mode"}
+        />
       );
     }
 
     if (sp === "droid") {
       return (
-        <label
-          className={cn(
-            "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-            plainComposerToolbarChrome
-              ? "border border-transparent bg-transparent"
-              : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-          )}
-        >
-          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Autonomy</span>
-          <select
-            value={dpmUse}
-            disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
-            onChange={(event) => {
-              const v = event.target.value as AgentChatDroidPermissionMode;
-              if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(v);
-              else onDroidPermissionModeChange?.(v);
-            }}
-            className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-          >
-            {DROID_PERMISSION_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value} title={option.detail}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PermissionModePicker
+          ariaLabel="Droid autonomy mode"
+          selectedValue={dpmUse}
+          options={DROID_PERMISSION_OPTIONS}
+          disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
+          onSelect={(value) => {
+            if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(value);
+            else onDroidPermissionModeChange?.(value);
+          }}
+        />
       );
     }
 
@@ -2616,34 +2599,20 @@ export function AgentChatComposer({
             value: modeId,
             label: cursorModeLabel(modeId),
           }));
+      const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
       return (
         <div className="flex flex-wrap items-center gap-2">
           {modeChoices.length ? (
-            <label
-              className={cn(
-                "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-                plainComposerToolbarChrome
-                  ? "border border-transparent bg-transparent"
-                  : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-              )}
-            >
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
-              <select
-                value={modeValue}
-                disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
-                onChange={(event) => {
-                  if (parallelControlSlot) parallelControlSlot.onCursorModeChange(event.target.value);
-                  else onCursorModeChange?.(event.target.value);
-                }}
-                className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-              >
-                {modeChoices.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <PermissionModePicker
+              ariaLabel="Cursor mode"
+              selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
+              options={cursorModeOptions}
+              disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+              onSelect={(value) => {
+                if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
+                else onCursorModeChange?.(value);
+              }}
+            />
           ) : null}
           {cursorExtraOptions.map((option) => {
             if (option.type === "boolean") {
@@ -2722,39 +2691,20 @@ export function AgentChatComposer({
       );
     }
 
-    const runtimeLabel = sp === "cursor" ? "Mode" : "Permissions";
     return (
-      <label
-        className={cn(
-          "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-          plainComposerToolbarChrome
-            ? "border border-transparent bg-transparent"
-            : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-        )}
-      >
-        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
-        <select
-          value={opmUse}
-          disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
-          onChange={(event) => {
-            const v = event.target.value as AgentChatOpenCodePermissionMode;
-            if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(v);
-            else onOpenCodePermissionModeChange?.(v);
-          }}
-          className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-        >
-          {OPENCODE_PERMISSION_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="OpenCode permission mode"
+        selectedValue={opmUse ?? "edit"}
+        options={OPENCODE_PERMISSION_OPTIONS}
+        disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
+        onSelect={(value) => {
+          if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(value);
+          else onOpenCodePermissionModeChange?.(value);
+        }}
+      />
     );
   }, [
     claudeSelectionMode,
-    claudeModePickerOpen,
-    codexPresetPickerOpen,
     applyCodexPreset,
     codexPreset,
     codexPresetOptions,

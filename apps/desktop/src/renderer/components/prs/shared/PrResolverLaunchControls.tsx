@@ -117,7 +117,7 @@ function toLegacyPermissionMode(mode: AgentChatPermissionMode, providerGroup: Mo
 
 function labelForPermissionOption(value: AgentChatPermissionMode, label: string, providerGroup: ModelProviderGroup): string {
   if (providerGroup === "claude") {
-    if (value === "default") return "Ask permissions";
+    if (value === "default") return "Manual";
     if (value === "edit") return "Accept edits";
     if (value === "plan") return "Plan";
     if (value === "full-auto") return "Bypass";

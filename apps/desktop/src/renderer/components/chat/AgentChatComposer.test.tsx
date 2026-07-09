@@ -506,16 +506,16 @@ describe("AgentChatComposer", () => {
 
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     const trigger = screen.getByRole("button", { name: "Claude permission mode" });
-    expect(trigger.textContent).toContain("Ask");
+    expect(trigger.textContent).toContain("Manual");
 
     fireEvent.click(trigger);
 
     expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Ask permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Manual/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Auto/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Bypass/ })).toBeTruthy();
   });
 
   it("routes Claude auto through the native permission callback", () => {
@@ -583,7 +583,7 @@ describe("AgentChatComposer", () => {
       codexConfigSource: "flags",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
 
     expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Edit mode" })).toBeTruthy();
@@ -605,7 +605,7 @@ describe("AgentChatComposer", () => {
 
     expect(container.querySelector(".ade-chat-composer-footer")).toBeTruthy();
 
-    const trigger = screen.getByRole("button", { name: "Codex approval preset" });
+    const trigger = screen.getByRole("button", { name: "Codex permission mode" });
     expect(trigger.className).toContain("ade-chat-composer-permission-trigger");
     expect(trigger.querySelector(".ade-chat-composer-permission-label")).toBeTruthy();
     expect(trigger.querySelector(".ade-chat-composer-permission-chevron")).toBeTruthy();
@@ -615,7 +615,7 @@ describe("AgentChatComposer", () => {
     const onCodexPresetChange = vi.fn();
     renderComposer({ onCodexPresetChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(screen.getByRole("option", { name: "Plan mode" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
@@ -624,7 +624,7 @@ describe("AgentChatComposer", () => {
       codexConfigSource: "flags",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(screen.getByRole("option", { name: "Edit mode" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
@@ -633,7 +633,7 @@ describe("AgentChatComposer", () => {
       codexConfigSource: "flags",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(screen.getByRole("option", { name: "Full access" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
@@ -690,17 +690,16 @@ describe("AgentChatComposer", () => {
       onDroidPermissionModeChange,
     });
 
-    const autonomySelect = screen.getByRole("combobox", { name: "Autonomy" }) as HTMLSelectElement;
-    expect(Array.from(autonomySelect.options).map((option) => option.value)).toEqual([
-      "read-only",
-      "auto-low",
-      "auto-medium",
-      "auto-high",
-      "agi",
-    ]);
+    const autonomyTrigger = screen.getByRole("button", { name: "Droid autonomy mode" });
+    fireEvent.click(autonomyTrigger);
+    expect(screen.getByRole("option", { name: "Read-only" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Auto low" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Auto medium" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Auto high" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "AGI (orchestrator)" })).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
 
-    fireEvent.change(autonomySelect, { target: { value: "auto-high" } });
+    fireEvent.click(screen.getByRole("option", { name: "Auto high" }));
 
     expect(onDroidPermissionModeChange).toHaveBeenCalledWith("auto-high");
   });
@@ -715,15 +714,14 @@ describe("AgentChatComposer", () => {
       onOpenCodePermissionModeChange,
     });
 
-    const permissionsSelect = screen.getByRole("combobox", { name: "Permissions" }) as HTMLSelectElement;
-    expect(Array.from(permissionsSelect.options).map((option) => option.value)).toEqual([
-      "plan",
-      "edit",
-      "full-auto",
-      "config-toml",
-    ]);
+    const permissionsTrigger = screen.getByRole("button", { name: "OpenCode permission mode" });
+    fireEvent.click(permissionsTrigger);
+    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Edit" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full auto" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Config" })).toBeTruthy();
 
-    fireEvent.change(permissionsSelect, { target: { value: "config-toml" } });
+    fireEvent.click(screen.getByRole("option", { name: "Config" }));
 
     expect(onOpenCodePermissionModeChange).toHaveBeenCalledWith("config-toml");
   });
@@ -734,7 +732,7 @@ describe("AgentChatComposer", () => {
       hideNativeControls: true,
     });
 
-    expect(screen.queryByRole("button", { name: "Codex approval preset" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Codex permission mode" })).toBeNull();
   });
 
   it("avoids promising option chips when a pending question is freeform only", () => {
@@ -1428,10 +1426,10 @@ describe("AgentChatComposer", () => {
       sessionProvider: "opencode",
     });
     const view = render(<AgentChatComposer {...props} />);
-    expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "OpenCode permission mode" })).toBeNull();
 
     view.rerender(<AgentChatComposer {...props} modelId="opencode/openai/gpt-5.4" />);
-    expect(screen.getByRole("combobox", { name: "Permissions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "OpenCode permission mode" })).toBeTruthy();
   });
 
   it("marks the textarea layout variant in grid-tile mode", () => {

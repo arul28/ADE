@@ -1756,7 +1756,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
-    expect(screen.getByRole("button", { name: "Codex approval preset" }).textContent).toContain("Full access");
+    expect(screen.getByRole("button", { name: "Codex permission mode" }).textContent).toContain("Full");
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch with the restored config." } });
@@ -1817,9 +1817,9 @@ describe("AgentChatPane submit recovery", () => {
       availableModelIdsOverride: ["openai/gpt-5.4"],
     });
 
-    const approvalButton = await screen.findByRole("button", { name: "Codex approval preset" });
+    const approvalButton = await screen.findByRole("button", { name: "Codex permission mode" });
     await waitFor(() => {
-      expect(approvalButton.textContent).toContain("Full access");
+      expect(approvalButton.textContent).toContain("Full");
       expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
       expect(screen.getByLabelText("Reasoning effort").textContent).toContain("HI");
     });
@@ -2704,7 +2704,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(await screen.findByRole("option", { name: "Full access" }));
 
     await waitFor(() => {
@@ -4052,7 +4052,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("keeps Auto-create selected while reporting Primary as the Work tools lane", async () => {
+  it("keeps Auto-create selected while routing Work tools through Primary", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({ onLaneChange });
@@ -4062,7 +4062,6 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
-    expect(await screen.findByText("Tools use Primary until the lane is created.")).toBeTruthy();
   });
 
   it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
@@ -4085,7 +4084,6 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
-    expect(await screen.findByText("Tools use current-lane until the lane is created.")).toBeTruthy();
   });
 
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {
@@ -5312,7 +5310,7 @@ describe("AgentChatPane submit recovery", () => {
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(await screen.findByRole("option", { name: "Plan mode" }));
 
     const textbox = await screen.findByRole("textbox");
@@ -5382,7 +5380,7 @@ describe("AgentChatPane submit recovery", () => {
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
     fireEvent.click(await screen.findByRole("option", { name: "Edit mode" }));
 
     const textbox = await screen.findByRole("textbox");

@@ -160,6 +160,7 @@ extension WorkSessionSettingsSheet {
   }
 
   func runtimeCard(option: WorkRuntimeOption, isSelected: Bool) -> some View {
+    let tint = workRuntimeModeTint(provider: summary.provider, mode: option.id)
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 10) {
         VStack(alignment: .leading, spacing: 4) {
@@ -176,7 +177,7 @@ extension WorkSessionSettingsSheet {
 
         if isSelected {
           Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(tint)
         }
       }
     }
@@ -184,11 +185,11 @@ extension WorkSessionSettingsSheet {
     .padding(12)
     .background(
       RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .fill(isSelected ? providerTint(summary.provider).opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
+        .fill(isSelected ? tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(isSelected ? providerTint(summary.provider).opacity(0.42) : ADEColor.border.opacity(0.18), lineWidth: isSelected ? 1.3 : 0.8)
+        .stroke(isSelected ? tint.opacity(0.42) : ADEColor.border.opacity(0.18), lineWidth: isSelected ? 1.3 : 0.8)
     )
     .glassEffect(in: .rect(cornerRadius: 16))
   }

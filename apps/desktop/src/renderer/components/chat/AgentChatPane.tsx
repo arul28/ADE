@@ -1442,7 +1442,7 @@ function clampHandoffReasoningToModel(current: string | null, descriptor: ModelD
 }
 
 const HANDOFF_CLAUDE_MODES: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
-  { value: "default", label: "Ask permissions" },
+  { value: "default", label: "Manual" },
   { value: "acceptEdits", label: "Accept edits" },
   { value: "auto", label: "Auto" },
   { value: "plan", label: "Plan" },
@@ -9339,7 +9339,7 @@ export function AgentChatPane({
             <div className="space-y-0.5">
               <select
                 value={handoffCodexSelectValue}
-                title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a preset replaces it." : undefined}
+                title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a mode replaces it." : undefined}
                 onChange={(e) => {
                   const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
                   const updated = handoffApplyCodexPreset(next, {
@@ -9351,7 +9351,7 @@ export function AgentChatPane({
                   setHandoffCodexConfigSource(updated.codexConfigSource);
                 }}
                 className={handoffSelectCls}
-                aria-label="Codex permission preset for handoff"
+                aria-label="Codex permission mode for handoff"
               >
                 <option value="default">Default — write + prompts on risk</option>
                 <option value="plan">Plan — read only + prompts</option>
@@ -9376,7 +9376,7 @@ export function AgentChatPane({
                 </button>
               ) : null}
               {handoffCodexPermissionPreset === "custom" ? (
-                <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard preset to apply to the new chat.</div>
+                <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard mode to apply to the new chat.</div>
               ) : null}
             </div>
           ) : null}
@@ -10969,11 +10969,6 @@ export function AgentChatPane({
                                       </button>
                                     </SmartTooltip>
                                   ) : null}
-                                </div>
-                              ) : null}
-                              {draftLaunchTargetIsAutoCreate && autoCreateToolsLane ? (
-                                <div className="font-sans text-[10px] leading-4 text-muted-fg/55">
-                                  Tools use {autoCreateToolsLane.name} until the lane is created.
                                 </div>
                               ) : null}
                             </div>

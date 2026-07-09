@@ -68,19 +68,19 @@ describe("PrResolverLaunchControls", () => {
     delete (window as unknown as { ade?: unknown }).ade;
   });
 
-  it("uses Work-tab Claude permission presets, including ask permissions", async () => {
+  it("uses Work-tab Claude permission modes, including manual", async () => {
     const user = userEvent.setup();
     const props = renderControls({
       modelId: "anthropic/claude-opus-4-8",
       permissionMode: "default",
     });
 
-    expect(screen.getByRole("button", { name: "Ask permissions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Manual" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Ask permissions" }));
+    await user.click(screen.getByRole("button", { name: "Manual" }));
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("default");
   });
 
