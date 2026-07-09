@@ -30,6 +30,7 @@ import {
   type ProjectId,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
@@ -52,6 +53,7 @@ export type MultiProjectRpcHandlerOptions = {
   scopeRegistry?: ProjectScopeRegistry;
   disposeScopesOnDispose?: boolean;
   onShutdown?: (() => void) | null;
+  personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -61,6 +63,8 @@ const RUNTIME_METHODS = new Set([
   "shutdown",
   "exit",
   "runtime/info",
+  "personalChats.call",
+  "personalChats.streamEvents",
   "machineInfo.get",
   "projects.list",
   "projects.add",
@@ -300,6 +304,8 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const ownsPersonalChatScope = options.personalChatScope == null;
+  const personalChatScope = options.personalChatScope ?? new PersonalChatScope();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
@@ -532,6 +538,7 @@ export function createMultiProjectRpcRequestHandler(
             clone: true,
             listMyGitHubRepos: true,
           },
+          personalChats: personalChatScope.capabilities(),
         },
       };
     }
@@ -570,6 +577,14 @@ export function createMultiProjectRpcRequestHandler(
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,
       };
+    }
+
+    if (method === "personalChats.call") {
+      return await personalChatScope.call(params.action, params.args);
+    }
+
+    if (method === "personalChats.streamEvents") {
+      return await personalChatScope.streamEvents(params);
     }
 
     if (method === "projects.list") {
@@ -833,6 +848,7 @@ export function createMultiProjectRpcRequestHandler(
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();
     }
+    if (ownsPersonalChatScope) void personalChatScope.dispose();
   };
 
   handler.setNotifier = (notify: JsonRpcNotifier | null) => {

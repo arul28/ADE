@@ -581,6 +581,10 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
+  PersonalChatCallArgs,
+  PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
@@ -791,6 +795,14 @@ declare global {
           id: string,
           options?: { manual?: boolean },
         ) => Promise<{ disconnected: boolean }>;
+      };
+      personalChats: {
+        call: (
+          request: PersonalChatCallArgs,
+        ) => Promise<PersonalChatCallResponse>;
+        streamEvents: (
+          request?: PersonalChatStreamEventsArgs,
+        ) => Promise<PersonalChatStreamEventsResult>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;

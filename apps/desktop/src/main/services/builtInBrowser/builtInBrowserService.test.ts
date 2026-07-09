@@ -639,6 +639,37 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.partitionCalls).toEqual([partitionA, partitionA, partitionC]);
   });
 
+  it("keeps an explicitly global browser profile isolated from the sender window project", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://project.example.test", activate: true }, browserWin);
+    await service.createTab({
+      profileScope: "global",
+      url: "https://personal.example.test",
+      activate: true,
+    }, browserWin);
+
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin)).toMatchObject({
+      profileProjectRoot: "/Users/ade/project-alpha",
+      url: "https://project.example.test/",
+    });
+    expect(service.getStatus({ profileScope: "global" }, browserWin)).toMatchObject({
+      partition: "persist:ade-browser",
+      profileProjectRoot: null,
+      url: "https://personal.example.test/",
+    });
+    expect(service.getStatus({ profileScope: "global" }, browserWin).partition)
+      .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).partition);
+  });
+
   it("rejects attached webviews from another project browser profile", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({

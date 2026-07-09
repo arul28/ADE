@@ -590,6 +590,7 @@ private struct WorkChatAttachmentChip: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
+  @Environment(\.workChatIsPersonal) private var isPersonalChat
   @Environment(\.displayScale) private var displayScale
 
   @State private var previewImage: UIImage?
@@ -680,6 +681,26 @@ private struct WorkChatAttachmentChip: View {
       }
     }
 
+    if isPersonalChat {
+      guard syncService.canInvokeRemoteAction("personalChats.getImageDataUrl") else {
+        loadFailed = true
+        return
+      }
+      do {
+        let dataUrl = try await syncService.personalChatImageDataUrl(path: attachment.path)
+        if let image = WorkChatAttachmentImagePreview.image(fromDataUrl: dataUrl, maxPixelSize: maxPixelSize) {
+          previewImage = image
+          loadFailed = false
+          return
+        }
+        loadFailed = true
+        return
+      } catch {
+        loadFailed = true
+        return
+      }
+    }
+
     guard let laneId, !laneId.isEmpty else {
       loadFailed = true
       return
@@ -747,6 +768,7 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
   let modelLabel: String?
   let laneId: String
   let requestedCwd: String?
+  let isPersonalChat: Bool
 
   func body(content: Content) -> some View {
     content
@@ -755,6 +777,7 @@ struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
       .environment(\.workChatModelLabel, modelLabel)
       .environment(\.workChatLaneId, laneId)
       .environment(\.workChatRequestedCwd, requestedCwd)
+      .environment(\.workChatIsPersonal, isPersonalChat)
   }
 }
 
@@ -766,6 +789,10 @@ private struct WorkChatRequestedCwdEnvironmentKey: EnvironmentKey {
   static let defaultValue: String? = nil
 }
 
+private struct WorkChatIsPersonalEnvironmentKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
 extension EnvironmentValues {
   var workChatLaneId: String? {
     get { self[WorkChatLaneIdEnvironmentKey.self] }
@@ -775,6 +802,12 @@ extension EnvironmentValues {
   var workChatRequestedCwd: String? {
     get { self[WorkChatRequestedCwdEnvironmentKey.self] }
     set { self[WorkChatRequestedCwdEnvironmentKey.self] = newValue }
+  }
+
+
+  var workChatIsPersonal: Bool {
+    get { self[WorkChatIsPersonalEnvironmentKey.self] }
+    set { self[WorkChatIsPersonalEnvironmentKey.self] = newValue }
   }
 }
 

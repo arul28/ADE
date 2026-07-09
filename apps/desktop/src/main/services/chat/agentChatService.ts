@@ -4915,11 +4915,13 @@ function buildCodexDeveloperInstructions(args: {
     | "orchestrationTag"
     | "orchestrationParentSessionId"
     | "orchestrationStepId"
+    | "surface"
   >;
   collaborationMode: "default" | "plan";
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
+  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -4949,7 +4951,7 @@ function resolveCodexInstructionCollaborationMode(
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
+    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
   >,
   supportedModes: Set<string> | null,
   laneWorktreePath: string,
@@ -4970,7 +4972,7 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: mode === "plan"
+      developer_instructions: mode === "plan" && session.surface !== "personal"
         ? null
         : buildCodexDeveloperInstructions({
             laneWorktreePath,
@@ -5430,6 +5432,37 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
   return session.sessionProfile === "light";
 }
 
+const PERSONAL_CHAT_SYSTEM_PROMPT = [
+  "You are a general-purpose AI assistant in an ADE personal chat.",
+  "This conversation is not attached to a software project, repository, branch, lane, or pull request.",
+  "Answer the user's request directly. Do not assume they want coding work or inspect files unless they explicitly ask.",
+  "If filesystem or shell work is explicitly requested, keep it inside the scratch working directory provided by the runtime.",
+].join(" ");
+
+function isPersonalSession(session: Pick<AgentChatSession, "surface">): boolean {
+  return session.surface === "personal";
+}
+
+function personalChatUserPromptFallback(
+  session: Pick<AgentChatSession, "surface" | "provider">,
+): string | null {
+  if (!isPersonalSession(session)) return null;
+  // Every current provider has a dedicated instruction channel below:
+  // Claude systemPrompt, Codex developerInstructions, OpenCode's system field,
+  // and provider-runner harness prefixes for Cursor/Droid. Keep a fallback for
+  // a future provider so personal chat never silently inherits coding context.
+  switch (session.provider) {
+    case "claude":
+    case "codex":
+    case "opencode":
+    case "cursor":
+    case "droid":
+      return null;
+    default:
+      return PERSONAL_CHAT_SYSTEM_PROMPT;
+  }
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -5600,10 +5633,25 @@ export function createAgentChatService(args: {
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
       ADE_CHAT_SESSION_ID: managed.session.id,
-      ADE_LANE_ID: managed.session.laneId,
-      ADE_PROJECT_ROOT: projectRoot,
-      ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
+      ...(isPersonalSession(managed.session)
+        ? { ADE_CHAT_SCOPE: "personal" }
+        : {
+            ADE_LANE_ID: managed.session.laneId,
+            ADE_PROJECT_ROOT: projectRoot,
+            ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
+          }),
     };
+    if (isPersonalSession(managed.session)) {
+      delete env.ADE_LANE_ID;
+      delete env.ADE_PROJECT_ROOT;
+      delete env.ADE_WORKSPACE_ROOT;
+      delete env.ADE_REPO_ROOT;
+      delete env.INIT_CWD;
+      delete env.OLDPWD;
+      // Keep shell-visible PWD aligned with the actual scratch cwd rather
+      // than leaking whichever project happened to launch the ADE brain.
+      env.PWD = managed.laneWorktreePath;
+    }
     const linearContext = writeSessionLinearIssueContext(managed.session.id);
     if (linearContext) {
       env.ADE_LINEAR_ISSUE_IDS = linearContext.identifiers;
@@ -9218,7 +9266,9 @@ export function createAgentChatService(args: {
           : undefined;
       const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
       const identityKey = normalizeIdentityKey(record.identityKey);
-      const surface = record.surface === "automation" ? record.surface : "work";
+      const surface = record.surface === "automation" || record.surface === "personal"
+        ? record.surface
+        : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
       const codexGoal = normalizeCodexGoalPayload(record.codexGoal);
@@ -15843,6 +15893,7 @@ export function createAgentChatService(args: {
       const openCodePromptBody = {
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+        ...(isPersonalSession(managed.session) ? { system: PERSONAL_CHAT_SYSTEM_PROMPT } : {}),
         ...(toolSelection ? { tools: toolSelection } : {}),
         ...(openCodeVariant ? { variant: openCodeVariant } : {}),
         parts: buildOpenCodePromptParts({
@@ -20602,10 +20653,11 @@ export function createAgentChatService(args: {
     managed.session.claudePermissionMode = claudePermissionMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
+    const personalSession = isPersonalSession(managed.session);
     const claudeEnv = buildAgentRuntimeEnv(managed);
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
-    const pluginPaths = discoverClaudePluginPaths(managed.laneWorktreePath);
+    const pluginPaths = personalSession ? [] : discoverClaudePluginPaths(managed.laneWorktreePath);
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
@@ -20682,7 +20734,9 @@ export function createAgentChatService(args: {
       source: claudeExecutable.source,
       path: claudeExecutable.path,
     });
-    if (!lightweight) {
+    if (personalSession) {
+      opts.systemPrompt = PERSONAL_CHAT_SYSTEM_PROMPT;
+    } else if (!lightweight) {
       opts.toolConfig = {
         askUserQuestion: {
           previewFormat: "markdown",
@@ -21048,7 +21102,8 @@ export function createAgentChatService(args: {
     const executionContext = resolveManagedExecutionContext(managed, {
       purpose: "deliver queued steer",
     });
-    const laneDirectiveKey = executionContext.laneDirectiveKey;
+    const personalSession = isPersonalSession(managed.session);
+    const laneDirectiveKey = personalSession ? null : executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective =
       laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     const promptText = composeLaunchDirectives(trimmed, [
@@ -21058,6 +21113,7 @@ export function createAgentChatService(args: {
             laneWorktreePath: executionContext.laneWorktreePath,
           })
         : null,
+      personalChatUserPromptFallback(managed.session),
       buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
     ]);
 
@@ -22821,7 +22877,8 @@ export function createAgentChatService(args: {
       managed.session.interactionMode = interactionMode ?? managed.session.interactionMode ?? "default";
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }
-    const laneDirectiveKey = executionContext.laneDirectiveKey;
+    const personalSession = isPersonalSession(managed.session);
+    const laneDirectiveKey = personalSession ? null : executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     // Guidance injection is capability-based, not session-state-based:
     // Claude sessions receive lane-scoped ADE guidance in their persistent system
@@ -22831,14 +22888,14 @@ export function createAgentChatService(args: {
     // including on resumed sessions where `shouldInjectLaneDirective` is false.
     const providerHasPersistentGuidance = managed.session.provider === "claude"
       || managed.session.provider === "codex";
-    const shouldInjectGuidance = !providerHasPersistentGuidance;
+    const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
     const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
       ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => slashCommandKey(command.name)) ?? [])
       : new Set<string>();
-    const expandedSlashCommandPrompt = providerSlashCommand
+    const expandedSlashCommandPrompt = providerSlashCommand && !personalSession
       ? resolveProviderSlashCommandPrompt({
           provider: managed.session.provider,
           cwd: managed.laneWorktreePath,
@@ -22850,10 +22907,10 @@ export function createAgentChatService(args: {
           codexRuntimeSlashCommandNames,
         })
       : null;
-    const contextAttachmentPrompt = providerSlashCommand
+    const contextAttachmentPrompt = providerSlashCommand && !personalSession
       ? ""
       : buildChatContextAttachmentPrompt(publicContextAttachments);
-    const promptText = providerSlashCommand
+    const promptText = providerSlashCommand && !personalSession
       ? expandedSlashCommandPrompt ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
@@ -22862,12 +22919,15 @@ export function createAgentChatService(args: {
                 laneWorktreePath: executionContext.laneWorktreePath,
               })
             : null,
-          buildExecutionModeDirective(executionMode, managed.session.provider),
-          buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
+          personalChatUserPromptFallback(managed.session),
+          personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
+          personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath) : null,
-          buildComputerUseDirective(
-            computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
-          ),
+          personalSession
+            ? null
+            : buildComputerUseDirective(
+                computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
+              ),
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -22876,7 +22936,7 @@ export function createAgentChatService(args: {
           return parsed.kind === "objective" ? parsed.objective : null;
         })()
       : null;
-    const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand
+    const autoTitleSeed = codexGoalTitleSeed ?? (providerSlashCommand && !personalSession
       ? expandedSlashCommandPrompt ?? null
       : visibleText);
     if (!managed.autoTitleSeed && autoTitleSeed) {
@@ -22904,9 +22964,9 @@ export function createAgentChatService(args: {
       ...(metadata ? { metadata } : {}),
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
-      laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
-      providerSlashCommand,
-      forceClaudeUserMessage: managed.session.provider === "claude" && !providerSlashCommand && slashCommand != null,
+      laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      providerSlashCommand: personalSession ? false : providerSlashCommand === true,
+      forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
       ...(cloudOverrides ? { cloudOverrides } : {}),
     };
@@ -24332,12 +24392,15 @@ export function createAgentChatService(args: {
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
+      const personalSession = isPersonalSession(managed.session);
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
-      if (isFirstSendForLane) {
-        const injected = await buildCursorSdkInjectedSystemPrompt({
-          runtime: "local",
-          laneWorktreePath: managed.laneWorktreePath,
-        });
+      if (personalSession || isFirstSendForLane) {
+        const injected = personalSession
+          ? PERSONAL_CHAT_SYSTEM_PROMPT
+          : await buildCursorSdkInjectedSystemPrompt({
+              runtime: "local",
+              laneWorktreePath: managed.laneWorktreePath,
+            });
         if (injected.length) {
           composed = `${injected}\n\n${composed}`;
         }
@@ -24690,10 +24753,12 @@ export function createAgentChatService(args: {
     const isFollowUp = Boolean(managed.session.cursorCloudAgentId);
     let cloudComposed = args.promptText;
     if (!isFollowUp) {
-      const injected = await buildCursorSdkInjectedSystemPrompt({
-        runtime: "cloud",
-        laneWorktreePath: managed.laneWorktreePath,
-      });
+      const injected = isPersonalSession(managed.session)
+        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        : await buildCursorSdkInjectedSystemPrompt({
+            runtime: "cloud",
+            laneWorktreePath: managed.laneWorktreePath,
+          });
       if (injected.length) {
         cloudComposed = `${injected}\n\n${cloudComposed}`;
       }
@@ -25495,20 +25560,22 @@ export function createAgentChatService(args: {
       }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
-      const droidHarnessPrompt = buildCodingAgentSystemPrompt({
-        cwd: managed.laneWorktreePath,
-        mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
-        permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-        interactive: true,
-        runtime: "droid-sdk",
-        adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-        orchestrationRole: managed.session.orchestrationRole,
-        orchestrationRunId: managed.session.orchestrationRunId,
-        orchestrationBundlePath: managed.session.orchestrationBundlePath,
-        orchestrationTag: managed.session.orchestrationTag,
-        orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
-        orchestrationStepId: managed.session.orchestrationStepId,
-      });
+      const droidHarnessPrompt = isPersonalSession(managed.session)
+        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        : buildCodingAgentSystemPrompt({
+            cwd: managed.laneWorktreePath,
+            mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
+            permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+            interactive: true,
+            runtime: "droid-sdk",
+            adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+            orchestrationRole: managed.session.orchestrationRole,
+            orchestrationRunId: managed.session.orchestrationRunId,
+            orchestrationBundlePath: managed.session.orchestrationBundlePath,
+            orchestrationTag: managed.session.orchestrationTag,
+            orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+            orchestrationStepId: managed.session.orchestrationStepId,
+          });
       const sdkInput = [
         droidHarnessPrompt,
         "",
@@ -27444,7 +27511,7 @@ export function createAgentChatService(args: {
     return chatRows
       .map((row) => summarizeSessionRow(row))
       .filter((summary) => includeIdentity || !summary.identityKey)
-      .filter((summary) => includeAutomation || (summary.surface ?? "work") === "work")
+      .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
   };
 

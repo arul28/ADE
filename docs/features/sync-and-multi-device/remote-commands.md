@@ -83,8 +83,9 @@ type SyncRemoteCommandPolicy = {
 ```
 
 The scope label matters because the brain serves **multiple projects**
-at once. `runtime`-scoped commands (machine-wide diagnostics, project
-catalog reads, settings, and `sync.getWebPairingInfo` — the browser
+and one hidden personal-chat scope at once. `runtime`-scoped commands
+(machine-wide diagnostics, personal chats, project catalog reads, settings,
+and `sync.getWebPairingInfo` — the browser
 pairing URL / PIN / relay-availability read the iOS "Pair a browser"
 sheet calls) run without a project binding. `project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
@@ -240,6 +241,22 @@ the queued message runs next; it returns `{ ok, dispatchedAt }`.
 model reads it, returning `{ ok, cancelled }`. The iOS companion uses
 both via `SyncService.dispatchChatSteer` /
 `cancelDispatchedChatSteer`.
+
+**Personal chat** (`personalChats.*`)
+- `list`, `create`, `getSummary`, `read`, `send`
+- `steer`, `cancelSteer`, `editSteer`, `dispatchSteer`,
+  `cancelDispatchedSteer`, `interrupt`, `respondToInput`, `approve`
+- `updateSession`, `archive`, `unarchive`, `delete`
+- `models`, `modelCatalog`, `getEventHistory`, `getEventHistoryPage`
+- `terminalCreate`, `terminalWrite`, `terminalResize`, `terminalDispose`
+- `saveTempAttachment`, `getImageDataUrl`, `streamEvents`
+
+All personal actions are `scope: "runtime"` and dispatch to the injected
+`PersonalChatScope`, never to the active project's `agentChatService`. Only
+`send` is queueable. `create` is live-only because replaying a queued create
+cannot return a stable session id and may duplicate the conversation. Every
+session-bound action revalidates `surface: "personal"`; terminal and attachment
+actions additionally enforce scope ownership/path confinement.
 
 **Git** (`git.*`)
 - `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`
@@ -583,7 +600,10 @@ can be sensitive.
   a command, subscribe to the transcript stream for incremental
   events. `chat.send` waits for the runtime-side dispatch acknowledgement
   before returning `ok`, so the phone does not clear its local echo
-  while the desktop is still preparing the turn.
+  while the desktop is still preparing the turn. Personal chat uses the same
+  envelopes but sends `chatScope: "personal"`; that explicit discriminator
+  resolves the hidden durable transcript and active-turn state without a
+  `projectId`.
 - **File access sub-protocol** (`file_request` / `file_response`) is
   a separate envelope from remote commands; it handles large binary
   payloads and streaming reads outside the command surface to avoid
@@ -642,6 +662,9 @@ first fetch instead of returning an empty passive cache.
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
+- **Do not make `personalChats.create` queueable.** Clients can cache personal
+  summaries per host for offline reading, but creation must wait for a live
+  brain. Only an existing session's `personalChats.send` may queue.
 - **`prs.createFromLane` requires GitHub auth on the brain.** Headless
   brains resolve auth the same way the desktop does: a stored PAT,
   then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),

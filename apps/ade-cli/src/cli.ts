@@ -27,6 +27,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -215,6 +216,7 @@ type CliPlan =
       summary?: "status" | "doctor" | "auth";
       formatter?: FormatterId;
       preferHeadless?: boolean;
+      machineOnly?: boolean;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -1508,11 +1510,18 @@ const HELP_BY_COMMAND: Record<string, string> = {
   requires an attached runtime because it owns provider/session state.
 
     $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --personal --text               List machine personal chats (no project required)
+    $ ade chat actions --personal --text            List machine personal-chat actions
+    $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan my trip"
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat steer <session> --personal --text "focus on the tradeoffs"
+    $ ade chat models --personal --provider codex
+    $ ade chat update <session> --personal --title "Trip planning"
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
@@ -1561,6 +1570,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     config-toml is only meaningful for Codex/OpenCode provider-native config.
     Use ade actions run chat.modelCatalog --json to inspect model-specific
     reasoning tiers and fast-mode support.
+
+  Personal chats attach to the machine-owned ADE brain and never register a
+  project. They work with a desktopless brain and through the same
+  'ade rpc --stdio' transport used by remote desktops. One-shot '--headless'
+  is intentionally unsupported because it would dispose the agent runtime when
+  the command exits.
 `,
   "chat create": `${ADE_BANNER}
   Chat create
@@ -1574,6 +1589,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.5 --prompt "Work this issue"
 
   Flags:
+    --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
     --provider <name>       claude | codex | cursor | droid | opencode.
     --model <id>            Model id, also sent as modelId for runtime parity.
@@ -6302,6 +6318,9 @@ function buildTerminalPlan(args: string[]): CliPlan {
 
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
+  if (readFlag(args, ["--personal"])) {
+    return buildPersonalChatPlan(sub, args);
+  }
   if (sub === "actions")
     return {
       kind: "execute",
@@ -6969,6 +6988,236 @@ function buildChatPlan(args: string[]): CliPlan {
     label: `chat ${sub}`,
     steps: [actionStep("result", "chat", sub, withSession())],
   };
+}
+
+function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
+  return {
+    key: "result",
+    method: "personalChats.call",
+    params: { action, args },
+  };
+}
+
+function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
+  const laneId = readLaneId(args);
+  if (laneId) {
+    throw new CliUsageError("--personal cannot be combined with --lane.");
+  }
+  if (
+    args.some((token) =>
+      token === "--from-linear-issue" ||
+      token.startsWith("--from-linear-issue=") ||
+      token === "--linear-issue-json" ||
+      token.startsWith("--linear-issue-json="),
+    )
+  ) {
+    throw new CliUsageError("Personal chats cannot attach project Linear issues.");
+  }
+
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+  };
+  if (sub === "actions") {
+    return {
+      kind: "static",
+      formatter: "actions-list",
+      value: {
+        actions: PERSONAL_CHAT_ACTIONS.map((action) => ({
+          name: `personalChats.${action}`,
+          description: "Machine-scoped personal chat action.",
+          example: `ade chat action --personal ${action} --input-json '{...}'`,
+        })),
+      },
+    };
+  }
+  if (sub === "action" || sub === "call") {
+    const action = requireValue(
+      readValue(args, ["--action"]) ?? firstStandalonePositional(args),
+      "personal chat action",
+    );
+    if (!(PERSONAL_CHAT_ACTIONS as readonly string[]).includes(action)) {
+      throw new CliUsageError(
+        `Unknown personal chat action '${action}'. Use \`ade chat actions --personal --text\` to list actions.`,
+      );
+    }
+    return {
+      ...base,
+      label: `personal chat ${action}`,
+      steps: [personalChatStep(action, collectGenericObjectArgs(args))],
+    };
+  }
+  if (sub === "list" || sub === "ls") {
+    const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
+    const excludeArchived = readFlag(args, ["--active", "--no-archived", "--exclude-archived"]);
+    if (includeArchived && excludeArchived) {
+      throw new CliUsageError("Use either --include-archived or --no-archived, not both.");
+    }
+    return {
+      ...base,
+      label: "personal chat list",
+      formatter: "chat-list",
+      steps: [personalChatStep("list", {
+        ...(includeArchived ? { includeArchived: true } : {}),
+        ...(excludeArchived ? { includeArchived: false } : {}),
+      })],
+    };
+  }
+
+  if (sub === "create" || sub === "spawn") {
+    const model = readValue(args, ["--model", "--model-id"]);
+    const provider = readValue(args, ["--provider"]);
+    const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    const fastMode = readFastModeFlag(args);
+    const createArgs = collectGenericObjectArgs(args, {
+      provider,
+      model,
+      modelId: model,
+      title: readValue(args, ["--title"]),
+      reasoningEffort: readValue(args, ["--reasoning-effort", "--effort"]),
+      permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
+      ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(prompt ? { kickoffText: prompt } : {}),
+    });
+    requireValue(asString(createArgs.provider), "provider");
+    requireValue(asString(createArgs.model), "model");
+    return {
+      ...base,
+      label: "personal chat create",
+      steps: [personalChatStep("create", createArgs)],
+    };
+  }
+
+  if (sub === "models") {
+    const provider = readValue(args, ["--provider"]);
+    return {
+      ...base,
+      label: "personal chat models",
+      steps: [personalChatStep("models", collectGenericObjectArgs(args, {
+        ...(provider ? { provider } : {}),
+      }))],
+    };
+  }
+  if (sub === "model-catalog" || sub === "catalog") {
+    const mode = readValue(args, ["--mode"]);
+    return {
+      ...base,
+      label: "personal chat model catalog",
+      steps: [personalChatStep("modelCatalog", collectGenericObjectArgs(args, {
+        ...(mode ? { mode } : {}),
+      }))],
+    };
+  }
+
+  const sessionSubcommands = new Set([
+    "read",
+    "messages",
+    "transcript",
+    "send",
+    "steer",
+    "update",
+    "configure",
+    "interrupt",
+    "stop",
+    "archive",
+    "unarchive",
+    "delete",
+    "rm",
+    "show",
+    "status",
+  ]);
+  if (!sessionSubcommands.has(sub)) {
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, archive, unarchive, or delete; got '${sub}'.`);
+  }
+
+  const sessionId = requireValue(
+    readValue(args, ["--session", "--session-id"]) ?? firstStandalonePositional(args),
+    "sessionId",
+  );
+  if (sub === "read" || sub === "messages" || sub === "transcript") {
+    const limit = readIntOption(args, ["--limit"], 50);
+    const since = readValue(args, ["--since"]);
+    return {
+      ...base,
+      label: "personal chat read",
+      formatter: "chat-read",
+      steps: [personalChatStep("read", collectGenericObjectArgs(args, {
+        sessionId,
+        ...(limit !== undefined ? { limit } : {}),
+        ...(since ? { since } : {}),
+      }))],
+    };
+  }
+  if (sub === "send") {
+    const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
+    const imageUrl = readValue(args, ["--image-url"]);
+    return {
+      ...base,
+      label: "personal chat send",
+      steps: [personalChatStep("send", collectGenericObjectArgs(args, {
+        sessionId,
+        text,
+        ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      }))],
+    };
+  }
+  if (sub === "steer") {
+    const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
+    const imageUrl = readValue(args, ["--image-url"]);
+    return {
+      ...base,
+      label: "personal chat steer",
+      steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
+        sessionId,
+        text,
+        ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      }))],
+    };
+  }
+  if (sub === "update" || sub === "configure") {
+    const model = readValue(args, ["--model", "--model-id"]);
+    const title = readValue(args, ["--title"]);
+    const provider = readValue(args, ["--provider"]);
+    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const fastMode = readFastModeFlag(args);
+    return {
+      ...base,
+      label: "personal chat update",
+      steps: [personalChatStep("updateSession", collectGenericObjectArgs(args, {
+        sessionId,
+        ...(title !== null ? { title } : {}),
+        ...(provider ? { provider } : {}),
+        ...(model ? { model, modelId: model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(fastMode !== undefined ? { fastMode } : {}),
+      }))],
+    };
+  }
+  if (sub === "interrupt" || sub === "stop") {
+    return {
+      ...base,
+      label: "personal chat interrupt",
+      steps: [personalChatStep("interrupt", collectGenericObjectArgs(args, { sessionId }))],
+    };
+  }
+  if (sub === "archive" || sub === "unarchive" || sub === "delete" || sub === "rm") {
+    const action = sub === "rm" ? "delete" : sub;
+    return {
+      ...base,
+      label: `personal chat ${action}`,
+      steps: [personalChatStep(action, collectGenericObjectArgs(args, { sessionId }))],
+    };
+  }
+  if (sub === "show" || sub === "status") {
+    return {
+      ...base,
+      label: "personal chat status",
+      steps: [personalChatStep("getSummary", { sessionId })],
+    };
+  }
+  throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
 }
 
 function buildTestsPlan(args: string[]): CliPlan {
@@ -12192,7 +12441,8 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("sync.") ||
-    method.startsWith("projects.")
+    method.startsWith("projects.") ||
+    method.startsWith("personalChats.")
   );
 }
 
@@ -13643,6 +13893,7 @@ async function runServe(
     { resolveMachineAdeLayout },
     { ProjectRegistry },
     { ProjectScopeRegistry },
+    { PersonalChatScope },
     { createMultiProjectRpcRequestHandler },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
@@ -13653,6 +13904,7 @@ async function runServe(
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
+    import("./services/personalChats/personalChatScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
@@ -13672,6 +13924,7 @@ async function runServe(
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   const projectRegistry = new ProjectRegistry(layout);
+  const personalChatScope = new PersonalChatScope();
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -14009,6 +14262,7 @@ async function runServe(
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () =>
         machineCloudRelayStore.isEnabled() ? machineCloudRelayStore.getRelayWssUrl() : null,
+      personalChatScope,
     }),
   );
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
@@ -14041,6 +14295,7 @@ async function runServe(
       // straight off that project's `.ade` transcripts dir (registry-validated,
       // no runtime boot) — the counterpart to the roster feed above.
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      personalChatScope,
     },
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -14062,6 +14317,7 @@ async function runServe(
       serverVersion: VERSION,
       projectRegistry,
       scopeRegistry,
+      personalChatScope,
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
@@ -14097,6 +14353,7 @@ async function runServe(
       // Best-effort tunnel teardown; the process exit closes sockets anyway.
     }
     await scopeRegistry.disposeAll();
+    await personalChatScope.dispose();
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});
     }
@@ -14889,11 +15146,17 @@ function formatActionsList(value: unknown): string {
     list.push(action);
     byDomain.set(domain, list);
   }
-  const lines = [
-    "ADE actions",
-    'Use: ade actions run <domain.action> --input-json \'{"key":"value"}\'',
-    'For multi-parameter methods: --args-list-json \'["first",{"second":true}]\'',
-  ];
+  const personalOnly = actions.every((action) => asString(action.name)?.startsWith("personalChats."));
+  const lines = personalOnly
+    ? [
+        "ADE personal chat actions",
+        'Use: ade chat action --personal <action> --input-json \'{"key":"value"}\'',
+      ]
+    : [
+        "ADE actions",
+        'Use: ade actions run <domain.action> --input-json \'{"key":"value"}\'',
+        'For multi-parameter methods: --args-list-json \'["first",{"second":true}]\'',
+      ];
   for (const [domain, list] of [...byDomain.entries()].sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
@@ -16524,6 +16787,10 @@ function summarizeExecution(args: {
     return buildSyncWebPairingOutput(values.result);
   }
 
+  if (plan.label.startsWith("personal chat ") && isRecord(values.result)) {
+    return values.result.result;
+  }
+
   const result = values.result ?? values;
   if (
     isRecord(result) &&
@@ -16781,7 +17048,9 @@ async function executePlan(
 ): Promise<unknown> {
   let connection: CliConnection;
   const connectionOptions =
-    plan.preferHeadless && !options.requireSocket
+    plan.machineOnly
+      ? { ...options, headless: false, requireSocket: true }
+      : plan.preferHeadless && !options.requireSocket
         ? { ...options, headless: true }
         : options;
   try {
@@ -16813,8 +17082,10 @@ async function executePlan(
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
         socketPath,
-        nextAction: options.requireSocket
-          ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
+        nextAction: plan.machineOnly
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          : options.requireSocket
+            ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
           : sourceRuntimeInterop
             ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
             : "Verify --project-root points at an ADE project and run ade doctor --json.",
@@ -17013,6 +17284,11 @@ async function runCli(
       output: formatOutput(plan.value, parsed.options, plan.formatter),
       exitCode: 0,
     };
+  if (plan.kind === "execute" && plan.machineOnly && parsed.options.headless) {
+    throw new CliUsageError(
+      "Personal chats require the machine-owned ADE brain; remove --headless and run `ade brain start` if the brain is not already available.",
+    );
+  }
   // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
   // discovers, but only on the paths that actually launch an agent/runtime/skill —
   // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
@@ -17024,7 +17300,7 @@ async function runCli(
     plan.kind === "runtime" ||
     plan.kind === "serve" ||
     (plan.kind === "execute" &&
-      /^(agent spawn|chat create|new chat|shell start cli)\b/.test(plan.label))
+      /^(agent spawn|chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
     reseedBundledAdeSkillsForCli();
   }

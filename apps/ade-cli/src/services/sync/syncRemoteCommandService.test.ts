@@ -34,6 +34,10 @@ function createService(options?: {
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   isCloudRelayEnabled?: () => boolean;
   usageTrackingService?: Record<string, unknown>;
+  personalChatScope?: {
+    call: ReturnType<typeof vi.fn>;
+    streamEvents?: ReturnType<typeof vi.fn>;
+  };
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -78,6 +82,7 @@ function createService(options?: {
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
+    ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -117,6 +122,49 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.getAdeStats", { preset: "decade" }))).rejects.toThrow(
       "usage.getAdeStats preset must be today, 7d, 30d, year, or all.",
     );
+  });
+
+  it("advertises and executes machine personal chats as runtime commands", async () => {
+    const personalChatScope = {
+      call: vi.fn(async (action: string, args: unknown) => ({
+        action,
+        result: { action, args },
+      })),
+      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0 })),
+    };
+    const { service } = createService({ personalChatScope });
+
+    expect(service.getDescriptor("personalChats.create")).toEqual({
+      action: "personalChats.create",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.cancelDispatchedSteer")).toEqual({
+      action: "personalChats.cancelDispatchedSteer",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.streamEvents")).toEqual({
+      action: "personalChats.streamEvents",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.terminalCreate")).toEqual({
+      action: "personalChats.terminalCreate",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("personalChats.send", {
+      sessionId: "personal-1",
+      text: "hello",
+    }))).resolves.toEqual({
+      action: "send",
+      args: { sessionId: "personal-1", text: "hello" },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("send", {
+      sessionId: "personal-1",
+      text: "hello",
+    });
   });
 
   it("registers sync.getWebPairingInfo and returns the configured browser pairing info", async () => {

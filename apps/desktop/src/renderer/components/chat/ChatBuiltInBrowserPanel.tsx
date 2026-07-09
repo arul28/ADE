@@ -17,7 +17,11 @@ import {
 } from "@phosphor-icons/react";
 import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
-import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
+import type {
+  BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserTab,
+  BuiltInBrowserTabTargetArgs,
+} from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
@@ -106,15 +110,6 @@ type BuiltInBrowserStatus = {
   [key: string]: unknown;
 };
 
-type BrowserTabTargetArgs = {
-  projectRoot?: string | null;
-  tabId?: string | null;
-};
-
-type BrowserProjectScopeArgs = {
-  projectRoot?: string | null;
-};
-
 type BuiltInBrowserEventPayload = {
   type?: string;
   status?: unknown;
@@ -134,23 +129,23 @@ type BuiltInBrowserEventPayload = {
 };
 
 type BuiltInBrowserApi = {
-  getStatus: (args?: BrowserProjectScopeArgs) => Promise<unknown>;
-  setBounds: (bounds: BrowserBounds & BrowserProjectScopeArgs) => Promise<void>;
-  attachWebview?: (args: { tabId: string; webContentsId: number } & BrowserProjectScopeArgs) => Promise<unknown>;
-  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BrowserProjectScopeArgs) => Promise<unknown>;
-  createTab?: (args?: { url?: string | null; activate?: boolean } & BrowserProjectScopeArgs) => Promise<unknown>;
-  switchTab?: (args: { tabId: string } & BrowserProjectScopeArgs) => Promise<unknown>;
-  closeTab?: (args: { tabId: string } & BrowserProjectScopeArgs) => Promise<unknown>;
-  reload: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  goBack: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  goForward: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  stop: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  startInspect: (args?: BrowserProjectScopeArgs) => Promise<void>;
-  stopInspect: (args?: BrowserProjectScopeArgs) => Promise<void>;
-  captureScreenshot: (args?: BrowserTabTargetArgs) => Promise<unknown>;
-  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BrowserProjectScopeArgs) => Promise<unknown>;
-  selectCurrent: (args?: BrowserProjectScopeArgs) => Promise<unknown>;
-  clearSelection: (args?: BrowserProjectScopeArgs) => Promise<void>;
+  getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs) => Promise<void>;
+  attachWebview?: (args: { tabId: string; webContentsId: number } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  createTab?: (args?: { url?: string | null; activate?: boolean } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  switchTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  closeTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  reload: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
+  goBack: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
+  goForward: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
+  stop: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
+  startInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
+  stopInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
+  captureScreenshot: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
+  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  selectCurrent: (args?: BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  clearSelection: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
   onEvent: (cb: (event: BuiltInBrowserEventPayload) => void) => () => void;
 };
 
@@ -165,6 +160,8 @@ type BrowserWebviewElement = HTMLElement & {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
+  /** Override the project browser profile. `null` selects the machine-wide profile. */
+  projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
@@ -720,11 +717,15 @@ async function cropBrowserScreenshot(
 
 export function ChatBuiltInBrowserPanel({
   sessionId,
+  projectRootOverride,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
 }: ChatBuiltInBrowserPanelProps) {
-  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const projectRoot = projectRootOverride === undefined
+    ? activeProjectRoot
+    : projectRootOverride;
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
   const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());
@@ -754,13 +755,17 @@ export function ChatBuiltInBrowserPanel({
   const [captureSelection, setCaptureSelection] = useState<BrowserCaptureSelection | null>(null);
   const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
-  const browserScope = useMemo<BrowserProjectScopeArgs>(
-    () => (projectRoot ? { projectRoot } : {}),
-    [projectRoot],
+  const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
+    () => (projectRootOverride === null
+      ? { profileScope: "global" }
+      : projectRoot
+        ? { projectRoot }
+        : {}),
+    [projectRoot, projectRootOverride],
   );
-  const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BrowserProjectScopeArgs => (
-    (projectRoot ? { ...args, projectRoot } : args) as T & BrowserProjectScopeArgs
-  ), [projectRoot]);
+  const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BuiltInBrowserProjectScopeArgs => (
+    ({ ...args, ...browserScope }) as T & BuiltInBrowserProjectScopeArgs
+  ), [browserScope]);
   const syncBrowserInputSuppressedState = useCallback(() => {
     setBrowserInputSuppressed(browserInputSuppressedRef.current || browserOverlayOccludedRef.current);
   }, []);

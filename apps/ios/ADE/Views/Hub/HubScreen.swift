@@ -41,6 +41,7 @@ struct HubScreen: View {
   // only overlay the local roster when it still matches the project being rendered.
   @State private var activeRosterProjectId: String?
   @State private var hubProjectPresentations: [HubProjectPresentation] = []
+  @State private var personalChatsPresented = false
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -55,14 +56,19 @@ struct HubScreen: View {
   }
 
   var body: some View {
-    ZStack(alignment: .top) {
-      HubBackground()
-      if openChatTarget != nil {
-        HubCoverParkingSurface()
-      } else if isNoMachineBlankState {
-        HubNoMachineState()
-      } else {
-        connectedHub
+    NavigationStack {
+      ZStack(alignment: .top) {
+        HubBackground()
+        if openChatTarget != nil {
+          HubCoverParkingSurface()
+        } else if isNoMachineBlankState {
+          HubNoMachineState()
+        } else {
+          connectedHub
+        }
+      }
+      .navigationDestination(isPresented: $personalChatsPresented) {
+        PersonalChatsScreen()
       }
     }
     .sheet(isPresented: $addProjectSheetPresented) {
@@ -120,6 +126,15 @@ struct HubScreen: View {
       HubTopBar(onAdd: { addProjectSheetPresented = true })
       ScrollView {
         LazyVStack(spacing: 12) {
+          HubPersonalChatsCard(
+            count: syncService.personalChatSessions.filter { $0.archivedAt == nil }.count,
+            attentionCount: syncService.personalChatSessions.filter {
+              $0.archivedAt == nil && ($0.awaitingInput == true || $0.status == "awaiting-input")
+            }.count,
+            isAvailable: syncService.supportsPersonalChats,
+            onOpen: { personalChatsPresented = true }
+          )
+
           if !canShowProjects {
             HubConnectingCard()
           } else if syncService.projects.isEmpty {
@@ -229,6 +244,10 @@ struct HubScreen: View {
       guard rosterRequestKey != nil, canShowProjects else { return }
       syncService.requestRosterSnapshot()
     }
+    .task(id: personalChatsRefreshKey) {
+      guard personalChatsRefreshKey != nil else { return }
+      _ = try? await syncService.refreshPersonalChats(includeArchived: true)
+    }
     // Persist the user's expand/collapse choices as they change so the hub
     // restores identically after opening a project and returning.
     .onChange(of: collapsedProjectIds) { _, _ in persistHubLayout() }
@@ -291,6 +310,20 @@ struct HubScreen: View {
       String(syncService.projects.count),
       syncService.projects.map(\.id).joined(separator: ",")
     ].joined(separator: "|")
+  }
+
+  /// Refresh badges when the Hub becomes visible on a compatible live host.
+  /// The key intentionally excludes `personalChatsRevision`: the refresh
+  /// mutates that revision, so including it would create a request loop.
+  private var personalChatsRefreshKey: String? {
+    guard hubIsActive,
+          !personalChatsPresented,
+          syncService.supportsPersonalChats,
+          syncService.canInvokeRemoteAction("personalChats.list")
+    else { return nil }
+    // Connected ↔ syncing is one live state for this purpose. Keeping a stable
+    // host key avoids redundant refreshes while normal sync batches flow.
+    return hubCollapseDefaultsConnectionKey ?? "machine"
   }
 
   /// Machine identity used to scope the persisted hub layout. Keyed on the host

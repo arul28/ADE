@@ -50,7 +50,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   }
 
   infra.addDispose(client.onChatEvent((payload) => {
-    ensureChatSubscription(payload.sessionId);
+    // Incoming events already belong to an explicit client subscription.
+    // Re-subscribing here can replace a machine-scoped personal-chat
+    // subscription for the same session id with a project-scoped one.
     emitChatEvent(payload);
   }));
 

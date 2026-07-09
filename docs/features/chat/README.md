@@ -7,6 +7,14 @@ to the agent the same way they would use any IDE copilot, but with ADE's
 lane/session tracking, tool approval flow, identity continuity, and handoff
 machinery layered on top.
 
+The same session/provider engine also backs machine-owned **personal chats**.
+Those sessions use `surface: "personal"` and an internal hidden lane for schema
+compatibility, but deliberately replace the coding prompt, cwd, environment,
+slash-command discovery, ADE guidance, browser profile, and project tooling at
+the boundary. Do not make the project chat schema nullable or treat a missing
+lane/project id as personal scope. See [Personal chats](../personal-chats/README.md)
+for its separate RPC, sync, storage, and UI contracts.
+
 ## Source file map
 
 | Path | Role |
@@ -17,6 +25,7 @@ machinery layered on top.
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns persistent project-profile partitions derived from the active project root (fallback `persist:ade-browser`) and one window/project browser service per ADE `BrowserWindow`, so each project keeps isolated cookies/storage while its tabs share that project's authenticated browser profile. Each window service manages multiple `WebContentsView` tabs (cap 10), active tab, per-tab lane/chat owner and lease metadata, lightweight browser agent sessions, bounds, visibility, inspect state, targeted status events, screenshot capture, scratch browser-agent observations, diagnostics, per-tab action traces, and emission of `BuiltInBrowserContextItem`s for selected page elements. Observe/click/type/key/scroll/fill/clear/wait/screenshot/select/reload/back/forward/stop can target a hidden or non-active tab by `tabId` or `sessionId`; inspect mode remains a visible-tab interaction. Sessions bind an agent workflow to one tab, remember owner plus last observation/trace ids, and have `ade browser session <action> <id>` CLI aliases. Scratch observations live under `.ade/cache/browser-observations/`, include a bounded DOM element list plus console/network diagnostics by default, can render a numbered element-map screenshot with `includeElementMap`, and prune to the latest 3 observations per tab by default; click/fill/clear/press/wait can target viewport coordinates or resolve `selector`/`text`/`testId`/`elementIndex`/saved observation `handle` before dispatching CDP input. Waits wake from browser/network/page events with a timeout fallback, and `network-idle` requires complete ready state, no pending browser requests, and a configurable idle window. Handles preserve same-origin iframe/open-shadow-root context when available, and tab traces record action target metadata, duration, before/after URL, session id, observation id, and errors without storing typed fill/type text. `ade browser proof` promotes a fresh scratch observation to durable proof through the proof broker. Window-open requests from a page are handled via `setWindowOpenHandler` returning `action: "allow"` + a `createWindow` factory: a new internal tab is created and its `webContents` is returned to Chromium so the popup keeps its real `window.opener` relationship with the opener tab (important for OAuth flows that postMessage back to the parent). Download requests are saved through the browser session with sanitized, unique filenames in the user's Downloads folder instead of falling through to Chromium defaults. Navigation normalization/protocol policy lives in `builtInBrowserNavigation.ts`; Google sign-in permission policy lives in `builtInBrowserPermissions.ts`. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
 | `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (including per-tab owner/lease metadata), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserObservation` / `BuiltInBrowserDomSnapshot` / `BuiltInBrowserObservationElementMap`, browser diagnostics/action trace DTOs, agent action args for click/type/key/scroll/fill/clear/wait, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
+| `apps/desktop/src/shared/types/personalChats.ts` | Machine-scope personal-chat action, capability, result, queue-policy, and event-stream contract layered over the same `AgentChatSession` DTOs. |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
 | `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
 | `apps/desktop/src/main/services/chat/claudeThinkingTranscriptRepair.ts` | Best-effort repair for Claude SDK JSONL transcripts where multiple distinct assistant responses reused one `message.id`. The repair preserves top-level threading, tool ids, thinking content, and signatures, but rekeys later responses before resume so Anthropic thinking blocks remain in the message shape originally generated by the model. |
@@ -747,6 +756,8 @@ config service):
 
 ## Related docs
 
+- [Personal chats](../personal-chats/README.md) -- projectless sessions that
+  reuse the chat engine behind a machine-scoped isolation boundary.
 - [Agents README](../agents/README.md) -- the CTO identity, persona
   overlays, and tool policy.
 - [History README](../history/README.md) -- chat sessions are not

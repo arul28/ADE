@@ -16,6 +16,7 @@ import { createLanesNamespace } from "./lanes";
 import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
+import { createPersonalChatsNamespace } from "./personalChats";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
@@ -96,6 +97,7 @@ export function createAdeWebAdapter(client: AdeSyncClient, initialCatalog?: Sync
     lanes: createLanesNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
+    personalChats: createPersonalChatsNamespace(infra),
     pty,
     terminal,
     diff,

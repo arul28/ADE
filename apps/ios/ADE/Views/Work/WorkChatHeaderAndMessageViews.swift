@@ -102,6 +102,9 @@ struct WorkChatHeaderMenuModel: Equatable {
   /// so the `.equatable()` gate re-renders the menu when it flips — including
   /// from the Work-list row's context menu while this chat is open.
   var sessionMuted: Bool = false
+  var showsProof: Bool = true
+  var showsPinAction: Bool = true
+  var showsSessionLink: Bool = true
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -154,14 +157,16 @@ struct WorkChatHeaderMenu: View, Equatable {
 
       Divider()
 
-      Button(action: onShowProof) {
-        if model.artifactCount == 0 {
-          Label("Proof", systemImage: "cube.transparent")
-        } else {
-          Label("Proof (\(model.artifactCount))", systemImage: "cube.transparent")
+      if model.showsProof {
+        Button(action: onShowProof) {
+          if model.artifactCount == 0 {
+            Label("Proof", systemImage: "cube.transparent")
+          } else {
+            Label("Proof (\(model.artifactCount))", systemImage: "cube.transparent")
+          }
         }
+        .accessibilityHint("Opens the proof drawer")
       }
-      .accessibilityHint("Opens the proof drawer")
 
       if model.showsLaneActions {
         Divider()
@@ -255,14 +260,18 @@ struct WorkChatHeaderMenu: View, Equatable {
             systemImage: model.sessionIdCopied ? "checkmark" : "doc.on.doc")
     }
 
-    Button(action: onCopySessionDeepLink) {
-      Label(model.sessionDeepLinkCopied ? "Copied session link" : "Copy session link",
-            systemImage: model.sessionDeepLinkCopied ? "checkmark" : "link")
+    if model.showsSessionLink {
+      Button(action: onCopySessionDeepLink) {
+        Label(model.sessionDeepLinkCopied ? "Copied session link" : "Copy session link",
+              systemImage: model.sessionDeepLinkCopied ? "checkmark" : "link")
+      }
     }
 
-    Button(action: onTogglePinned) {
-      Label(model.sessionPinned ? "Unpin from front" : "Pin to front",
-            systemImage: model.sessionPinned ? "pin.slash" : "pin")
+    if model.showsPinAction {
+      Button(action: onTogglePinned) {
+        Label(model.sessionPinned ? "Unpin from front" : "Pin to front",
+              systemImage: model.sessionPinned ? "pin.slash" : "pin")
+      }
     }
 
     if !model.sessionId.isEmpty {

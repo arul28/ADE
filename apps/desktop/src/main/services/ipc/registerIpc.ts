@@ -2449,8 +2449,16 @@ export function registerIpc({
     channel: string,
   ): BuiltInBrowserProjectScopeArgs => {
     const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
+    const profileScope = optionalBuiltInBrowserString(record, "profileScope", channel, 16);
+    if (profileScope && profileScope !== "global") {
+      return invalidBuiltInBrowserArg(channel, "profileScope is invalid");
+    }
+    if (profileScope === "global" && projectRoot) {
+      return invalidBuiltInBrowserArg(channel, "profileScope and projectRoot cannot both be set");
+    }
     return {
       ...(projectRoot ? { projectRoot } : {}),
+      ...(profileScope === "global" ? { profileScope } : {}),
     };
   };
 

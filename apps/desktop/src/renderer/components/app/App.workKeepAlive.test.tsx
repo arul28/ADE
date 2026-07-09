@@ -187,6 +187,12 @@ vi.mock("../lanes/LanesPage", async () => {
   };
 });
 
+vi.mock("../personalChats/PersonalChatsPage", () => ({
+  PersonalChatsPage: ({ standalone = false }: { standalone?: boolean }) => (
+    <div data-testid="personal-chats-page" data-standalone={standalone ? "true" : "false"} />
+  ),
+}));
+
 describe("App Work route keep-alive", () => {
   beforeEach(() => {
     cleanup();
@@ -262,6 +268,30 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
+
+  it("parks the project surface while projectless chats are open inside a project", async () => {
+    window.history.replaceState({}, "", "/chats");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    expect((await screen.findByTestId("personal-chats-page")).getAttribute("data-standalone")).toBe("false");
+    expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("false");
+    expect(screen.getByTestId("work-page").closest("[aria-hidden='true']")).not.toBeNull();
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
+
+  it("opens projectless chats when no project is selected", async () => {
+    appStoreState.project = { rootPath: "" };
+    appStoreState.showWelcome = true;
+    window.history.replaceState({}, "", "/chats");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    expect((await screen.findByTestId("personal-chats-page")).getAttribute("data-standalone")).toBe("true");
+    expect(screen.queryByTestId("work-page")).toBeNull();
+    expect(screen.queryByTestId("project-page")).toBeNull();
   }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("parks the native Work browser view when the Work route is backgrounded", async () => {
