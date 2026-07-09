@@ -3978,13 +3978,17 @@ button:active, [role="button"]:active {
   animation: ade-fade-slide-up 0.3s ease-out both;
 }
 
-.ade-update-installed-card[data-state="open"] {
+/* The card is centered by a flex layer (not fixed + translate), so its entrance
+   must stay translate-free. The [data-radix-dialog-content] prefix raises
+   specificity above the global ade-dialog-in rule (translateX(-50%)), which
+   would otherwise shift a flex-centered card left by half its width. */
+[data-radix-dialog-content].ade-update-installed-card[data-state="open"] {
   animation: ade-update-installed-card-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 @keyframes ade-update-installed-card-in {
-  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /*
