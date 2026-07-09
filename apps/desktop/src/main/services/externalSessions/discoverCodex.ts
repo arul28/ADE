@@ -100,7 +100,16 @@ function sortedChildDirs(dir: string, pattern: RegExp): string[] {
     .sort((left, right) => right.localeCompare(left));
 }
 
-function collectRecentCodexSessionCandidates(root: string, limit: number): CodexSessionCandidate[] {
+function matchesCodexLookup(entryName: string, sessionId: string | null): boolean {
+  if (!sessionId) return true;
+  return entryName.endsWith(`-${sessionId}.jsonl`) || entryName.endsWith(`-${sessionId}.jsonl.zst`);
+}
+
+function collectRecentCodexSessionCandidates(
+  root: string,
+  limit: number,
+  sessionId: string | null = null,
+): CodexSessionCandidate[] {
   const candidates: CodexSessionCandidate[] = [];
   const years = sortedChildDirs(root, /^\d{4}$/u);
   for (const year of years) {
@@ -113,6 +122,7 @@ function collectRecentCodexSessionCandidates(root: string, limit: number): Codex
           if (!entry.isFile() || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".jsonl.zst"))) {
             continue;
           }
+          if (!matchesCodexLookup(entry.name, sessionId)) continue;
           const candidate = sessionFileCandidate(path.join(dayDir, entry.name), {});
           if (candidate) candidates.push(candidate);
         }
@@ -123,8 +133,8 @@ function collectRecentCodexSessionCandidates(root: string, limit: number): Codex
 }
 
 function codexHomeDir(args: ExternalSessionDiscoveryArgs): string {
-  const env = args.env ?? process.env;
-  const configured = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
+  const env = args.env ?? (args.homeDir ? undefined : process.env);
+  const configured = typeof env?.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
   return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
 }
 
@@ -165,6 +175,7 @@ function collectProjectScopedCodexSessionCandidates(
   limit: number,
   scopeRoots: string[],
   logger: ExternalSessionDiscoveryArgs["logger"],
+  sessionId: string | null = null,
 ): CodexSessionCandidate[] {
   const candidates: CodexSessionCandidate[] = [];
   let scanned = 0;
@@ -192,6 +203,7 @@ function collectProjectScopedCodexSessionCandidates(
           if (!entry.isFile() || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".jsonl.zst"))) {
             continue;
           }
+          if (!matchesCodexLookup(entry.name, sessionId)) continue;
           const candidate = sessionFileCandidate(path.join(dayDir, entry.name), {});
           if (!candidate) continue;
           if (scanned >= CODEX_PROJECT_SCOPE_SCAN_CEILING) {
@@ -221,6 +233,7 @@ export async function discoverCodexSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
+  const lookupId = args.sessionId?.trim() || null;
   const codexDir = codexHomeDir(args);
   const sessionsDir = path.join(codexDir, "sessions");
   const index = readCodexIndex(path.join(codexDir, "session_index.jsonl"));
@@ -229,15 +242,15 @@ export async function discoverCodexSessions(
 
   const scanLimit = Math.max(CODEX_RECENT_SCAN_FLOOR, limit * 20);
   const candidates = args.scopeRoots?.length
-    ? collectProjectScopedCodexSessionCandidates(sessionsDir, scanLimit, args.scopeRoots, args.logger)
-    : collectRecentCodexSessionCandidates(sessionsDir, scanLimit);
+    ? collectProjectScopedCodexSessionCandidates(sessionsDir, scanLimit, args.scopeRoots, args.logger, lookupId)
+    : collectRecentCodexSessionCandidates(sessionsDir, scanLimit, lookupId);
 
   for (const candidate of candidates) {
     const filePath = candidate.filePath;
     const compressed = filePath.endsWith(".jsonl.zst");
     if (compressed) {
       const id = idFromCodexFilename(filePath);
-      if (!id || recordsById.has(id)) continue;
+      if (!id || (lookupId && id !== lookupId) || recordsById.has(id)) continue;
       const indexed = index.get(id);
       recordsById.set(id, recordWithFile({
         provider: "codex",
@@ -260,7 +273,7 @@ export async function discoverCodexSessions(
     const meta = candidate.meta ?? readCodexSessionMeta(filePath);
     if (!meta || !isImportableCodexSession(meta)) continue;
     const id = candidate.meta?.id ?? asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
-    if (!id || recordsById.has(id)) continue;
+    if (!id || (lookupId && id !== lookupId) || recordsById.has(id)) continue;
     const indexed = index.get(id);
     const firstUserText = firstCodexUserText(jsonl);
     const title = candidate.meta?.title ?? titleFromCodexPayload(payload, indexed);

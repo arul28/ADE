@@ -255,9 +255,8 @@ struct WorkImportSessionScreen: View {
       )
       guard requestedQueryKey == queryKey else { return }
       sessions = loadedSessions
-      if let current = selectedSession,
-         let refreshed = sessions.first(where: { $0.importIdentity == current.importIdentity }) {
-        selectedSession = refreshed
+      if let current = selectedSession {
+        selectedSession = sessions.first(where: { $0.importIdentity == current.importIdentity })
       }
       hasLoaded = true
     } catch is CancellationError {

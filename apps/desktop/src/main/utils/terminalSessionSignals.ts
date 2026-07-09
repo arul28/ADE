@@ -10,28 +10,18 @@ import type {
   TerminalToolType,
 } from "../../shared/types";
 import {
+  buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand as buildCanonicalTrackedCliResumeCommand,
-  modelToCliFlag,
   normalizeCliFlagValue,
+  OPENCODE_RESUME_REPLAY_LIMIT as CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
-import { decodeOpenCodeRegistryId } from "../../shared/modelRegistry";
 import { parseCommandLine } from "../../shared/shell";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
 const RESUME_HINT_PREFIX_REGEX = /\b(?:resume|continue)\s+with\s+(.+)$/i;
 const RESUME_COMMAND_LINE_REGEX = /^(?:.*?(?:[%$#❯›]\s+))?((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:claude|codex|cursor-agent|droid|opencode)\s+.+)$/i;
-
-function shellQuote(value: string): string {
-  if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_.:@%+=,/-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function commandArrayToLine(parts: string[]): string {
-  return parts.map(shellQuote).join(" ");
-}
 
 export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
 
@@ -168,34 +158,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   return null;
 }
 
-const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
-
-function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
-  if (permissionMode == null || permissionMode === "config-toml") return null;
-  if (permissionMode === "full-auto") return "allow";
-  if (permissionMode === "edit") return { "*": "ask", edit: "allow", question: "allow" };
-  if (permissionMode === "plan") return { "*": "ask", edit: "deny", bash: "deny", question: "allow" };
-  return { "*": "ask", question: "allow" };
-}
-
-function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | undefined): string | null {
-  const permission = openCodePermissionValue(permissionMode);
-  return permission ? JSON.stringify({ permission }) : null;
-}
-
-function normalizeOpenCodeCliModel(model: string | null | undefined): string | null {
-  const normalized = normalizeCliFlagValue(model);
-  if (!normalized) return null;
-  const decoded = decodeOpenCodeRegistryId(normalized);
-  if (!decoded) return normalized;
-  return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
-}
-
-function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  return permissionMode === "plan" ? ["--agent", "plan"] : [];
-}
-
-export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
+export const OPENCODE_RESUME_REPLAY_LIMIT = CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT;
 
 export function buildOpenCodeReplayResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
@@ -206,27 +169,16 @@ export function buildOpenCodeReplayResumeCommand(args: {
   prompt: string;
   replayLimit?: number | null;
 }): string {
-  const variant = args.fastMode === true ? "fast" : normalizeCliFlagValue(args.reasoningEffort);
-  const commandArgs = [
-    "opencode",
-    "run",
-    "--interactive",
-    ...permissionModeToOpenCodeArgs(args.permissionMode),
-    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
-  ];
-  if (variant) commandArgs.push("--variant", variant);
-  if (args.targetId) {
-    commandArgs.push("--session", args.targetId);
-  } else {
-    commandArgs.push("--continue");
-  }
-  const replayLimit = Number.isFinite(args.replayLimit)
-    ? Math.max(1, Math.floor(Number(args.replayLimit)))
-    : OPENCODE_RESUME_REPLAY_LIMIT;
-  commandArgs.push("--replay", "--replay-limit", String(replayLimit), "--", args.prompt);
-  const config = openCodeConfigEnv(args.permissionMode);
-  const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
-  return `${assignment}${commandArrayToLine(commandArgs)}`;
+  return buildCanonicalOpenCodeReplayResumeCommand({
+    permissionMode: args.permissionMode,
+    model: args.model,
+    reasoningEffort: args.reasoningEffort,
+    fastMode: args.fastMode,
+    prompt: args.prompt,
+    resumeTarget: args.targetId,
+    continueLast: !args.targetId,
+    replayLimit: args.replayLimit,
+  });
 }
 
 function extractTrackedCliPermissionMode(command: string, provider: TerminalResumeProvider): AgentChatPermissionMode | undefined {

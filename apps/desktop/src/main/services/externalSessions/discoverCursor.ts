@@ -118,6 +118,7 @@ export async function discoverCursorSessions(
   const limit = normalizeExternalSessionLimit(args.limit);
   const projectsDir = path.join(resolveHomeDir(args), ".cursor", "projects");
   const chatsDir = path.join(resolveHomeDir(args), ".cursor", "chats");
+  const lookupId = args.sessionId?.trim() || null;
   const candidates: Array<ExternalSessionFileCandidate<{
     agentId: string;
     projectSlug: string;
@@ -131,6 +132,21 @@ export async function discoverCursorSessions(
     const cwd = workspaceByHash.get(workspaceEntry.name);
     if (!cwd) continue;
     const workspaceDir = path.join(chatsDir, workspaceEntry.name);
+    if (lookupId) {
+      if (lookupId.startsWith("agent-")) continue;
+      const storePath = path.join(workspaceDir, lookupId, "store.db");
+      const stat = safeStat(storePath);
+      if (stat?.isFile()) {
+        storeCandidates.push({
+          filePath: storePath,
+          mtimeMs: Math.floor(cursorStoreMtime(storePath)),
+          size: stat.size,
+          agentId: lookupId,
+          cwd,
+        });
+      }
+      continue;
+    }
     for (const chatEntry of safeReadDir(workspaceDir)) {
       if (!chatEntry.isDirectory() || chatEntry.name.startsWith("agent-")) continue;
       const storePath = path.join(workspaceDir, chatEntry.name, "store.db");
@@ -158,6 +174,17 @@ export async function discoverCursorSessions(
       continue;
     }
     const transcriptRoot = path.join(projectDir, "agent-transcripts");
+    if (lookupId) {
+      if (lookupId.startsWith("agent-")) continue;
+      const filePath = path.join(transcriptRoot, lookupId, `${lookupId}.jsonl`);
+      const candidate = sessionFileCandidate(filePath, {
+        agentId: lookupId,
+        projectSlug: projectEntry.name,
+        trustedCwd,
+      });
+      if (candidate) candidates.push(candidate);
+      continue;
+    }
     for (const agentEntry of safeReadDir(transcriptRoot)) {
       if (!agentEntry.isDirectory()) continue;
       const agentId = agentEntry.name;

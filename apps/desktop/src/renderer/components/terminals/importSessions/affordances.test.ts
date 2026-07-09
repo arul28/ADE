@@ -106,6 +106,20 @@ describe("importAffordancesFor", () => {
     expect(affs[0]?.hint).toMatch(/another folder/i);
   });
 
+  it("unknown-cwd Droid sessions still offer a lane-local fork", () => {
+    const affs = importAffordancesFor(
+      session({
+        provider: "droid",
+        cwd: null,
+        cwdMatchesRequestedLane: null,
+        capabilities: { fork: true, forkIntoDifferentCwd: true },
+      }),
+    );
+    expect(affs).toEqual([
+      expect.objectContaining({ kind: "fork-into-lane", enabled: true, mode: "fork" }),
+    ]);
+  });
+
   it("foreign cwd with forkIntoDifferentCwd and resumeInPlace offers both in priority order", () => {
     const affs = importAffordancesFor(
       session({

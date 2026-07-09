@@ -8227,7 +8227,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : prev);
       return;
     }
-    await refreshState();
+    try {
+      await refreshState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: `Unable to refresh ADE sessions: ${message}` }
+        : prev);
+      return;
+    }
     const existing = ref.kind === "chat"
       ? sessionsRef.current.find((session) => session.sessionId === ref.sessionId)
       : terminalSessionsRef.current.find((session) => session.terminalId === ref.sessionId);

@@ -27,6 +27,7 @@ export async function discoverDroidSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const sessionsDir = path.join(resolveHomeDir(args), ".factory", "sessions");
+  const lookupId = args.sessionId?.trim() || null;
   const candidates: ExternalSessionFileCandidate[] = [];
 
   for (const projectEntry of safeReadDir(sessionsDir)) {
@@ -38,6 +39,11 @@ export async function discoverDroidSessions(
       continue;
     }
     const projectDir = path.join(sessionsDir, projectEntry.name);
+    if (lookupId) {
+      const candidate = sessionFileCandidate(path.join(projectDir, `${lookupId}.jsonl`), {});
+      if (candidate) candidates.push(candidate);
+      continue;
+    }
     for (const entry of safeReadDir(projectDir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
       const filePath = path.join(projectDir, entry.name);
@@ -52,7 +58,7 @@ export async function discoverDroidSessions(
     const first = asRecord(jsonl[0]);
     if (!first || asString(first.type) !== "session_start") continue;
     const id = asString(first.id) ?? path.basename(candidate.filePath, ".jsonl");
-    if (!id) continue;
+    if (!id || (lookupId && id !== lookupId)) continue;
     const cwd = asString(first.cwd);
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const firstUserText = firstUserTextFromRecords(jsonl);

@@ -19,6 +19,8 @@ export type ExternalSessionDiscoveryArgs = {
   env?: NodeJS.ProcessEnv;
   cwd?: string | null;
   projectRoot?: string | null;
+  /** Exact provider session id to resolve without building a broad recent-session list. */
+  sessionId?: string | null;
   limit?: number | null;
   scopeRoots?: string[] | null;
   logger?: {

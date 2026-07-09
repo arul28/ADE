@@ -382,8 +382,8 @@ describe("terminalSessionSignals", () => {
       prompt: "continue from here",
     });
 
-    expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --variant fast --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
-    expect(command).toContain("\"question\":\"allow\"");
+    expect(command).toContain("opencode run --interactive --model \"openai/gpt-5.4\" --variant fast --session ses_abc --replay --replay-limit 40 -- \"continue from here\"");
+    expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
 
   it("normalizes ADE OpenCode registry IDs in replay resume commands", () => {
@@ -394,7 +394,7 @@ describe("terminalSessionSignals", () => {
       prompt: "continue from here",
     });
 
-    expect(command).toContain("--model lmstudio/openai/gpt-oss-20b");
+    expect(command).toContain("--model \"lmstudio/openai/gpt-oss-20b\"");
   });
 
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {

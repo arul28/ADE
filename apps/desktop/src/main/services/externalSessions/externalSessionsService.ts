@@ -168,12 +168,18 @@ function realish(filePath: string): string {
   }
 }
 
-function safeDirectoryExists(filePath: string): boolean {
+function safeDirectoryExists(filePath: string, cache?: Map<string, boolean>): boolean {
+  const cacheKey = path.resolve(filePath);
+  const cached = cache?.get(cacheKey);
+  if (cached !== undefined) return cached;
+  let exists = false;
   try {
-    return fs.statSync(filePath).isDirectory();
+    exists = fs.statSync(filePath).isDirectory();
   } catch {
-    return false;
+    exists = false;
   }
+  cache?.set(cacheKey, exists);
+  return exists;
 }
 
 function deriveProjectScopeRoots(projectRoot: string): string[] {
@@ -414,6 +420,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   const capabilitiesFor = (
     provider: ExternalSessionProvider,
     session?: Pick<ExternalSessionDiscoveryRecord, "cwd"> | null,
+    cwdExistenceCache?: Map<string, boolean>,
   ): ExternalSessionCapabilities => {
     const base = provider !== "droid"
       ? PROVIDER_CAPABILITIES[provider]
@@ -423,12 +430,21 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         })();
     if (session === undefined || provider === "codex") return base;
     const cwd = session?.cwd?.trim() ?? "";
-    const cwdAvailable = cwd.length > 0 && safeDirectoryExists(cwd);
+    const cwdAvailable = cwd.length > 0 && safeDirectoryExists(cwd, cwdExistenceCache);
     if (cwdAvailable) return base;
     if (provider === "claude" && cwd.length > 0) {
       return {
         ...base,
         resumeInPlace: false,
+      };
+    }
+    if (provider === "droid") {
+      // Droid forks are created in the destination lane and do not depend on
+      // the source cwd remaining available. Only in-place resume is lost.
+      return {
+        ...base,
+        resumeInPlace: false,
+        resumeInDifferentCwd: false,
       };
     }
     return {
@@ -483,6 +499,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
     const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
     const activeCutoffMs = Date.now() - 2 * 60_000;
+    const cwdExistenceCache = new Map<string, boolean>();
     const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);
     const scoped = projectScoped
       ? discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots))
@@ -505,7 +522,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           importedSessionRef: importedRef,
           possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
           cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
-          capabilities: capabilitiesFor(session.provider, session),
+          capabilities: capabilitiesFor(session.provider, session, cwdExistenceCache),
         };
       })
       .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
@@ -513,8 +530,32 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   };
 
   const findExternalSummary = async (provider: ExternalSessionProvider, sessionId: string): Promise<ExternalSessionSummary | null> => {
-    const sessions = await list({ providers: [provider], scope: "all", limit: MAX_FIND_LIMIT });
-    return sessions.find((session) => session.id === sessionId) ?? null;
+    const [session] = await discoverByProvider[provider]({
+      homeDir: args.homeDir,
+      env: args.env,
+      projectRoot: args.projectRoot,
+      sessionId,
+      limit: 1,
+      scopeRoots: null,
+      logger: args.logger,
+    });
+    if (!session || session.id !== sessionId) return null;
+    return {
+      provider: session.provider,
+      id: session.id,
+      cwd: session.cwd,
+      title: session.title,
+      preview: session.preview,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messageCount: session.messageCount,
+      alreadyImported: false,
+      importedSessionRef: null,
+      possiblyActive: typeof session.sourceMtimeMs === "number"
+        && session.sourceMtimeMs >= Date.now() - 2 * 60_000,
+      cwdMatchesRequestedLane: null,
+      capabilities: capabilitiesFor(provider, session),
+    };
   };
 
   const importExternalSession = async (
@@ -695,7 +736,5 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     import: importExternalSession,
   };
 }
-
-const MAX_FIND_LIMIT = 5000;
 
 export type ExternalSessionsService = ReturnType<typeof createExternalSessionsService>;

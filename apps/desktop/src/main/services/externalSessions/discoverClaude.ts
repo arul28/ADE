@@ -91,12 +91,19 @@ export async function discoverClaudeSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const projectsDir = path.join(claudeConfigDir(args), "projects");
+  const lookupId = args.sessionId?.trim() || null;
+  if (lookupId && !isUuidLike(lookupId)) return [];
   const candidates: Array<ExternalSessionFileCandidate<{ id: string }>> = [];
 
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
     if (!slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, claudeProjectSlugForCwd)) continue;
     const projectDir = path.join(projectsDir, projectEntry.name);
+    if (lookupId) {
+      const candidate = sessionFileCandidate(path.join(projectDir, `${lookupId}.jsonl`), { id: lookupId });
+      if (candidate) candidates.push(candidate);
+      continue;
+    }
     for (const entry of safeReadDir(projectDir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
       const id = entry.name.slice(0, -".jsonl".length);

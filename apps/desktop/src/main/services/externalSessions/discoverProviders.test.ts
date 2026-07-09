@@ -22,6 +22,7 @@ let root: string;
 let previousHome: string | undefined;
 let previousPath: string | undefined;
 let previousDisableBundledOpenCode: string | undefined;
+let previousCodexHome: string | undefined;
 
 function writeJsonl(filePath: string, rows: unknown[]): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -33,6 +34,7 @@ beforeEach(() => {
   previousHome = process.env.HOME;
   previousPath = process.env.PATH;
   previousDisableBundledOpenCode = process.env.ADE_DISABLE_BUNDLED_OPENCODE;
+  previousCodexHome = process.env.CODEX_HOME;
 });
 
 afterEach(() => {
@@ -50,6 +52,11 @@ afterEach(() => {
     delete process.env.ADE_DISABLE_BUNDLED_OPENCODE;
   } else {
     process.env.ADE_DISABLE_BUNDLED_OPENCODE = previousDisableBundledOpenCode;
+  }
+  if (previousCodexHome === undefined) {
+    delete process.env.CODEX_HOME;
+  } else {
+    process.env.CODEX_HOME = previousCodexHome;
   }
   clearOpenCodeBinaryCache();
   fs.rmSync(root, { recursive: true, force: true });
@@ -208,6 +215,25 @@ describe("external session provider discovery", () => {
     });
   });
 
+  it("prefers an explicit homeDir over process CODEX_HOME", async () => {
+    const homeDir = path.join(root, "explicit-home");
+    const cwd = path.join(root, "repo");
+    const id = "23232323-2323-4232-8232-232323232323";
+    process.env.CODEX_HOME = path.join(root, "ambient-codex-home");
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-${id}.jsonl`), [
+      {
+        timestamp: "2026-07-06T10:00:00.000Z",
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "use the explicit home" } },
+    ]);
+
+    await expect(discoverCodexSessions({ homeDir, sessionId: id, limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id, cwd, preview: "use the explicit home" }),
+    ]);
+  });
+
   it("does not derive Codex titles from the first user message", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");
@@ -313,7 +339,7 @@ describe("external session provider discovery", () => {
       { role: "user", message: { content: [{ type: "text", text: "Preserve the transcript preview" }] } },
     ]);
 
-    const sessions = await discoverCursorSessions({ homeDir, scopeRoots: [cwd], limit: 10 });
+    const sessions = await discoverCursorSessions({ homeDir, scopeRoots: [cwd], sessionId: agentId, limit: 1 });
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
@@ -398,6 +424,9 @@ describe("external session provider discovery", () => {
       cwd: null,
       title: "Missing cwd",
     });
+    await expect(discoverOpenCodeSessions({ homeDir, cwd, sessionId: "open-3", limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: "open-3", cwd: null, title: "Missing cwd" }),
+    ]);
 
     const service = createExternalSessionsService({
       droidForkSupported: true,
