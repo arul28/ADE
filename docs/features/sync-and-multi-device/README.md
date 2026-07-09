@@ -238,7 +238,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   derived from the shared required-action contract), and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
-  `desktop`, `daemon`, or `remote`. It also owns the all-projects session
+  `desktop`, `daemon`, or `remote`. After a successful project command it
+  records meaningful user mutations in the local usage ledger, deriving
+  `mobile` / `web` / `desktop` attribution from the peer metadata; reads and
+  failed commands do not create events. It also owns the all-projects session
   roster push for the mobile Hub: per subscribed peer it tracks
   `rosterSubscribed` / `rosterSeq` / a `rosterBaseline` map, debounces
   rebuilds (trailing-edge with a hard cadence ceiling), and forces a
@@ -341,9 +344,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `chunkedEnvelopes` hello capability
   (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
   full frame. Protocol version is `1`. Default host port is `8787`.
-- `syncRemoteCommandService.ts` (~3,280 lines) — command registry
+- `syncRemoteCommandService.ts` (~4,600 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
-  `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
+  `usage.getAdeStats`, `prs.getMobileSnapshot`, `lanes.presence.*`,
+  `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
   `work.importExternalSession`, `modelPicker.*`, …). Each registration
   carries a `SyncRemoteCommandDescriptor` with a **scope** label of
@@ -359,6 +363,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   [External Session Import](../terminals-and-sessions/external-session-import.md)
   for the provider storage formats, host/runtime requirements, and mobile
   testing constraints.
+  `usage.getAdeStats` is a viewer-allowed project read backed by the runtime's
+  usage tracker; it serves cached provider/GitHub data plus live DB aggregates
+  to iOS and web without replicating the local-only raw interaction ledger.
   Lane snapshot commands accept decoration flags so mobile can refresh
   runtime/session buckets without recomputing conflict status, rebase
   suggestions, or auto-rebase status on every light refresh; lane detail

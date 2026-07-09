@@ -67,7 +67,10 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
   `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
-  sync sub-protocols, and local browser-only state.
+  sync sub-protocols, and local browser-only state. `misc.ts` routes
+  `window.ade.usage.getAdeStats` through the viewer-allowed
+  `usage.getAdeStats` command so the reused empty-Work activity carousel shows
+  the runtime's cached cross-client aggregate instead of an empty native stub.
 
 Browser shell and routes:
 

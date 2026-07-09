@@ -173,6 +173,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
+import { isAdeUsageRangePreset } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import {
   buildTrackedCliLaunchCommand,
@@ -236,6 +237,7 @@ import type { createPrService } from "../../../../desktop/src/main/services/prs/
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -267,6 +269,7 @@ type SyncRemoteCommandServiceArgs = {
    * production callers (bootstrap, syncHostService) always pass it.
    */
   db?: AdeDb;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
@@ -4551,6 +4554,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       handler,
     });
   };
+
+  register("usage.getAdeStats", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getAdeStats preset must be today, 7d, 30d, year, or all.");
+    }
+    return await args.usageTrackingService.getAdeUsageStats({
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+    });
+  });
 
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });

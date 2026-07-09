@@ -9,6 +9,16 @@ import {
   MODEL_REGISTRY,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { openKvDb, type AdeDb } from "../state/kvDb";
+import {
+  collectAdeDatabaseUsageStats,
+  isMeaningfulUsageAction,
+  recordUsageInteraction,
+  usageActionFromIpcChannel,
+  usageActionFromRpcDomain,
+  usageClientSurfaceFromPeer,
+  usageClientSurfaceFromRpcName,
+} from "./usageStatsStore";
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -1172,6 +1182,40 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("caches a completed empty provider scan instead of rescanning on every stats read", async () => {
+    const logger = createLogger();
+    const dependencies = {
+      ...createFastDependencies(),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: "arul28/ADE",
+        available: true,
+        fetchedAt: new Date().toISOString(),
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    expect((await service.getAdeUsageStats({ preset: "7d" })).freshness?.state).toBe("refreshing");
+    await vi.waitFor(() => expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await service.getAdeUsageStats({ preset: "7d" })).freshness?.state).toBe("fresh");
+    await service.getAdeUsageStats({ preset: "7d" });
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
   it("waits for a startup no-cost poll before running an explicit cost refresh", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
@@ -1226,17 +1270,33 @@ describe("createUsageTrackingService", () => {
       },
     });
 
+    const firstLoading = await service.getAdeUsageStats({
+      preset: "today",
+      since: "2026-05-30T00:00:00.000Z",
+      until: "2026-05-30T10:00:00.000Z",
+    });
+    await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
     const first = await service.getAdeUsageStats({
       preset: "today",
       since: "2026-05-30T00:00:00.000Z",
       until: "2026-05-30T10:00:00.000Z",
     });
+    const secondLoading = await service.getAdeUsageStats({
+      preset: "today",
+      since: "2026-05-30T00:00:00.000Z",
+      until: "2026-05-30T11:00:00.000Z",
+    });
+    await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setImmediate(resolve));
     const second = await service.getAdeUsageStats({
       preset: "today",
       since: "2026-05-30T00:00:00.000Z",
       until: "2026-05-30T11:00:00.000Z",
     });
 
+    expect(firstLoading.freshness?.state).toBe("refreshing");
+    expect(secondLoading.freshness?.state).toBe("refreshing");
     expect(first.summary.commitsCreated).toBe(10);
     expect(second.summary.commitsCreated).toBe(11);
     expect(scanGitHubStats).toHaveBeenCalledTimes(2);
@@ -2323,5 +2383,130 @@ describe("fetchJsonWithRetry", () => {
     const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
     expect(res.status).toBe(401);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ADE database usage aggregation", () => {
+  const roots: string[] = [];
+  const databases: AdeDb[] = [];
+
+  afterEach(() => {
+    for (const db of databases.splice(0)) db.close();
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  async function createStatsDb(): Promise<AdeDb> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-stats-"));
+    roots.push(root);
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    databases.push(db);
+    db.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-1", root, "ADE", "main", "2026-07-01T00:00:00.000Z", "2026-07-09T00:00:00.000Z"],
+    );
+    db.run(
+      `insert into lanes(
+         id, project_id, name, lane_type, base_ref, branch_ref, worktree_path,
+         is_edit_protected, status, created_at
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-1", "project-1", "Stats", "worktree", "main", "ade-109", root, 0, "active", "2026-07-08T10:00:00.000Z"],
+    );
+    return db;
+  }
+
+  it("combines successful ADE operations, sessions, tokens, and client activity without double-counting", async () => {
+    const db = await createStatsDb();
+    db.run(
+      `insert into terminal_sessions(
+         id, lane_id, tracked, tool_type, pinned, title, started_at, ended_at,
+         transcript_path, status, chat_session_id, resume_metadata_json
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["session-1", "lane-1", 1, "claude-chat", 0, "Stats", "2026-07-08T12:00:00.000Z", "2026-07-08T12:30:00.000Z", "/tmp/stats.log", "exited", "session-1", JSON.stringify({ provider: "claude", launch: { model: "claude-sonnet-5" } })],
+    );
+    db.run(
+      `insert into session_deltas(
+         session_id, project_id, lane_id, started_at, ended_at, files_changed,
+         insertions, deletions, touched_files_json, failure_lines_json, computed_at
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["session-1", "project-1", "lane-1", "2026-07-08T12:00:00.000Z", "2026-07-08T12:30:00.000Z", 3, 120, 20, "[]", "[]", "2026-07-08T12:31:00.000Z"],
+    );
+    db.run(
+      `insert into ai_usage_log(id, timestamp, feature, provider, model, input_tokens, output_tokens, duration_ms, success, session_id)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "ai-1", "2026-07-08T12:01:00.000Z", "chat", "claude", "sonnet", 100, 50, 1_000, 1, "session-1",
+        "ai-2", "2026-07-08T12:02:00.000Z", "chat", "claude", "opus", 20, 10, 500, 0, "session-1",
+      ],
+    );
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+       values (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "op-1", "project-1", "lane-1", "git_commit", "2026-07-08T12:20:00.000Z", "2026-07-08T12:20:01.000Z", "succeeded",
+        "op-2", "project-1", "lane-1", "git_push", "2026-07-08T12:21:00.000Z", "2026-07-08T12:21:01.000Z", "succeeded",
+        "op-3", "project-1", "lane-1", "git_commit", "2026-07-08T12:22:00.000Z", "2026-07-08T12:22:01.000Z", "failed",
+      ],
+    );
+    recordUsageInteraction(db, { projectId: "project-1", client: "desktop", action: "chat.send", sessionId: "session-1", occurredAt: "2026-07-08T12:05:00.000Z" });
+    recordUsageInteraction(db, { projectId: "project-1", client: "mobile", action: "git.push", sessionId: "session-1", occurredAt: "2026-07-08T12:21:00.000Z" });
+
+    const stats = collectAdeDatabaseUsageStats(db, {
+      since: "2026-07-08T00:00:00.000Z",
+      until: "2026-07-09T00:00:00.000Z",
+    });
+
+    expect(stats?.summary).toMatchObject({
+      trackedAdeTokens: 180,
+      trackedAdeCalls: 2,
+      trackedAdeDurationMs: 1_500,
+      chatSessions: 1,
+      commitsCreated: 1,
+      pushOperations: 1,
+      filesChanged: 3,
+      insertions: 120,
+      deletions: 20,
+      totalInteractions: 2,
+      activeDays: 1,
+      longestSessionMs: 1_800_000,
+    });
+    expect(stats?.features).toEqual([
+      expect.objectContaining({ feature: "chat", provider: "claude", calls: 2, successRate: 50 }),
+    ]);
+    expect(stats?.clients).toEqual([
+      expect.objectContaining({ client: "desktop", interactions: 1 }),
+      expect.objectContaining({ client: "mobile", interactions: 1 }),
+    ]);
+    expect(stats?.daily).toEqual([
+      expect.objectContaining({
+        date: "2026-07-08",
+        totalTokens: 180,
+        sessions: 1,
+        filesChanged: 3,
+        commits: 1,
+        interactions: 2,
+        clients: { desktop: 1, mobile: 1 },
+      }),
+    ]);
+  });
+
+  it("normalizes client actions while excluding reads and terminal keystrokes", async () => {
+    const db = await createStatsDb();
+    expect(usageClientSurfaceFromRpcName("ade-desktop")).toBe("desktop");
+    expect(usageClientSurfaceFromRpcName("ade-code")).toBe("tui");
+    expect(usageClientSurfaceFromRpcName("ade-web-client")).toBe("web");
+    expect(usageClientSurfaceFromPeer("phone", "ios")).toBe("mobile");
+    expect(usageActionFromIpcChannel("ade.agentChat.send")).toBe("chat.send");
+    expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
+    expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
+    expect(usageActionFromRpcDomain("pr", "createQueuePrs")).toBe("prs.createQueue");
+    expect(usageActionFromRpcDomain("file", "writeWorkspaceText")).toBe("files.writeText");
+    expect(usageActionFromRpcDomain("process", "restartStack")).toBe("processes.start");
+    expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);
+    expect(usageActionFromRpcDomain("external-sessions", "import")).toBe("work.importExternalSession");
+
+    recordUsageInteraction(db, { client: "desktop", action: "lanes.list" });
+    expect(db.get<{ count: number }>("select count(*) count from usage_events")?.count).toBe(0);
   });
 });

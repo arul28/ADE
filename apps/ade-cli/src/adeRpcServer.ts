@@ -60,6 +60,11 @@ import {
 } from "../../desktop/src/shared/cliLaunch";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
+import {
+  recordUsageInteraction,
+  usageActionFromRpcDomain,
+  usageClientSurfaceFromRpcName,
+} from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -160,6 +165,7 @@ type SessionIdentity = {
 type SessionState = {
   initialized: boolean;
   protocolVersion: string;
+  clientName: string;
   identity: SessionIdentity;
   askUserEvents: number[];
   askUserRateLimit: {
@@ -3447,6 +3453,22 @@ async function runTool(args: {
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
     };
+    const isUserClient = !session.identity.runId
+      && !session.identity.stepId
+      && !session.identity.attemptId
+      && !session.identity.chatSessionId;
+    if (isUserClient) {
+      const requestedSessionId = typeof scopedObjectArgs.sessionId === "string"
+        ? scopedObjectArgs.sessionId
+        : null;
+      recordUsageInteraction(runtime.db, {
+        projectId: runtime.projectId,
+        client: usageClientSurfaceFromRpcName(session.clientName),
+        action: usageActionFromRpcDomain(domain, action),
+        feature: domain,
+        sessionId: statusHints.chatSessionId ?? requestedSessionId,
+      });
+    }
     return {
       domain,
       action,
@@ -4908,6 +4930,7 @@ export function createAdeRpcRequestHandler(args: {
   const session: SessionState = {
     initialized: false,
     protocolVersion: DEFAULT_PROTOCOL_VERSION,
+    clientName: "unknown",
     identity: {
       callerId: "unknown",
       role: "external",
@@ -4954,6 +4977,10 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/initialize") {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
+      const clientInfo = safeObject(params.clientInfo);
+      session.clientName = asOptionalTrimmedString(params.clientName)
+        ?? asOptionalTrimmedString(clientInfo.name)
+        ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {

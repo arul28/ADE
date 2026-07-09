@@ -3909,6 +3909,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
+    XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
   }
 
   @MainActor
@@ -3945,6 +3946,64 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
+    XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
+  }
+
+  func testMobileAdeUsageStatsDecodesPayloadWithoutNewOptionalBreakdowns() throws {
+    let json = """
+    {
+      "generatedAt": "2026-07-09T12:00:00.000Z",
+      "summary": {
+        "totalTokens": 42,
+        "chatSessions": 2
+      },
+      "daily": [
+        {
+          "date": "2026-07-09",
+          "inputTokens": 12,
+          "outputTokens": 30,
+          "insertions": 7,
+          "deletions": 3,
+          "filesChanged": 1,
+          "sessions": 2
+        }
+      ]
+    }
+    """
+
+    let stats = try JSONDecoder().decode(MobileAdeUsageStats.self, from: Data(json.utf8))
+
+    XCTAssertEqual(stats.generatedAt, "2026-07-09T12:00:00.000Z")
+    XCTAssertEqual(stats.summary.totalTokens, 42)
+    XCTAssertEqual(stats.daily.first?.totalTokens, nil)
+    XCTAssertEqual(stats.daily.first?.inputTokens, 12)
+    XCTAssertNil(stats.summary.totalInteractions)
+    XCTAssertNil(stats.clients)
+    XCTAssertNil(stats.freshness)
+  }
+
+  @MainActor
+  func testFetchAdeUsageStatsRejectsLegacyHostBeforeTransport() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+      ],
+    ])
+
+    do {
+      _ = try await service.fetchAdeUsageStats(preset: "7d")
+      XCTFail("A legacy host must reject usage stats before attempting transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
+    }
   }
 
   @MainActor

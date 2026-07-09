@@ -72,9 +72,11 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
+import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 
 type SyncServiceArgs = {
   db: AdeDb;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   logger: Logger;
   projectId?: string | null;
   runtimeProjectId?: string | null;
@@ -583,6 +585,7 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
+    usageTrackingService: args.usageTrackingService,
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,

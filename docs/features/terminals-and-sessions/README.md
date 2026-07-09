@@ -584,12 +584,17 @@ iOS Work surfaces:
   lightweight terminal emulator remains here only for compact previews.
 - `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
   `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
-  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
+  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift`,
+  `WorkUsageActivityCarousel.swift` — mobile chat,
   composer, command/tool/reasoning cards, and new-chat launch surface.
   `WorkNewChatScreen` segments between **ADE chat** and **CLI session**;
   the CLI mode submits `work.startCliSession` against the host through
   `SyncService.startCliSession`, and the Import entry opens the external
-  session browser.
+  session browser. A compact activity carousel is pinned outside the welcome
+  scroll view above the composer, so keyboard/composer movement does not drag
+  it through the page. It fetches the host's cached `usage.getAdeStats`
+  snapshot, supports activity/token/code/client-mix charts and
+  day/week/month/year ranges, and persists both selections on-device.
 - `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` — iOS import
   browser/action sheet. It calls `SyncService.listExternalSessions` and
   `SyncService.importExternalSession`, mirrors the desktop capability

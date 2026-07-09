@@ -7,10 +7,12 @@ import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
   AiSettingsStatus,
+  AdeUsageStats,
   BudgetCapConfig,
   UsageSnapshot,
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
+import { UsageActivityCarousel } from "./UsageActivityCarousel";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -91,6 +93,38 @@ function makeQuotaPanelSnapshot(): UsageSnapshot {
     lastPolledAt: "2026-05-08T07:00:00.000Z",
     errors: [],
   };
+}
+
+function makeActivityStats(): AdeUsageStats {
+  return {
+    generatedAt: "2026-07-09T12:00:00.000Z",
+    range: { preset: "7d", since: "2026-07-03T00:00:00.000Z", until: "2026-07-09T12:00:00.000Z" },
+    summary: {
+      totalTokens: 3_000,
+      chatSessions: 2,
+      terminalSessions: 1,
+      trackedAdeDurationMs: 3_600_000,
+    },
+    providers: [],
+    models: [],
+    adeProviders: [],
+    adeModels: [],
+    agentProviders: [],
+    agentModels: [],
+    features: [],
+    lanes: [],
+    activities: [],
+    clients: [
+      { client: "desktop", interactions: 8, activeDays: 2, sessions: 2, lastActiveAt: "2026-07-09T12:00:00.000Z" },
+      { client: "mobile", interactions: 2, activeDays: 1, sessions: 1, lastActiveAt: "2026-07-09T11:00:00.000Z" },
+    ],
+    daily: [
+      { date: "2026-07-08", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, commits: 1, prs: 0, insertions: 80, deletions: 10, filesChanged: 2, sessions: 1, interactions: 4 },
+      { date: "2026-07-09", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, commits: 1, prs: 1, insertions: 120, deletions: 20, filesChanged: 4, sessions: 2, interactions: 6 },
+    ],
+    github: { repo: "ade/ADE", available: true, lastFetchedAt: "2026-07-09T12:00:00.000Z", error: null },
+    sourceNotes: [],
+  } as unknown as AdeUsageStats;
 }
 
 function makeHeaderUsageSnapshot(): UsageSnapshot {
@@ -299,6 +333,20 @@ describe("usage components", () => {
       expect(screen.queryByText("Cursor")).toBeNull();
       expect(screen.queryByText(/Cursor not detected/i)).toBeNull();
     });
+
+    it("does not refresh when provider and cost scans are both fresh", async () => {
+      const freshSnapshot = makeQuotaPanelSnapshot();
+      freshSnapshot.lastPolledAt = new Date().toISOString();
+      freshSnapshot.costsLastPolledAt = new Date().toISOString();
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(freshSnapshot);
+      vi.mocked(window.ade.usage.refresh).mockResolvedValue(freshSnapshot);
+
+      render(<UsageQuotaPanel />);
+
+      expect(await screen.findByText("63.0% used")).toBeTruthy();
+      await act(async () => { await Promise.resolve(); });
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
   });
 
   describe("HeaderUsageControl", () => {
@@ -450,6 +498,33 @@ describe("usage components", () => {
         window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
         window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
       }
+    });
+  });
+
+  describe("UsageActivityCarousel", () => {
+    beforeEach(() => localStorage.clear());
+
+    it("cycles through charts and persists the selected chart", async () => {
+      render(<UsageActivityCarousel stats={makeActivityStats()} preset="7d" />);
+      expect(screen.getByText("ADE activity")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Next activity chart" }));
+      await waitFor(() => expect(screen.getByText("AI token flow")).toBeTruthy());
+      expect(JSON.parse(localStorage.getItem("ade.stats.carousel.v1") ?? "{}")).toMatchObject({
+        slide: "tokens",
+        preset: "7d",
+      });
+    });
+
+    it("switches among the day, week, month, and year contracts", () => {
+      const onPresetChange = vi.fn();
+      render(<UsageActivityCarousel stats={makeActivityStats()} preset="7d" onPresetChange={onPresetChange} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Year" }));
+      expect(onPresetChange).toHaveBeenCalledWith("year");
+      expect(screen.getByRole("button", { name: "Day" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Week" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Month" })).toBeTruthy();
     });
   });
 });

@@ -52,7 +52,16 @@ export type GetAggregatedUsageArgs = {
   limit?: number;
 };
 
-export type AdeUsageRangePreset = "today" | "7d" | "30d" | "all";
+export const ADE_USAGE_RANGE_PRESETS = ["today", "7d", "30d", "year", "all"] as const;
+
+export type AdeUsageRangePreset = (typeof ADE_USAGE_RANGE_PRESETS)[number];
+
+export function isAdeUsageRangePreset(value: unknown): value is AdeUsageRangePreset {
+  return typeof value === "string"
+    && (ADE_USAGE_RANGE_PRESETS as readonly string[]).includes(value);
+}
+
+export type AdeUsageClientSurface = "desktop" | "mobile" | "tui" | "web" | "api";
 
 export type GetAdeUsageStatsArgs = {
   preset?: AdeUsageRangePreset;
@@ -120,6 +129,14 @@ export type AdeUsageActivitySummary = {
   count: number;
 };
 
+export type AdeUsageClientSummary = {
+  client: AdeUsageClientSurface;
+  interactions: number;
+  activeDays: number;
+  sessions: number;
+  lastActiveAt: string | null;
+};
+
 export type AdeUsageDailyPoint = {
   date: string;
   inputTokens: number;
@@ -131,6 +148,9 @@ export type AdeUsageDailyPoint = {
   deletions: number;
   filesChanged: number;
   sessions: number;
+  durationMs?: number;
+  interactions?: number;
+  clients?: Partial<Record<AdeUsageClientSurface, number>>;
 };
 
 export type AdeUsageStats = {
@@ -187,6 +207,11 @@ export type AdeUsageStats = {
     artifactsCaptured?: number;
     automationRuns?: number;
     workerRuns?: number;
+    totalInteractions?: number;
+    activeDays?: number;
+    currentStreakDays?: number;
+    longestStreakDays?: number;
+    longestSessionMs?: number;
   };
   providers: AdeUsageProviderSummary[];
   models: AdeUsageModelSummary[];
@@ -197,6 +222,7 @@ export type AdeUsageStats = {
   features?: AdeUsageFeatureSummary[];
   lanes?: AdeUsageLaneSummary[];
   activities?: AdeUsageActivitySummary[];
+  clients?: AdeUsageClientSummary[];
   daily: AdeUsageDailyPoint[];
   github: {
     repo: string | null;
@@ -205,6 +231,11 @@ export type AdeUsageStats = {
     error: string | null;
   };
   sourceNotes?: string[];
+  freshness?: {
+    state: "fresh" | "refreshing" | "stale";
+    providerUpdatedAt: string | null;
+    githubUpdatedAt: string | null;
+  };
 };
 
 // ---------------------------------------------------------------------------

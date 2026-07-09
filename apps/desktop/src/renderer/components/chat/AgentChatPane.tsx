@@ -155,6 +155,7 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
+import { WorkUsageActivityCarousel } from "../usage/UsageActivityCarousel";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import {
@@ -10991,6 +10992,18 @@ export function AgentChatPane({
                           <div className="w-full max-w-[820px]">
                             {composerWithTypographyRoot}
                           </div>
+                        ) : null}
+
+                        {isWorkDraftComposer && !appPanelOpen ? (
+                          <motion.div
+                            className="flex w-full justify-center"
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 6 }}
+                            transition={{ duration: 0.28, ease: "easeOut" }}
+                          >
+                            <WorkUsageActivityCarousel />
+                          </motion.div>
                         ) : null}
                       </div>
                     </div>

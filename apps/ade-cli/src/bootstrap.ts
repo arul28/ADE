@@ -1277,6 +1277,7 @@ export async function createAdeRuntime(args: {
 
   const usageTrackingService = createUsageTrackingService({
     logger,
+    db,
     pollIntervalMs: 120_000,
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
     projectRoot,
@@ -1327,6 +1328,7 @@ export async function createAdeRuntime(args: {
     const { createSyncService } = await import("./services/sync/syncService");
     syncService = createSyncService({
       db,
+      usageTrackingService,
       logger,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,

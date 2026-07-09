@@ -4228,3 +4228,60 @@ struct PrMobileSnapshot: Codable, Equatable {
   var workflowCards: [PrWorkflowCard]
   var live: Bool
 }
+
+// MARK: - ADE usage activity
+
+/// Compact projection of the desktop usage contract used by the fixed Work
+/// new-chat carousel. Most counters are optional so a newer phone can continue
+/// to render useful charts while paired to an older desktop runtime.
+struct MobileAdeUsageSummary: Codable, Equatable {
+  var totalTokens: Int?
+  var trackedAdeDurationMs: Int?
+  var chatSessions: Int?
+  var terminalSessions: Int?
+  var filesChanged: Int?
+  var insertions: Int?
+  var deletions: Int?
+  var activeDays: Int?
+  var currentStreakDays: Int?
+  var longestStreakDays: Int?
+  var totalInteractions: Int?
+}
+
+struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
+  var id: String { date }
+  var date: String
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var totalTokens: Int?
+  var insertions: Int?
+  var deletions: Int?
+  var filesChanged: Int?
+  var sessions: Int?
+  var durationMs: Int?
+  var interactions: Int?
+  var clients: [String: Int]?
+}
+
+struct MobileAdeUsageClientSummary: Codable, Equatable, Identifiable {
+  var id: String { client }
+  var client: String
+  var interactions: Int
+  var activeDays: Int
+  var sessions: Int
+  var lastActiveAt: String?
+}
+
+struct MobileAdeUsageFreshness: Codable, Equatable {
+  var state: String
+  var providerUpdatedAt: String?
+  var githubUpdatedAt: String?
+}
+
+struct MobileAdeUsageStats: Codable, Equatable {
+  var generatedAt: String
+  var summary: MobileAdeUsageSummary
+  var clients: [MobileAdeUsageClientSummary]?
+  var daily: [MobileAdeUsageDailyPoint]
+  var freshness: MobileAdeUsageFreshness?
+}
