@@ -366,7 +366,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64}/**",
+      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64}{,/**}",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "fileAssociations": [
