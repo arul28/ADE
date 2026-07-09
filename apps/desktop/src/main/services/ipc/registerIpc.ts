@@ -60,6 +60,7 @@ import type {
   ArchiveLaneArgs,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
+  AutomationScheduledCleanup,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
@@ -555,6 +556,7 @@ import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
+import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -894,6 +896,7 @@ export type AppContext = {
   automationService: ReturnType<typeof createAutomationService> | null;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  linearIngressService?: LinearIngressService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -4685,6 +4688,43 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
     const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.simulate(arg);
+  });
+
+  ipcMain.handle(IPC.automationsListScheduledCleanups, async (): Promise<AutomationScheduledCleanup[]> => {
+    const ctx = ensureAutomationContext();
+    return ctx.automationService.listScheduledCleanups();
+  });
+
+  ipcMain.handle(IPC.automationsCancelScheduledCleanup, async (_event, arg: { id: string }): Promise<boolean> => {
+    const ctx = ensureAutomationContext();
+    return ctx.automationService.cancelScheduledCleanup(arg.id);
+  });
+
+  const ensureLinearIngressContext = (): AppContextWith<"linearIngressService"> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["linearIngressService"] as const);
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.automationsLinearIngressGetStatus, async (): Promise<LinearIngressStatus> => {
+    const ctx = ensureLinearIngressContext();
+    return ctx.linearIngressService.getStatus();
+  });
+
+  ipcMain.handle(IPC.automationsLinearIngressSetup, async (): Promise<LinearIngressStatus> => {
+    const ctx = ensureLinearIngressContext();
+    return ctx.linearIngressService.setup();
+  });
+
+  ipcMain.handle(IPC.automationsLinearIngressTeardown, async (): Promise<LinearIngressStatus> => {
+    const ctx = ensureLinearIngressContext();
+    return ctx.linearIngressService.teardown();
+  });
+
+  ipcMain.handle(IPC.automationsLinearIngressPollNow, async (): Promise<LinearIngressStatus> => {
+    const ctx = ensureLinearIngressContext();
+    await ctx.linearIngressService.pollNow();
+    return ctx.linearIngressService.getStatus();
   });
 
   ipcMain.handle(IPC.reviewListLaunchContext, async (): Promise<ReviewLaunchContext> => {

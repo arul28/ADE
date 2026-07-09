@@ -38,6 +38,8 @@ import type {
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
+  AutomationLinearIngressStatus,
+  AutomationScheduledCleanup,
   AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
@@ -4127,6 +4129,50 @@ contextBridge.exposeInMainWorld("ade", {
         { args: req },
         () => ipcRenderer.invoke(IPC.automationsSimulate, req),
       ),
+    listScheduledCleanups: async (): Promise<AutomationScheduledCleanup[]> =>
+      callProjectRuntimeActionOr(
+        "automations",
+        "listScheduledCleanups",
+        {},
+        () => ipcRenderer.invoke(IPC.automationsListScheduledCleanups),
+      ),
+    cancelScheduledCleanup: async (id: string): Promise<boolean> =>
+      callProjectRuntimeActionOr(
+        "automations",
+        "cancelScheduledCleanup",
+        { args: { id } },
+        () => ipcRenderer.invoke(IPC.automationsCancelScheduledCleanup, { id }),
+      ),
+    linearIngress: {
+      getStatus: async (): Promise<AutomationLinearIngressStatus> =>
+        callProjectRuntimeActionOr(
+          "automations",
+          "linearIngressGetStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.automationsLinearIngressGetStatus),
+        ),
+      setup: async (): Promise<AutomationLinearIngressStatus> =>
+        callProjectRuntimeActionOr(
+          "automations",
+          "linearIngressSetup",
+          {},
+          () => ipcRenderer.invoke(IPC.automationsLinearIngressSetup),
+        ),
+      teardown: async (): Promise<AutomationLinearIngressStatus> =>
+        callProjectRuntimeActionOr(
+          "automations",
+          "linearIngressTeardown",
+          {},
+          () => ipcRenderer.invoke(IPC.automationsLinearIngressTeardown),
+        ),
+      pollNow: async (): Promise<AutomationLinearIngressStatus> =>
+        callProjectRuntimeActionOr(
+          "automations",
+          "linearIngressPollNow",
+          {},
+          () => ipcRenderer.invoke(IPC.automationsLinearIngressPollNow),
+        ),
+    },
     onEvent: subscribeAutomationsEvents,
   },
   review: {

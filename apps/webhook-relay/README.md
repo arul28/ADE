@@ -1,9 +1,9 @@
 # ADE webhook relay
 
-This is the cheap hosted ingress for ADE PR events. GitHub delivers webhooks to a
-Cloudflare Worker, the Worker verifies the GitHub HMAC signature, writes the
-event into D1, and ADE desktop/TUI/mobile sync paths poll the newest events with
-the existing `automations.githubRelay` cursor.
+This is the cheap hosted ingress for ADE GitHub and Linear events. Providers
+deliver webhooks to a Cloudflare Worker, the Worker verifies the provider HMAC
+signature, writes the event into D1, and ADE polls the newest events with a
+monotonic cursor.
 
 No user repository needs ADE-specific code. The repo-side step is installing the
 ADE GitHub App on the repositories the user wants ADE to track.
@@ -23,8 +23,9 @@ ADE GitHub App on the repositories the user wants ADE to track.
   yet or the user explicitly presses Refresh.
 - If the hosted relay fails, ADE keeps using the current GitHub polling/snapshot
   path.
-- The event envelope is provider-neutral enough to add Linear later without
-  replacing the ADE cache path.
+- Linear webhook signing secrets are scoped per organization and stored in D1;
+  Linear API/OAuth tokens are used only to verify organization ownership and
+  are never stored.
 
 Cloudflare pricing changes, so check the official pages before launch:
 
@@ -78,6 +79,13 @@ let the relay verify a repository installation live through GitHub's App API
 when webhook state has not arrived yet or the user presses Refresh in Settings.
 `GITHUB_APP_PRIVATE_KEY` should be the private key PEM downloaded from the
 GitHub App settings.
+
+Linear support requires no new Wrangler secrets. Each ADE client generates its
+own webhook signing secret and registers it into the
+`linear_organizations` D1 table through the authenticated registration route.
+For local tests or a Linear-compatible proxy, `LINEAR_API_BASE_URL` overrides
+the default `https://api.linear.app/graphql` endpoint. It may be the GraphQL URL
+itself or an origin, in which case the Worker appends `/graphql`.
 
 Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
 
@@ -145,6 +153,36 @@ ADE_GITHUB_RELAY_API_BASE_URL=https://ade-github-webhook-relay.<your-subdomain>.
 ADE_GITHUB_RELAY_REMOTE_PROJECT_ID=<stable-project-id>
 ADE_GITHUB_RELAY_ACCESS_TOKEN=<relay-token>
 ```
+
+## Linear setup
+
+ADE performs the Linear setup flow after the user connects a workspace with a
+workspace-admin API key or OAuth token carrying the `admin` scope:
+
+1. ADE creates a 32-byte random signing secret and creates a Linear webhook
+   targeting
+   `https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook`.
+2. ADE calls `POST /linear/orgs/register` with `{ "secret": "…" }` and the
+   user's Linear authorization header. API keys are sent raw; OAuth tokens are
+   sent as `Bearer <token>`.
+3. The Worker asks Linear for `viewer.organization.id`, then upserts the secret
+   for that organization. It does not store or log the authorization token.
+4. ADE polls `GET /linear/orgs/:organizationId/events?after=seq:<n>`. The Worker
+   rechecks that the caller's Linear token belongs to the requested organization
+   and caches that token-to-organization verdict in memory for five minutes.
+
+Configure the Linear webhook for `Issue`, `Comment`, and `IssueLabel` resources,
+with all public teams enabled. The single global ingest URL is:
+
+```text
+https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook
+```
+
+Incoming deliveries are deduplicated by `Linear-Delivery`, retained according
+to `EVENT_RETENTION_DAYS` (30 days by default), and rejected when the raw-body
+HMAC is invalid or `webhookTimestamp` is more than 60 seconds from the Worker
+clock. An unknown organization receives a successful acknowledgement without
+storage so Linear does not disable the webhook while setup is still converging.
 
 ## GitHub App setup
 

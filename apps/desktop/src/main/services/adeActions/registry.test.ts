@@ -128,11 +128,32 @@ describe("isAllowedAdeAction", () => {
 });
 
 describe("getAdeActionDomainServices feature gates", () => {
-  it("hides Automations domains in packaged builds", () => {
+  it("keeps Automations domains available in packaged builds by default", () => {
     withEnv(
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
         ADE_DISABLE_AUTOMATIONS: undefined,
+      },
+      () => {
+        const services = getAdeActionDomainServices({
+          isPackaged: true,
+          automationService: {},
+          automationPlannerService: {},
+          automationIngressService: {},
+          projectConfigService: {},
+        } as never);
+
+        expect(services.automation_planner).not.toBeNull();
+        expect(services.automations).not.toBeNull();
+      },
+    );
+  });
+
+  it("honors the packaged-build Automations kill switch", () => {
+    withEnv(
+      {
+        ADE_ENABLE_AUTOMATIONS: undefined,
+        ADE_DISABLE_AUTOMATIONS: "1",
       },
       () => {
         const services = getAdeActionDomainServices({

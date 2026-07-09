@@ -68,6 +68,8 @@ import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
+import { createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
+import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -224,6 +226,7 @@ export type AdeRuntime = {
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
@@ -1105,6 +1108,50 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  const linearIngressService = automationService
+    ? createLinearIngressService({
+        db,
+        projectId,
+        credentialStore: new EncryptedFileCredentialStore({
+          secretsDir: path.join(paths.adeDir, "secrets"),
+        }),
+        getLinearClient: () => headlessLinearServices.linearClient,
+        getLinearAccessToken: async () => {
+          const credentials = headlessLinearServices.linearCredentialService;
+          await credentials.ensureFreshToken();
+          const token = credentials.getToken()?.trim() ?? "";
+          if (!token) return null;
+          if (credentials.getStatus().authMode === "oauth") {
+            return /^bearer\s+/i.test(token) ? token : `Bearer ${token}`;
+          }
+          return token.replace(/^bearer\s+/i, "");
+        },
+        cursorStore: createKvIngressCursorStore(db),
+        hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+        dispatch: (record) => {
+          if (!automationService) return;
+          for (const dispatch of buildLinearAutomationDispatches(record)) {
+            void automationService.dispatchIngressTrigger(dispatch).catch((error) => {
+              logger.warn("automations.linear_relay_dispatch_failed", {
+                eventId: record.eventId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+        },
+        logger,
+      })
+    : null;
+  if (linearIngressService) {
+    // Availability keys off configuration, not the enabled-rule-dependent
+    // status.state ("disabled" while no Linear rule is enabled would make
+    // enabling the first Linear rule impossible).
+    automationService?.setLinearIngressAvailable(() => {
+      const status = linearIngressService.getStatus();
+      return Boolean(status.webhookId && status.organizationId && !status.lastError);
+    });
+    linearIngressService.start();
+  }
   const configReloadService = createConfigReloadService({
     paths: {
       sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1519,6 +1566,7 @@ export async function createAdeRuntime(args: {
     budgetCapService,
     automationService,
     automationIngressService,
+    linearIngressService,
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
@@ -1539,6 +1587,7 @@ export async function createAdeRuntime(args: {
       // one project must not sever the relay for the others. The daemon's
       // shutdown path (disposeServeResources) stops it.
       swallow(() => automationIngressService?.dispose());
+      swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
       swallow(() => syncService?.dispose());

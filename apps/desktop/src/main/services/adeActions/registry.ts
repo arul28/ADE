@@ -11,6 +11,7 @@ import type {
   AutomationRunDetail,
   AutomationRunListArgs,
   AutomationRuleSummary,
+  AutomationScheduledCleanup,
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
@@ -27,6 +28,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
+import type { LinearIngressStatus } from "../automations/linearIngressService";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import type {
   AiConfig,
@@ -640,6 +642,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "refreshWebhookGatewayStatus",
     "setWebhookGatewayPublicUrl",
     "listIngressEvents",
+    "listScheduledCleanups",
+    "cancelScheduledCleanup",
+    "linearIngressGetStatus",
+    "linearIngressSetup",
+    "linearIngressTeardown",
+    "linearIngressPollNow",
   ],
   review: [
     "cancelRun",
@@ -793,6 +801,12 @@ type AutomationsDomainService = {
   refreshWebhookGatewayStatus(): Promise<AutomationIngressStatus["webhookGateway"]>;
   setWebhookGatewayPublicUrl(args?: { publicUrl?: string | null }): Promise<AutomationIngressStatus["webhookGateway"]>;
   listIngressEvents(args?: { limit?: number }): AutomationIngressEventRecord[];
+  listScheduledCleanups(): AutomationScheduledCleanup[];
+  cancelScheduledCleanup(args: { id: string }): boolean;
+  linearIngressGetStatus(): LinearIngressStatus;
+  linearIngressSetup(): Promise<LinearIngressStatus>;
+  linearIngressTeardown(): Promise<LinearIngressStatus>;
+  linearIngressPollNow(): Promise<LinearIngressStatus>;
 };
 
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
@@ -823,7 +837,23 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     refreshWebhookGatewayStatus: () => automationService.refreshWebhookGatewayStatus(),
     setWebhookGatewayPublicUrl: (args = {}) => automationService.setWebhookGatewayPublicUrl(args),
     listIngressEvents: (args = {}) => automationService.listIngressEvents(args.limit),
+    listScheduledCleanups: () => automationService.listScheduledCleanups(),
+    cancelScheduledCleanup: ({ id }) => automationService.cancelScheduledCleanup(id),
+    linearIngressGetStatus: () => requireLinearIngress(runtime).getStatus(),
+    linearIngressSetup: () => requireLinearIngress(runtime).setup(),
+    linearIngressTeardown: () => requireLinearIngress(runtime).teardown(),
+    linearIngressPollNow: async () => {
+      const service = requireLinearIngress(runtime);
+      await service.pollNow();
+      return service.getStatus();
+    },
   };
+}
+
+function requireLinearIngress(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
+  const service = runtime.linearIngressService;
+  if (!service) throw new Error("Linear ingress is not available on this runtime.");
+  return service;
 }
 
 type IssueDomainService = {
