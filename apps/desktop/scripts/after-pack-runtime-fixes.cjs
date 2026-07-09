@@ -123,6 +123,14 @@ function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
   console.log(`[afterPack] Bundled OpenCode runtime packages: ${copied.join(", ")}`);
 }
 
+function pruneOpenCodeInstallShim(runtimeRoot, platform) {
+  if (platform === "win32") return;
+  const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
+  if (removeIfPresent(runtimeRoot, shimPath)) {
+    console.log(`[afterPack] Pruned non-target OpenCode install shim: ${shimPath}`);
+  }
+}
+
 function replaceCpuFeaturesNativeAddon(runtimeRoot, context) {
   const packageArch = darwinPackageArchForContext(context);
   if (!packageArch) return;
@@ -416,6 +424,7 @@ module.exports = async function afterPack(context) {
     replaceCpuFeaturesNativeAddon(runtimeRoot, context);
   }
   ensureOpenCodeRuntimePackages(runtimeRoot, platform);
+  pruneOpenCodeInstallShim(runtimeRoot, platform);
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {
