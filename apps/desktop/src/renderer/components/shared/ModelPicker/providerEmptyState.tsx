@@ -1,5 +1,5 @@
 import { Gear, ArrowSquareOut, Terminal } from "@phosphor-icons/react";
-import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { cn } from "../../ui/cn";
 
@@ -95,12 +95,12 @@ export type ProviderEmptyStateProps =
   | {
       family: ProviderFamily;
       mode?: "default" | "discovery-empty";
-      onOpenSignIn?: (family?: ProviderFamily) => void;
+      onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
     }
   | {
       mode: "opencode-required";
       family: "opencode" | "ollama" | "lmstudio";
-      onOpenSignIn?: (family?: ProviderFamily) => void;
+      onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
     };
 
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
@@ -154,7 +154,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
 
 export type ProviderSetupBannerProps = {
   family: ProviderFamily;
-  onOpenSignIn?: (family?: ProviderFamily) => void;
+  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
 };
 
 /**

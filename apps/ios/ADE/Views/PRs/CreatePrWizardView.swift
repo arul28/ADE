@@ -302,14 +302,18 @@ struct CreatePrWizardView: View {
     switch createMode {
     case .single:
       guard selectedLane != nil, selectedLaneCanCreate else { return false }
-      let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+      let effectiveTitle = trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle
+      let hasTitle = !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       let hasBase = !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       return hasTitle && hasBase
     case .queue:
       return selectedLaneIds.count >= 1
     case .integration:
       let hasName = !integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+      let effectiveTitle = trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle
+      let hasTitle = !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       return selectedLaneIds.count >= 2 && hasName && hasTitle
     }
   }

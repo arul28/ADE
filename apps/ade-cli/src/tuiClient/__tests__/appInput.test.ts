@@ -86,6 +86,7 @@ import {
   promptTextForTerminal,
   clipboardImageCacheRootForRuntime,
   uploadClipboardImageAttachmentToRuntime,
+  defaultPrTitleForLane,
 } from "../app";
 import { isTerminalSessionResumable } from "../closedCliSessions";
 import {
@@ -630,6 +631,49 @@ describe("lane worktree availability", () => {
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("PR title defaults", () => {
+  function laneForPrTitle(overrides: Partial<LaneSummary> = {}): LaneSummary {
+    return {
+      id: "lane-1",
+      name: "Feature",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "feature",
+      worktreePath: "/tmp/feature",
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-05-20T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("uses the parent lane branch when defaulting stacked lane PR titles", () => {
+    const parent = laneForPrTitle({
+      id: "lane-parent",
+      name: "Parent",
+      branchRef: "feature/parent",
+      worktreePath: "/tmp/parent",
+    });
+    const child = laneForPrTitle({
+      id: "lane-child",
+      name: "Child",
+      branchRef: "feature/child",
+      parentLaneId: parent.id,
+      baseRef: "main",
+      worktreePath: "/tmp/child",
+    });
+
+    expect(defaultPrTitleForLane(child, [parent, child])).toBe("Child -> Parent");
   });
 });
 

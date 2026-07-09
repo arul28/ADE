@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
-import { MODEL_REGISTRY, type ModelDescriptor, type ProviderFamily } from "../../../../shared/modelRegistry";
+import { MODEL_REGISTRY, type AuthType, type ModelDescriptor, type ProviderFamily } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
@@ -121,7 +121,7 @@ export type ModelPickerContentProps = {
    */
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
-  onOpenSignIn?: (family?: ProviderFamily) => void;
+  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
@@ -734,7 +734,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onToggleFavorite={toggleFavorite}
                         onCopyId={handleCopyId}
                         onSetSurfaceDefault={handleSetSurfaceDefault}
-                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(m.family) } : {})}
+                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(m.family, m.authTypes) } : {})}
                       />
                     </div>
                   );
@@ -770,7 +770,7 @@ function EmptyState({
   opencodeBinaryKnown: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onOpenSignIn?: (family?: ProviderFamily) => void;
+  onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
     const family = selection.slice("provider:".length) as ProviderFamily;

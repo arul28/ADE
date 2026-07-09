@@ -10,6 +10,7 @@ import {
   resolveModelDescriptor,
   resolveProviderGroupForModel,
 } from "../../../desktop/src/shared/modelRegistry";
+import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBaseResolution";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
@@ -1141,9 +1142,16 @@ function prBranchNameFromRef(ref: string | null | undefined): string {
   return value;
 }
 
-function defaultPrTitleForLane(sourceLane: LaneSummary | null | undefined, lanes: LaneSummary[]): string {
+export function defaultPrTitleForLane(sourceLane: LaneSummary | null | undefined, lanes: LaneSummary[]): string {
   const sourceName = sourceLane?.name?.trim() || "Source lane";
-  const targetBranch = prBranchNameFromRef(sourceLane?.baseRef);
+  const parentLane = sourceLane?.parentLaneId
+    ? lanes.find((lane) => lane.id === sourceLane.parentLaneId) ?? null
+    : null;
+  const targetBranch = resolveStableLaneBaseBranch({
+    lane: sourceLane,
+    parent: parentLane,
+    primaryBranchRef: "main",
+  });
   const targetLane = targetBranch
     ? lanes.find((lane) => lane.id !== sourceLane?.id && prBranchNameFromRef(lane.branchRef) === targetBranch)
     : null;
