@@ -27,7 +27,6 @@ import type {
   PersonalChatCallResponse,
 } from "../../../shared/types";
 import {
-  MODEL_REGISTRY,
   getModelById,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
@@ -59,7 +58,7 @@ type PersonalChatsBridge = {
 };
 
 const EMPTY_EVENTS: AgentChatEventEnvelope[] = [];
-const DEFAULT_MODEL_ID = "openai/gpt-5.4";
+const DEFAULT_MODEL_ID = "";
 
 function bridge(): PersonalChatsBridge {
   const candidate = (window.ade as typeof window.ade & { personalChats?: PersonalChatsBridge }).personalChats;
@@ -200,6 +199,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setSelectedId(null);
     setEventsBySession({});
     setToolPanel(null);
+    setCatalog(null);
+    setModelId(DEFAULT_MODEL_ID);
     setLoading(true);
     setError(null);
     void Promise.all([
@@ -276,14 +277,16 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     () => catalog ? descriptorsFromAgentChatModelCatalog(catalog) : null,
     [catalog],
   );
-  const models = useMemo<readonly ModelDescriptor[]>(() => {
-    if (dynamicCatalog?.models.length) return dynamicCatalog.models;
-    return MODEL_REGISTRY.filter((model) => !model.deprecated);
-  }, [dynamicCatalog]);
-  const availableModelIds = useMemo(
-    () => dynamicCatalog?.availableModelIds.length ? dynamicCatalog.availableModelIds : models.map((model) => model.id),
-    [dynamicCatalog, models],
+  const models = useMemo<readonly ModelDescriptor[]>(
+    () => dynamicCatalog?.models ?? [],
+    [dynamicCatalog],
   );
+  const availableModelIds = useMemo(
+    () => dynamicCatalog?.availableModelIds ?? [],
+    [dynamicCatalog],
+  );
+  const hasValidNewSessionModel = availableModelIds.includes(modelId)
+    && models.some((model) => model.id === modelId);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -307,6 +310,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   }, [refreshSessions, selectedId]);
 
   const handleModelChange = useCallback((nextModelId: string) => {
+    if (!availableModelIds.includes(nextModelId)) return;
     setModelId(nextModelId);
     const descriptor = models.find((model) => model.id === nextModelId) ?? getModelById(nextModelId);
     if (selectedId && descriptor) {
@@ -316,11 +320,13 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         provider: resolveProviderGroupForModel(descriptor),
       }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     }
-  }, [models, selectedId, updateSelected]);
+  }, [availableModelIds, models, selectedId, updateSelected]);
 
   const createSession = useCallback(async (): Promise<AgentChatSessionSummary> => {
-    const descriptor = models.find((model) => model.id === modelId) ?? getModelById(modelId) ?? models[0];
-    if (!descriptor) throw new Error("Choose an available model before starting a chat.");
+    const descriptor = models.find((model) => model.id === modelId);
+    if (!descriptor || !availableModelIds.includes(descriptor.id)) {
+      throw new Error("Choose an available model before starting a chat.");
+    }
     const created = await callPersonal<AgentChatSessionSummary>("create", {
       provider: resolveProviderGroupForModel(descriptor),
       model: getRuntimeModelRefForDescriptor(descriptor),
@@ -333,11 +339,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     await refreshSessions();
     setSelectedId(created.sessionId);
     return created;
-  }, [fastMode, modelId, models, permissionMode, reasoningEffort, refreshSessions]);
+  }, [availableModelIds, fastMode, modelId, models, permissionMode, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || (!selectedSession && !hasValidNewSessionModel)) return;
     setSending(true);
     setError(null);
     try {
@@ -355,7 +361,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     } finally {
       setSending(false);
     }
-  }, [createSession, draft, reasoningEffort, refreshSessions, selectedSession, sending]);
+  }, [createSession, draft, hasValidNewSessionModel, reasoningEffort, refreshSessions, selectedSession, sending]);
 
   const removeSession = useCallback(async (sessionId: string, action: "archive" | "delete") => {
     setMenuId(null);
@@ -497,7 +503,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                   className="max-h-44 min-h-[54px] w-full resize-none bg-transparent px-2 py-1.5 font-sans text-[13px] leading-5 text-fg/88 outline-none placeholder:text-muted-fg/32"
                 />
                 <div className="flex min-w-0 items-center gap-1.5 pt-1">
-                  <ModelPicker value={modelId} onChange={handleModelChange} surfaceKey="personal-chat" models={models} availableModelIds={availableModelIds} constrainToAvailableModelIds compact disabled={sending || turnActive} fastModeActive={fastMode} fastModeSupported={modelSupportsFastMode(selectedDescriptor)} onFastModeToggle={(next) => { setFastMode(next); void updateSelected({ fastMode: next }); }} />
+                  <ModelPicker value={modelId} onChange={handleModelChange} surfaceKey="personal-chat" models={models} availableModelIds={availableModelIds} constrainToAvailableModelIds compact disabled={sending || turnActive || catalog === null || availableModelIds.length === 0} fastModeActive={fastMode} fastModeSupported={modelSupportsFastMode(selectedDescriptor)} onFastModeToggle={(next) => { setFastMode(next); void updateSelected({ fastMode: next }); }} />
                   <ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} compact disabled={sending || turnActive} onChange={(next) => { setReasoningEffort(next); void updateSelected({ reasoningEffort: next }); }} />
                   <select value={permissionMode} disabled={sending || turnActive} onChange={(event) => { const next = event.target.value as AgentChatPermissionMode; setPermissionMode(next); void updateSelected({ permissionMode: next }); }} className="h-7 max-w-[112px] rounded-md border border-white/[0.06] bg-white/[0.025] px-2 font-sans text-[10px] text-fg/60 outline-none" aria-label="Permission mode">
                     <option value="default">Default</option>
@@ -508,7 +514,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                   {turnActive && selectedId ? (
                     <button type="button" onClick={() => void callPersonal<void>("interrupt", { sessionId: selectedId })} className="flex h-8 w-8 items-center justify-center rounded-full border border-rose-300/20 bg-rose-500/10 text-rose-200" aria-label="Stop response"><Stop size={13} weight="fill" /></button>
                   ) : (
-                    <button type="button" disabled={!draft.trim() || sending} onClick={() => void submit()} className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-[var(--color-accent-contrast)] transition-opacity disabled:opacity-30" aria-label="Send message">{sending ? <SpinnerGap size={14} className="animate-spin" /> : <PaperPlaneTilt size={14} weight="fill" />}</button>
+                    <button type="button" disabled={!draft.trim() || sending || (!selectedSession && !hasValidNewSessionModel)} onClick={() => void submit()} className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-[var(--color-accent-contrast)] transition-opacity disabled:opacity-30" aria-label="Send message">{sending ? <SpinnerGap size={14} className="animate-spin" /> : <PaperPlaneTilt size={14} weight="fill" />}</button>
                   )}
                 </div>
               </div>

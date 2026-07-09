@@ -5442,6 +5442,26 @@ function isPersonalSession(session: Pick<AgentChatSession, "surface">): boolean 
   return session.surface === "personal";
 }
 
+function personalChatUserPromptFallback(
+  session: Pick<AgentChatSession, "surface" | "provider">,
+): string | null {
+  if (!isPersonalSession(session)) return null;
+  // Every current provider has a dedicated instruction channel below:
+  // Claude systemPrompt, Codex developerInstructions, OpenCode's system field,
+  // and provider-runner harness prefixes for Cursor/Droid. Keep a fallback for
+  // a future provider so personal chat never silently inherits coding context.
+  switch (session.provider) {
+    case "claude":
+    case "codex":
+    case "opencode":
+    case "cursor":
+    case "droid":
+      return null;
+    default:
+      return PERSONAL_CHAT_SYSTEM_PROMPT;
+  }
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -15872,6 +15892,7 @@ export function createAgentChatService(args: {
       const openCodePromptBody = {
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+        ...(isPersonalSession(managed.session) ? { system: PERSONAL_CHAT_SYSTEM_PROMPT } : {}),
         ...(toolSelection ? { tools: toolSelection } : {}),
         ...(openCodeVariant ? { variant: openCodeVariant } : {}),
         parts: buildOpenCodePromptParts({
@@ -21091,7 +21112,7 @@ export function createAgentChatService(args: {
             laneWorktreePath: executionContext.laneWorktreePath,
           })
         : null,
-      personalSession ? PERSONAL_CHAT_SYSTEM_PROMPT : null,
+      personalChatUserPromptFallback(managed.session),
       buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
     ]);
 
@@ -22880,7 +22901,7 @@ export function createAgentChatService(args: {
                 laneWorktreePath: executionContext.laneWorktreePath,
               })
             : null,
-          personalSession ? PERSONAL_CHAT_SYSTEM_PROMPT : null,
+          personalChatUserPromptFallback(managed.session),
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath) : null,
@@ -24353,9 +24374,10 @@ export function createAgentChatService(args: {
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
+      const personalSession = isPersonalSession(managed.session);
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
-      if (isFirstSendForLane) {
-        const injected = isPersonalSession(managed.session)
+      if (personalSession || isFirstSendForLane) {
+        const injected = personalSession
           ? PERSONAL_CHAT_SYSTEM_PROMPT
           : await buildCursorSdkInjectedSystemPrompt({
               runtime: "local",

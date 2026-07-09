@@ -1185,6 +1185,16 @@ function WelcomeScreen() {
             color: COLORS.textPrimary,
             border: `1px solid ${COLORS.border}`,
             background: "color-mix(in srgb, var(--color-surface-raised) 88%, transparent)",
+            boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
+            transition: "transform 0.2s ease, box-shadow 0.2s ease",
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = "translateY(-2px)";
+            event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = "none";
+            event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
           }}
         >
           <ChatCircleDots size={18} weight="duotone" />

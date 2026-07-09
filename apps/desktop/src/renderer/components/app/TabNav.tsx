@@ -324,6 +324,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           <NavLink
             to="/chats"
             data-active={primaryTabPath(location.pathname) === "/chats" ? "true" : undefined}
+            onClick={() => {
+              logRendererDebugEvent("renderer.tab_nav.click", {
+                projectRoot: activeProjectRoot,
+                from: location.pathname,
+                to: "/chats",
+                showWelcome,
+                hasActiveProject,
+              });
+            }}
             className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
           >
             {primaryTabPath(location.pathname) === "/chats" ? <div className="absolute inset-0 bg-white/[0.08]" /> : null}

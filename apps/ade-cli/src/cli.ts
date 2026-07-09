@@ -7109,6 +7109,27 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
 
+  const sessionSubcommands = new Set([
+    "read",
+    "messages",
+    "transcript",
+    "send",
+    "steer",
+    "update",
+    "configure",
+    "interrupt",
+    "stop",
+    "archive",
+    "unarchive",
+    "delete",
+    "rm",
+    "show",
+    "status",
+  ]);
+  if (!sessionSubcommands.has(sub)) {
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, archive, unarchive, or delete; got '${sub}'.`);
+  }
+
   const sessionId = requireValue(
     readValue(args, ["--session", "--session-id"]) ?? firstStandalonePositional(args),
     "sessionId",
@@ -7196,7 +7217,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("getSummary", { sessionId })],
     };
   }
-  throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, archive, unarchive, or delete; got '${sub}'.`);
+  throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
 }
 
 function buildTestsPlan(args: string[]): CliPlan {
@@ -17061,8 +17082,10 @@ async function executePlan(
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
         socketPath,
-        nextAction: options.requireSocket
-          ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
+        nextAction: plan.machineOnly
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          : options.requireSocket
+            ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
           : sourceRuntimeInterop
             ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
             : "Verify --project-root points at an ADE project and run ade doctor --json.",

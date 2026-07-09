@@ -244,6 +244,10 @@ struct HubScreen: View {
       guard rosterRequestKey != nil, canShowProjects else { return }
       syncService.requestRosterSnapshot()
     }
+    .task(id: personalChatsRefreshKey) {
+      guard personalChatsRefreshKey != nil else { return }
+      _ = try? await syncService.refreshPersonalChats(includeArchived: true)
+    }
     // Persist the user's expand/collapse choices as they change so the hub
     // restores identically after opening a project and returning.
     .onChange(of: collapsedProjectIds) { _, _ in persistHubLayout() }
@@ -306,6 +310,20 @@ struct HubScreen: View {
       String(syncService.projects.count),
       syncService.projects.map(\.id).joined(separator: ",")
     ].joined(separator: "|")
+  }
+
+  /// Refresh badges when the Hub becomes visible on a compatible live host.
+  /// The key intentionally excludes `personalChatsRevision`: the refresh
+  /// mutates that revision, so including it would create a request loop.
+  private var personalChatsRefreshKey: String? {
+    guard hubIsActive,
+          !personalChatsPresented,
+          syncService.supportsPersonalChats,
+          syncService.canInvokeRemoteAction("personalChats.list")
+    else { return nil }
+    // Connected ↔ syncing is one live state for this purpose. Keeping a stable
+    // host key avoids redundant refreshes while normal sync batches flow.
+    return hubCollapseDefaultsConnectionKey ?? "machine"
   }
 
   /// Machine identity used to scope the persisted hub layout. Keyed on the host

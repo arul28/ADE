@@ -618,7 +618,9 @@ export function createBrainProjectActionsSyncHandler(
         // Capture the tail point before reading history. Events committed
         // during the snapshot can then be replayed (and client-deduped), but
         // can never fall into the gap between history collection and offset.
-        const offset = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
+        const offset = await fs.promises.stat(transcriptPath)
+          .then((stat) => stat.size)
+          .catch(() => 0);
         const history = (await args.personalChatScope.call("getEventHistory", {
           sessionId,
           maxBytes,
@@ -665,8 +667,9 @@ export function createBrainProjectActionsSyncHandler(
           : envelope.requestId ?? "";
         const action = typeof payload?.action === "string" ? payload.action : "";
         const commandArgs = payload?.args ?? {};
-        const descriptors = personalChatCommandDescriptors(args.personalChatScope);
-        const descriptor = descriptors.find((entry) => entry.action === action);
+        const descriptor = action.startsWith("personalChats.")
+          ? personalChatCommandDescriptors(args.personalChatScope).find((entry) => entry.action === action)
+          : undefined;
         if (action.startsWith("personalChats.") && args.personalChatScope && descriptor) {
           send(peer.ws, "command_ack", {
             commandId,

@@ -693,6 +693,8 @@ private struct WorkChatAttachmentChip: View {
           loadFailed = false
           return
         }
+        loadFailed = true
+        return
       } catch {
         loadFailed = true
         return

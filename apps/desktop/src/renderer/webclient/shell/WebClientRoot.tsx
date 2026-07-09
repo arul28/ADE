@@ -56,6 +56,10 @@ function isAppRoute(pathname: string): boolean {
   return APP_ROUTE_ROOTS.some((root) => pathname === root || pathname.startsWith(`${root}/`));
 }
 
+function isChatsRoute(pathname: string): boolean {
+  return pathname === "/chats" || pathname.startsWith("/chats/");
+}
+
 function toProjectInfo(project: SyncMobileProjectSummary): ProjectInfo {
   return {
     rootPath: project.rootPath ?? `remote:${project.id}`,
@@ -145,13 +149,18 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     setPhase({ kind: "ready", AppRoot });
   }, [client]);
 
-  const enterChats = useCallback(async (catalogSeed?: SyncMobileProjectSummary[]) => {
+  const enterChats = useCallback(async (
+    catalogSeed?: SyncMobileProjectSummary[],
+    initialPath = "/chats",
+  ) => {
     if (!adapterRef.current) {
       adapterRef.current = await loadAdapter(client, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
     adapterRef.current.bindProject(null);
-    window.history.replaceState(null, "", "/chats");
+    stashedTargetRef.current = null;
+    stashTarget(null);
+    window.history.replaceState(null, "", initialPath);
     const AppRoot = await loadAppRoot();
     setPhase({ kind: "ready", AppRoot });
   }, [client]);
@@ -166,8 +175,8 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     }
     setCatalog(projects);
 
-    if (window.location.pathname === "/chats") {
-      await enterChats(projects);
+    if (isChatsRoute(window.location.pathname)) {
+      await enterChats(projects, `${window.location.pathname}${window.location.search}`);
       return;
     }
 

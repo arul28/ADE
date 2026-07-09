@@ -20,8 +20,10 @@ function terminalResult<T>(response: PersonalChatCallResponse): T {
   return response.result as T;
 }
 
-async function callTerminal<T>(request: PersonalChatCallArgs): Promise<T> {
-  return terminalResult<T>(await window.ade.personalChats.call(request));
+type PersonalChatsApi = Window["ade"]["personalChats"];
+
+async function callTerminal<T>(api: PersonalChatsApi, request: PersonalChatCallArgs): Promise<T> {
+  return terminalResult<T>(await api.call(request));
 }
 
 function eventRecord(value: unknown): Record<string, unknown> | null {
@@ -38,9 +40,11 @@ export function PersonalTerminalPanel({
   onClose: () => void;
 }) {
   const terminalPreferences = useAppStore((state) => state.terminalPreferences);
+  const personalChatsApi = window.ade.personalChats;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const scheduleFitRef = useRef<(() => void) | null>(null);
   const ptyRef = useRef<TerminalCreateResult | null>(null);
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
   const [status, setStatus] = useState<"starting" | "ready" | "exited" | "error">("starting");
@@ -53,6 +57,9 @@ export function PersonalTerminalPanel({
     let pollTimer: number | null = null;
     let fitFrame: number | null = null;
     let cursor = 0;
+    setStatus("starting");
+    setError(null);
+    lastDimsRef.current = null;
     const preferences = terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES;
     const terminal = new Terminal({
       allowProposedApi: true,
@@ -91,7 +98,7 @@ export function PersonalTerminalPanel({
       lastDimsRef.current = dims;
       const pty = ptyRef.current;
       if (pty && (previous?.cols !== dims.cols || previous?.rows !== dims.rows)) {
-        void callTerminal({ action: "terminalResize", args: { ptyId: pty.ptyId, ...dims } }).catch(() => undefined);
+        void callTerminal(personalChatsApi, { action: "terminalResize", args: { ptyId: pty.ptyId, ...dims } }).catch(() => undefined);
       }
     };
     const scheduleFit = () => {
@@ -101,6 +108,7 @@ export function PersonalTerminalPanel({
         fitTerminal();
       });
     };
+    scheduleFitRef.current = scheduleFit;
     const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(host);
     scheduleFit();
@@ -108,7 +116,7 @@ export function PersonalTerminalPanel({
     const dataSubscription = terminal.onData((data) => {
       const pty = ptyRef.current;
       if (!pty || cancelled) return;
-      void callTerminal({ action: "terminalWrite", args: { ptyId: pty.ptyId, data } }).catch((reason) => {
+      void callTerminal(personalChatsApi, { action: "terminalWrite", args: { ptyId: pty.ptyId, data } }).catch((reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
       });
     });
@@ -117,7 +125,7 @@ export function PersonalTerminalPanel({
       if (cancelled || !ptyRef.current) return;
       let nextDelayMs = 75;
       try {
-        const result = await window.ade.personalChats.streamEvents({ cursor, limit: 500 });
+        const result = await personalChatsApi.streamEvents({ cursor, limit: 500 });
         if (cancelled) return;
         cursor = result.nextCursor ?? cursor;
         nextDelayMs = result.hasMore ? 0 : result.events.length > 0 ? 35 : 75;
@@ -148,12 +156,12 @@ export function PersonalTerminalPanel({
       try {
         fitTerminal();
         const dims = lastDimsRef.current ?? { cols: 80, rows: 24 };
-        const created = await callTerminal<TerminalCreateResult>({
+        const created = await callTerminal<TerminalCreateResult>(personalChatsApi, {
           action: "terminalCreate",
           args: { chatSessionId, ...dims },
         });
         if (cancelled) {
-          await callTerminal({
+          await callTerminal(personalChatsApi, {
             action: "terminalDispose",
             args: { ptyId: created.ptyId, sessionId: created.sessionId },
           }).catch(() => undefined);
@@ -180,16 +188,28 @@ export function PersonalTerminalPanel({
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
+      scheduleFitRef.current = null;
       const pty = ptyRef.current;
       ptyRef.current = null;
       if (pty) {
-        void callTerminal({
+        void callTerminal(personalChatsApi, {
           action: "terminalDispose",
           args: { ptyId: pty.ptyId, sessionId: pty.sessionId },
         }).catch(() => undefined);
       }
     };
-  }, [chatSessionId, terminalPreferences]);
+  }, [chatSessionId, personalChatsApi]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const preferences = terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES;
+    terminal.options.fontFamily = preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
+    terminal.options.fontSize = Math.round(preferences.fontSize);
+    terminal.options.lineHeight = preferences.lineHeight;
+    terminal.options.scrollback = preferences.scrollback;
+    scheduleFitRef.current?.();
+  }, [terminalPreferences]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#0c0e16]" aria-label="Personal terminal">

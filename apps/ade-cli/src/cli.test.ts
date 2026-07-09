@@ -2380,12 +2380,80 @@ describe("ADE CLI", () => {
       "--personal",
       "not-real",
     ])).toThrow(/Unknown personal chat action/);
+    expect(() => buildCliPlan([
+      "chat",
+      "typo",
+      "--personal",
+    ])).toThrow(/Personal chats support.*got 'typo'/);
     await expect(runCli([
       "--headless",
       "chat",
       "list",
       "--personal",
     ])).rejects.toThrow(/require the machine-owned ADE brain/);
+  });
+
+  posixIt("executes personal chat commands over the machine socket without project registration", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-personal-chat-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: unknown }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "personalChats.call") {
+          return { action: "list", result: [] };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await runCli([
+        "--socket",
+        socketPath,
+        "chat",
+        "list",
+        "--personal",
+        "--text",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(requests.filter((request) => request.method === "ade/initialize")).toHaveLength(2);
+      expect(requests.at(-1)).toEqual({
+        method: "personalChats.call",
+        params: { action: "list", args: {} },
+      });
+      expect(requests.some((request) => request.method === "projects.add")).toBe(false);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("advises starting the machine brain when a personal chat connection fails", async () => {
+    const socketPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-personal-chat-missing-")),
+      "missing.sock",
+    );
+    try {
+      await runCli([
+        "--socket",
+        socketPath,
+        "--timeout-ms",
+        "25",
+        "chat",
+        "list",
+        "--personal",
+      ]);
+      throw new Error("Expected the personal chat command to fail without a machine brain.");
+    } catch (error) {
+      expect((error as { details?: { nextAction?: string } }).details?.nextAction).toContain(
+        "ade brain start",
+      );
+    } finally {
+      fs.rmSync(path.dirname(socketPath), { recursive: true, force: true });
+    }
   });
 
   it("requires a chat session id for chat show", () => {

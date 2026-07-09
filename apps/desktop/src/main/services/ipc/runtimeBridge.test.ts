@@ -1145,6 +1145,48 @@ describe("registerRuntimeBridge", () => {
     expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
   });
 
+  it("routes personal chat calls to the bound remote machine", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallMachineForTargetMock.mockResolvedValue({
+      action: "send",
+      result: { accepted: true },
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/remote", displayName: "Remote" } as any,
+        binding: {
+          kind: "remote",
+          key: "remote:target-1:project-1",
+          targetId: "target-1",
+          projectId: "project-1",
+          rootPath: "/remote",
+          displayName: "Remote",
+          runtimeName: "Remote",
+        },
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.personalChatsCall)?.(eventForSender(), {
+        action: "send",
+        args: { sessionId: "personal-1", text: "hello" },
+      }),
+    ).resolves.toEqual({ action: "send", result: { accepted: true } });
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "personalChats.call",
+      {
+        action: "send",
+        args: { sessionId: "personal-1", text: "hello" },
+      },
+      {},
+    );
+    expect(remoteRegistryGetMock).toHaveBeenCalledWith("target-1");
+  });
+
   it("routes personal chat event polling to the bound remote machine", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteCallMachineForTargetMock.mockResolvedValue({ events: [], nextCursor: 12, hasMore: false });
@@ -1176,6 +1218,28 @@ describe("registerRuntimeBridge", () => {
       {},
     );
     expect(remoteRegistryGetMock).toHaveBeenCalledWith("target-1");
+  });
+
+  it("routes personal chat event polling through the local machine runtime", async () => {
+    const callSync = vi.fn().mockResolvedValue({ events: [], nextCursor: 0, hasMore: false });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callSync } as any,
+      getWindowSession: () => ({ windowId: 7, project: null, binding: null }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.personalChatsStreamEvents)?.(eventForSender(), {
+        cursor: -2.4,
+        limit: 900,
+      }),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+    expect(callSync).toHaveBeenCalledWith("personalChats.streamEvents", {
+      cursor: 0,
+      limit: 500,
+    });
+    expect(remoteCallMachineForTargetMock).not.toHaveBeenCalled();
   });
 });
 
