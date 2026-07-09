@@ -310,9 +310,13 @@ Auto-update (top-bar control, not a settings tab):
   so the badge falls back to the underlying snapshot. While
   `installing` (or after the user clicks install but before the main
   process flips status), the badge animates in fuchsia and is
-  disabled. The "Update installed" dialog reads
-  `recentlyInstalled.releaseNotesUrl` and opens the public release
-  notes link for the running version.
+  disabled. The post-install dialog is a centered card titled
+  "Updated to vX.Y.Z" (the running version) with an X close button
+  and click-outside dismiss; it offers a "Changelog" button that opens
+  `recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View
+  on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
+  (the GitHub release page). Each button is shown only when its URL is
+  present; opening either link also dismisses the notice.
 
 ## Detail docs
 

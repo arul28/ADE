@@ -135,10 +135,29 @@ export function buildReleaseNotesUrl(
   return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 
+// Deterministic GitHub release page for a version tag, e.g.
+// https://github.com/arul28/ADE/releases/tag/v1.2.18 — the same repo the
+// updater feed points at above.
+export function buildGithubReleaseUrl(version: string): string | null {
+  const normalizedVersion = version.trim().replace(/^v/i, "");
+  if (!normalizedVersion) return null;
+  return `https://github.com/arul28/ADE/releases/tag/${encodeURIComponent(`v${normalizedVersion}`)}`;
+}
+
 function cloneRecentlyInstalledUpdate(
   update: RecentlyInstalledUpdate | null,
 ): RecentlyInstalledUpdate | null {
   return update ? { ...update } : null;
+}
+
+// Backfills the GitHub release URL for updates persisted before that field
+// existed, so the renderer always has a "View on GitHub" target.
+function withGithubReleaseUrl(
+  update: RecentlyInstalledUpdate | null,
+): RecentlyInstalledUpdate | null {
+  if (!update) return null;
+  if (update.githubReleaseUrl) return update;
+  return { ...update, githubReleaseUrl: buildGithubReleaseUrl(update.version) };
 }
 
 function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
@@ -221,6 +240,7 @@ function reconcilePersistedUpdateState(args: {
         installedAt: args.now,
         releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
           ?? pendingInstall.releaseNotesUrl,
+        githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion),
       };
       cacheCleanupReason = "installed";
     } else {
@@ -233,7 +253,9 @@ function reconcilePersistedUpdateState(args: {
   return {
     state: nextState,
     changed,
-    recentlyInstalled: cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    recentlyInstalled: withGithubReleaseUrl(
+      cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    ),
     cacheCleanupReason,
   };
 }
