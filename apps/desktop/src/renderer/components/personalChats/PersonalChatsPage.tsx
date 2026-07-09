@@ -431,14 +431,29 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   const removeSession = useCallback(async (sessionId: string, action: "archive" | "delete") => {
     setMenuId(null);
-    await callPersonal<void>(action, { sessionId });
+    setError(null);
+    try {
+      await callPersonal<void>(action, { sessionId });
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      setError(`Could not ${action} this chat${detail ? `: ${detail}` : "."}`);
+      await refreshSessions().catch(() => undefined);
+      return;
+    }
+
     setEventsBySession((current) => {
       const next = { ...current };
       delete next[sessionId];
       return next;
     });
     if (selectedId === sessionId) setSelectedId(null);
-    await refreshSessions();
+    try {
+      await refreshSessions();
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      const completedAction = action === "archive" ? "archived" : "deleted";
+      setError(`The chat was ${completedAction}, but the chat list could not refresh${detail ? `: ${detail}` : "."}`);
+    }
   }, [refreshSessions, selectedId]);
 
   const filtered = useMemo(() => {
