@@ -1356,6 +1356,58 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
+async function runClaudeStreamFixture(args: {
+  sdkSessionId: string;
+  messages: Array<Record<string, unknown>>;
+}): Promise<AgentChatEventEnvelope[]> {
+  const events: AgentChatEventEnvelope[] = [];
+  const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+  const send = vi.fn().mockResolvedValue(undefined);
+  let streamCall = 0;
+
+  const stream = vi.fn(() => (async function* () {
+    streamCall += 1;
+    if (streamCall === 1) {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: args.sdkSessionId,
+        slash_commands: [],
+      };
+      return;
+    }
+
+    for (const message of args.messages) {
+      yield message;
+    }
+  })());
+
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send,
+    stream,
+    close: vi.fn(),
+    sessionId: args.sdkSessionId,
+    setPermissionMode,
+  } as any);
+
+  const { service } = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "claude-sonnet-5",
+    modelId: "anthropic/claude-sonnet-5",
+  });
+
+  await service.runSessionTurn({
+    sessionId: session.id,
+    text: "Exercise Claude streaming text.",
+  });
+
+  return events;
+}
+
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
   await vi.waitFor(() => {
     expect(sessionService.get(sessionId)?.title).toBe(title);
@@ -9747,6 +9799,129 @@ describe("createAgentChatService", () => {
           && event.event.status === "completed",
       );
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("groups idle-reader Claude deltas by the stable message id and suppresses the repeated snapshot", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const messageId = "msg-idle-stable-stream";
+      const fragments = ["Idle ", "Claude ", "text ", "stays ", "whole."];
+      const fullText = fragments.join("");
+      let streamCall = 0;
+      let startIdle!: () => void;
+      const startIdlePromise = new Promise<void>((resolve) => { startIdle = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-stable-stream",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-stable-stream",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startIdlePromise;
+        yield {
+          type: "stream_event",
+          uuid: "wire-idle-message-start",
+          event: {
+            type: "message_start",
+            message: { id: messageId, usage: { input_tokens: 1, output_tokens: 0 } },
+          },
+        };
+        for (const [index, text] of fragments.entries()) {
+          yield {
+            type: "stream_event",
+            uuid: `wire-idle-delta-${index + 1}`,
+            event: {
+              type: "content_block_delta",
+              index: 0,
+              message: { id: messageId },
+              delta: { type: "text_delta", text },
+            },
+          };
+        }
+        yield {
+          type: "assistant",
+          uuid: "wire-idle-assistant-snapshot",
+          supersedes: ["superseded-idle-wire-message"],
+          message: {
+            id: messageId,
+            content: [{ type: "text", text: fullText }],
+            usage: { input_tokens: 1, output_tokens: 5 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-stable-stream",
+          usage: { input_tokens: 1, output_tokens: 5 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-stable-stream",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Complete the foreground turn, then stream idle work.",
+      });
+
+      startIdle();
+      const idleDone = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "done"
+          && event.event.turnId.startsWith("claude-idle-")
+          && event.event.status === "completed",
+      );
+
+      const textEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> =>
+          event.type === "text" && event.turnId === idleDone.event.turnId
+        );
+      expect(textEvents.map((event) => event.text).join("")).toBe(fullText);
+      expect(new Set(textEvents.map((event) => event.messageId))).toEqual(new Set([messageId]));
+
+      const retraction = events.find((event) =>
+        event.event.type === "transcript_retraction"
+        && event.event.turnId === idleDone.event.turnId
+      );
+      expect(retraction?.event).toMatchObject({
+        type: "transcript_retraction",
+        replacementMessageId: messageId,
+      });
     });
 
     it("keeps idle skip_transcript tasks out of visible chat info", async () => {
@@ -22694,6 +22869,173 @@ describe("createAgentChatService", () => {
       agentProgressSummaries: true,
       forwardSubagentText: true,
     }));
+  });
+
+  it("groups Claude text deltas by the stable message id and suppresses the repeated snapshot", async () => {
+    const messageId = "msg-stable-stream";
+    const fragments = ["Stable ", "Claude ", "text ", "stays ", "whole."];
+    const fullText = fragments.join("");
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-session-stable-stream",
+      messages: [
+        {
+          type: "stream_event",
+          uuid: "wire-message-start",
+          event: {
+            type: "message_start",
+            message: { id: messageId, usage: { input_tokens: 1, output_tokens: 0 } },
+          },
+        },
+        ...fragments.map((text, index) => ({
+          type: "stream_event",
+          uuid: `wire-delta-${index + 1}`,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            message: { id: messageId },
+            delta: { type: "text_delta", text },
+          },
+        })),
+        {
+          type: "assistant",
+          uuid: "wire-assistant-snapshot",
+          supersedes: ["superseded-wire-message"],
+          message: {
+            id: messageId,
+            content: [{ type: "text", text: fullText }],
+            usage: { input_tokens: 1, output_tokens: 5 },
+          },
+        },
+        { type: "result", usage: { input_tokens: 1, output_tokens: 5 } },
+      ],
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text).join("")).toBe(fullText);
+    expect(new Set(textEvents.map((event) => event.messageId))).toEqual(new Set([messageId]));
+
+    const retraction = events.find((event) => event.event.type === "transcript_retraction");
+    expect(retraction?.event).toMatchObject({
+      type: "transcript_retraction",
+      replacementMessageId: messageId,
+    });
+  });
+
+  it("keeps sequential Claude text blocks ordered under one stable message id", async () => {
+    const messageId = "msg-stable-blocks";
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-session-stable-blocks",
+      messages: [
+        {
+          type: "stream_event",
+          uuid: "wire-blocks-start",
+          event: {
+            type: "message_start",
+            message: { id: messageId, usage: { input_tokens: 1, output_tokens: 0 } },
+          },
+        },
+        {
+          type: "stream_event",
+          uuid: "wire-block-0-delta-1",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "First " },
+          },
+        },
+        {
+          type: "stream_event",
+          uuid: "wire-block-0-delta-2",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "block. " },
+          },
+        },
+        {
+          type: "stream_event",
+          uuid: "wire-block-1-delta-1",
+          event: {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "text_delta", text: "Second " },
+          },
+        },
+        {
+          type: "stream_event",
+          uuid: "wire-block-1-delta-2",
+          event: {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "text_delta", text: "block." },
+          },
+        },
+        {
+          type: "assistant",
+          uuid: "wire-blocks-snapshot",
+          message: {
+            id: messageId,
+            content: [
+              { type: "text", text: "First block. " },
+              { type: "text", text: "Second block." },
+            ],
+            usage: { input_tokens: 1, output_tokens: 4 },
+          },
+        },
+        { type: "result", usage: { input_tokens: 1, output_tokens: 4 } },
+      ],
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text).join("")).toBe("First block. Second block.");
+    expect(textEvents.every((event) => event.messageId === messageId)).toBe(true);
+  });
+
+  it("falls back to Claude wire UUIDs when streamed text has no stable message id", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-session-wire-fallback",
+      messages: [
+        {
+          type: "stream_event",
+          uuid: "wire-fallback-start",
+          event: { type: "message_start", message: {} },
+        },
+        {
+          type: "stream_event",
+          uuid: "wire-fallback-delta",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Fallback text." },
+          },
+        },
+        {
+          type: "assistant",
+          uuid: "wire-fallback-snapshot",
+          message: {
+            content: [
+              { type: "text", text: "Fallback text." },
+              { type: "text", text: " Snapshot fallback." },
+            ],
+            usage: { input_tokens: 1, output_tokens: 2 },
+          },
+        },
+        { type: "result", usage: { input_tokens: 1, output_tokens: 2 } },
+      ],
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text).join("")).toBe("Fallback text. Snapshot fallback.");
+    expect(textEvents.map((event) => event.messageId)).toEqual([
+      "wire-fallback-delta",
+      "wire-fallback-snapshot",
+    ]);
   });
 
   it("does not duplicate Claude text when an assistant snapshot repeats id-less streamed deltas", async () => {

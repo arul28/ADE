@@ -532,10 +532,15 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
     )
   }
   .sorted { lhs, rhs in
-    if lhs.timestamp == rhs.timestamp {
-      return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+    if let lhsSequence = lhs.sequence,
+       let rhsSequence = rhs.sequence,
+       lhsSequence != rhsSequence {
+      return lhsSequence < rhsSequence
     }
-    return lhs.timestamp < rhs.timestamp
+    if lhs.timestamp != rhs.timestamp {
+      return lhs.timestamp < rhs.timestamp
+    }
+    return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
   }
 }
 

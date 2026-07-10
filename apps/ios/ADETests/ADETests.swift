@@ -10061,6 +10061,32 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testMakeWorkChatTranscriptOrdersSequencedFragmentsBeforeTimestampJitter() {
+    let entries = [
+      AgentChatEventEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:03.000Z",
+        event: .text(text: "second", messageId: "msg-stream", turnId: "turn-1", itemId: nil),
+        sequence: 2,
+        provenance: nil
+      ),
+      AgentChatEventEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:03.001Z",
+        event: .text(text: "First ", messageId: "msg-stream", turnId: "turn-1", itemId: nil),
+        sequence: 1,
+        provenance: nil
+      ),
+    ]
+
+    let transcript = makeWorkChatTranscript(from: entries)
+    XCTAssertEqual(transcript.compactMap(\.sequence), [1, 2])
+
+    let assistantMessages = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+    XCTAssertEqual(assistantMessages.map(\.markdown), ["First second"])
+  }
+
   func testWorkChatMessagesDoNotMergeUnidentifiedAssistantTextAcrossTools() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(

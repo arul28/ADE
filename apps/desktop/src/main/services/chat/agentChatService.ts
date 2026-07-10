@@ -13032,6 +13032,7 @@ export function createAgentChatService(args: {
     toolInputJsonByContentIndex: Map<number, string>;
     toolUseMetaByContentIndex: Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>;
     currentStreamMessageId: string | null;
+    streamedTextByContentIndex: Map<number, string>;
     scheduledWakeAttached: boolean;
   };
 
@@ -13149,6 +13150,8 @@ export function createAgentChatService(args: {
     }
     persistChatState(managed);
     state.turnId = null;
+    state.currentStreamMessageId = null;
+    state.streamedTextByContentIndex.clear();
     if (runtime.pendingSteers.length && managed.runtime === runtime) {
       runtime.idleReaderPromise = null;
       await deliverNextQueuedSteer(managed, runtime);
@@ -13511,7 +13514,9 @@ export function createAgentChatService(args: {
       const betaMessage = asRecord(assistantMsg.message);
       const assistantWireUuid = compactString(assistantMsg.uuid);
       const assistantMessageId = compactString(betaMessage?.id);
-      const providerMessageId = assistantWireUuid ?? assistantMessageId ?? null;
+      const providerMessageId = assistantMessageId ?? assistantWireUuid ?? null;
+      const snapshotMatchesCurrentStream = assistantMessageId != null
+        && assistantMessageId === state.currentStreamMessageId;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
@@ -13520,14 +13525,23 @@ export function createAgentChatService(args: {
         if (!block) continue;
         if (block.type === "text") {
           const text = typeof block.text === "string" ? block.text : "";
-          if (text.length) {
-            state.assistantText += text;
+          const streamedPrefix = snapshotMatchesCurrentStream
+            ? state.streamedTextByContentIndex.get(index) ?? ""
+            : "";
+          const textToEmit = streamedPrefix.length > 0 && text.startsWith(streamedPrefix)
+            ? text.slice(streamedPrefix.length)
+            : text;
+          if (textToEmit.length) {
+            state.assistantText += textToEmit;
             emitChatEvent(managed, {
               type: "text",
-              text,
+              text: textToEmit,
               ...(providerMessageId ? { messageId: providerMessageId } : {}),
               turnId,
             });
+          }
+          if (snapshotMatchesCurrentStream) {
+            state.streamedTextByContentIndex.set(index, text);
           }
         } else if (block.type === "thinking") {
           const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
@@ -13574,6 +13588,7 @@ export function createAgentChatService(args: {
       const contentIndex = typeof event.index === "number" ? event.index : null;
       if (event.type === "message_start") {
         const message = asRecord(event.message);
+        state.streamedTextByContentIndex.clear();
         state.currentStreamMessageId = compactString(message?.id) ?? compactString(streamMsg.uuid) ?? null;
         return;
       }
@@ -13583,7 +13598,13 @@ export function createAgentChatService(args: {
           const text = typeof delta.text === "string" ? delta.text : "";
           if (text.length) {
             state.assistantText += text;
-            const providerMessageId = compactString(streamMsg.uuid) ?? state.currentStreamMessageId;
+            if (contentIndex != null) {
+              state.streamedTextByContentIndex.set(
+                contentIndex,
+                `${state.streamedTextByContentIndex.get(contentIndex) ?? ""}${text}`,
+              );
+            }
+            const providerMessageId = state.currentStreamMessageId ?? compactString(streamMsg.uuid);
             emitChatEvent(managed, {
               type: "text",
               text,
@@ -13744,6 +13765,7 @@ export function createAgentChatService(args: {
       toolInputJsonByContentIndex: new Map(),
       toolUseMetaByContentIndex: new Map(),
       currentStreamMessageId: null,
+      streamedTextByContentIndex: new Map(),
       scheduledWakeAttached: false,
     };
 
@@ -15160,7 +15182,7 @@ export function createAgentChatService(args: {
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
           const assistantWireUuid = compactString(assistantMsg.uuid);
-          const assistantProviderMessageId = assistantWireUuid ?? assistantMessageId ?? null;
+          const assistantProviderMessageId = assistantMessageId ?? assistantWireUuid ?? null;
           emitClaudeTranscriptRetraction(
             managed,
             assistantMsg.supersedes,
@@ -15311,7 +15333,7 @@ export function createAgentChatService(args: {
                   if (textKey) streamedClaudeTextContentKeys.add(textKey);
                   recentClaudeTextDeltaBuffer += text;
                   assistantText += text;
-                  const streamProviderMessageId = compactString(streamMsg.uuid) ?? currentClaudeStreamMessageId;
+                  const streamProviderMessageId = currentClaudeStreamMessageId ?? compactString(streamMsg.uuid);
                   emitChatEvent(managed, {
                     type: "text",
                     text,
