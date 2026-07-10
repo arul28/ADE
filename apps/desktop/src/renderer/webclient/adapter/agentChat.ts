@@ -159,6 +159,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     getClaudeSessionInfo: (args: unknown) => call("chat.getClaudeSessionInfo", args, null),
     getClaudeSessionMessages: (args: unknown) => call("chat.getClaudeSessionMessages", args, []),
     getSubagentTranscript: (args: unknown) => call("chat.getSubagentTranscript", args, null),
+    getMainTranscript: (args: unknown) => call("chat.getMainTranscript", args, null),
     getContextUsage: (args: unknown) => call("chat.getContextUsage", args, null),
     rewindFiles: (args: unknown) =>
       call(

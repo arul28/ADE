@@ -22163,6 +22163,9 @@ export function createAgentChatService(args: {
           at: "resume",
         });
       }
+      // Must run AFTER the thinking-transcript repair: that repair can rekey
+      // SDK message ids, and the splice repair keys rebuilt envelopes to the
+      // post-rekey ids it reads via getSessionMessages.
       await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
     }
 

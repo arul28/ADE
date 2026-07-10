@@ -160,7 +160,9 @@ export function SessionContextMenu({
             Rename
           </button>
         )}
-        {!renaming && !tagging && session.toolType === "claude-chat" && onSetChatTag ? (
+        {/* Tag writes need a live Claude SDK runtime (updateSession throws for
+            ended sessions), so only offer the item while the session runs. */}
+        {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
             onClick={() => {
