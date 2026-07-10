@@ -401,8 +401,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [isLanesRoute]);
 
   useEffect(() => {
-    if (showWelcome && isPersonalChatsRoute) setPersonalChatsTabOpen(true);
-  }, [showWelcome, isPersonalChatsRoute, setPersonalChatsTabOpen]);
+    // Any /chats visit opens the machine-level Chats tab — from the projectless
+    // shell AND from a project's sidebar link — so the top bar always carries a
+    // selectable affordance for the surface being shown.
+    if (isPersonalChatsRoute) setPersonalChatsTabOpen(true);
+  }, [isPersonalChatsRoute, setPersonalChatsTabOpen]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {

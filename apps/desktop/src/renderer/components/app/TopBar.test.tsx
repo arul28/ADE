@@ -455,6 +455,24 @@ describe("TopBar", () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
+  it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
+    const root = "/Users/arul/ADE";
+    renderChatsTopBar({
+      personalChatsRouteActive: true,
+      storeOverrides: {
+        project: { rootPath: root, name: "ADE" },
+        showWelcome: false,
+        openProjectTabRoots: [root],
+        projectInfoByRoot: { [root]: { rootPath: root, displayName: "ADE" } },
+      } as any,
+    });
+
+    expect(screen.getByText("Chats").parentElement?.getAttribute("data-state")).toBe("active");
+    const projectTab = screen.getByText("ADE", { selector: "span" }).closest('[role="button"]');
+    expect(projectTab?.getAttribute("data-state")).toBeNull();
+    expect(projectTab?.getAttribute("aria-current")).toBe("true");
+  });
+
   it("keeps the phone sync drawer open before a project is open", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 

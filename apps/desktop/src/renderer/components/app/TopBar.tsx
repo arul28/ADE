@@ -1979,7 +1979,7 @@ export function TopBar({
                   key={remoteTab.key}
                   role="button"
                   tabIndex={0}
-                  data-state={isCurrentRemote ? "active" : undefined}
+                  data-state={isCurrentRemote && !personalChatsRouteActive ? "active" : undefined}
                   data-remote-state={remoteTabState}
                   aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
@@ -2079,7 +2079,9 @@ export function TopBar({
               let projectTabState: string | undefined;
               if (isRelocating) projectTabState = "open";
               else if (isMissing) projectTabState = "missing";
-              else if (isCurrent) projectTabState = "active";
+              // While the Chats machine tab is the foreground surface, the
+              // bound project tab stays rendered but must not also read active.
+              else if (isCurrent && !personalChatsRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
               return (
                 <div

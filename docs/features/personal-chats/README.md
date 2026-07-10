@@ -99,14 +99,15 @@ as the active project.
 
 On desktop, `/chats` is a global route surfaced through a real machine-level
 **Chats** top tab rather than a route-derived pseudo-tab. Its existence is held
-in session-only `personalChatsTabOpen` app state (set the first time the
-projectless shell lands on `/chats`); its active-ness is derived from the
-current route. The tab is a plain clickable tab: clicking it navigates to
-`/chats`, and it can sit alongside project tabs and the New Tab as an inactive
-tab. Opening it as a global sidebar surface while a project remains selected
-keeps the window's existing project binding, so a remote-bound window still
-addresses the remote machine's personal chats. Returning to a project route
-does not require reopening the project.
+in session-only `personalChatsTabOpen` app state (set on any `/chats` visit —
+from the projectless shell or a project's sidebar link); its active-ness is
+derived from the current route. The tab is a plain clickable tab: clicking it
+navigates to `/chats`, and it can sit alongside project tabs and the New Tab as
+an inactive tab. While it is the foreground surface, the bound project tab
+stays rendered but drops its active styling. Opening it as a global sidebar
+surface while a project remains selected keeps the window's existing project
+binding, so a remote-bound window still addresses the remote machine's personal
+chats. Returning to a project route does not require reopening the project.
 
 The ADE CLI uses the same machine endpoint through explicit `--personal`
 commands, for example:
