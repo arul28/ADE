@@ -4403,6 +4403,8 @@ struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
   var inputTokens: Int?
   var outputTokens: Int?
   var totalTokens: Int?
+  /// Cache-read tokens for the day (provider ledgers). Absent on older hosts.
+  var cachedTokens: Int?
   var insertions: Int?
   var deletions: Int?
   var filesChanged: Int?
@@ -4410,6 +4412,11 @@ struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
   var durationMs: Int?
   var interactions: Int?
   var clients: [String: Int]?
+  /// GitHub-reported measures for the same day, kept separate from local ones.
+  var githubCommits: Int?
+  var githubPrs: Int?
+  var githubAdditions: Int?
+  var githubDeletions: Int?
 }
 
 struct MobileAdeUsageClientSummary: Codable, Equatable, Identifiable {
@@ -4427,10 +4434,79 @@ struct MobileAdeUsageFreshness: Codable, Equatable {
   var githubUpdatedAt: String?
 }
 
-struct MobileAdeUsageStats: Codable, Equatable {
+/// GitHub-scoped activity, reported separately from local activity (never
+/// max-merged). All optional so older hosts still decode.
+struct MobileAdeUsageGithubActivity: Codable, Equatable {
+  var commits: Int?
+  var prsTracked: Int?
+  var prsOpen: Int?
+  var prsMerged: Int?
+  var prsClosed: Int?
+  var prAdditions: Int?
+  var prDeletions: Int?
+}
+
+/// Current-project ADE DB / git-operation activity, reported separately from
+/// GitHub. All optional so older hosts still decode.
+struct MobileAdeUsageLocalActivity: Codable, Equatable {
+  var commits: Int?
+  var pushOperations: Int?
+  var prLandings: Int?
+  var filesChanged: Int?
+  var insertions: Int?
+  var deletions: Int?
+}
+
+/// Per-provider ledger summary. Rendered on richer surfaces; decoded here so the
+/// mobile model stays a faithful, forward-compatible view of the shared contract.
+struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
+  var id: String { provider }
+  var provider: String
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var cachedTokens: Int?
+  var totalTokens: Int?
+  var rangeCostUsd: Double?
+  /// "exact" | "chars" | "distribution" | "mixed" — omitted means exact.
+  var estimation: String?
+  /// False when this provider's ledger cannot be filtered to a project.
+  var scopeSupported: Bool?
+  var adeOriginatedTokens: Int?
+  var externalTokens: Int?
+}
+
+struct MobileAdeUsageStats: Decodable, Equatable {
   var generatedAt: String
+  /// Scope the provider metrics were computed at ("machine" | "project"). Absent
+  /// on legacy hosts.
+  var scope: String?
   var summary: MobileAdeUsageSummary
   var clients: [MobileAdeUsageClientSummary]?
   var daily: [MobileAdeUsageDailyPoint]
   var freshness: MobileAdeUsageFreshness?
+  var githubActivity: MobileAdeUsageGithubActivity?
+  var localActivity: MobileAdeUsageLocalActivity?
+  var providers: [MobileAdeUsageProviderSummary]?
+}
+
+extension MobileAdeUsageStats {
+  private enum CodingKeys: String, CodingKey {
+    case generatedAt, scope, summary, clients, daily, freshness
+    case githubActivity, localActivity, providers
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    generatedAt = try container.decode(String.self, forKey: .generatedAt)
+    scope = try container.decodeIfPresent(String.self, forKey: .scope)
+    summary = try container.decode(MobileAdeUsageSummary.self, forKey: .summary)
+    clients = try container.decodeIfPresent([MobileAdeUsageClientSummary].self, forKey: .clients)
+    daily = try container.decodeIfPresent([MobileAdeUsageDailyPoint].self, forKey: .daily) ?? []
+    freshness = try container.decodeIfPresent(MobileAdeUsageFreshness.self, forKey: .freshness)
+    githubActivity = try container.decodeIfPresent(MobileAdeUsageGithubActivity.self, forKey: .githubActivity)
+    localActivity = try container.decodeIfPresent(MobileAdeUsageLocalActivity.self, forKey: .localActivity)
+    // Lossy-decode the providers array so one malformed provider entry can't drop
+    // the whole stats payload (mirrors ExternalSessionSummary's sessions decode).
+    providers = (try? container.decode(ADELossyArray<MobileAdeUsageProviderSummary>.self, forKey: .providers))?.wrappedValue
+  }
 }
