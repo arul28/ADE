@@ -58,8 +58,10 @@ describe("chat pane scalability helpers", () => {
     expect(rows.find((row) => row.kind === "show-all")).toMatchObject({ hiddenCount: 3 });
     expect(rows.find((row) => row.kind === "earlier-toggle")).toMatchObject({ count: 1, expanded: false });
 
+    // Lines are anchored at the calibrated TUI preamble baseline (4) — see
+    // SUBAGENT_PANE_TABLE_START_LINE in chatSubagents.ts.
     const showAllLine = rows.slice(0, rows.findIndex((row) => row.kind === "show-all"))
-      .reduce((line, row) => line + (row.kind === "section-header" || row.kind === "main" ? 2 : 1), 0);
+      .reduce((line, row) => line + (row.kind === "section-header" || row.kind === "main" ? 2 : 1), 4);
     expect(subagentIndexForPaneLine({ snapshots }, showAllLine, 0, {})).toEqual({
       type: "show-all",
       section: "subagents",

@@ -1019,6 +1019,13 @@ export function selectedSubagentSnapshot(
   return row?.kind === "snapshot" ? row.snapshot : null;
 }
 
+// Calibrated preamble offset the ade-code TUI mouse mapper assumes. The caller
+// passes `mouse.y - subagentPaneTop`, and app.tsx's subagentPaneTop formula was
+// tuned against this baseline (the CHATS head + chat-info preamble rows that
+// render above the "main" row). Changing one side without the other shifts
+// every roster click by the same amount.
+const SUBAGENT_PANE_TABLE_START_LINE = 4;
+
 function subagentPaneRowLineSpan(row: SubagentPaneRow, selected: boolean): number {
   if (row.kind === "section-header") return 2;
   if (row.kind === "main") return 2;
@@ -1063,7 +1070,7 @@ export function subagentPaneSelectableLineOffsets(
 ): number[] {
   const rows = buildSubagentPaneRows(content, viewState);
   const offsets: number[] = [];
-  let line = 0;
+  let line = SUBAGENT_PANE_TABLE_START_LINE;
   let selectableIndex = 0;
 
   for (const row of rows) {
@@ -1109,7 +1116,10 @@ export function subagentIndexForPaneLine(
     ...windowed.visibleRows,
     ...(windowed.hiddenAfter > 0 ? [null] : []),
   ];
-  let rowLine = 0;
+  let rowLine = SUBAGENT_PANE_TABLE_START_LINE;
+  const anchors: Array<{ line: number; target: SubagentPaneTarget }> = [];
+  let exactHit: SubagentPaneTarget | null = null;
+  let insideNonInteractive = false;
   for (const row of visibleRows) {
     const selectableIndex = row?.kind === "main"
       ? 0
@@ -1118,18 +1128,43 @@ export function subagentIndexForPaneLine(
         : -1;
     const selected = selectableIndex === selectedIndex;
     const span = row ? subagentPaneRowLineSpan(row, selected) : 1;
+    const target: SubagentPaneTarget | null = !row
+      ? null
+      : row.kind === "main" || row.kind === "snapshot"
+        ? { type: "snapshot", index: selectableIndex }
+        : row.kind === "section-header"
+          ? (row.collapsible ? { type: "toggle-section", section: row.section } : null)
+          : row.kind === "earlier-toggle"
+            ? { type: "toggle-earlier", section: row.section }
+            : row.kind === "show-all"
+              ? { type: "show-all", section: row.section }
+              : { type: "restore", section: row.section };
+    if (target) anchors.push({ line: rowLine, target });
     if (line >= rowLine && line < rowLine + span) {
-      if (!row) return null;
-      if (row.kind === "main" || row.kind === "snapshot") return { type: "snapshot", index: selectableIndex };
-      if (row.kind === "section-header" && row.collapsible) return { type: "toggle-section", section: row.section };
-      if (row.kind === "earlier-toggle") return { type: "toggle-earlier", section: row.section };
-      if (row.kind === "show-all") return { type: "show-all", section: row.section };
-      if (row.kind === "restore-cleared") return { type: "restore", section: row.section };
-      return null;
+      if (target) exactHit = target;
+      else insideNonInteractive = true;
     }
     rowLine += span;
   }
-  return null;
+  if (exactHit) return exactHit;
+  if (!anchors.length) return null;
+  // Near-miss tolerance (the pre-grouping mapper snapped to the nearest row):
+  // the constant paneTop the TUI passes drifts by a line or two when variable
+  // blocks (plan, goal banner) sit above the roster, so a click inside a
+  // non-interactive span or just past the roster bounds snaps to the nearest
+  // interactive row instead of dead-dropping.
+  const first = anchors[0]!.line;
+  if (!insideNonInteractive && (line < first - 1 || line > rowLine)) return null;
+  let best = anchors[0]!;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const anchor of anchors) {
+    const distance = Math.abs(line - anchor.line);
+    if (distance < bestDistance) {
+      best = anchor;
+      bestDistance = distance;
+    }
+  }
+  return best.target;
 }
 
 export function isLifecycleEventForSnapshot(event: AgentChatEvent, snapshot: SubagentSnapshot): boolean {

@@ -92,9 +92,24 @@ describe("subagent pane helpers", () => {
   });
 
   it("only accounts for detail lines on the selected subagent row", () => {
+    // Offsets are anchored at the calibrated preamble baseline (4) that
+    // app.tsx's subagentPaneTop formula assumes — see
+    // SUBAGENT_PANE_TABLE_START_LINE in shared/chatSubagents.ts.
     const content = rosterPaneContent();
-    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([0, 2, 4, 5, 6]);
-    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([0, 2, 3, 5, 6]);
+    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([4, 6, 8, 9, 10]);
+    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([4, 6, 7, 9, 10]);
+  });
+
+  it("snaps near-miss clicks to the nearest interactive row", () => {
+    const content = rosterPaneContent();
+    const offsets = subagentPaneSelectableLineOffsets(content, 1);
+    // One line above/below a row (inside a non-interactive span or gap) still
+    // resolves — the TUI's constant paneTop drifts when variable blocks render
+    // above the roster, and dead-dropping every near miss made clicks brittle.
+    expect(subagentIndexForPaneLine(content, offsets[0]! + 1, 1)).toEqual({ type: "snapshot", index: 0 });
+    // Far outside the roster stays null.
+    expect(subagentIndexForPaneLine(content, 0, 1)).toBeNull();
+    expect(subagentIndexForPaneLine(content, offsets[4]! + 4, 1)).toBeNull();
   });
 
   it("emits grouped section, show-all, Earlier, and tagged action rows", () => {
