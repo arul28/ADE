@@ -53,9 +53,16 @@ describe("parseRemoteRuntimePairingInput", () => {
     ]);
   });
 
+  it("preserves the server-issued runtime host grant", () => {
+    const url = encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo,
+      runtimeHostGrant: "runtime-grant-1",
+    }));
+    expect(parseRemoteRuntimePairingInput(url).runtimeHostGrant).toBe("runtime-grant-1");
+  });
+
   it("rejects garbage", () => {
     expect(() => parseRemoteRuntimePairingInput("not-a-pairing-code"))
       .toThrow(/invalid ADE pairing link or code/i);
   });
 });
-

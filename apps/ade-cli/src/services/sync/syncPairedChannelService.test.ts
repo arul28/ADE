@@ -23,6 +23,7 @@ function pairingRecord(peerDeviceType: string): SyncPairingRecord {
     peerName: "Paired peer",
     peerPlatform: "macOS",
     peerDeviceType,
+    runtimeHostGranted: peerDeviceType === "desktop",
   };
 }
 

@@ -189,7 +189,7 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
 export function isRuntimeHostPairingRecord(
   record: SyncPairingRecord | null | undefined,
 ): boolean {
-  return record?.peerDeviceType === "desktop";
+  return record?.runtimeHostGranted === true;
 }
 
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -1076,6 +1076,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
     return null;
   }
   const dpopPublicKey = toOptionalString(value?.dpopPublicKey);
+  const runtimeHostGrant = toOptionalString(value?.runtimeHostGrant);
   return {
     code,
     peer: {
@@ -1087,6 +1088,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       dbVersion: Number(peer.dbVersion ?? 0),
     },
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   };
 }
 
@@ -1487,6 +1489,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       }
       : undefined,
+    issueRuntimeHostPairingGrant: () => pairingStore.issueRuntimeHostGrant(),
     isCloudRelayEnabled: () => Boolean(args.getCloudRelayWssUrl?.()),
     logger: args.logger,
   });
@@ -4410,6 +4413,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code, {
             dpopPublicKey: pairing.dpopPublicKey ?? null,
+            runtimeHostGrant: pairing.runtimeHostGrant ?? null,
           });
           clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {

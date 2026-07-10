@@ -121,6 +121,7 @@ describe("bootstrapPairedRuntime", () => {
     };
     const pairedStore = {
       getForReference: vi.fn(() => credentials),
+      save: vi.fn(() => credentials),
       markEndpointSucceeded: vi.fn(() => credentials),
     };
 
@@ -152,6 +153,45 @@ describe("bootstrapPairedRuntime", () => {
     expect(createForwardClientMock).toHaveBeenCalledWith(result.transport.connection);
   });
 
+  it.each([
+    ["persists a learned relay route", "wss://relay.example/connect/new", [
+      "wss://relay.example/connect/new",
+      "ws://studio.local:8787",
+    ]],
+    ["clears a relay route on explicit null", null, ["ws://studio.local:8787"]],
+  ])("%s after a successful paired hello", async (_label, cloudRelayWssUrl, endpoints) => {
+    initializeMock.mockResolvedValue({
+      runtimeInfo: { version: "1.0.0", multiProject: true },
+      capabilities: { projects: true },
+    });
+    callMock.mockResolvedValue([]);
+    const credentialsWithRelay = {
+      ...credentials,
+      endpoints: ["ws://studio.local:8787", "wss://relay.example/connect/old"],
+      relayUrl: "wss://relay.example/connect/old",
+    };
+    const pairedStore = {
+      getForReference: vi.fn(() => credentialsWithRelay),
+      save: vi.fn((value) => value),
+      markEndpointSucceeded: vi.fn(() => credentialsWithRelay),
+    };
+    const connectedTransport = transport();
+    connectedTransport.connection.hello.cloudRelayWssUrl = cloudRelayWssUrl;
+
+    await bootstrapPairedRuntime({
+      target,
+      registry: { update: vi.fn(() => target) } as any,
+      pairedStore: pairedStore as any,
+      appVersion: "1.0.0",
+      options: { openTransport: vi.fn(async () => connectedTransport) },
+    });
+
+    expect(pairedStore.save).toHaveBeenCalledWith(expect.objectContaining({
+      relayUrl: cloudRelayWssUrl,
+      endpoints,
+    }));
+  });
+
   it("surfaces initialize incompatibility with an SSH update suggestion", async () => {
     initializeMock.mockResolvedValue({
       runtimeInfo: { version: "0.1.0", multiProject: false },
@@ -163,6 +203,7 @@ describe("bootstrapPairedRuntime", () => {
       registry: { update: vi.fn() } as any,
       pairedStore: {
         getForReference: vi.fn(() => credentials),
+        save: vi.fn(),
         markEndpointSucceeded: vi.fn(),
       } as any,
       appVersion: "1.0.0",

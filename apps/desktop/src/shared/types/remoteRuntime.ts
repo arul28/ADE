@@ -242,6 +242,7 @@ export type RemoteRuntimeParsedPairingInput = {
   machineName?: string;
   endpoints: string[];
   relayUrl?: string;
+  runtimeHostGrant?: string;
   requiresPin: true;
 };
 

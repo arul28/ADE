@@ -33,6 +33,7 @@ export type PairWithMachineOptions = Omit<
 > & {
   appVersion?: string;
   pairingTimeoutMs?: number;
+  runtimeHostGrant?: string | null;
 };
 
 function nowIso(): string {
@@ -375,6 +376,9 @@ export class DesktopPairedMachineStore {
             dbVersion: 0,
           },
           dpopPublicKey: keys.publicKey,
+          ...(options.runtimeHostGrant
+            ? { runtimeHostGrant: options.runtimeHostGrant }
+            : {}),
         }, pairingRequestId);
       } catch (error) {
         void pairingResponse.catch(() => {});

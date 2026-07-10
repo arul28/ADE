@@ -263,7 +263,10 @@ export class RemoteConnectionService {
           endpoint,
           args.pin,
           args.deviceName,
-          { appVersion: this.options.appVersion },
+          {
+            appVersion: this.options.appVersion,
+            runtimeHostGrant: parsed.runtimeHostGrant ?? null,
+          },
         );
         if (paired.hostIdentity.deviceId !== parsed.hostIdentity.deviceId) {
           this.pairedStore.remove(paired.hostIdentity.deviceId);

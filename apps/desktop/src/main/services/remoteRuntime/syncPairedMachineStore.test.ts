@@ -50,6 +50,7 @@ describe("DesktopPairedMachineStore", () => {
     process.env.ADE_HOME = adeHome;
     let pairedPublicKey: string | null = null;
     let pairedDeviceType: unknown = null;
+    let pairedRuntimeHostGrant: unknown = null;
     let dpopVerdict: SyncDpopVerification | null = null;
 
     const createWebSocket = () => new FakeWebSocket((text, ws) => {
@@ -58,10 +59,12 @@ describe("DesktopPairedMachineStore", () => {
           const payload = envelope.payload as {
             code: string;
             dpopPublicKey?: string;
+            runtimeHostGrant?: string;
             peer: { deviceId: string; deviceType: unknown };
           };
           pairedPublicKey = payload.dpopPublicKey ?? null;
           pairedDeviceType = payload.peer.deviceType;
+          pairedRuntimeHostGrant = payload.runtimeHostGrant;
           ws.receive(encodeSyncEnvelope({
             type: "pairing_result",
             requestId: envelope.requestId,
@@ -117,10 +120,15 @@ describe("DesktopPairedMachineStore", () => {
       "ws://studio.local:8787",
       "123456",
       "Desktop client",
-      { pairingTimeoutMs: 2_000, createWebSocket },
+      {
+        pairingTimeoutMs: 2_000,
+        createWebSocket,
+        runtimeHostGrant: "server-issued-runtime-grant",
+      },
     );
 
     expect(pairedDeviceType).toBe("desktop");
+    expect(pairedRuntimeHostGrant).toBe("server-issued-runtime-grant");
     expect(dpopVerdict).toEqual({ ok: true });
     expect(paired).toMatchObject({
       version: 1,

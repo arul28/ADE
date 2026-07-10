@@ -297,13 +297,14 @@ describe("buildSyncHostHelloOkPayload", () => {
       siteId: "paired-mobile-site-1",
       dbVersion: 0,
     } satisfies SyncPeerMetadata;
-    const record = (peerDeviceType: string): SyncPairingRecord => ({
+    const record = (runtimeHostGranted: boolean): SyncPairingRecord => ({
       secretHash: "hash",
       createdAt: "2026-07-10T00:00:00.000Z",
       lastUsedAt: null,
       peerName: "Paired peer",
       peerPlatform: "macOS",
-      peerDeviceType,
+      peerDeviceType: "desktop",
+      runtimeHostGranted,
     });
     const base = {
       peer: spoofedDesktopHello,
@@ -320,18 +321,16 @@ describe("buildSyncHostHelloOkPayload", () => {
       localCommandDescriptors: [],
     };
 
-    for (const peerDeviceType of ["phone", "browser"]) {
-      const payload = buildSyncHostHelloOkPayload({
-        ...base,
-        runtimeChannelEnabled: isRuntimeHostPairingRecord(record(peerDeviceType)),
-      });
-      expect(payload.features.rpcChannel).toBe(false);
-      expect(payload.features.portForward).toBe(false);
-    }
+    const ungranted = buildSyncHostHelloOkPayload({
+      ...base,
+      runtimeChannelEnabled: isRuntimeHostPairingRecord(record(false)),
+    });
+    expect(ungranted.features.rpcChannel).toBe(false);
+    expect(ungranted.features.portForward).toBe(false);
 
     const genuineDesktop = buildSyncHostHelloOkPayload({
       ...base,
-      runtimeChannelEnabled: isRuntimeHostPairingRecord(record("desktop")),
+      runtimeChannelEnabled: isRuntimeHostPairingRecord(record(true)),
     });
     expect(genuineDesktop.features.rpcChannel).toBe(true);
     expect(genuineDesktop.features.portForward).toBe(true);
@@ -775,7 +774,7 @@ describe("brain project actions fallback handler", () => {
     }
   });
 
-  it("refuses rpc/fwd when a phone pairing record spoofs desktop through the brain ingress", async () => {
+  it("refuses rpc/fwd when a PIN-authorized brain pairing request merely claims desktop", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
     const pairing = createSpoofedDesktopPairing(secretsDir);
@@ -962,9 +961,9 @@ function createSpoofedDesktopPairing(secretsDir: string) {
   pinStore.setPin("428193");
   const recordedPeer = {
     deviceId: "spoofed-mobile-1",
-    deviceName: "Paired phone",
-    platform: "iOS",
-    deviceType: "phone",
+    deviceName: "Self-claimed desktop",
+    platform: "macOS",
+    deviceType: "desktop",
     siteId: "spoofed-mobile-site-1",
     dbVersion: 0,
   } satisfies SyncPeerMetadata;
@@ -979,9 +978,7 @@ function createSpoofedDesktopPairing(secretsDir: string) {
     secret,
     helloPeer: {
       ...recordedPeer,
-      deviceName: "Spoofed desktop",
-      platform: "macOS",
-      deviceType: "desktop",
+      deviceName: "Self-claimed desktop",
     } satisfies SyncPeerMetadata,
   };
 }
@@ -1139,7 +1136,7 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
 }
 
 describe("paired runtime host authorization", () => {
-  it("refuses rpc/fwd when a phone pairing record spoofs desktop through the project-host ingress", async () => {
+  it("refuses rpc/fwd when a PIN-authorized project-host pairing request merely claims desktop", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const pairing = createSpoofedDesktopPairing(path.join(projectRoot, ".ade", "secrets"));
     const baseArgs = createHostArgs(projectRoot, []);

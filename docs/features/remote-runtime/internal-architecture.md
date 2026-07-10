@@ -111,9 +111,11 @@ frames inside `rpc_*` envelopes, and loopback TCP previews ride `fwd_*`
 envelopes (host-side connect restricted to `127.0.0.1`). Both are gated to
 desktop runtime-host peers: the host only opens the RPC channel / port-forward
 for a peer that authenticated with `kind: "paired"` **and** whose authoritative
-stored pairing record has `peerDeviceType: "desktop"`. The device type claimed
-in `hello.peer` is metadata, not authorization: a paired phone or browser that
-reconnects while claiming `deviceType: "desktop"` still stays on the mobile
+stored pairing record has `runtimeHostGranted: true`. The Share Machine link
+carries a short-lived, one-time server grant that is consumed only after the
+PIN succeeds. The device type claimed in `hello.peer` is metadata, not
+authorization: a paired phone or browser that reconnects while claiming
+`deviceType: "desktop"` still stays on the mobile
 command allowlist. If it sends `rpc_open`/`fwd_open`, the host closes the channel
 with "Runtime channel is only available to desktop clients", and `hello_ok`
 advertises `features.rpcChannel`/`features.portForward` as `false`. The host also

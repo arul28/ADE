@@ -36,6 +36,7 @@ export function parseRemoteRuntimePairingInput(
     ...(payload.hostIdentity.name ? { machineName: payload.hostIdentity.name } : {}),
     endpoints: ordered.map((candidate) => candidate.endpoint),
     ...(relayUrl ? { relayUrl } : {}),
+    ...(payload.runtimeHostGrant ? { runtimeHostGrant: payload.runtimeHostGrant } : {}),
     requiresPin: true,
   };
 }

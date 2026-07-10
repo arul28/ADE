@@ -229,7 +229,13 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
   const code = optionalString(record.code);
   const peer = normalizePeerMetadata(record.peer);
   const dpopPublicKey = optionalString(record.dpopPublicKey);
-  return code && peer ? { code, peer, ...(dpopPublicKey ? { dpopPublicKey } : {}) } : null;
+  const runtimeHostGrant = optionalString(record.runtimeHostGrant);
+  return code && peer ? {
+    code,
+    peer,
+    ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
+  } : null;
 }
 
 function send(
@@ -839,6 +845,7 @@ export function createBrainProjectActionsSyncHandler(
             try {
               const paired = pairingStore.pairPeer(payload.peer, payload.code, {
                 dpopPublicKey: payload.dpopPublicKey ?? null,
+                runtimeHostGrant: payload.runtimeHostGrant ?? null,
               });
               pairFailures.clearAfterSuccess(remoteAddress ?? null);
               send(ws, "pairing_result", { ok: true, deviceId: paired.deviceId, secret: paired.secret }, envelope.requestId);

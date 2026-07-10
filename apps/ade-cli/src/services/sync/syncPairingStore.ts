@@ -12,6 +12,8 @@ export type SyncPairingRecord = {
   peerName: string;
   peerPlatform: string;
   peerDeviceType: string;
+  /** Server-issued authorization for full runtime RPC and forwarding. */
+  runtimeHostGranted?: boolean;
   /**
    * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
    * Once present, paired hellos from this device must carry a valid proof.
@@ -20,6 +22,7 @@ export type SyncPairingRecord = {
 };
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
+type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
 
 type SyncPairingStoreArgs = {
   filePath: string;
@@ -62,6 +65,7 @@ function pairingError(code: "pin_not_set" | "invalid_pin", message: string): Err
 
 export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
+  const runtimeHostGrantPath = `${args.filePath}.runtime-host-grants`;
 
   const readRecords = (): PairingSecretsFile => {
     if (!fs.existsSync(args.filePath)) return {};
@@ -79,14 +83,64 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     }
   };
 
+  const readRuntimeHostGrants = (): RuntimeHostGrantFile => {
+    if (!fs.existsSync(runtimeHostGrantPath)) return {};
+    return safeJsonParse<RuntimeHostGrantFile>(
+      fs.readFileSync(runtimeHostGrantPath, "utf8"),
+      {},
+    );
+  };
+
+  const writeRuntimeHostGrants = (grants: RuntimeHostGrantFile): void => {
+    writeTextAtomic(runtimeHostGrantPath, `${JSON.stringify(grants, null, 2)}\n`, { mode: 0o600 });
+    try {
+      fs.chmodSync(runtimeHostGrantPath, 0o600);
+    } catch {
+      // ignore chmod failures on platforms that don't support it
+    }
+  };
+
+  const consumeRuntimeHostGrant = (token: string | null | undefined): boolean => {
+    const normalized = token?.trim();
+    if (!normalized) return false;
+    const tokenHash = hashSecret(normalized);
+    const now = Date.now();
+    const grants = readRuntimeHostGrants();
+    const granted = (grants[tokenHash]?.expiresAt ?? 0) > now;
+    delete grants[tokenHash];
+    for (const [hash, entry] of Object.entries(grants)) {
+      if (!entry || entry.expiresAt <= now) delete grants[hash];
+    }
+    writeRuntimeHostGrants(grants);
+    return granted;
+  };
+
   return {
-    pairPeer(peer: SyncPeerMetadata, pin: string, options?: { dpopPublicKey?: string | null }): { deviceId: string; secret: string } {
+    issueRuntimeHostGrant(ttlMs = 10 * 60_000): string {
+      const token = randomBytes(32).toString("base64url");
+      const grants = readRuntimeHostGrants();
+      const now = Date.now();
+      for (const [hash, entry] of Object.entries(grants)) {
+        if (!entry || entry.expiresAt <= now) delete grants[hash];
+      }
+      grants[hashSecret(token)] = {
+        expiresAt: now + Math.max(1_000, Math.floor(ttlMs)),
+      };
+      writeRuntimeHostGrants(grants);
+      return token;
+    },
+
+    pairPeer(peer: SyncPeerMetadata, pin: string, options?: {
+      dpopPublicKey?: string | null;
+      runtimeHostGrant?: string | null;
+    }): { deviceId: string; secret: string } {
       if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
       if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
+      const runtimeHostGranted = consumeRuntimeHostGrant(options?.runtimeHostGrant);
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
       const existing = records[peer.deviceId] ?? null;
@@ -99,6 +153,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         peerName: peer.deviceName,
         peerPlatform: peer.platform,
         peerDeviceType: peer.deviceType,
+        runtimeHostGranted,
         // Re-pairing (PIN gated) may rotate or introduce the device key; a
         // re-pair without a key keeps the existing one rather than downgrading.
         dpopPublicKey: dpopPublicKey ?? existing?.dpopPublicKey ?? null,

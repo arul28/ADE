@@ -170,11 +170,27 @@ export async function bootstrapPairedRuntime(args: {
         runtimeBinaryVersion: initializeInfo.version,
         lastConnectedAt: connectedAt,
       });
-      args.pairedStore.markEndpointSucceeded(
+      const routeUpdatedCredentials = args.pairedStore.markEndpointSucceeded(
         credentials.hostIdentity.deviceId,
         candidate.endpoint,
         connectedAt,
       );
+      if (Object.prototype.hasOwnProperty.call(
+        transport.connection.hello,
+        "cloudRelayWssUrl",
+      )) {
+        const learnedRelay = transport.connection.hello.cloudRelayWssUrl ?? null;
+        const endpointsWithoutPreviousRelay = routeUpdatedCredentials.endpoints.filter(
+          (endpoint) => endpoint !== credentials.relayUrl,
+        );
+        args.pairedStore.save({
+          ...routeUpdatedCredentials,
+          relayUrl: learnedRelay,
+          endpoints: learnedRelay
+            ? [learnedRelay, ...endpointsWithoutPreviousRelay]
+            : endpointsWithoutPreviousRelay,
+        });
+      }
       const portForwardClient = createSyncPortForwardClient(transport.connection);
       return {
         client,

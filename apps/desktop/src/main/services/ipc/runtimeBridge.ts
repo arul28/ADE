@@ -595,7 +595,7 @@ export function registerRuntimeBridge({
         throw new Error("Local ADE runtime connection is not available.");
       }
       const info = await localRuntimeConnectionPool.callSync<SyncWebPairingInfo>(
-        "sync.getWebPairingInfo",
+        "sync.getDesktopPairingInfo",
       );
       const url = typeof info?.pairingUrl === "string" ? info.pairingUrl.trim() : "";
       const machineName = typeof info?.machineName === "string"
