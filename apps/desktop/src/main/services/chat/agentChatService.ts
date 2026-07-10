@@ -12244,6 +12244,12 @@ export function createAgentChatService(args: {
     if (status === "disposed") {
       await scheduledWorkReady;
       if (scheduledWorkScheduler) {
+        // This cancel snapshot runs while the session row still reads "running",
+        // so a racing in-flight-turn upsert could slip past it. That is safe only
+        // because saveState is synchronous (better-sqlite3): the awaits resolve on
+        // microtasks, sessionService.end below runs before any timer fires, and
+        // the leaked schedule cancels at fire time via sessionState === "ended".
+        // If saveState ever becomes async I/O, mark the row terminal first.
         await Promise.all(
           scheduledWorkScheduler.list(managed.session.id).map((schedule) =>
             scheduledWorkScheduler!.cancel(schedule.id)),
