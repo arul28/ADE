@@ -55,6 +55,8 @@ labels this value as an estimate rather than an exact installer requirement.
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
 
 The service tests reproduce each feasible boundary deterministically by
-injecting disk measurements and updater errors. The install watchdog covers the
-macOS case where `quitAndInstall()` returns but no quit, relaunch, or error event
-follows.
+injecting disk measurements and updater errors. Preparation has a 30-second
+watchdog, while the native Squirrel handoff has a separate five-minute watchdog
+so loopback transfer and staging are not mistaken for a stalled quit. Handoff
+timeouts retain the pending-install marker because Squirrel may still complete;
+an explicit updater error clears it.

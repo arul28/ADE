@@ -1120,7 +1120,7 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("falls back to an actionable error when quit-and-install stalls", async () => {
+  it("allows native handoff to outlive the prepare watchdog before reporting a stall", async () => {
     vi.useFakeTimers();
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
@@ -1131,6 +1131,7 @@ describe("createAutoUpdateService", () => {
       globalStatePath,
       updaterCacheDir,
       installWatchdogMs: 1_000,
+      nativeHandoffWatchdogMs: 5_000,
       getDiskSpace: () => ({
         availableBytes: 20 * 1024 * 1024 * 1024,
         volumePath: "/System/Volumes/Data",
@@ -1145,6 +1146,13 @@ describe("createAutoUpdateService", () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
 
+    expect(service.getSnapshot().status).toBe("installing");
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: { targetVersion: "1.2.3" },
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+
     expect(service.getSnapshot()).toMatchObject({
       status: "error",
       error: "ADE did not quit for the update. Free space if needed, then try again.",
@@ -1154,7 +1162,9 @@ describe("createAutoUpdateService", () => {
         preservesDownload: true,
       },
     });
-    expect(readState(globalStatePath)).toEqual({});
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: { targetVersion: "1.2.3" },
+    });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
     service.dispose();

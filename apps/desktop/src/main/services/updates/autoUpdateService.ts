@@ -22,6 +22,7 @@ import {
 
 const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+const DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS = 5 * 60_000;
 
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
@@ -53,6 +54,7 @@ type CreateAutoUpdateServiceArgs = {
   installTargetPath?: string;
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   installWatchdogMs?: number;
+  nativeHandoffWatchdogMs?: number;
   autoCheckEnabled?: boolean;
 };
 
@@ -312,6 +314,7 @@ export function createAutoUpdateService({
   installTargetPath = process.execPath,
   getDiskSpace = readDiskSpace,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  nativeHandoffWatchdogMs = DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS,
   autoCheckEnabled = true,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
@@ -943,16 +946,15 @@ export function createAutoUpdateService({
             const message = "ADE did not quit for the update. Free space if needed, then try again.";
             logger.warn("autoUpdate.quit_and_install_stalled", {
               version: installVersion,
-              installWatchdogMs,
+              nativeHandoffWatchdogMs,
             });
-            clearPendingInstallUpdate();
             setErrorSnapshot({
               error: new Error(message),
               fallbackPhase: "install",
               message,
               preservesDownload: true,
             });
-          }, installWatchdogMs);
+          }, nativeHandoffWatchdogMs);
           return true;
         } catch (error) {
           const message = formatErrorMessage(error);
