@@ -47,6 +47,7 @@ import {
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
+import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../desktop/src/main/services/cto/linearAppClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import { createFileService as createFileServiceImpl } from "../../desktop/src/main/services/files/fileService";
 import { createProcessService as createProcessServiceImpl } from "../../desktop/src/main/services/processes/processService";
@@ -1511,7 +1512,9 @@ function createHeadlessLinearCredentialService(args: {
         authMode,
         tokenExpiresAt: readCredential(tokenExpiresAtKey),
         refreshTokenStored: Boolean(readCredential(refreshTokenKey)),
-        oauthConfigured: readOAuthClientCredentials() != null,
+        // The bundled ADE app client makes OAuth always available; a custom
+        // client (if configured) takes precedence over it.
+        oauthConfigured: true,
       };
     },
     getTokenOrThrow() {
@@ -1568,7 +1571,12 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(oauthClientKey, null);
     },
     getOAuthClientCredentials() {
-      return readOAuthClientCredentials();
+      // A user-configured OAuth client wins; otherwise sign-in uses the
+      // bundled ADE Linear app (PKCE — no client secret ships with ADE).
+      return readOAuthClientCredentials() ?? { clientId: ADE_LINEAR_APP_CLIENT_ID, clientSecret: null };
+    },
+    getOAuthClientSource(): LinearOAuthClientSource {
+      return readOAuthClientCredentials() ? "custom" : "ade-app";
     },
     ensureFreshToken,
   };

@@ -1119,6 +1119,11 @@ export async function createAdeRuntime(args: {
         getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
         cursorStore: createKvIngressCursorStore(db),
         hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+        isAdeAppConnection: () => {
+          const credentials = headlessLinearServices.linearCredentialService;
+          return credentials.getStatus().authMode === "oauth"
+            && credentials.getOAuthClientSource() === "ade-app";
+        },
         dispatch: (record) => {
           if (!automationService) return;
           for (const dispatch of buildLinearAutomationDispatches(record)) {

@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
+import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
@@ -684,12 +685,20 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         authMode: stored?.authMode ?? null,
         tokenExpiresAt: stored?.expiresAt ?? null,
         refreshTokenStored: Boolean(stored?.refreshToken),
-        oauthConfigured: readOAuthClientCredentials() != null,
+        // The bundled ADE app client makes OAuth always available; a custom
+        // client (if configured) takes precedence over it.
+        oauthConfigured: true,
       };
     },
 
     getOAuthClientCredentials(): LinearOAuthClientCredentials | null {
-      return readOAuthClientCredentials();
+      // A user-configured OAuth client wins; otherwise sign-in uses the
+      // bundled ADE Linear app (PKCE — no client secret ships with ADE).
+      return readOAuthClientCredentials() ?? { clientId: ADE_LINEAR_APP_CLIENT_ID, clientSecret: null };
+    },
+
+    getOAuthClientSource(): LinearOAuthClientSource {
+      return readOAuthClientCredentials() ? "custom" : "ade-app";
     },
 
     ensureFreshToken,

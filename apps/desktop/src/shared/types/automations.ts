@@ -84,6 +84,8 @@ export type AutomationLinearIngressStatus = {
   lastEventAt: string | null;
   lastError: string | null;
   relayBaseUrl: string;
+  /** Events arrive via the ADE Linear OAuth app; no workspace webhook to manage. */
+  appManaged?: boolean;
 };
 
 export type AutomationScheduledCleanup = {

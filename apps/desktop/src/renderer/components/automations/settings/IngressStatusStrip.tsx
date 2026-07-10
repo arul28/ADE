@@ -90,7 +90,8 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
             <>
               <Dot tone="ok" />
               <span className="text-fg/80">
-                Connected{linear.lastEventAt ? ` · last ${formatDate(linear.lastEventAt, "—")}` : ""}
+                {linear.appManaged ? "Connected via ADE app" : "Connected"}
+                {linear.lastEventAt ? ` · last ${formatDate(linear.lastEventAt, "—")}` : ""}
               </span>
             </>
           ) : linear?.state === "error" ? (
@@ -98,6 +99,10 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
               <Dot tone="warn" />
               <span className="text-amber-200">Error</span>
             </>
+          ) : linear?.appManaged ? (
+            // App-connected workspaces self-configure on the first poll after
+            // a linear.* rule is enabled — no manual connect step.
+            <span className="text-muted-fg/70">Via ADE app</span>
           ) : (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void setupLinear()}>
               Connect

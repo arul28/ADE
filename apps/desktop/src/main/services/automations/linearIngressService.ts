@@ -21,6 +21,9 @@ import {
 const DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS = 45_000;
 const LINEAR_RELAY_PAGE_LIMIT = 500;
 const LINEAR_RELAY_MAX_PAGES_PER_POLL = 20;
+// Sentinel webhook id for workspaces whose events arrive through the ADE
+// Linear OAuth app: no workspace webhook exists to create or delete.
+const ADE_APP_WEBHOOK_ID = "ade-linear-app";
 
 type LinearAccessCredentials = {
   ensureFreshToken: (opts?: { force?: boolean }) => Promise<void>;
@@ -96,6 +99,12 @@ export type LinearIngressServiceDeps = {
   dispatch: (record: LinearIngressEventRecord) => void;
   logger: Logger;
   hasEnabledLinearRules: () => boolean;
+  /**
+   * True when the project's Linear connection is an OAuth token issued to the
+   * bundled ADE Linear app — its webhook is auto-provisioned by Linear, so
+   * setup skips webhook creation and runs automatically on the first poll.
+   */
+  isAdeAppConnection?: () => boolean;
   fetchImpl?: typeof fetch;
   pollIntervalMs?: number;
 };
@@ -233,6 +242,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       lastEventAt: persisted.lastEventAt,
       lastError,
       relayBaseUrl,
+      appManaged: persisted.webhookId === ADE_APP_WEBHOOK_ID || Boolean(deps.isAdeAppConnection?.()),
     };
   };
 
@@ -271,6 +281,20 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       if (!client) throw new Error("Connect Linear before configuring webhook ingestion.");
       const authorization = await requireAuthorization();
       const relayBaseUrl = resolveLinearRelayBaseUrl(deps.db);
+
+      if (deps.isAdeAppConnection?.()) {
+        // The ADE Linear OAuth app already delivers this workspace's events
+        // (Linear auto-provisions the app webhook on authorization and signs
+        // with the app-level secret the relay knows). Registration only
+        // resolves and pins the organization id for the read route.
+        const secret = randomBytes(32).toString("hex");
+        const organizationId = await registerOrganization({ relayBaseUrl, authorization, secret });
+        persistLinearWebhookSecret(deps.credentialStore, secret);
+        persistLinearRelayRegistration(deps.db, { webhookId: ADE_APP_WEBHOOK_ID, organizationId });
+        deps.logger.info("automations.linear_relay_configured", { organizationId, webhookId: ADE_APP_WEBHOOK_ID, appManaged: true });
+        return getStatus();
+      }
+
       const webhookUrl = `${relayBaseUrl}/linear/webhook`;
       const persisted = readLinearRelayPersistedState(deps.db);
       const storedSecret = readLinearWebhookSecret(deps.db, deps.credentialStore);
@@ -320,7 +344,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   const teardown = async (): Promise<LinearIngressStatus> => {
     const persisted = readLinearRelayPersistedState(deps.db);
     try {
-      if (persisted.webhookId) {
+      if (persisted.webhookId && persisted.webhookId !== ADE_APP_WEBHOOK_ID) {
         const client = deps.getLinearClient();
         if (!client) throw new Error("Connect Linear before removing the configured webhook.");
         await client.deleteWebhook(persisted.webhookId);
@@ -371,6 +395,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   const poll = async (): Promise<void> => {
     if (!deps.hasEnabledLinearRules()) return;
     let status = getStatus();
+    if (status.state === "unconfigured" && deps.isAdeAppConnection?.()) {
+      // App-connected workspaces need no manual connect step: events already
+      // flow to the relay, only the organization id is missing locally.
+      try {
+        status = await setup();
+      } catch {
+        return; // setup recorded the error; surface via status
+      }
+    }
     if (status.state === "error" && status.webhookId && status.organizationId) {
       // A configured relay should recover from transient poll errors. Clear the
       // previous attempt before re-evaluating readiness; secret-store failures

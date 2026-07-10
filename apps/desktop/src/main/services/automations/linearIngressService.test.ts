@@ -70,7 +70,7 @@ function makeWebhook(id = "webhook-1") {
   };
 }
 
-function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch } = {}) {
+function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch; adeApp?: boolean } = {}) {
   const db = new FakeDb();
   const credentials = new FakeCredentialStore();
   const cursorBySource = new Map<string, string | null>();
@@ -107,6 +107,7 @@ function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch } 
     dispatch: (record) => dispatched.push(record),
     logger: createLogger(),
     hasEnabledLinearRules: () => options.enabled !== false,
+    ...(options.adeApp ? { isAdeAppConnection: () => true } : {}),
     fetchImpl: options.fetchImpl ?? vi.fn(async () => {
       throw new Error("unexpected fetch");
     }) as unknown as typeof fetch,
@@ -302,6 +303,32 @@ describe("linearIngressService", () => {
     expect(harness.dispatched).toHaveLength(0);
     expect(harness.db.ingressRows).toHaveLength(0);
     expect(harness.cursorBySource.get("linear-relay")).toBe("seq:99");
+  });
+
+  it("self-configures app-connected workspaces on the first poll without creating a webhook", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/linear/orgs/register")) {
+        return new Response(JSON.stringify({ organizationId: "org-app" }), { status: 200 });
+      }
+      // events poll
+      return new Response(JSON.stringify({ events: [], nextCursor: null, cursorExpired: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ adeApp: true, fetchImpl });
+
+    await harness.service.pollNow();
+
+    const status = harness.service.getStatus();
+    expect(status.state).toBe("ready");
+    expect(status.organizationId).toBe("org-app");
+    expect(status.appManaged).toBe(true);
+    expect(harness.client.createWebhook).not.toHaveBeenCalled();
+    expect(harness.client.listWebhooks).not.toHaveBeenCalled();
+
+    // Teardown clears local state but never deletes the app's webhook.
+    await harness.service.teardown();
+    expect(harness.client.deleteWebhook).not.toHaveBeenCalled();
+    expect(harness.service.getStatus().organizationId).toBe(null);
   });
 
   it("deletes the Linear webhook and clears relay state, cursor, and encrypted secret", async () => {

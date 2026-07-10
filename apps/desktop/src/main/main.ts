@@ -3168,6 +3168,9 @@ app.whenReady().then(async () => {
           getLinearAccessToken: createLinearAccessTokenGetter(linearCredentialService),
           cursorStore: createKvIngressCursorStore(db),
           hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+          isAdeAppConnection: () =>
+            linearCredentialService.getStatus().authMode === "oauth"
+            && linearCredentialService.getOAuthClientSource() === "ade-app",
           dispatch: (record) => {
             if (!automationService) return;
             for (const dispatch of buildLinearAutomationDispatches(record)) {
