@@ -1,5 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -96,6 +96,7 @@ const RUNTIME_METHODS = new Set([
   "sync.getRuntimeName",
   "sync.setRuntimeName",
   "sync.clearRuntimeName",
+  "sync.getDesktopPairingInfo",
   "sync.setActiveLanePresence",
   "sync.getCloudRelayStatus",
   "sync.setCloudRelayEnabled",
@@ -772,6 +773,18 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.clearRuntimeName") {
       return await (await getSyncService()).clearRuntimeName();
+    }
+
+    if (method === "sync.getDesktopPairingInfo") {
+      const syncService = await getSyncService();
+      // This daemon socket is the trusted desktop-local surface. The paired
+      // command path still consults the descriptor's viewerAllowed=false
+      // policy before it can reach the same handler.
+      return await syncService.executeRemoteCommand({
+        commandId: `local-runtime-${randomUUID()}`,
+        action: "sync.getDesktopPairingInfo",
+        args: {},
+      });
     }
 
     if (method === "sync.getCloudRelayStatus") {
