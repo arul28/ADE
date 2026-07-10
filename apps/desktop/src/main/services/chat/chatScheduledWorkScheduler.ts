@@ -460,7 +460,9 @@ export function createChatScheduledWorkScheduler(
           await persist();
           await emitTransition(schedule, "fired");
           if (schedule.kind === "cron" && schedule.status === "fired") {
-            delete schedule.activeTurnId;
+            // Only clear the turn we claimed — a newer fire's recordTurnStarted
+            // may already own activeTurnId, and its outcome summary must land.
+            if (schedule.activeTurnId === turnId) delete schedule.activeTurnId;
             schedule.fireAt = schedule.cron
               ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
               : undefined;
