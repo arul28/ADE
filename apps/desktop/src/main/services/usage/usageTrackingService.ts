@@ -916,12 +916,14 @@ function aggregateCosts(
     dailyTokens: {} as DailyTokenBreakdown,
     dailyModelTokens: {} as DailyModelTokenBreakdown,
     adeOriginatedTokens: 0,
+    adeOriginatedDailyTokens: {} as DailyTokenBreakdown,
   }])) as Record<AdeUsageRangePreset, {
     costUsd: number;
     tokenBreakdown: TokenBreakdown;
     dailyTokens: DailyTokenBreakdown;
     dailyModelTokens: DailyModelTokenBreakdown;
     adeOriginatedTokens: number;
+    adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
   for (const entry of entries) {
@@ -935,10 +937,16 @@ function aggregateCosts(
       addDailyTokenEntry(accumulator.dailyTokens, entry);
       addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
-        accumulator.adeOriginatedTokens += entry.inputTokens
+        const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
           + entry.cachedTokens
           + toNonNegativeInt(entry.cacheWriteTokens);
+        accumulator.adeOriginatedTokens += adeOriginatedTokens;
+        const date = localDayKey(entry.timestamp);
+        if (date) {
+          accumulator.adeOriginatedDailyTokens[date] = (accumulator.adeOriginatedDailyTokens[date] ?? 0)
+            + adeOriginatedTokens;
+        }
       }
     }
   }
@@ -964,6 +972,9 @@ function aggregateCosts(
     ...(options.scopeSupported != null ? { scopeSupported: options.scopeSupported } : {}),
     adeOriginatedTokensByPreset: Object.fromEntries(
       ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedTokens]),
+    ),
+    adeOriginatedDailyTokensByPreset: Object.fromEntries(
+      ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedDailyTokens]),
     ),
   };
 }
@@ -1270,12 +1281,16 @@ function addCostSnapshotsProviderUsage(
     }
     if (cost.estimation) providerSummary.estimation = cost.estimation;
     if (cost.scopeSupported != null) providerSummary.scopeSupported = cost.scopeSupported;
-    const adeOriginatedTokens = Math.min(
-      providerTotalTokens,
-      toNonNegativeInt(cost.adeOriginatedTokensByPreset?.[range.preset]),
-    );
-    providerSummary.adeOriginatedTokens = toNonNegativeInt(providerSummary.adeOriginatedTokens) + adeOriginatedTokens;
-    providerSummary.externalTokens = toNonNegativeInt(providerSummary.externalTokens) + providerTotalTokens - adeOriginatedTokens;
+    const adeOriginatedTokens = exactRange
+      ? adeOriginatedTokensForExactRange(cost, range)
+      : toNonNegativeInt(cost.adeOriginatedTokensByPreset?.[range.preset]);
+    if (adeOriginatedTokens != null) {
+      const narrowedAdeOriginatedTokens = Math.min(providerTotalTokens, adeOriginatedTokens);
+      providerSummary.adeOriginatedTokens = toNonNegativeInt(providerSummary.adeOriginatedTokens) + narrowedAdeOriginatedTokens;
+      providerSummary.externalTokens = toNonNegativeInt(providerSummary.externalTokens)
+        + providerTotalTokens
+        - narrowedAdeOriginatedTokens;
+    }
     for (const [model, tokens] of Object.entries(tokenBreakdown)) {
       const modelInput = toNonNegativeInt(tokens.input);
       const modelOutput = toNonNegativeInt(tokens.output);
@@ -1294,6 +1309,14 @@ function addCostSnapshotsProviderUsage(
       });
     }
   }
+}
+
+function adeOriginatedTokensForExactRange(cost: CostSnapshot, range: ResolvedAdeUsageRange): number | null {
+  const dailyTokens = cost.adeOriginatedDailyTokensByPreset?.all;
+  if (!dailyTokens) return null;
+  return Object.entries(dailyTokens).reduce((sum, [date, tokens]) => (
+    dateIntersectsRange(date, range) ? sum + toNonNegativeInt(tokens) : sum
+  ), 0);
 }
 
 function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsageRange): Record<string, CostTokenBreakdown> {

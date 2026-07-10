@@ -403,6 +403,8 @@ export type CostSnapshot = {
   scopeSupported?: boolean;
   /** Tokens attributed to ADE-originated sessions, by preset. */
   adeOriginatedTokensByPreset?: Partial<Record<AdeUsageRangePreset, number>>;
+  /** Tokens attributed to ADE-originated sessions by local day, by preset. */
+  adeOriginatedDailyTokensByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, number>>>;
 };
 
 export type ExtraUsage = {

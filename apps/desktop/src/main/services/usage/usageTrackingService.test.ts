@@ -359,6 +359,79 @@ describe("aggregateCosts", () => {
 });
 
 describe("local daily aggregation", () => {
+  it("scopes the ADE and external token split to an exact range", () => {
+    const adeDay = new Date(2026, 4, 28, 12, 0, 0, 0);
+    const externalDay = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const cost = aggregateCosts([
+      {
+        messageId: "ade-day",
+        model: "gpt-5.5",
+        originator: "ade_desktop",
+        inputTokens: 70,
+        outputTokens: 30,
+        cachedTokens: 0,
+        timestamp: adeDay.getTime(),
+      },
+      {
+        messageId: "external-day",
+        model: "gpt-5.5",
+        originator: "codex_cli_rs",
+        inputTokens: 40,
+        outputTokens: 10,
+        cachedTokens: 0,
+        timestamp: externalDay.getTime(),
+      },
+    ], "codex");
+    const snapshot = {
+      windows: [],
+      pacing: calculatePacing([]),
+      costs: [cost],
+      adeCosts: [],
+      extraUsage: [],
+      lastPolledAt: externalDay.toISOString(),
+      errors: [],
+    } as any;
+
+    const presetStats = collectAdeUsageStats({
+      snapshot,
+      args: { preset: "all" },
+      nowMs: externalDay.getTime(),
+    });
+    const exactStats = collectAdeUsageStats({
+      snapshot,
+      args: {
+        preset: "all",
+        since: new Date(2026, 4, 29, 0, 0, 0, 0).toISOString(),
+        until: new Date(2026, 4, 29, 23, 59, 59, 999).toISOString(),
+      },
+      nowMs: externalDay.getTime(),
+    });
+
+    expect(presetStats.providers.find((provider) => provider.provider === "codex")).toMatchObject({
+      totalTokens: 150,
+      adeOriginatedTokens: 100,
+      externalTokens: 50,
+    });
+    expect(exactStats.providers.find((provider) => provider.provider === "codex")).toMatchObject({
+      totalTokens: 50,
+      adeOriginatedTokens: 0,
+      externalTokens: 50,
+    });
+
+    const legacyCost = { ...cost, adeOriginatedDailyTokensByPreset: undefined };
+    const legacyExactStats = collectAdeUsageStats({
+      snapshot: { ...snapshot, costs: [legacyCost] },
+      args: {
+        preset: "all",
+        since: new Date(2026, 4, 29, 0, 0, 0, 0).toISOString(),
+        until: new Date(2026, 4, 29, 23, 59, 59, 999).toISOString(),
+      },
+      nowMs: externalDay.getTime(),
+    });
+    expect(legacyExactStats.providers.find((provider) => provider.provider === "codex")).not.toHaveProperty("adeOriginatedTokens");
+    expect(legacyExactStats.providers.find((provider) => provider.provider === "codex")).not.toHaveProperty("externalTokens");
+  });
+
   it("daily points carry output and cache split", () => {
     const now = new Date(2026, 4, 29, 12, 0, 0, 0);
     const date = localDayKey(now);
