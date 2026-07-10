@@ -198,7 +198,10 @@ apps/ios/
 │   │   │                            #   timeline rows, plus the unified Chat
 │   │   │                            #   Info sheet — ordered Subagents /
 │   │   │                            #   Background / Schedule sections mirroring
-│   │   │                            #   desktop — and the subagent strip/badge),
+│   │   │                            #   desktop — the subagent strip/badge, and
+│   │   │                            #   the resolved-question card that collapses
+│   │   │                            #   an answered question to a one-line
+│   │   │                            #   "Answered · <choice>" / "Declined" row),
 │   │   │                            # WorkPlanComposerViews (plan-approval
 │   │   │                            #   strip + review sheet),
 │   │   │                            # WorkComposerTypedTriggers (UITextView
@@ -208,7 +211,14 @@ apps/ios/
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
 │   │   │                            # WorkChatAttachmentTray,
-│   │   │                            # WorkArtifactTerminalViews,
+│   │   │                            # WorkChatComposerAndInputViews (compacted
+│   │   │                            #   icon-only staged-steer strip + the
+│   │   │                            #   structured-question card: chip tab strip
+│   │   │                            #   over a viewport-capped internal scroll),
+│   │   │                            # WorkArtifactTerminalViews (in-thread
+│   │   │                            #   artifact card with a friendly
+│   │   │                            #   "Preview isn't available" fallback when
+│   │   │                            #   the blob can't render on-device),
 │   │   │                            # TerminalSessionScreen + SwiftTermSessionView
 │   │   │                            #   (full-screen SwiftTerm terminal,
 │   │   │                            #   offset resume/history paging +
@@ -1568,6 +1578,20 @@ does not duplicate the full desktop Stats page.
   model-selection — and flips `acceptForSession` on the current gate then
   accepts each remaining sweepable gate sequentially (stale itemIds no-op
   on the host, so re-sends after auto-resolution are safe).
+- **Optimistic steers reconcile on the active-to-idle turn boundary.**
+  A message the phone sends mid-turn is echoed as an optimistic "Sends
+  after turn" row (`WorkQueuedSteerRow`) using the host-assigned steer id
+  the `chat.send` ack returns. Those graduate out when the host's
+  `deliverNextQueuedSteer` folds them into the next turn — but if the
+  graduation events never reach the phone, the row would linger forever.
+  `WorkSessionDestinationView` watches the effective chat status (derived
+  through `workChatTranscriptPreferenceStatus`, which downgrades a
+  stale-active row to idle via the fresher `liveTurnActiveHint`) and, on the
+  active-to-non-active transition, runs `reconcileOptimisticSteersAfterTurnEnd`:
+  a forced canonical transcript refresh, then drop any optimistic steer the
+  reachable host no longer lists as pending. It never drops while the host is
+  unreachable or the refresh came back empty, so a transient gap cannot erase
+  a genuinely queued message.
 - **`AttentionDrawerModel.clearVisibleItems()` persists dismissals
   scoped to the active id set.** Ids are stored under
   `ade.attention.dismissedItemIDs` and pruned on every rebuild

@@ -608,7 +608,14 @@ can be sensitive.
   a command, subscribe to the transcript stream for incremental
   events. `chat.send` waits for the runtime-side dispatch acknowledgement
   before returning `ok`, so the phone does not clear its local echo
-  while the desktop is still preparing the turn. Personal chat uses the same
+  while the desktop is still preparing the turn. The handler passes
+  `routeActiveToSteer: true` into `agentChatService.sendMessage`, so a send
+  that lands while a turn is already active is converted into a steer
+  instead of racing the live turn; when that happens the ack carries the
+  steer's `{ steerId, queued }` alongside `ok: true` (a plain new-turn send
+  still returns just `{ ok: true }`). The extra fields are additive — older
+  clients ignore them, and the phone uses them to reconcile the message it
+  echoed optimistically. Personal chat uses the same
   envelopes but sends `chatScope: "personal"`; that explicit discriminator
   resolves the hidden durable transcript and active-turn state without a
   `projectId`.
