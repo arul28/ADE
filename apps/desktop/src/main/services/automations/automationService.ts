@@ -32,7 +32,7 @@ import type {
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
-import { isWebhookGatewayTriggerType, triggerDeliveryKeyForType } from "../../../shared/types";
+import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -136,10 +136,6 @@ function ruleTriggers(rule: Pick<AutomationRule, "triggers" | "trigger">): Autom
       ? [rule.trigger]
       : [];
   return triggers;
-}
-
-function ruleNeedsExternalIngress(rule: Pick<AutomationRule, "triggers" | "trigger">): boolean {
-  return ruleTriggers(rule).some((trigger) => isWebhookGatewayTriggerType(trigger.type));
 }
 
 function readGitHubOriginFromConfig(projectRoot: string): string | null {
@@ -3195,7 +3191,7 @@ export function createAutomationService({
     const desired = new Set<string>();
     for (const rule of rules) {
       if (!rule.enabled) continue;
-      const ingressSetupError = ruleNeedsExternalIngress(rule) ? getIngressSetupError(rule) : null;
+      const ingressSetupError = getIngressSetupError(rule);
       if (ingressSetupError) {
         logger.warn("automations.external_trigger_waiting_for_ingress", {
           automationId: rule.id,

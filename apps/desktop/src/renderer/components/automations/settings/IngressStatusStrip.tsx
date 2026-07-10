@@ -5,17 +5,7 @@ import { LINEAR_BRAND, LinearMark } from "../../lanes/linearBrand";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { formatDate } from "../../../lib/format";
-
-type LinearIngressApi = typeof window.ade.automations.linearIngress;
-
-/**
- * The Linear ingress IPC is part of the preload contract, but a remote runtime
- * on an older build may not expose it — probe defensively so the row hides
- * rather than throwing.
- */
-function linearIngressApi(): Partial<LinearIngressApi> | null {
-  return window.ade?.automations?.linearIngress ?? null;
-}
+import { linearIngressApi } from "../linearIngressApi";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (

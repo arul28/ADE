@@ -1,9 +1,10 @@
 import { ArrowRight } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
-import { accentTint, eventLabel, sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog";
+import { sourceForTriggerType } from "../triggerCatalog";
 import type { AutomationTemplate } from "./templateData";
 import { templateIconFor } from "./templateIcons";
+import { SourceIconBadge, TemplateSourceChip } from "./TemplateSourceChip";
 
 export function TemplateCard({
   template,
@@ -16,8 +17,6 @@ export function TemplateCard({
 }) {
   const Icon = templateIconFor(template.id);
   const source = sourceForTriggerType(template.triggerType);
-  const sourceDefinition = sourceDef(source);
-  const SourceIcon = sourceDefinition.icon;
   return (
     <button
       type="button"
@@ -29,16 +28,7 @@ export function TemplateCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <span
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border"
-          style={{
-            borderColor: accentTint(source, 0.25),
-            background: accentTint(source, 0.12),
-            color: sourceAccent(source),
-          }}
-        >
-          <Icon size={16} weight="regular" />
-        </span>
+        <SourceIconBadge source={source} size={32} icon={Icon} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[13px] font-semibold text-fg">{template.name}</span>
@@ -55,14 +45,7 @@ export function TemplateCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between">
-        <span
-          className="inline-flex min-w-0 items-center gap-1 truncate text-[10.5px]"
-          style={{ color: accentTint(source, 0.85) }}
-          title={template.triggerType}
-        >
-          <SourceIcon size={11} weight="fill" className="shrink-0" />
-          <span className="truncate">{sourceDefinition.label} · {eventLabel(template.triggerType)}</span>
-        </span>
+        <TemplateSourceChip triggerType={template.triggerType} />
         {/* Decorative affordance: the whole card is the button; a nested
             <button> would be invalid HTML. */}
         <span className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-1 text-[10.5px] font-medium text-fg/85 transition-colors group-hover:border-accent/40 group-hover:text-accent">

@@ -1,8 +1,14 @@
 import { useState } from "react";
 import { Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { AutomationIngressStatus, AutomationTrigger } from "../../../../shared/types";
+import type {
+  AutomationIngressDelivery,
+  AutomationIngressStatus,
+  AutomationTrigger,
+  AutomationTriggerDeliveryStatus,
+} from "../../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../../shared/types";
+import { linearIngressApi } from "../linearIngressApi";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { inputCls, labelCls, recessedCls, selectCls } from "../designTokens";
@@ -46,10 +52,27 @@ function SmallField({
   );
 }
 
-type LinearIngressApi = typeof window.ade.automations.linearIngress;
-
-function linearIngressApi(): Partial<LinearIngressApi> | null {
-  return window.ade?.automations?.linearIngress ?? null;
+function CalloutActionButton({
+  label,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="ml-auto shrink-0 text-amber-100"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
+  );
 }
 
 function TriggerDeliveryCallout({
@@ -57,8 +80,8 @@ function TriggerDeliveryCallout({
   status,
   onIngressChanged,
 }: {
-  deliveryKey: NonNullable<ReturnType<typeof triggerDeliveryKeyForType>>;
-  status: NonNullable<AutomationIngressStatus["delivery"]>[NonNullable<ReturnType<typeof triggerDeliveryKeyForType>>];
+  deliveryKey: keyof AutomationIngressDelivery;
+  status: AutomationTriggerDeliveryStatus;
   onIngressChanged?: () => void;
 }) {
   const navigate = useNavigate();
@@ -78,38 +101,18 @@ function TriggerDeliveryCallout({
     }
   };
 
-  const action = deliveryKey === "github" || deliveryKey === "githubWebhook" ? (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="ml-auto shrink-0 text-amber-100"
-      onClick={() => navigate("/settings?tab=general#github-connection")}
-    >
-      Open GitHub settings
-    </Button>
-  ) : deliveryKey === "linear" ? linearApi?.setup ? (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="ml-auto shrink-0 text-amber-100"
-      disabled={linearPending}
-      onClick={() => void setupLinear()}
-    >
-      Connect Linear
-    </Button>
-  ) : (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="ml-auto shrink-0 text-amber-100"
-      onClick={() => navigate("/settings?tab=general#linear-connection")}
-    >
-      Open Linear settings
-    </Button>
-  ) : null;
+  let action = null;
+  if (deliveryKey === "github" || deliveryKey === "githubWebhook") {
+    action = (
+      <CalloutActionButton label="Open GitHub settings" onClick={() => navigate("/settings?tab=general#github-connection")} />
+    );
+  } else if (deliveryKey === "linear") {
+    action = linearApi?.setup ? (
+      <CalloutActionButton label="Connect Linear" disabled={linearPending} onClick={() => void setupLinear()} />
+    ) : (
+      <CalloutActionButton label="Open Linear settings" onClick={() => navigate("/settings?tab=general#linear-connection")} />
+    );
+  }
 
   return (
     <div className="flex items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
