@@ -132,7 +132,9 @@ function createRuntime() {
         daily: [],
       })),
       getUsageSnapshot: vi.fn(() => ({ available: true, entries: [] })),
+      noteQuotaDemand: vi.fn(() => ({ available: true, entries: [] })),
       forceRefresh: vi.fn(async () => ({ available: true, entries: [] })),
+      refreshHistory: vi.fn(async () => ({ available: true, entries: [] })),
       poll: vi.fn(async () => ({ available: true, entries: [] })),
       start: vi.fn(() => {}),
       stop: vi.fn(() => {}),
@@ -2599,6 +2601,12 @@ describe("adeRpcServer", () => {
     expect(usageActions.structuredContent.actions).toContainEqual(
       expect.objectContaining({ domain: "usage", action: "getAdeUsageStats", name: "usage.getAdeUsageStats" }),
     );
+    expect(usageActions.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ domain: "usage", action: "noteQuotaDemand", name: "usage.noteQuotaDemand" }),
+    );
+    expect(usageActions.structuredContent.actions).not.toContainEqual(
+      expect.objectContaining({ domain: "usage", action: "refreshHistory" }),
+    );
 
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
@@ -2726,6 +2734,15 @@ describe("adeRpcServer", () => {
     expect(usageStats?.isError).toBeUndefined();
     expect(fixture.runtime.usageTrackingService.getAdeUsageStats).toHaveBeenCalledWith({ preset: "7d" });
     expect(usageStats.structuredContent.result).toMatchObject({ preset: "7d", daily: [] });
+
+    const quotaDemand = await callTool(handler, "run_ade_action", {
+      domain: "usage",
+      action: "noteQuotaDemand",
+      args: {},
+    });
+    expect(quotaDemand?.isError).toBeUndefined();
+    expect(fixture.runtime.usageTrackingService.noteQuotaDemand).toHaveBeenCalledWith(undefined);
+    expect(quotaDemand.structuredContent.result).toEqual({ available: true, entries: [] });
 
   });
 

@@ -1045,6 +1045,8 @@ declare global {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
         getSnapshot: () => Promise<UsageSnapshot | null>;
         refresh: () => Promise<UsageSnapshot | null>;
+        refreshHistory: () => Promise<UsageSnapshot | null>;
+        noteDemand: () => Promise<UsageSnapshot | null>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;

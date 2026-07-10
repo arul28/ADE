@@ -948,6 +948,8 @@ export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
   | "usage.getAdeStats"
+  | "usage.getQuotaSnapshot"
+  | "usage.refreshQuota"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"

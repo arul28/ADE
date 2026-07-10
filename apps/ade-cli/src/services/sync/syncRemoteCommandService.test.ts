@@ -112,7 +112,10 @@ function makePairingConnectInfo(
 describe("createSyncRemoteCommandService", () => {
   it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
     const getAdeUsageStats = vi.fn().mockResolvedValue({ generatedAt: "2026-07-09T12:00:00.000Z", daily: [] });
-    const { service } = createService({ usageTrackingService: { getAdeUsageStats } });
+    const quotaSnapshot = { windows: [], lastPolledAt: "2026-07-09T12:00:00.000Z", errors: [] };
+    const getUsageSnapshot = vi.fn(() => quotaSnapshot);
+    const forceRefresh = vi.fn(async () => ({ ...quotaSnapshot, lastPolledAt: "2026-07-09T12:01:00.000Z" }));
+    const { service } = createService({ usageTrackingService: { getAdeUsageStats, getUsageSnapshot, forceRefresh } });
 
     expect(service.getDescriptor("usage.getAdeStats")).toEqual({
       action: "usage.getAdeStats",
@@ -127,6 +130,22 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.getAdeStats", { preset: "decade" }))).rejects.toThrow(
       "usage.getAdeStats preset must be today, 7d, 30d, year, or all.",
     );
+    expect(service.getDescriptor("usage.getQuotaSnapshot")).toEqual({
+      action: "usage.getQuotaSnapshot",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    expect(service.getDescriptor("usage.refreshQuota")).toEqual({
+      action: "usage.refreshQuota",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    await expect(service.execute(makePayload("usage.getQuotaSnapshot"))).resolves.toEqual(quotaSnapshot);
+    await expect(service.execute(makePayload("usage.refreshQuota"))).resolves.toMatchObject({
+      lastPolledAt: "2026-07-09T12:01:00.000Z",
+    });
+    expect(getUsageSnapshot).toHaveBeenCalledTimes(1);
+    expect(forceRefresh).toHaveBeenCalledWith({ allowInteractiveAuth: false });
   });
 
   it("advertises and executes machine personal chats as runtime commands", async () => {

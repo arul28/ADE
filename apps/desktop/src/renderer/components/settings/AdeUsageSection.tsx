@@ -22,6 +22,7 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { UsageActivityCarousel } from "../usage/UsageActivityCarousel";
+import { UsageQuotaPanel } from "../usage/UsageQuotaPanel";
 
 const ACCENT = {
   tokens: "#60A5FA",
@@ -296,6 +297,7 @@ function ChangeRow({ label, value, max, color }: { label: string; value: number;
 }
 
 export function AdeUsageSection() {
+  const [activeTab, setActiveTab] = React.useState<"limits" | "activity">("limits");
   const [preset, setPreset] = React.useState<AdeUsageRangePreset>("7d");
   const [cacheScope, setCacheScope] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<AdeUsageStats | null>(null);
@@ -321,7 +323,7 @@ export function AdeUsageSection() {
       setError(null);
       if (force) {
         setRefreshing(true);
-        await window.ade?.usage?.refresh?.();
+        await window.ade?.usage?.refreshHistory?.();
       }
       const result = await window.ade?.usage?.getAdeStats?.({ preset: nextPreset });
       if (!result) {
@@ -379,9 +381,9 @@ export function AdeUsageSection() {
   }, []);
 
   React.useEffect(() => {
-    if (!cacheScope) return;
+    if (!cacheScope || activeTab !== "activity") return;
     void loadStats(preset, cacheScope, false);
-  }, [cacheScope, loadStats, preset]);
+  }, [activeTab, cacheScope, loadStats, preset]);
 
   React.useEffect(() => {
     if (!cacheScope) return;
@@ -399,11 +401,13 @@ export function AdeUsageSection() {
   const updatedLabel = stats?.generatedAt ? relativeTimeCompact(stats.generatedAt) : "";
   const rangeLabel = compactRange(stats);
   const loadingEmpty = loading && !stats;
-  const headerDetail = [
-    "ADE activity across desktop, mobile, terminal, and web",
-    rangeLabel,
-    updatedLabel ? `updated ${updatedLabel}` : "",
-  ].filter(Boolean).join(" / ");
+  const headerDetail = activeTab === "limits"
+    ? "Live Claude and Codex quota from the connected host"
+    : [
+        "ADE activity across desktop, mobile, terminal, and web",
+        rangeLabel,
+        updatedLabel ? `updated ${updatedLabel}` : "",
+      ].filter(Boolean).join(" / ");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -411,7 +415,7 @@ export function AdeUsageSection() {
         <div>
           <div style={{ ...LABEL_STYLE, textTransform: "uppercase", letterSpacing: 1.3, marginBottom: 8 }}>Settings</div>
           <h1 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 26, lineHeight: 1.1, color: COLORS.textPrimary }}>
-            Stats
+            Usage
           </h1>
           <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
             {headerDetail}
@@ -419,6 +423,34 @@ export function AdeUsageSection() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%" }}>
+          <div style={{ display: "flex", border: `1px solid ${COLORS.borderMuted}`, borderRadius: 8, overflow: "hidden" }}>
+            {(["limits", "activity"] as const).map((tab) => {
+              const active = activeTab === tab;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  style={{
+                    border: "none",
+                    borderRight: tab === "limits" ? `1px solid ${COLORS.borderMuted}` : "none",
+                    background: active ? COLORS.textPrimary : "transparent",
+                    color: active ? COLORS.pageBg : COLORS.textSecondary,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12,
+                    fontWeight: 650,
+                    padding: "9px 14px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {tab === "limits" ? "Limits" : "Activity"}
+                </button>
+              );
+            })}
+          </div>
+
+          {activeTab === "activity" ? (
+            <>
           <div style={{ display: "flex", flexWrap: "wrap", border: `1px solid ${COLORS.borderMuted}`, borderRadius: 8, overflow: "hidden", maxWidth: "100%" }}>
             {RANGE_OPTIONS.map((option) => {
               const active = preset === option.preset;
@@ -454,9 +486,15 @@ export function AdeUsageSection() {
             <ArrowClockwise size={14} />
             {refreshing ? "Refreshing" : "Refresh"}
           </button>
+            </>
+          ) : null}
         </div>
       </header>
 
+      {activeTab === "limits" ? (
+        <UsageQuotaPanel showRefreshControl className="max-w-3xl" />
+      ) : (
+        <>
       {error ? <EmptyState text={error} /> : null}
 
       <UsageActivityCarousel
@@ -522,6 +560,8 @@ export function AdeUsageSection() {
           icon={<ChartLineUp size={18} />}
         />
       </div>
+        </>
+      )}
     </div>
   );
 }

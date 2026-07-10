@@ -2027,7 +2027,12 @@ describe("preload OAuth bridge", () => {
           statusHints: {},
         };
       }
-      if (channel === IPC.usageGetSnapshot || channel === IPC.usageRefresh) {
+      if (
+        channel === IPC.usageGetSnapshot
+        || channel === IPC.usageRefresh
+        || channel === IPC.usageRefreshHistory
+        || channel === IPC.usageNoteDemand
+      ) {
         throw new Error("local bound usage should not fall back to desktop usage IPC");
       }
       return undefined;
@@ -2054,6 +2059,8 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.usage.getSnapshot()).resolves.toEqual(snapshot);
     await expect(bridge.usage.refresh()).resolves.toEqual(refreshed);
+    await expect(bridge.usage.refreshHistory()).resolves.toEqual(snapshot);
+    await expect(bridge.usage.noteDemand()).resolves.toEqual(snapshot);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo",
@@ -2063,8 +2070,18 @@ describe("preload OAuth bridge", () => {
       rootPath: "/repo",
       request: { domain: "usage", action: "forceRefresh" },
     });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "usage", action: "refreshHistory" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "usage", action: "noteQuotaDemand" },
+    });
     expect(invoke).not.toHaveBeenCalledWith(IPC.usageGetSnapshot);
     expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefresh);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefreshHistory);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageNoteDemand);
   });
 
   it("routes usage reads through a remote project runtime when bound", async () => {
@@ -2104,7 +2121,12 @@ describe("preload OAuth bridge", () => {
         const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
         return { ok: true, domain: request?.domain, action: request?.action, result: snapshot, statusHints: {} };
       }
-      if (channel === IPC.usageGetSnapshot || channel === IPC.usageRefresh) {
+      if (
+        channel === IPC.usageGetSnapshot
+        || channel === IPC.usageRefresh
+        || channel === IPC.usageRefreshHistory
+        || channel === IPC.usageNoteDemand
+      ) {
         throw new Error("remote usage should not call desktop usage IPC");
       }
       return undefined;
@@ -2131,6 +2153,8 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.usage.getSnapshot()).resolves.toEqual(snapshot);
     await expect(bridge.usage.refresh()).resolves.toEqual(snapshot);
+    await expect(bridge.usage.refreshHistory()).resolves.toEqual(snapshot);
+    await expect(bridge.usage.noteDemand()).resolves.toEqual(snapshot);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -2142,8 +2166,20 @@ describe("preload OAuth bridge", () => {
       projectId: "project-1",
       request: { domain: "usage", action: "forceRefresh" },
     });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "usage", action: "refreshHistory" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "usage", action: "noteQuotaDemand" },
+    });
     expect(invoke).not.toHaveBeenCalledWith(IPC.usageGetSnapshot);
     expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefresh);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefreshHistory);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageNoteDemand);
   });
 
   it("routes project local-data cleanup through a remote project runtime when bound", async () => {

@@ -25,6 +25,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../desktop/src/shared/types/externalSessions";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { UsageProviderSource, UsageProviderState } from "../../../desktop/src/shared/types/usage";
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
 
@@ -296,14 +297,19 @@ export type RightPaneContent =
       loadedAt?: number | null;
     }
   | {
-      // /usage pane: provider quota window(s) + this session's tokens & cost.
-      // `quotaWindows` undefined ⇒ no quota data in the snapshot (the daemon
-      // exposes at most a single rate-limit window today), so the pane degrades
-      // to the session block only.
+      // /usage pane: provider quota windows plus this session's tokens and cost.
       kind: "usage";
       title?: string;
       loading?: boolean;
       error?: string | null;
+      providerStatuses?: Array<{
+        id: string;
+        label: string;
+        state: UsageProviderState;
+        source?: UsageProviderSource;
+        updatedAt?: string | null;
+        message?: string | null;
+      }>;
       quotaWindows?: Array<{ id: string; label: string; percent: number; resetAt?: number | null }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;
     }

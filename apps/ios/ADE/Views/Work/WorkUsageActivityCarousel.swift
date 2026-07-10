@@ -23,6 +23,7 @@ private enum WorkUsageChart: Int, CaseIterable {
   case tokens
   case code
   case clients
+  case limits
 
   var title: String {
     switch self {
@@ -30,6 +31,7 @@ private enum WorkUsageChart: Int, CaseIterable {
     case .tokens: return "AI token flow"
     case .code: return "Code movement"
     case .clients: return "Where you use ADE"
+    case .limits: return "AI limits"
     }
   }
 
@@ -39,6 +41,7 @@ private enum WorkUsageChart: Int, CaseIterable {
     case .tokens: return "Input and output"
     case .code: return "Additions and deletions"
     case .clients: return "Desktop, mobile, terminal, and web"
+    case .limits: return "Live quota from your machine"
     }
   }
 }
@@ -84,17 +87,20 @@ private func workUsageCompact(_ value: Int) -> String {
 
 struct WorkUsageActivityCarousel: View {
   @EnvironmentObject private var syncService: SyncService
-  @AppStorage("ade.work.usageChart.v1") private var chartRaw = WorkUsageChart.activity.rawValue
+  @AppStorage("ade.work.usageChart.v1") private var chartRaw = WorkUsageChart.limits.rawValue
   @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.week.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var stats: MobileAdeUsageStats?
   @State private var loadedRange: String?
   @State private var loading = false
   @State private var direction: CGFloat = 1
+  @ObservedObject private var quotaStore = MobileUsageQuotaStore.shared
 
   private var chart: WorkUsageChart { WorkUsageChart(rawValue: chartRaw) ?? .activity }
   private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .week }
-  private var loadKey: String { "\(rangeRaw):\(syncService.connectionState.rawValue)" }
+  private var statsLoadKey: String {
+    "\(chart == .limits ? "limits" : "activity"):\(rangeRaw):\(syncService.connectionState.rawValue)"
+  }
 
   private var chartHeading: some View {
     VStack(alignment: .leading, spacing: 2) {
@@ -136,24 +142,29 @@ struct WorkUsageActivityCarousel: View {
         HStack(alignment: .top, spacing: 10) {
           chartHeading
           Spacer(minLength: 4)
-          rangeSelector
+          if chart != .limits { rangeSelector }
         }
 
         VStack(alignment: .leading, spacing: 4) {
           chartHeading
-          rangeSelector
-            .frame(maxWidth: .infinity, alignment: .trailing)
+          if chart != .limits {
+            rangeSelector
+              .frame(maxWidth: .infinity, alignment: .trailing)
+          }
         }
       }
 
       ZStack {
         Group {
-          if let stats, loadedRange == rangeRaw {
+          if chart == .limits {
+            WorkUsageQuotaCompact(snapshot: quotaStore.snapshot)
+          } else if let stats, loadedRange == rangeRaw {
             switch chart {
             case .activity: WorkUsageHeatmap(points: stats.daily)
             case .tokens: WorkUsageBars(points: stats.daily, mode: .tokens)
             case .code: WorkUsageBars(points: stats.daily, mode: .code)
             case .clients: WorkUsageClientMix(clients: stats.clients ?? [])
+            case .limits: EmptyView()
             }
           } else if loading {
             ProgressView().controlSize(.small).tint(ADEColor.purpleAccent)
@@ -182,7 +193,10 @@ struct WorkUsageActivityCarousel: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Previous activity chart")
         Spacer(minLength: 0)
-        if loadedRange == rangeRaw, let summary = stats?.summary {
+        if chart == .limits, let snapshot = quotaStore.snapshot {
+          Text("Checked \(mobileUsageRelativeTime(snapshot.lastPolledAt))")
+          if quotaStore.refreshing { ProgressView().controlSize(.mini) }
+        } else if loadedRange == rangeRaw, let summary = stats?.summary {
           Text("\(workUsageCompact(summary.totalTokens ?? 0)) tokens")
           Text("·")
           Text("\(workUsageCompact((summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0))) sessions")
@@ -222,7 +236,10 @@ struct WorkUsageActivityCarousel: View {
     }
     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
     .overlay { RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
-    .task(id: loadKey) { await loadStats() }
+    .task(id: statsLoadKey) { await loadStats() }
+    .task(id: syncService.connectionState.rawValue) {
+      await quotaStore.load(using: syncService)
+    }
   }
 
   private func changeChart(by delta: Int) {
@@ -236,6 +253,10 @@ struct WorkUsageActivityCarousel: View {
 
   @MainActor
   private func loadStats() async {
+    guard chart != .limits else {
+      loading = false
+      return
+    }
     let requestedRange = range.rawValue
     guard syncService.supportsRemoteAction("usage.getAdeStats") else {
       stats = nil
@@ -267,6 +288,60 @@ struct WorkUsageActivityCarousel: View {
       loading = false
     }
   }
+}
+
+private func mobileUsageRelativeTime(_ iso: String) -> String {
+  let fractional = ISO8601DateFormatter()
+  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  guard let date = fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else {
+    return "recently"
+  }
+  let seconds = max(0, Int(Date().timeIntervalSince(date)))
+  if seconds < 60 { return "now" }
+  if seconds < 3_600 { return "\(seconds / 60)m ago" }
+  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
+  return "\(seconds / 86_400)d ago"
+}
+
+private struct WorkUsageQuotaCompact: View {
+  let snapshot: MobileUsageQuotaSnapshot?
+
+  var body: some View {
+    VStack(spacing: 8) {
+      if let snapshot {
+        ForEach(["claude", "codex"], id: \.self) { provider in
+          let windows = snapshot.windows.filter { $0.provider == provider }
+          let fiveHour = windows.first { $0.windowType == "five_hour" }
+          let weekly = windows.first { $0.windowType == "weekly" || $0.windowType == "monthly" }
+          let status = snapshot.providerStatus?[provider]
+          HStack(spacing: 8) {
+            Text(provider == "claude" ? "Claude" : "Codex")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(width: 54, alignment: .leading)
+            Text(fiveHour.map { "5h \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "5h —")
+            Text(weekly.map { "week \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "week —")
+            Spacer(minLength: 0)
+            Text(mobileUsageStatusLabel(status))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          .font(.system(.caption2, design: .monospaced))
+        }
+      } else {
+        Text("Connect to a machine to load live limits.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+  }
+}
+
+private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> String {
+  guard let status else { return "WAITING" }
+  let source = status.source?.uppercased() ?? "UNKNOWN"
+  return status.state == "ok" ? source : "\(status.state.uppercased()) · \(source)"
 }
 
 private struct WorkUsageHeatmap: View {

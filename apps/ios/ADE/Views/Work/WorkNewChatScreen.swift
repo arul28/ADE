@@ -685,6 +685,9 @@ struct WorkNewChatScreen: View {
       }
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
+      .refreshable {
+        await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
+      }
 
       // Kept outside the scroll view so lane selection can scroll away while
       // the activity card stays pinned immediately above the composer. The

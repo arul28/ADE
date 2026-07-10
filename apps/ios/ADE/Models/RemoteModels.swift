@@ -4434,3 +4434,33 @@ struct MobileAdeUsageStats: Codable, Equatable {
   var daily: [MobileAdeUsageDailyPoint]
   var freshness: MobileAdeUsageFreshness?
 }
+
+// MARK: - Live provider quota
+
+struct MobileUsageQuotaWindow: Codable, Equatable, Identifiable {
+  var id: String { "\(provider):\(windowType):\(resetsAt):\(percentUsed)" }
+  var provider: String
+  var windowType: String
+  var percentUsed: Double
+  var resetsAt: String
+  var resetsInMs: Double
+  var windowDurationMs: Double?
+}
+
+struct MobileUsageProviderStatus: Codable, Equatable {
+  var state: String
+  var lastSuccessAt: String?
+  var source: String?
+  var updatedAt: String?
+  var lastAttemptAt: String?
+  var errorKind: String?
+  var nextRetryAt: String?
+  var message: String?
+}
+
+struct MobileUsageQuotaSnapshot: Codable, Equatable {
+  var windows: [MobileUsageQuotaWindow]
+  var providerStatus: [String: MobileUsageProviderStatus]?
+  var lastPolledAt: String
+  var errors: [String]
+}

@@ -4889,6 +4889,16 @@ export function registerIpc({
     return (await ctx.usageTrackingService?.forceRefresh()) ?? null;
   });
 
+  ipcMain.handle(IPC.usageRefreshHistory, async (): Promise<UsageSnapshot | null> => {
+    const ctx = getCtx();
+    return (await ctx.usageTrackingService?.refreshHistory()) ?? null;
+  });
+
+  ipcMain.handle(IPC.usageNoteDemand, async (): Promise<UsageSnapshot | null> => {
+    const ctx = getCtx();
+    return ctx.usageTrackingService?.noteQuotaDemand() ?? null;
+  });
+
   ipcMain.handle(
     IPC.usageCheckBudget,
     async (

@@ -222,9 +222,13 @@ describe("commands", () => {
 
   it("keeps provider-agnostic skills visible outside Claude chats", () => {
     const rows = paletteCommands("/", [], { provider: "codex" });
-    for (const name of ["/agents", "/init", "/usage", "/insights", "/fast"]) {
+    for (const name of ["/agents", "/init", "/insights", "/fast"]) {
       expect(rows).not.toContainEqual(expect.objectContaining({ name }));
     }
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/usage",
+      description: "Show Claude and Codex limits plus session usage",
+    }));
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/skills",
       description: "List agent skills from project, user, and ADE bundled roots",

@@ -66,6 +66,8 @@ Shared types and IPC:
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.ai.*` and settings-specific channels per integration
+  - `ade.usage.*` for cached quota reads, explicit quota/history refresh,
+    recent-demand registration, budgets, and activity stats
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
@@ -243,22 +245,19 @@ Renderer — settings:
   plan window (`wk` when a
   weekly window is present, otherwise `mo`). Percent values are clamped
   to 0-100, color through the green/amber/red thresholds at 75% /
-  100%, and show an ellipsis while missing. On mount, the button reads
-  the cached `ade.usage.getSnapshot`, immediately forces
-  `ade.usage.refresh`, ignores a slower cached startup read when a
-  fresher forced refresh has already landed, refreshes every 120 s, and
-  refreshes on window focus when the latest poll is older than 60 s.
+  100%, and show an ellipsis while missing. On mount, the panel reads
+  `ade.usage.getSnapshot` and registers recent demand; the service's adaptive
+  cadence refreshes every 60 s while the surface is active, every 2 min in the
+  normal state, and every 5 min after 15 min idle.
   Provider detection comes from `ade.ai.getStatus` on mount and every
   5 min; CLIs not detected on the machine are hidden from the header,
   while installed-but-unauthenticated providers stay visible in the
-  panel as "Not signed in". The panel auto-refreshes on open, subscribes
+  panel as "Not signed in". The panel subscribes
   to usage `onUpdate`, and drills down into 5-hour, weekly, monthly,
-  and other reset windows, last-poll status, daily 7-day usage, and
-  per-provider messages/error chips. Codex polling keeps the legacy HTTP
-  rate-limit endpoint as the first source for windows, then also asks the
-  Codex app-server via CLI JSON-RPC for `account/usage/read` and
-  `account/workspaceMessages/read` so the panel can show native daily
-  usage and provider workspace messages even when HTTP windows succeed.
+  and other reset windows with source, updated time, stale state, and inline
+  provider errors. Codex polling returns directly when the HTTP rate-limit
+  endpoint has complete windows and starts the app-server RPC only for auth
+  recovery or a successful but unrecognized response schema.
   Cursor usage polling was removed (it required a team-admin API key that
   desktop users almost never have); only `claude` and `codex` are tracked
   in `TRACKED_PROVIDERS`. Budget
@@ -266,9 +265,11 @@ Renderer — settings:
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
-  — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
-  for today / 7d / 30d / year / all-time stats and calls
-  `window.ade.usage.refresh()` for explicit refresh. The first render is
+  — Settings > Stats, split into Limits and Activity tabs. Limits renders the
+  same live quota contract as the header. Activity reads
+  `window.ade.usage.getAdeStats({ preset })` for today / 7d / 30d / year /
+  all-time stats and calls `window.ade.usage.refreshHistory()` for an explicit
+  history refresh. The first Activity render is
   stale-while-revalidate: cached provider/GitHub data and live project-DB
   aggregates return immediately while expensive provider-ledger and `gh`
   scans refresh in the background. The dashboard combines deduplicated local
@@ -276,9 +277,15 @@ Renderer — settings:
   automations, workers, GitHub activity, and client-surface activity.
 - `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
   live quota snapshot plus the retrospective `getAdeUsageStats` projection.
-  It returns cached provider/GitHub results and current DB aggregates without
-  awaiting expensive scans, exposes freshness metadata, and coalesces stale
+  Live quota polling is adaptive and coalesced, retains unexpired last-good
+  provider windows with source/freshness metadata, and never starts history
+  scans. The history path returns cached provider/GitHub results and current DB
+  aggregates without awaiting expensive scans, then coalesces stale
   provider/GitHub revalidation in the background.
+- `apps/desktop/src/main/services/usage/usageProviderStrategies.ts` — provider
+  boundary for authoritative live quota polling. Local history scanners remain
+  outside this interface. See [Usage tracking strategy](usage-tracking.md) for
+  the ADE/CodexBar matrix, latency baseline, provider ranking, and mobile flow.
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is
@@ -286,9 +293,10 @@ Renderer — settings:
   web commands are attributed as `desktop`, `tui`, `mobile`, and `web`.
   `usage_events` is local-only (excluded from CRR replication) because every
   controller action is recorded once on the runtime that executes it.
-- `apps/desktop/src/shared/types/usage.ts` — shared range, daily-point,
-  freshness, aggregate, and client-attribution contracts. Supported presets
-  are today, 7d, 30d, year, and all time.
+- `apps/desktop/src/shared/types/usage.ts` — shared quota windows, provider
+  source/error/freshness state, range, daily-point, aggregate, and
+  client-attribution contracts. Supported presets are today, 7d, 30d, year,
+  and all time.
 - `apps/desktop/src/renderer/components/usage/UsageActivityCarousel.tsx` —
   reusable animated activity/token/code/client-mix carousel. It persists the
   selected chart and day/week/month/year range, appears in Settings > Stats,

@@ -4532,6 +4532,16 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   });
 
+  register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");
+    return args.usageTrackingService.getUsageSnapshot();
+  });
+
+  register("usage.refreshQuota", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");
+    return await args.usageTrackingService.forceRefresh({ allowInteractiveAuth: false });
+  });
+
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerProcessRemoteCommands({ args, register });

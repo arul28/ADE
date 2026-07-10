@@ -47,6 +47,7 @@ const {
   isCodexTokenStale,
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
+  parseClaudeCliUsage,
   parseCodexRateLimitWindows,
   calculatePacingByProvider,
   buildProviderWindows,
@@ -54,6 +55,7 @@ const {
   collectAdeUsageStats,
   pollCodexUsage,
   pollCodexViaCliRpc,
+  readClaudeCredentials,
   resolveTokenPrice,
   resetDynamicTokenPricingForTest,
   setDynamicTokenPricingForTest,
@@ -717,6 +719,43 @@ describe("parseClaudeWindows", () => {
   });
 });
 
+describe("parseClaudeCliUsage", () => {
+  it("parses Claude's interactive usage panel as a bounded fallback", () => {
+    const windows = parseClaudeCliUsage(`
+Settings: Usage
+Current session
+75% left
+Resets 5pm
+Current week (all models)
+40% used
+Resets Jul 12 at 3pm
+`);
+
+    expect(windows).toHaveLength(2);
+    expect(windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(25);
+    expect(windows.find((window) => window.windowType === "weekly")?.percentUsed).toBe(40);
+    expect(windows.every((window) => Number.isFinite(Date.parse(window.resetsAt)))).toBe(true);
+  });
+});
+
+describe("readClaudeCredentials", () => {
+  it("skips macOS Keychain access for background reads", async () => {
+    const originalPlatform = process.platform;
+    const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    setPlatform("darwin");
+
+    try {
+      await expect(readClaudeCredentials({ allowKeychain: false })).resolves.toBeNull();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    } finally {
+      readFileSpy.mockRestore();
+      setPlatform(originalPlatform);
+    }
+  });
+});
+
 describe("parseCodexRateLimitWindows", () => {
   it("accepts the wham HTTP response shape", () => {
     const result = parseCodexRateLimitWindows({
@@ -942,7 +981,7 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
-  it("does not spawn the CLI fallback for non-auth Codex 4xx responses", async () => {
+  it.each([403, 409, 429] as const)("does not spawn the CLI fallback for Codex HTTP %s", async (status) => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
@@ -951,7 +990,7 @@ describe("pollCodexViaCliRpc", () => {
     process.env.CODEX_HOME = tmpDir;
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
-      status: 429,
+      status,
       json: async () => ({}),
     }));
 
@@ -960,7 +999,8 @@ describe("pollCodexViaCliRpc", () => {
       const result = await pollCodexUsage(logger as any);
 
       expect(result.windows).toEqual([]);
-      expect(result.errors).toEqual(["codex: API returned 429"]);
+      expect(result.errors).toEqual([`codex: API returned ${status}`]);
+      expect(result.errorKind).toBe(status === 403 ? "forbidden" : status === 409 ? "conflict" : "rate_limited");
       expect(mockState.spawn).not.toHaveBeenCalled();
     } finally {
       if (originalCodexHome === undefined) {
@@ -973,7 +1013,51 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
-  it("merges app-server daily usage and workspace messages when HTTP rate-limit windows succeed", async () => {
+  it("falls back to the Codex RPC when a successful HTTP response drifts", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "ok-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ renamed_rate_limit: {} }),
+    }));
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const result = await pollCodexUsage(createLogger() as any);
+
+      expect(result.windows).toHaveLength(2);
+      expect(result.source).toBe("cli");
+      expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not launch app-server when HTTP returns complete rate-limit windows", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
@@ -1031,15 +1115,10 @@ describe("pollCodexViaCliRpc", () => {
 
       expect(result.errors).toEqual([]);
       expect(result.windows).toHaveLength(2);
-      expect(result.dailyUsage7d?.some((value) => value === 123)).toBe(true);
-      expect(result.providerMessages).toEqual([
-        expect.objectContaining({
-          provider: "codex",
-          id: "msg-1",
-          kind: "headline",
-          message: "Native usage ready",
-        }),
-      ]);
+      expect(result.source).toBe("http");
+      expect(result.dailyUsage7d).toBeUndefined();
+      expect(result.providerMessages).toBeUndefined();
+      expect(mockState.spawn).not.toHaveBeenCalled();
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;
@@ -1086,19 +1165,19 @@ describe("createUsageTrackingService", () => {
   it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 
     const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
     service1.start();
-    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
+    expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
     service1.dispose();
 
     const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
     service2.start();
-    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
+    expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
 
-    setIntervalSpy.mockRestore();
+    setTimeoutSpy.mockRestore();
   });
 
   it("calls onUpdate when poll completes", async () => {
@@ -1161,12 +1240,12 @@ describe("createUsageTrackingService", () => {
     expect(pacing?.codex?.status).toBe("far-ahead");
   });
 
-  it("forceRefresh invalidates cost cache and re-polls", async () => {
+  it("refreshHistory invalidates cost cache without coupling it to quota refresh", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
     const service = createUsageTrackingService({ logger, dependencies });
 
-    const s1 = await service.forceRefresh();
+    const s1 = await service.refreshHistory();
     expect(s1).toBeDefined();
     expect(s1.lastPolledAt).toBeTruthy();
     expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
@@ -1179,6 +1258,43 @@ describe("createUsageTrackingService", () => {
     expect(dependencies.scanCopilotLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanGeminiLogs).toHaveBeenCalledTimes(1);
 
+    service.dispose();
+  });
+
+  it("keeps an explicit quota refresh responsive while a large history scan is pending", async () => {
+    const logger = createLogger();
+    let resolveSlowScan!: (entries: never[]) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(() => new Promise<never[]>((resolve) => {
+        resolveSlowScan = resolve;
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    const historyRefresh = service.refreshHistory();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(service.forceRefresh()).resolves.toBeDefined();
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    expect(dependencies.pollCodexUsage).toHaveBeenCalledTimes(1);
+
+    resolveSlowScan([]);
+    await expect(historyRefresh).resolves.toBeDefined();
+    service.dispose();
+  });
+
+  it("does not scan provider ledgers during an explicit quota-only refresh", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    await service.forceRefresh();
+
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCodexLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCursorLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanGeminiLogs).not.toHaveBeenCalled();
     service.dispose();
   });
 
@@ -1216,7 +1332,7 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("waits for a startup no-cost poll before running an explicit cost refresh", async () => {
+  it("runs an explicit history scan independently from a pending startup quota poll", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
     let resolveStartupPoll!: (value: { windows: never[]; extraUsage: null; errors: never[] }) => void;
@@ -1231,16 +1347,16 @@ describe("createUsageTrackingService", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
 
-    const refresh = service.forceRefresh();
+    const refresh = service.refreshHistory();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
-
-    resolveStartupPoll({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
     await expect(refresh).resolves.toBeDefined();
-
-    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(2);
     expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanCodexLogs).toHaveBeenCalledTimes(1);
+
+    resolveStartupPoll({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });
@@ -1375,7 +1491,7 @@ describe("createUsageTrackingService", () => {
     };
     const service = createUsageTrackingService({ logger, dependencies });
 
-    const snapshot = await service.forceRefresh();
+    const snapshot = await service.refreshHistory();
 
     expect(snapshot.costs.find((cost) => cost.provider === "codex")?.tokenBreakdownByPreset?.today?.["gpt-5.5"]).toMatchObject({
       input: 150,
@@ -2140,9 +2256,20 @@ describe("buildProviderWindows", () => {
 
   it("marks ok and stamps lastSuccessAt when fresh windows arrive", () => {
     const fresh = [win(10)];
-    const result = buildProviderWindows("claude", fresh, [], [], null, "2026-06-07T00:00:00Z");
+    const result = buildProviderWindows(
+      "claude",
+      fresh,
+      [],
+      [],
+      null,
+      "2026-06-07T00:00:00Z",
+      "oauth",
+    );
     expect(result.status.state).toBe("ok");
     expect(result.status.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.updatedAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.lastAttemptAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.source).toBe("oauth");
     expect(result.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
     expect(result.windows).toBe(fresh);
   });
@@ -2228,8 +2355,23 @@ describe("buildProviderWindows", () => {
 
   it("frames a 401/expired-token failure as reconnect, not unreachable", () => {
     const result = buildProviderWindows("claude", [], ["claude: API returned 401"], [], null, "t");
-    expect(result.status.state).toBe("error");
+    expect(result.status.state).toBe("unauthed");
     expect(result.status.message).toMatch(/sign-in expired|reconnect/i);
+  });
+
+  it("preserves a forbidden error kind while showing reconnect guidance", () => {
+    const result = buildProviderWindows(
+      "claude",
+      [],
+      ["claude: API returned 403"],
+      [],
+      null,
+      "t",
+      "oauth",
+      "forbidden",
+    );
+    expect(result.status.state).toBe("unauthed");
+    expect(result.status.errorKind).toBe("forbidden");
   });
 });
 
@@ -2266,12 +2408,12 @@ describe("usage reliability: non-destructive merge", () => {
       },
     });
 
-    const first = await service.poll({ includeCosts: false });
+    const first = await service.poll();
     expect(first.windows.filter((w) => w.provider === "claude")).toHaveLength(1);
     expect(first.extraUsage).toEqual([claudeExtraUsage]);
     expect(first.providerStatus?.claude?.state).toBe("ok");
 
-    const second = await service.poll({ includeCosts: false });
+    const second = await service.poll();
     const claudeWindows = second.windows.filter((w) => w.provider === "claude");
     expect(claudeWindows).toHaveLength(1);
     expect(claudeWindows[0]?.percentUsed).toBe(40);
@@ -2301,7 +2443,7 @@ describe("usage reliability: non-destructive merge", () => {
       },
     });
 
-    const snap = await service.poll({ includeCosts: false });
+    const snap = await service.poll();
     const five = snap.windows.find((w) => w.windowType === "five_hour");
     const weekly = snap.windows.find((w) => w.windowType === "weekly");
     expect(five?.pacing).toBeDefined();
@@ -2349,6 +2491,20 @@ describe("fetchJsonWithRetry", () => {
 
     const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
     expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves Retry-After metadata for provider backoff", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "120" : null },
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.retryAfterMs).toBe(120_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

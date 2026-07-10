@@ -113,13 +113,13 @@ function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string
 }
 
 // A quiet, non-destructive warning: data is being shown, but the last refresh
-// for one or more providers failed (stale) or has nothing yet (error).
+// failed, needs re-authentication, or has nothing yet.
 function usageWarning(snapshot: UsageSnapshot | null): { warn: boolean; detail: string | null } {
   const statuses = snapshot?.providerStatus;
   if (!statuses) return { warn: false, detail: null };
   const issues: string[] = [];
   for (const [provider, status] of Object.entries(statuses)) {
-    if (status && (status.state === "stale" || status.state === "error")) {
+    if (status && status.state !== "ok") {
       issues.push(status.message ?? `${PROVIDER_LABEL[provider as UsageProvider] ?? provider} unavailable`);
     }
   }

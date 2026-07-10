@@ -4055,6 +4055,43 @@ final class ADETests: XCTestCase {
     XCTAssertNil(stats.freshness)
   }
 
+  func testMobileUsageQuotaSnapshotDecodesSourceFreshnessAndUnknownFields() throws {
+    let json = """
+    {
+      "windows": [{
+        "provider": "claude",
+        "windowType": "five_hour",
+        "percentUsed": 27.5,
+        "resetsAt": "2026-07-10T19:00:00.000Z",
+        "resetsInMs": 3600000,
+        "windowDurationMs": 18000000,
+        "futureField": true
+      }],
+      "providerStatus": {
+        "claude": {
+          "state": "stale",
+          "source": "oauth",
+          "updatedAt": "2026-07-10T17:00:00.000Z",
+          "lastAttemptAt": "2026-07-10T18:00:00.000Z",
+          "errorKind": "rate_limited",
+          "nextRetryAt": "2026-07-10T18:05:00.000Z",
+          "message": "Showing last reading"
+        }
+      },
+      "lastPolledAt": "2026-07-10T18:00:00.000Z",
+      "errors": ["claude: API returned 429"],
+      "pacing": { "status": "on-track" }
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(MobileUsageQuotaSnapshot.self, from: Data(json.utf8))
+
+    XCTAssertEqual(snapshot.windows.first?.percentUsed, 27.5)
+    XCTAssertEqual(snapshot.providerStatus?["claude"]?.source, "oauth")
+    XCTAssertEqual(snapshot.providerStatus?["claude"]?.errorKind, "rate_limited")
+    XCTAssertEqual(snapshot.errors, ["claude: API returned 429"])
+  }
+
   @MainActor
   func testFetchAdeUsageStatsRejectsLegacyHostBeforeTransport() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -4071,6 +4108,66 @@ final class ADETests: XCTestCase {
     do {
       _ = try await service.fetchAdeUsageStats(preset: "7d")
       XCTFail("A legacy host must reject usage stats before attempting transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
+    }
+  }
+
+  @MainActor
+  func testFetchUsageQuotaRejectsLegacyHostBeforeTransport() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+      ],
+    ])
+
+    do {
+      _ = try await service.fetchUsageQuotaSnapshot(refresh: true)
+      XCTFail("A legacy host must reject usage quota before attempting transport")
+    } catch {
+      XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
+    }
+  }
+
+  @MainActor
+  func testFetchUsageQuotaRejectsAdvertisedHostWithoutUsageActionBeforeTransport() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertFalse(service.supportsRemoteAction("usage.refreshQuota"))
+    do {
+      _ = try await service.fetchUsageQuotaSnapshot(refresh: true)
+      XCTFail("A host without the usage action must reject quota refresh before transport")
     } catch {
       let nsError = error as NSError
       XCTAssertEqual(nsError.domain, "ADE")
