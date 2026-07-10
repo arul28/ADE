@@ -134,6 +134,22 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.getAdeStats", { scope: "galaxy" }))).rejects.toThrow(
       "usage.getAdeStats scope must be machine or project.",
     );
+
+    getAdeUsageStats.mockClear();
+    await service.execute(makePayload("usage.getAdeStats", {
+      since: "2026-07-01T00:00:00.000Z",
+      until: "2026-07-08T00:00:00.000Z",
+    }));
+    expect(getAdeUsageStats).toHaveBeenCalledWith({
+      since: "2026-07-01T00:00:00.000Z",
+      until: "2026-07-08T00:00:00.000Z",
+    });
+    await expect(service.execute(makePayload("usage.getAdeStats", { since: "not-a-date" }))).rejects.toThrow(
+      "usage.getAdeStats since must be an ISO timestamp.",
+    );
+    await expect(service.execute(makePayload("usage.getAdeStats", { until: "not-a-date" }))).rejects.toThrow(
+      "usage.getAdeStats until must be an ISO timestamp.",
+    );
   });
 
   it("advertises and executes machine personal chats as runtime commands", async () => {
