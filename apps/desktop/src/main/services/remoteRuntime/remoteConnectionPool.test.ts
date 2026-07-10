@@ -278,6 +278,42 @@ describe("RemoteConnectionPool", () => {
     expect(dispose).toHaveBeenCalledWith(false);
   });
 
+  it("closes a paired RPC transport exactly once when client failure evicts it", async () => {
+    const client = createClient();
+    const dispose = vi.fn();
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client,
+      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      portForwardClient: { ensureForward: vi.fn(), dispose },
+      result: {
+        ...connectResult("1.0.0"),
+        target: pairedTarget,
+        route: {
+          kind: "lan",
+          endpoint: "ws://studio.local:8787/",
+          latencyMs: 2,
+        },
+      },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const onEvicted = vi.fn();
+    pool.onEntryEvicted(onEvicted);
+    await pool.connect(pairedTarget);
+
+    client.emitDisconnect(new Error("Remote ADE service timed out waiting for method projects.list (5000ms)."));
+    await Promise.resolve();
+
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledWith(false);
+    expect(onEvicted).toHaveBeenCalledTimes(1);
+
+    await pool.disconnect(pairedTarget.id);
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to SSH when the paired host lacks rpcChannel support", async () => {
     bootstrapPairedRuntimeMock.mockRejectedValueOnce(
       new PairedRuntimeTransportUnavailableError(

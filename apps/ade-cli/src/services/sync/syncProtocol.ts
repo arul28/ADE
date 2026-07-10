@@ -16,6 +16,9 @@ export const MAX_CHANNEL_ID_CHARS = 128;
 /** Hello capability a client declares when it can reassemble envelope_chunk frames. */
 export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
 
+/** Hello capability for paired desktop clients that consume only rpc/fwd envelopes. */
+export const SYNC_RUNTIME_ONLY_CAPABILITY = "runtimeOnly";
+
 // URLSessionWebSocketTask buffers at most ~1 MiB per message by default and
 // kills the whole connection ("Message too long") past that. Keep every frame
 // comfortably under that even after the base64 + wrapper overhead of a chunk.

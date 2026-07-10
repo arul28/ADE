@@ -27,6 +27,7 @@ import {
   parseSyncEnvelopeChunkPayload,
   RPC_DATA_CHUNK_BYTES,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
   type ParsedSyncEnvelope,
 } from "../sync/syncProtocol";
@@ -330,7 +331,10 @@ export function buildDesktopPairedHello(
       deviceType: "desktop",
       siteId: credentials.siteId,
       dbVersion: 0,
-      capabilities: [SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      capabilities: [
+        SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+        SYNC_RUNTIME_ONLY_CAPABILITY,
+      ],
       ...(appVersion?.trim() ? { appVersion: appVersion.trim() } : {}),
     },
     auth: {

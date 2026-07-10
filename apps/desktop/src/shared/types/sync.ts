@@ -68,6 +68,11 @@ export type SyncPeerMetadata = {
    * back to `dbVersion` for older clients.
    */
   dbVersionBySite?: Record<string, number>;
+  /**
+   * Additive hello capabilities. `runtimeOnly` means the client consumes only
+   * rpc/fwd envelopes; hosts honor it only for an authenticated pairing record
+   * carrying the server-issued runtime-host grant.
+   */
   capabilities?: string[];
   appVersion?: string;
   appBuild?: string;

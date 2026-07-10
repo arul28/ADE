@@ -3,7 +3,12 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { WebSocket } from "ws";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
-import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "../sync/syncProtocol";
+import {
+  encodeSyncEnvelope,
+  parseSyncEnvelope,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
+  wsDataToText,
+} from "../sync/syncProtocol";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import { openSyncRuntimeTransport } from "./syncRuntimeTransport";
 
@@ -137,7 +142,11 @@ describe("openSyncRuntimeTransport", () => {
     });
     expect(observedChannelId).toBe("runtime-test");
     expect(observedHello).toMatchObject({
-      peer: { deviceType: "desktop", deviceId: "desktop-1" },
+      peer: {
+        deviceType: "desktop",
+        deviceId: "desktop-1",
+        capabilities: expect.arrayContaining([SYNC_RUNTIME_ONLY_CAPABILITY]),
+      },
       auth: {
         kind: "paired",
         deviceId: "desktop-1",

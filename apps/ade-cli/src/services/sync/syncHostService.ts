@@ -121,7 +121,7 @@ import {
 } from "./syncPairedChannelService";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
@@ -190,6 +190,17 @@ export function isRuntimeHostPairingRecord(
   record: SyncPairingRecord | null | undefined,
 ): boolean {
   return record?.runtimeHostGranted === true;
+}
+
+export function isRuntimeOnlySyncPeer(args: {
+  authKind: "bootstrap" | "paired" | null;
+  pairingRecord: SyncPairingRecord | null;
+  metadata: SyncPeerMetadata | null;
+}): boolean {
+  return args.authKind === "paired"
+    && isRuntimeHostPairingRecord(args.pairingRecord)
+    && Array.isArray(args.metadata?.capabilities)
+    && args.metadata.capabilities.includes(SYNC_RUNTIME_ONLY_CAPABILITY);
 }
 
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -2997,6 +3008,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
   }
 
+  function isRuntimeOnlyPairedHost(peer: PeerState): boolean {
+    return isRuntimeOnlySyncPeer(peer);
+  }
+
   function sendNextChangesetBatch(
     peer: PeerState,
     reason: SyncChangesetBatchPayload["reason"],
@@ -3712,6 +3727,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const nowMs = Date.now();
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
+      // A paired desktop runtime connection shares this authenticated socket
+      // only for rpc/fwd envelopes. The authoritative pairing record remains
+      // the gate so a phone/browser cannot suppress its normal CRDT stream by
+      // spoofing the hello capability.
+      if (isRuntimeOnlyPairedHost(peer)) continue;
       if (isPeerBackpressured(peer)) continue;
       if (peer.pendingChangesetBatch) {
         if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {

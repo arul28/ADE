@@ -1071,7 +1071,7 @@ export class RemoteConnectionPool {
       if (notify) notifyEvicted(error);
     };
 
-    entry.client.onDisconnect((error) => evict(false, true, error));
+    entry.client.onDisconnect((error) => evict(entry.transport === "paired", true, error));
     if (entry.transport === "ssh") {
       entry.ssh.once("close", () => evict(true));
       entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
