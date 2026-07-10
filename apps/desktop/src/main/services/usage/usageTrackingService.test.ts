@@ -617,11 +617,11 @@ describe("collectAdeUsageStats", () => {
 });
 
 describe("GitHub activity scan", () => {
-  it("stops pull request pagination once a page crosses the range start", async () => {
-    const runCommand = vi.fn(async () => JSON.stringify({
+  it("stops pull request pagination once a page's oldest update crosses the range start", async () => {
+    const runCommand = vi.fn(async (_command: string, _args: string[]) => JSON.stringify({
       nodes: [
-        { number: 3, createdAt: "2026-05-29T12:00:00.000Z", author: { login: "arul" } },
-        { number: 2, createdAt: "2026-05-20T12:00:00.000Z", author: { login: "arul" } },
+        { number: 3, createdAt: "2026-05-29T12:00:00.000Z", updatedAt: "2026-05-29T12:00:00.000Z", author: { login: "arul" } },
+        { number: 2, createdAt: "2026-05-28T12:00:00.000Z", updatedAt: "2026-05-20T12:00:00.000Z", author: { login: "arul" } },
       ],
       pageInfo: { hasNextPage: true, endCursor: "next-page" },
     }));
@@ -640,6 +640,58 @@ describe("GitHub activity scan", () => {
 
     expect(rows.map((row) => row.number)).toEqual([3, 2]);
     expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining("field: UPDATED_AT"),
+    ]));
+  });
+
+  it("continues past old creations to count a long-lived PR merged in range", async () => {
+    const pages = [
+      {
+        nodes: [
+          {
+            number: 2,
+            createdAt: "2026-01-10T12:00:00.000Z",
+            updatedAt: "2026-05-29T12:00:00.000Z",
+            author: { login: "arul" },
+          },
+        ],
+        pageInfo: { hasNextPage: true, endCursor: "next-page" },
+      },
+      {
+        nodes: [
+          {
+            number: 1,
+            state: "MERGED",
+            createdAt: "2025-12-01T12:00:00.000Z",
+            updatedAt: "2026-05-28T12:00:00.000Z",
+            mergedAt: "2026-05-28T12:00:00.000Z",
+            author: { login: "arul" },
+          },
+        ],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    ];
+    const runCommand = vi.fn(async () => JSON.stringify(pages.shift()));
+
+    const rows = await scanGithubPullRequestPages({
+      projectRoot: "/repo",
+      repoParts: { owner: "arul", name: "ADE" },
+      viewer: "arul",
+      range: {
+        preset: "7d",
+        since: "2026-05-23T00:00:00.000Z",
+        until: "2026-05-29T23:59:59.000Z",
+      },
+      runCommand,
+    });
+
+    expect(runCommand).toHaveBeenCalledTimes(2);
+    expect(rows).toContainEqual(expect.objectContaining({
+      number: 1,
+      createdAt: "2025-12-01T12:00:00.000Z",
+      mergedAt: "2026-05-28T12:00:00.000Z",
+    }));
   });
 });
 
@@ -1309,6 +1361,63 @@ describe("createUsageTrackingService", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ lastPolledAt: expect.any(String) }));
 
+    service.dispose();
+  });
+
+  it("notifies onUpdate after a GitHub-only background refresh completes", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    let resolveGithub!: (stats: {
+      repo: string;
+      available: boolean;
+      fetchedAt: string;
+      error: null;
+      commitsCreated: number;
+      prsTracked: number;
+      prsOpen: number;
+      prsMerged: number;
+      prsClosed: number;
+      prAdditions: number;
+      prDeletions: number;
+      filesChanged: number;
+      daily: never[];
+    }) => void;
+    const scanGitHubStats = vi.fn(() => new Promise<Parameters<typeof resolveGithub>[0]>((resolve) => {
+      resolveGithub = resolve;
+    }));
+    const service = createUsageTrackingService({
+      logger,
+      onUpdate,
+      dependencies: {
+        ...createFastDependencies(),
+        scanGitHubStats,
+      },
+    });
+
+    await service.poll();
+    onUpdate.mockClear();
+
+    await service.getAdeUsageStats({ preset: "7d" });
+    await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(1));
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    resolveGithub({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: "2026-05-29T12:00:00.000Z",
+      error: null,
+      commitsCreated: 1,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    });
+
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
     service.dispose();
   });
 
@@ -3021,6 +3130,69 @@ describe("ADE database usage aggregation", () => {
       outputTokens: 2,
       totalTokens: 6,
     }));
+  });
+
+  it("caps raw daily bucket scans newest-first without throwing", async () => {
+    const db = await createStatsDb();
+    const logger = createLogger();
+    const originalAll = db.all.bind(db);
+    const newestRow = {
+      timestamp: "2026-07-08T12:00:00.000Z",
+      input_tokens: 1,
+      output_tokens: 0,
+      duration_ms: 0,
+    };
+    const oldestRow = {
+      ...newestRow,
+      timestamp: "2026-07-07T12:00:00.000Z",
+    };
+    const rowsBeyondCap = Array(250_001).fill(newestRow);
+    rowsBeyondCap[0] = oldestRow;
+    let checkedClientQuery = false;
+    let checkedOperationQuery = false;
+    let checkedAiQuery = false;
+    const cappedDb: AdeDb = {
+      ...db,
+      all: ((sql: string, params = []) => {
+        const normalized = sql.replace(/\s+/g, " ").trim();
+        if (normalized.startsWith("select occurred_at, client_surface")) {
+          expect(normalized).toContain("order by occurred_at desc limit ?");
+          checkedClientQuery = true;
+        }
+        if (normalized.startsWith("select started_at, kind")) {
+          expect(normalized).toContain("order by started_at desc limit ?");
+          checkedOperationQuery = true;
+        }
+        if (normalized.startsWith("select timestamp,")) {
+          expect(normalized).toContain("order by timestamp desc limit ?");
+          const limit = Number(params.at(-1));
+          expect(rowsBeyondCap.length).toBeGreaterThan(limit);
+          checkedAiQuery = true;
+          return rowsBeyondCap.slice(1, limit + 1);
+        }
+        return originalAll(sql, params);
+      }) as AdeDb["all"],
+    };
+
+    const stats = collectAdeDatabaseUsageStats(cappedDb, {
+      since: null,
+      until: "2026-07-09T00:00:00.000Z",
+    }, logger);
+
+    expect(checkedClientQuery).toBe(true);
+    expect(checkedOperationQuery).toBe(true);
+    expect(checkedAiQuery).toBe(true);
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: "2026-07-08",
+      inputTokens: 250_000,
+      totalTokens: 250_000,
+    }));
+    expect(stats?.daily.some((point) => point.date === "2026-07-07")).toBe(false);
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledWith("usage.daily_bucket_scan_capped", {
+      maxRows: 250_000,
+      sources: ["ai_usage_log"],
+    });
   });
 
   it("combines successful ADE operations, sessions, tokens, and client activity without double-counting", async () => {

@@ -578,9 +578,24 @@ describe("usage components", () => {
       expect(tooltip.textContent).toContain("1.5K tokens");
     });
 
-    it("renders a warm empty state when the range has no activity", () => {
-      render(<ActivityModule stats={makeEmptyActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
+    it("renders a warm empty state only when local and GitHub activity are empty", () => {
+      const { rerender } = render(<ActivityModule stats={makeEmptyActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
       expect(screen.getByText("Your activity will appear here after your first chat.")).toBeTruthy();
+
+      const githubOnly = makeEmptyActivityStats();
+      githubOnly.daily = [{
+        ...githubOnly.daily[0]!,
+        githubCommits: 1,
+        githubPrs: 1,
+        githubAdditions: 20,
+        githubDeletions: 3,
+      }];
+      rerender(<ActivityModule stats={githubOnly} preset="7d" onPresetChange={vi.fn()} />);
+
+      expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
+      fireEvent.click(screen.getByRole("tab", { name: "Code" }));
+      expect(screen.getByRole("img", { name: "Code changes by day, additions and deletions" })).toBeTruthy();
+      expect(screen.getByText("GitHub")).toBeTruthy();
     });
 
     it("shows a streak chip once the streak reaches three days", () => {

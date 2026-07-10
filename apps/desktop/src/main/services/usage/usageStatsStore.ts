@@ -12,7 +12,10 @@ import type {
   AdeUsageProviderSummary,
 } from "../../../shared/types";
 import type { AdeDb, SqlValue } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
 import { localDayKey, localDayOffset, localDayOrdinal } from "./localDay";
+
+const DAILY_BUCKET_SCAN_MAX_ROWS = 250_000;
 
 export type AdeUsageStatsRange = {
   since: string | null;
@@ -352,6 +355,7 @@ function calculateStreaks(activeDateValues: Iterable<string>, until: string): { 
 export function collectAdeDatabaseUsageStats(
   db: AdeDb | null | undefined,
   range: AdeUsageStatsRange,
+  logger?: Pick<Logger, "debug">,
 ): AdeDatabaseUsageStats | null {
   if (!db) return null;
 
@@ -431,7 +435,9 @@ export function collectAdeDatabaseUsageStats(
     select occurred_at, client_surface
       from usage_events
      where ${eventRange.sql}
-  `, eventRange.params);
+     order by occurred_at desc
+     limit ?
+  `, [...eventRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
 
   const interactionRows = safeAll<{ action: string; count: number }>(db, `
     select action, count(*) count
@@ -454,7 +460,9 @@ export function collectAdeDatabaseUsageStats(
      where ${operationRange.sql}
        and status = 'succeeded'
        and kind in ('git_commit', 'pr_land')
-  `, operationRange.params);
+     order by started_at desc
+     limit ?
+  `, [...operationRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
   const operationCounts = new Map(operationRows.map((row) => [row.kind, int(row.count)]));
   const activityCounts = new Map(interactionRows.map((row) => [row.action, int(row.count)]));
   const operationActivityNames: Record<string, string> = {
@@ -602,7 +610,20 @@ export function collectAdeDatabaseUsageStats(
            coalesce(duration_ms, 0) duration_ms
       from ai_usage_log
      where ${aiRange.sql}
-  `, aiRange.params);
+     order by timestamp desc
+     limit ?
+  `, [...aiRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
+  const cappedDailySources = [
+    clientEventRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
+    operationDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "operations" : null,
+    aiDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "ai_usage_log" : null,
+  ].filter((source): source is string => source !== null);
+  if (cappedDailySources.length > 0) {
+    logger?.debug("usage.daily_bucket_scan_capped", {
+      maxRows: DAILY_BUCKET_SCAN_MAX_ROWS,
+      sources: cappedDailySources,
+    });
+  }
   for (const row of aiDailyRows) {
     const date = isoDate(row.timestamp);
     if (!date) continue;

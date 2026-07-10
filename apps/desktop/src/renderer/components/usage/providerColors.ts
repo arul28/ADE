@@ -1,10 +1,9 @@
 import type { ThemeId } from "../../state/appStore";
 
 /**
- * Brand-anchored provider colors for usage bars and legends. One token map used
- * by every provider surface (the activity module and the Settings dashboard) so
- * a provider reads as the same color everywhere. Each provider carries a
- * light-theme and dark-theme value tuned to sit legibly on a card background.
+ * Brand-anchored provider colors for usage bars and legends in the Settings
+ * dashboard. Each provider carries a light-theme and dark-theme value tuned to
+ * sit legibly on a card background.
  *
  * Anthropic/Claude keeps its rust family; the rest are picked to stay distinct
  * from one another without leaning on the generic blue/purple defaults.
@@ -63,9 +62,4 @@ export function providerColor(provider: string, theme: ThemeId = "dark"): string
   const key = normalizeProvider(provider);
   const pair = PROVIDER_COLORS[key] ?? FALLBACK_PALETTE[hashIndex(key, FALLBACK_PALETTE.length)]!;
   return theme === "light" ? pair.light : pair.dark;
-}
-
-/** True when the provider has an explicit brand token (vs. a hashed fallback). */
-export function hasProviderBrandColor(provider: string): boolean {
-  return normalizeProvider(provider) in PROVIDER_COLORS;
 }
