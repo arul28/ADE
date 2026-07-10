@@ -1606,6 +1606,7 @@ describe("createSyncRemoteCommandService", () => {
         text: "hello",
       }, {
         awaitDispatch: false,
+        routeActiveToSteer: true,
       });
       expect(result).toEqual({ ok: true });
     });
@@ -1814,6 +1815,7 @@ describe("createSyncRemoteCommandService", () => {
           ],
         }, {
           awaitDispatch: false,
+          routeActiveToSteer: true,
         });
       });
 
@@ -1882,6 +1884,7 @@ describe("createSyncRemoteCommandService", () => {
           interactionMode: "chat",
         }, {
           awaitDispatch: false,
+          routeActiveToSteer: true,
         });
       });
 
