@@ -4520,6 +4520,8 @@ describe("createAgentChatService", () => {
   });
 
   describe("cross-machine handoff", () => {
+    const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");
+
     it("builds a bounded portable capsule only after the source is clean and published", async () => {
       installCleanCrossMachineGitFixture();
       const { service, laneService } = createService();
@@ -4538,7 +4540,7 @@ describe("createAgentChatService", () => {
         sourceSessionId: source.id,
         handoffId: "handoff-source-1",
         targetModelId: "opencode/openai/gpt-5.4-mini",
-        continuationPrompt: "Continue with the destination integration test. token=ghp_123456789012345678901234567890",
+        continuationPrompt: `Continue with the destination integration test. token=${fakeGitHubToken}`,
       });
 
       expect(prepared.capsule).toMatchObject({
@@ -4565,7 +4567,7 @@ describe("createAgentChatService", () => {
       installCleanCrossMachineGitFixture(
         "feature/primary",
         "",
-        "https://git-user:ghp_123456789012345678901234567890@github.com/example/ade.git?token=secret-value#credential",
+        `https://git-user:${fakeGitHubToken}@github.com/example/ade.git?token=secret-value#credential`,
       );
       const { service, laneService } = createService();
       const source = await service.createSession({
@@ -4576,7 +4578,7 @@ describe("createAgentChatService", () => {
       });
       await service.updateSession({
         sessionId: source.id,
-        title: "Review token=ghp_123456789012345678901234567890",
+        title: `Review token=${fakeGitHubToken}`,
         manuallyNamed: true,
       });
       const lane = await laneService.getSummary("lane-1");
