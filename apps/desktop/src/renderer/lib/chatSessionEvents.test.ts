@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../shared/types";
+/* @vitest-environment jsdom */
+
+import { describe, expect, it, vi } from "vitest";
+import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
 import {
+  announceWorkChatSessionCreated,
   compareChatSessionsByEffectiveRecency,
   getChatSessionLocalTouchTimestampForEvent,
   getEffectiveChatSessionRecencyMs,
   shouldRefreshSessionListForChatEvent,
+  subscribeWorkChatSessionCreated,
 } from "./chatSessionEvents";
 
 function makeEnvelope(event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope {
@@ -26,6 +30,25 @@ function makeSession(
     ...overrides,
   };
 }
+
+describe("work chat session creation events", () => {
+  it("delivers the newly-created session and unsubscribes cleanly", () => {
+    const listener = vi.fn();
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      provider: "codex",
+    } as AgentChatSession;
+    const unsubscribe = subscribeWorkChatSessionCreated(listener);
+
+    announceWorkChatSessionCreated("/project/a", session);
+    expect(listener).toHaveBeenCalledWith({ projectRoot: "/project/a", session });
+
+    unsubscribe();
+    announceWorkChatSessionCreated("/project/a", session);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("shouldRefreshSessionListForChatEvent", () => {
   it("refreshes on turn completion", () => {

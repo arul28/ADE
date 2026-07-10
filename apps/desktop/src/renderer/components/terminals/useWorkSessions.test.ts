@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import type { WorkChatSessionCreatedDetail } from "../../lib/chatSessionEvents";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -39,9 +40,10 @@ function resetFakeAppStoreState() {
 // Module-level mocks (hoisted by vitest)
 // ---------------------------------------------------------------------------
 
-const { listSessionsCachedMock, useSearchParamsMock } = vi.hoisted(() => ({
+const { listSessionsCachedMock, useSearchParamsMock, workChatSessionCreatedListeners } = vi.hoisted(() => ({
   listSessionsCachedMock: vi.fn().mockResolvedValue([]),
   useSearchParamsMock: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+  workChatSessionCreatedListeners: new Set<(detail: WorkChatSessionCreatedDetail) => void>(),
 }));
 
 vi.mock("../../lib/sessionListCache", () => ({
@@ -51,6 +53,10 @@ vi.mock("../../lib/sessionListCache", () => ({
 
 vi.mock("../../lib/chatSessionEvents", () => ({
   shouldRefreshSessionListForChatEvent: vi.fn(() => false),
+  subscribeWorkChatSessionCreated: vi.fn((listener: (detail: WorkChatSessionCreatedDetail) => void) => {
+    workChatSessionCreatedListeners.add(listener);
+    return () => workChatSessionCreatedListeners.delete(listener);
+  }),
 }));
 
 vi.mock("../../lib/terminalAttention", async () => {
@@ -1887,6 +1893,41 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+  });
+
+  it("shows an announced headless chat before session-list propagation completes", async () => {
+    const { result } = renderHook(() => useWorkSessions());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    act(() => {
+      for (const listener of workChatSessionCreatedListeners) {
+        listener({
+          projectRoot: "/fake/project",
+          session: {
+            id: "new-chat",
+            laneId: "lane-1",
+            provider: "codex",
+            model: "gpt-5.4",
+            status: "idle",
+            createdAt: "2026-07-10T12:00:00.000Z",
+            lastActivityAt: "2026-07-10T12:00:00.000Z",
+          },
+        });
+      }
+    });
+
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "new-chat", laneId: "lane-1" }),
+    ]));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 140));
+    });
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "new-chat", laneId: "lane-1" }),
+    ]));
   });
 
   it("does not leak unhandled rejections when a background session refresh fails", async () => {

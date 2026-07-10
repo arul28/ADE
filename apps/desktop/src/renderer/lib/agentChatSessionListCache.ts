@@ -44,17 +44,20 @@ export async function listAgentChatSessionsCached(
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const cached = chatSessionListCache.get(key);
 
-  if (cached?.promise) return cached.promise;
+  if (!options?.force && cached?.promise) return cached.promise;
   if (!options?.force && cached?.value !== undefined && cached.expiresAt > now) {
     return cached.value;
   }
 
   const normalized = normalizeArgs(args);
   const promise = window.ade.agentChat.list(normalized).then((value) => {
-    chatSessionListCache.set(key, {
-      value,
-      expiresAt: Date.now() + ttlMs,
-    });
+    const current = chatSessionListCache.get(key);
+    if (current?.promise === promise) {
+      chatSessionListCache.set(key, {
+        value,
+        expiresAt: Date.now() + ttlMs,
+      });
+    }
     return value;
   }).catch((error) => {
     const current = chatSessionListCache.get(key);

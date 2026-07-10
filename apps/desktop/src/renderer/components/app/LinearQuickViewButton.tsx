@@ -32,7 +32,9 @@ import {
   defaultKickoffIntro,
   defaultKickoffPrompt,
   findIssueConflicts,
+  isBatchLaunchInFlight,
   runBatchLaunch,
+  BatchLaunchAgentReadinessTracker,
   type BatchLaunchIssueConfig,
   type BatchLaunchItemState,
 } from "../../lib/linearBatchLaunch";
@@ -42,6 +44,7 @@ import {
   rememberLaunchedLanes,
 } from "../../lib/launchedLanesHighlight";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
@@ -129,11 +132,25 @@ export function LinearQuickViewButton({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
+  const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
   const occludesNativeBrowser = open || batchModalOpen;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
+
+  useEffect(() => window.ade.agentChat.onEvent((envelope) => {
+    const transition = batchAgentReadinessRef.current.observe(envelope);
+    if (!transition) return;
+    setBatchLaunchStates((current) => {
+      const state = current.get(transition.issueId);
+      if (!state || (state.status !== "initializing-agent" && state.status !== "done")) return current;
+      if (state.status === "done" && transition.outcome.status === "done") return current;
+      const next = new Map(current);
+      next.set(transition.issueId, { ...state, ...transition.outcome });
+      return next;
+    });
+  }), []);
   // Auto-check Linear visibility for both local and remote projects. The check
   // is driven by getLinearConnectionStatus, which routes to the remote daemon
   // when bound to a remote runtime, so a remote machine's Linear connection is
@@ -339,6 +356,7 @@ export function LinearQuickViewButton({
 
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
     if (!entries.length) return;
+    batchAgentReadinessRef.current.beginBatch();
     if (launchPromptClipboardEnabled) {
       const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
       const lastPrompt = lastLaunchEntry
@@ -375,8 +393,8 @@ export function LinearQuickViewButton({
         // server-side without a mounted chat pane. When the user picked a
         // permission mode it is forwarded; otherwise the IPC defaults to an
         // autonomous-runnable mode.
-        launch: (args) =>
-          window.ade.agentChat.launch({
+        launch: async (args) => {
+          const session = await window.ade.agentChat.launch({
             laneId: args.laneId,
             provider: args.provider,
             model: args.model,
@@ -395,7 +413,12 @@ export function LinearQuickViewButton({
             ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
             kickoffText: args.kickoffText,
             contextAttachments: args.contextAttachments,
-          }),
+          });
+          if (activeProjectRoot) {
+            announceWorkChatSessionCreated(activeProjectRoot, session);
+          }
+          return session;
+        },
         // CLI-agent variant: spawns a tracked terminal pty with the issue
         // attached so the agent drives it via `ade linear`. Returns the pty
         // session id, which runBatchLaunch records like a chat session id.
@@ -418,16 +441,23 @@ export function LinearQuickViewButton({
           // As soon as an issue reports its materialized lane id, drop its
           // optimistic spinner placeholder — the real lane will render instead.
           if (patch.laneId) clearCreatingIssue(issueId);
+          const earlyOutcome = patch.sessionId
+            ? batchAgentReadinessRef.current.registerSession(issueId, patch.sessionId)
+            : null;
           setBatchLaunchStates((current) => {
             const prev = current.get(issueId);
             if (!prev) return current;
             const next = new Map(current);
-            next.set(issueId, { ...prev, ...patch });
+            next.set(issueId, {
+              ...prev,
+              ...patch,
+              ...(patch.status === "initializing-agent" && earlyOutcome ? earlyOutcome : {}),
+            });
             return next;
           });
         },
       },
-    );
+    ).finally(() => batchAgentReadinessRef.current.finishRegistration());
     // Clear any placeholders whose issues failed before a lane materialized so a
     // failed launch never leaves a permanent spinner tab.
     for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
@@ -438,7 +468,7 @@ export function LinearQuickViewButton({
         sessionIds: result.createdSessionIds,
       });
     }
-  }, [launchPromptClipboardEnabled, refreshLanes]);
+  }, [activeProjectRoot, launchPromptClipboardEnabled, refreshLanes]);
 
   const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
     // Close + reroute synchronously; the orchestrator runs detached so the
@@ -510,8 +540,8 @@ export function LinearQuickViewButton({
     if (batchLaunchStates.size === 0) return null;
     const states = [...batchLaunchStates.values()];
     const completed = states.filter((s) => s.status === "done").length;
-    const failed = states.filter((s) => s.status === "failed").length;
-    const running = states.some((s) => s.status !== "done" && s.status !== "failed");
+    const failed = states.filter((s) => s.status === "failed" || s.status === "agent-error").length;
+    const running = states.some((s) => isBatchLaunchInFlight(s.status));
     return { total: states.length, completed, failed, running };
   }, [batchLaunchStates]);
 

@@ -20,7 +20,10 @@ import {
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
-import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import {
+  shouldRefreshSessionListForChatEvent,
+  subscribeWorkChatSessionCreated,
+} from "../../lib/chatSessionEvents";
 import {
   forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
@@ -917,6 +920,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       session,
       laneName,
     });
+    pendingOptimisticSessionsRef.current.set(optimistic.id, {
+      session: optimistic,
+      createdAtMs: Date.now(),
+    });
     setSessions((prev) => upsertSessionByStartedAt(prev, optimistic));
   }, [lanes]);
 
@@ -949,6 +956,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     scheduleBackgroundRefresh(delayMs);
   }, [scheduleBackgroundRefresh]);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    return subscribeWorkChatSessionCreated((detail) => {
+      if (detail.projectRoot !== projectRootRef.current) return;
+      upsertOptimisticChatSession(detail.session);
+      scheduleBackgroundRefresh(80);
+    });
+  }, [active, scheduleBackgroundRefresh, upsertOptimisticChatSession]);
 
   useEffect(() => {
     // Apply the per-project sessions cache immediately so switching back to a

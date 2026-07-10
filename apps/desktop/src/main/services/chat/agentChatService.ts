@@ -32793,10 +32793,18 @@ export function createAgentChatService(args: {
       // runSessionTurn's bounded RPC timeout.
       timeoutMs: null,
     }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      // The durable session already exists, so surface a non-retryable kickoff
+      // failure to every renderer instead of leaving batch launch UI spinning
+      // forever (or tempting the user to create a duplicate lane/session).
+      const managed = managedSessions.get(session.id);
+      if (managed) {
+        emitChatEvent(managed, { type: "error", message });
+      }
       logger.warn("agentChat.launchHeadless turn failed", {
         sessionId: session.id,
         laneId: createArgs.laneId,
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
     });
     return session;

@@ -3616,6 +3616,30 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("emits a persisted error when kickoff validation fails after the durable session is created", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        kickoffText: "/login",
+      });
+
+      expect(session).toBeDefined();
+      await vi.waitFor(() => {
+        expect(events).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: session.id,
+            event: expect.objectContaining({ type: "error", message: expect.stringMatching(/login/i) }),
+          }),
+        ]));
+      });
+    });
+
     it("returns the session and lets a pending kickoff turn outlive the default runSessionTurn timeout", async () => {
       vi.useFakeTimers();
       try {

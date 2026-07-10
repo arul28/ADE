@@ -1,13 +1,19 @@
 import React, { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { ArrowClockwise, CheckCircle, CircleNotch, WarningCircle, X } from "@phosphor-icons/react";
-import type { BatchLaunchItemState, BatchLaunchItemStatus } from "../../lib/linearBatchLaunch";
+import {
+  isBatchLaunchInFlight,
+  type BatchLaunchItemState,
+  type BatchLaunchItemStatus,
+} from "../../lib/linearBatchLaunch";
 import { LINEAR_BRAND } from "../lanes/linearBrand";
 
 function statusLabel(status: BatchLaunchItemStatus): string {
   switch (status) {
     case "creating-lane": return "Creating lane";
     case "launching-agent": return "Launching agent";
+    case "initializing-agent": return "Starting agent";
+    case "agent-error": return "Needs attention";
     case "done": return "Ready";
     case "failed": return "Failed";
     default: return "Queued";
@@ -16,11 +22,40 @@ function statusLabel(status: BatchLaunchItemStatus): string {
 
 function StatusIcon({ status }: { status: BatchLaunchItemStatus }): React.ReactElement {
   if (status === "done") return <CheckCircle size={13} weight="fill" className="text-emerald-400" />;
-  if (status === "failed") return <WarningCircle size={13} weight="fill" className="text-rose-400" />;
-  if (status === "creating-lane" || status === "launching-agent") {
+  if (status === "failed" || status === "agent-error") {
+    return <WarningCircle size={13} weight="fill" className={status === "failed" ? "text-rose-400" : "text-amber-300"} />;
+  }
+  if (isBatchLaunchInFlight(status)) {
     return <CircleNotch size={13} className="animate-spin text-[color:var(--ade-linear,#7B8AF0)]" />;
   }
   return <span className="inline-block h-2 w-2 rounded-full bg-white/25" />;
+}
+
+function statusTextClass(status: BatchLaunchItemStatus): string {
+  if (status === "failed") return "shrink-0 text-[10px] font-medium text-rose-300/90";
+  if (status === "agent-error") return "shrink-0 text-[10px] font-medium text-amber-200/90";
+  return "shrink-0 text-[10px] text-muted-fg/55";
+}
+
+function batchHeadline({
+  rowCount,
+  readyCount,
+  failedCount,
+  attentionCount,
+  inFlight,
+}: {
+  rowCount: number;
+  readyCount: number;
+  failedCount: number;
+  attentionCount: number;
+  inFlight: boolean;
+}): string {
+  if (inFlight) return `Launching ${rowCount} ${rowCount === 1 ? "lane" : "lanes"}…`;
+  const parts: string[] = [];
+  if (readyCount > 0) parts.push(`${readyCount} ready`);
+  if (failedCount > 0) parts.push(`${failedCount} failed`);
+  if (attentionCount > 0) parts.push(`${attentionCount} needs attention`);
+  return parts.join(" · ");
 }
 
 /**
@@ -42,16 +77,17 @@ export function BatchLaunchStatusToast({
 }) {
   const rows = useMemo(() => [...states.values()], [states]);
   const failedCount = rows.filter((row) => row.status === "failed").length;
+  const attentionCount = rows.filter((row) => row.status === "agent-error").length;
   const doneCount = rows.filter((row) => row.status === "done").length;
-  const inFlight = rows.some((row) => row.status === "creating-lane" || row.status === "launching-agent" || row.status === "pending");
+  const inFlight = rows.some((row) => isBatchLaunchInFlight(row.status));
 
   // Auto-dismiss a fully-successful run after a short beat.
   useEffect(() => {
     if (!rows.length) return;
-    if (inFlight || failedCount > 0) return;
+    if (inFlight || failedCount > 0 || attentionCount > 0) return;
     const timer = window.setTimeout(onDismiss, 3200);
     return () => window.clearTimeout(timer);
-  }, [rows.length, inFlight, failedCount, onDismiss]);
+  }, [rows.length, inFlight, failedCount, attentionCount, onDismiss]);
 
   if (!rows.length) return null;
 
@@ -66,11 +102,13 @@ export function BatchLaunchStatusToast({
           style={{ background: LINEAR_BRAND.surface }}
         >
           <span className="text-[12px] font-semibold text-fg/90">
-            {inFlight
-              ? `Launching ${rows.length} ${rows.length === 1 ? "lane" : "lanes"}…`
-              : failedCount > 0
-                ? `${doneCount} launched · ${failedCount} failed`
-                : `${doneCount} ${doneCount === 1 ? "lane" : "lanes"} launched`}
+            {batchHeadline({
+              rowCount: rows.length,
+              readyCount: doneCount,
+              failedCount,
+              attentionCount,
+              inFlight,
+            })}
           </span>
           <button
             type="button"
@@ -99,11 +137,7 @@ export function BatchLaunchStatusToast({
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/75">{row.issue.title}</span>
                 <span
-                  className={
-                    row.status === "failed"
-                      ? "shrink-0 text-[10px] font-medium text-rose-300/90"
-                      : "shrink-0 text-[10px] text-muted-fg/55"
-                  }
+                  className={statusTextClass(row.status)}
                 >
                   {statusLabel(row.status)}
                 </span>
