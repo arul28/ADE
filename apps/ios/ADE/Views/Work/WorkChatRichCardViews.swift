@@ -1366,11 +1366,10 @@ struct WorkCodexRecoveryCardView: View {
 }
 
 /// Resolved / historical structured-question card shown in the transcript once
-/// a question is no longer pending. Replaces the flat "Question asked · Input
-/// requested" event card: renders the asking provider's logo + "{Provider}
-/// asked", the question text as the primary line, clean option rows (recommended
-/// and chosen marked), and — when resolved — the outcome inline so the separate
-/// "Input resolved" ribbon can be folded away.
+/// a question is no longer pending. Collapses to a single compact row — status
+/// icon plus a one-line summary ("Answered · {choice}", a quoted typed answer,
+/// "Declined", or a question count) — mirroring Claude Code's resolved rows;
+/// the full option list only exists on the pending card.
 struct WorkResolvedQuestionCard: View {
   let card: WorkEventCardModel
   var fallbackProvider: String? = nil
@@ -1383,8 +1382,6 @@ struct WorkResolvedQuestionCard: View {
     }
     return fallbackProvider
   }
-
-  private var accent: Color { ADEColor.providerChatAccent(for: resolvedProvider) }
 
   private var resolution: String? {
     guard let trimmed = card.resolution?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1459,7 +1456,9 @@ struct WorkResolvedQuestionCard: View {
     if isSecretResolution {
       return "Answered"
     }
-    if let resolution, !isPlainStatus(resolution) {
+    // Only echo a typed answer when the question model is present and known
+    // non-secret; without the model we can't rule out a secret, so stay mute.
+    if let resolution, model != nil, !isPlainStatus(resolution) {
       return "Answered · \u{201C}\(resolution)\u{201D}"
     }
     return "Answered"

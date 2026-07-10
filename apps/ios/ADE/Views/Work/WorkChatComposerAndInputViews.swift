@@ -800,9 +800,10 @@ struct WorkQueuedSteerRow: View {
             tint: ADEColor.textSecondary,
             label: "Edit",
             hint: nil,
-            identifier: "Work.Chat.StagedStrip.Edit",
-            syncAction: onBeginEdit
-          )
+            identifier: "Work.Chat.StagedStrip.Edit"
+          ) {
+            onBeginEdit()
+          }
 
           steerActionButton(
             systemImage: "xmark",
@@ -834,15 +835,10 @@ struct WorkQueuedSteerRow: View {
     label: String,
     hint: String?,
     identifier: String,
-    syncAction: (() -> Void)? = nil,
-    action: (@MainActor () async -> Void)? = nil
+    action: @escaping @MainActor () async -> Void
   ) -> some View {
     Button {
-      if let syncAction {
-        syncAction()
-      } else if let action {
-        Task { await action() }
-      }
+      Task { await action() }
     } label: {
       Image(systemName: systemImage)
         .font(.system(size: 14, weight: .semibold))
@@ -925,7 +921,7 @@ struct WorkStructuredQuestionCard: View {
   @State private var selections: [String: Set<String>] = [:]
   @State private var freeformByQuestion: [String: String] = [:]
   @State private var expandedPreviews: Set<String> = []
-  @State private var measuredBodyHeight: CGFloat = -1
+  @State private var measuredBodyHeight: CGFloat? = nil
   @FocusState private var freeformFocused: Bool
 
   private var isPaged: Bool { question.questions.count > 1 }
@@ -942,8 +938,8 @@ struct WorkStructuredQuestionCard: View {
   /// scroll internally. Falls back to the cap until the first measurement lands.
   private var resolvedBodyHeight: CGFloat {
     let cap = bodyMaxHeight
-    guard measuredBodyHeight >= 0 else { return cap }
-    return min(measuredBodyHeight, cap)
+    guard let measured = measuredBodyHeight else { return cap }
+    return min(measured, cap)
   }
 
   var body: some View {
@@ -968,8 +964,13 @@ struct WorkStructuredQuestionCard: View {
       .frame(height: resolvedBodyHeight)
       .scrollBounceBehavior(.basedOnSize)
       .onPreferenceChange(WorkQuestionBodyHeightKey.self) { height in
-        guard measuredBodyHeight < 0 || abs(measuredBodyHeight - height) > 0.5 else { return }
-        measuredBodyHeight = height
+        guard let measured = measuredBodyHeight else {
+          measuredBodyHeight = height
+          return
+        }
+        if abs(measured - height) > 0.5 {
+          measuredBodyHeight = height
+        }
       }
 
       if activeQuestion.allowsFreeform {

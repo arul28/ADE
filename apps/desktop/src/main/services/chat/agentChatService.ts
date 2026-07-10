@@ -27393,7 +27393,10 @@ export function createAgentChatService(args: {
     const dispatchStartedAt = Date.now();
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const managed = ensureManagedSession(args.sessionId);
-    if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
+    // Empty sends fall through to prepareSendMessage's no-op path instead of
+    // steering, so they don't report queued:false as a delivered message.
+    const routableText = args.text.trim().length > 0 || (args.contextAttachments?.length ?? 0) > 0;
+    if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       return steer({
         sessionId: args.sessionId,
         text: args.text,
