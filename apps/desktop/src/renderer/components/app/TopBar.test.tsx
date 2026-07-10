@@ -324,7 +324,10 @@ describe("TopBar", () => {
       },
       lanes: { list: vi.fn(async () => []) },
       sessions: { list: vi.fn(async () => []) },
-      agentChat: { list: vi.fn(async () => []) },
+      agentChat: {
+        list: vi.fn(async () => []),
+        onEvent: vi.fn(() => () => {}),
+      },
       processes: { listRuntime: vi.fn(async () => []) },
     } as any;
   });

@@ -80,7 +80,7 @@ export async function listSessionsCached(
   if (!force && existing?.value && now - existing.timestamp < ttlMs && canSatisfyLimit(existing.fetchedLimit, limit)) {
     return sliceRows(existing.value, limit);
   }
-  if (existing?.inFlight && canSatisfyLimit(existing.inFlightLimit, limit)) {
+  if (!force && existing?.inFlight && canSatisfyLimit(existing.inFlightLimit, limit)) {
     return existing.inFlight.then((rows) => sliceRows(rows, limit));
   }
 
@@ -130,7 +130,7 @@ export function invalidateSessionListCache(scope?: SessionListCacheScope): void 
     ? scope.laneId === undefined ? undefined : scope.laneId?.trim() || null
     : undefined;
 
-  for (const [key, entry] of [...cache.entries()]) {
+  for (const key of [...cache.keys()]) {
     let parsed: { projectRoot?: string | null; laneId?: string | null };
     try {
       parsed = JSON.parse(key) as { projectRoot?: string | null; laneId?: string | null };
@@ -142,16 +142,10 @@ export function invalidateSessionListCache(scope?: SessionListCacheScope): void 
     if (projectRootFilter !== undefined && parsed.projectRoot !== projectRootFilter) continue;
     if (laneIdFilter !== undefined && parsed.laneId !== laneIdFilter) continue;
 
-    if (!entry.inFlight) {
-      cache.delete(key);
-      continue;
-    }
-    cache.set(key, {
-      value: null,
-      timestamp: 0,
-      fetchedLimit: null,
-      inFlight: entry.inFlight,
-      inFlightLimit: entry.inFlightLimit,
-    });
+    // A mutation invalidates the snapshot represented by an in-flight list
+    // call too. Delete the entry so the next caller starts a fresh read; the
+    // superseded promise can still resolve for its original caller, but its
+    // identity guard above prevents it from repopulating this cache key.
+    cache.delete(key);
   }
 }

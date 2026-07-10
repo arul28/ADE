@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LaneLinearIssue, LaneSummary } from "../../shared/types";
+import type { AgentChatEventEnvelope, LaneLinearIssue, LaneSummary } from "../../shared/types";
 import { createDynamicCursorCliModelDescriptor } from "../../shared/modelRegistry";
 import { descriptorsFromAgentChatModelCatalog, resetRuntimeCatalogDescriptorCacheForTests } from "../components/shared/ModelPicker/modelCatalog";
 import {
   defaultKickoffPrompt,
   findIssueConflicts,
+  isBatchLaunchInFlight,
   runBatchLaunch,
+  BatchLaunchAgentReadinessTracker,
   type BatchLaunchDeps,
   type BatchLaunchIssueConfig,
 } from "./linearBatchLaunch";
@@ -193,6 +195,53 @@ describe("defaultKickoffPrompt", () => {
   });
 });
 
+describe("BatchLaunchAgentReadinessTracker", () => {
+  const envelope = (sessionId: string, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId,
+    timestamp: "2026-07-10T12:00:00.000Z",
+    event,
+  });
+
+  it("reconciles lifecycle events that arrive before the launch IPC returns", () => {
+    const tracker = new BatchLaunchAgentReadinessTracker();
+    tracker.beginBatch();
+
+    expect(tracker.observe(envelope("session-1", { type: "user_message", text: "Start." }))).toBeNull();
+    expect(tracker.registerSession("issue-1", "session-1")).toEqual({ status: "done", error: null });
+    expect(tracker.observe(envelope("session-1", { type: "error", message: "Runtime failed after start" }))).toEqual({
+      issueId: "issue-1",
+      outcome: { status: "agent-error", error: "Runtime failed after start" },
+    });
+  });
+
+  it("reports kickoff errors as non-retryable attention after session creation", () => {
+    const tracker = new BatchLaunchAgentReadinessTracker();
+    tracker.beginBatch();
+    expect(tracker.registerSession("issue-1", "session-1")).toBeNull();
+
+    expect(tracker.observe(envelope("session-1", { type: "error", message: "Claude login required" }))).toEqual({
+      issueId: "issue-1",
+      outcome: { status: "agent-error", error: "Claude login required" },
+    });
+  });
+
+  it("stops buffering unrelated chat events after batch registration finishes", () => {
+    const tracker = new BatchLaunchAgentReadinessTracker();
+    tracker.beginBatch();
+    tracker.finishRegistration();
+    expect(tracker.observe(envelope("unrelated", { type: "user_message", text: "Other chat" }))).toBeNull();
+    expect(tracker.registerSession("issue-1", "unrelated")).toBeNull();
+  });
+
+  it("uses one canonical in-flight status classification", () => {
+    expect(isBatchLaunchInFlight("pending")).toBe(true);
+    expect(isBatchLaunchInFlight("initializing-agent")).toBe(true);
+    expect(isBatchLaunchInFlight("done")).toBe(false);
+    expect(isBatchLaunchInFlight("agent-error")).toBe(false);
+    expect(isBatchLaunchInFlight("failed")).toBe(false);
+  });
+});
+
 describe("runBatchLaunch", () => {
   it("launches every issue: lane → headless launch (session + kickoff)", async () => {
     const createLane = vi.fn(async (args: { name: string; linearIssue: LaneLinearIssue; branchName?: string }) => ({ id: `lane-${args.name}` }));
@@ -221,6 +270,14 @@ describe("runBatchLaunch", () => {
     expect(result.createdLaneIds).toHaveLength(2);
     expect(result.createdSessionIds).toHaveLength(2);
     expect(result.failedIssueIds).toHaveLength(0);
+    expect(onItem).toHaveBeenCalledWith("a", expect.objectContaining({
+      sessionId: "sess",
+      status: "initializing-agent",
+    }));
+    expect(onItem).toHaveBeenCalledWith("b", expect.objectContaining({
+      sessionId: "sess",
+      status: "initializing-agent",
+    }));
   });
 
   it("passes only user branch overrides as explicit branch names", async () => {

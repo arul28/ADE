@@ -684,6 +684,8 @@ The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 before the IPC round-trip completes), `refresh`, and the right-sidebar
 setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
 sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
+`chatSessionEvents.ts` uses that optimistic path for durable chats created by
+headless/batch launch, then schedules a short background refresh.
 
 `launchPtySession` accepts `WorkPtyLaunchArgs` and returns
 `Promise<WorkPtyLaunchResult>`. The args carry `disposition?:
@@ -729,6 +731,9 @@ for how the PTY service consumes the delay).
 `useLaneWorkSessions` (in
 `apps/desktop/src/renderer/components/lanes/useLaneWorkSessions.ts`)
 wraps the same state but scopes to a single lane for the Lanes tab.
+It consumes the same renderer-local chat-session creation announcement as
+Work, filters it to the active project/lane, inserts the optimistic chat row,
+and schedules a short background refresh.
 Its `launchPtySession` also accepts `WorkPtyLaunchArgs` and returns
 `WorkPtyLaunchResult`, forwarding `startupDelayMs` and respecting
 `disposition` the same way. The lane-scoped launcher builds an
@@ -754,9 +759,13 @@ nothing when no delta is available.
   `sessionStatusDot`, `sessionIndicatorState`, `sessionCapsuleBadge`,
   `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —
-  `listSessionsCached`, `invalidateSessionListCache`.
+  `listSessionsCached`, `invalidateSessionListCache`. Normal reads coalesce;
+  forced reads and mutation invalidation bypass stale in-flight snapshots,
+  with promise identity preventing late responses from replacing fresh cache.
 - `apps/desktop/src/renderer/lib/chatSessionEvents.ts` —
-  `shouldRefreshSessionListForChatEvent` gates refreshes on chat IPC
+  `announceWorkChatSessionCreated` invalidates both renderer list caches and
+  publishes a durable chat session for optimistic Work/Lanes insertion;
+  `shouldRefreshSessionListForChatEvent` gates refreshes on streamed chat IPC
   events so the session list does not thrash on every message.
 
 ## Gotchas

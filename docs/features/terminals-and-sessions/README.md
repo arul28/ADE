@@ -426,7 +426,10 @@ Renderer surfaces:
   `ade.workViewState.v1`. Invalidates the shared session-list cache
   and schedules a background refresh on window focus /
   `visibilitychange` and on chat events, so returning to Work after a
-  tab switch always renders the current session set. Fresh PTY launches
+  tab switch always renders the current session set. Renderer-local
+  chat-session creation announcements are also inserted optimistically and
+  followed by a background refresh, so a headless batch-created chat appears
+  without waiting for session-list convergence. Fresh PTY launches
   are inserted as optimistic sessions before the forced
   session-list refresh returns, which keeps the new terminal tab visible
   even when the runtime cache responds with a stale list. During project
@@ -550,6 +553,10 @@ Renderer surfaces:
   a pointer edge.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
+  Ordinary callers coalesce compatible in-flight reads; forced reads bypass
+  them, and invalidation removes in-flight entries so a post-mutation refresh
+  cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
+  superseded response from repopulating the cache.
 - `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
   plus `getStaleRunningCliSessionAgeHours`, the canonical check that
   returns a rounded age in hours when a non-run, non-chat session has

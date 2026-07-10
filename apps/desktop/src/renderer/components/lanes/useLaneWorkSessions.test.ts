@@ -26,6 +26,7 @@ vi.mock("../../lib/sessionListCache", () => ({
 
 vi.mock("../../lib/chatSessionEvents", () => ({
   shouldRefreshSessionListForChatEvent: vi.fn(() => false),
+  subscribeWorkChatSessionCreated: vi.fn(() => () => {}),
 }));
 
 vi.mock("../../lib/terminalAttention", () => ({

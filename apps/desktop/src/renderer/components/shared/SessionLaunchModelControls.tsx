@@ -1,5 +1,5 @@
 import React, { useCallback } from "react";
-import { CaretDown, ChatCircleDots, Check, Lightning, Terminal } from "@phosphor-icons/react";
+import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
@@ -31,40 +31,6 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "border-white/[0.06] bg-white/[0.03] text-fg/80",
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
-
-function ComposerFastModeButton({
-  active,
-  disabled = false,
-  supported,
-  onToggle,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  supported: boolean;
-  onToggle?: (next: boolean) => void;
-}) {
-  if (!supported) return null;
-  return (
-    <button
-      type="button"
-      aria-label="Fast mode"
-      aria-pressed={active}
-      title={active ? "Fast mode on" : "Enable fast mode"}
-      disabled={disabled || !onToggle}
-      onClick={() => onToggle?.(!active)}
-      className={cn(
-        "inline-flex h-6 shrink-0 items-center justify-center gap-0.5 rounded-md border px-1.5",
-        "font-sans text-[9px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-        active
-          ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-          : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
-      )}
-    >
-      <Lightning size={10} weight="fill" />
-      <span>Fast</span>
-    </button>
-  );
-}
 
 function SessionTypeToggle({
   value,
@@ -344,12 +310,6 @@ export function SessionLaunchModelControls({
         compact
         triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
         disabled={disabled}
-      />
-      <ComposerFastModeButton
-        active={config.fastMode}
-        supported={batchLaunchSupportsFastMode(config.modelId)}
-        disabled={disabled}
-        onToggle={(fastMode) => onChange({ fastMode })}
       />
       <LaunchNativePermissionControls
         modelId={config.modelId}

@@ -5910,16 +5910,29 @@ export function AgentChatPane({
       turnActive
       || selectedSession?.status === "active"
       || selectedSessionAwaitingInput;
-    if (!shouldRecoverLiveTranscript) return undefined;
+    if (!shouldRecoverLiveTranscript && selectedEvents.length > 0) return undefined;
 
     let disposed = false;
-    const offset = stableSessionDelayOffset(selectedSessionId);
-    const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
-    const intervalMs = isTileActive ? 2200 : 2800 + (offset % 700);
     const recover = () => {
       if (disposed) return;
       void loadHistory(selectedSessionId, { force: true });
     };
+
+    // A newly-created headless chat can become visible before its first
+    // transcript append or lifecycle event reaches the renderer. An active
+    // session uses the normal live polling loop; an empty idle session gets
+    // two bounded retries so a stale summary cannot strand a blank pane.
+    if (!shouldRecoverLiveTranscript) {
+      const retryTimers = [900, 3_000].map((delayMs) => window.setTimeout(recover, delayMs));
+      return () => {
+        disposed = true;
+        retryTimers.forEach((timer) => window.clearTimeout(timer));
+      };
+    }
+
+    const offset = stableSessionDelayOffset(selectedSessionId);
+    const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
+    const intervalMs = isTileActive ? 2200 : 2800 + (offset % 700);
     const initialTimer = window.setTimeout(recover, initialDelayMs);
     const intervalTimer = window.setInterval(recover, intervalMs);
     return () => {
@@ -5931,6 +5944,7 @@ export function AgentChatPane({
     isTileActive,
     isTileVisible,
     loadHistory,
+    selectedEvents.length,
     selectedSession?.status,
     selectedSessionAwaitingInput,
     selectedSessionId,

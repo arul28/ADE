@@ -3616,6 +3616,88 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("emits a persisted error when kickoff validation fails after the durable session is created", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        kickoffText: "/login",
+      });
+
+      expect(session).toBeDefined();
+      await vi.waitFor(() => {
+        expect(events).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: session.id,
+            event: expect.objectContaining({ type: "error", message: expect.stringMatching(/login/i) }),
+          }),
+        ]));
+      });
+    });
+
+    it("terminates and persists a failed Codex kickoff when turn/start rejects", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const writeFileSync = vi.spyOn(fs, "writeFileSync");
+      mockState.codexResponseOverrides.set("turn/start", {
+        error: { code: -32_000, message: "turn start exploded" },
+      });
+      mockState.delayedCodexMethods.add("turn/start");
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.launchHeadless({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        kickoffText: "Investigate the incident.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      writeFileSync.mockClear();
+      mockState.flushCodexResponses();
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "done"
+          && event.event.status === "failed",
+      );
+
+      const sessionEvents = events
+        .filter((event) => event.sessionId === session.id)
+        .map((event) => event.event);
+      const errorIndex = sessionEvents.findIndex((event) =>
+        event.type === "error" && /turn start exploded/i.test(event.message),
+      );
+      const failedIndex = sessionEvents.findIndex((event) =>
+        event.type === "status"
+        && event.turnStatus === "failed"
+        && /turn start exploded/i.test(event.message ?? ""),
+      );
+      const doneIndex = sessionEvents.findIndex((event) =>
+        event.type === "done" && event.status === "failed",
+      );
+
+      expect(errorIndex).toBeGreaterThanOrEqual(0);
+      expect(failedIndex).toBeGreaterThan(errorIndex);
+      expect(doneIndex).toBeGreaterThan(failedIndex);
+      expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      expect(writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(`${session.id}.json`),
+        expect.any(String),
+        "utf8",
+      );
+    });
+
     it("returns the session and lets a pending kickoff turn outlive the default runSessionTurn timeout", async () => {
       vi.useFakeTimers();
       try {

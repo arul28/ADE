@@ -1,4 +1,35 @@
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../shared/types";
+import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
+import { invalidateAgentChatSessionListCache } from "./agentChatSessionListCache";
+import { invalidateSessionListCache } from "./sessionListCache";
+
+const WORK_CHAT_SESSION_CREATED_EVENT = "ade:work:chat-session-created";
+
+export type WorkChatSessionCreatedDetail = {
+  projectRoot: string;
+  session: AgentChatSession;
+};
+
+export function announceWorkChatSessionCreated(
+  projectRoot: string,
+  session: AgentChatSession,
+): void {
+  invalidateSessionListCache({ projectRoot });
+  invalidateAgentChatSessionListCache({ projectRoot, laneId: session.laneId });
+  window.dispatchEvent(new CustomEvent<WorkChatSessionCreatedDetail>(WORK_CHAT_SESSION_CREATED_EVENT, {
+    detail: { projectRoot, session },
+  }));
+}
+
+export function subscribeWorkChatSessionCreated(
+  listener: (detail: WorkChatSessionCreatedDetail) => void,
+): () => void {
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<WorkChatSessionCreatedDetail>).detail;
+    if (detail?.projectRoot && detail.session?.id && detail.session.laneId) listener(detail);
+  };
+  window.addEventListener(WORK_CHAT_SESSION_CREATED_EVENT, handler);
+  return () => window.removeEventListener(WORK_CHAT_SESSION_CREATED_EVENT, handler);
+}
 
 function parseTimestampMs(value: string | null | undefined): number {
   if (!value) return 0;

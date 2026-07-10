@@ -6072,6 +6072,33 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("rehydrates a newly-created idle chat when its first history snapshot is temporarily empty", async () => {
+    const session = buildSession("session-1", { title: "New headless chat", status: "idle" });
+    let historyReads = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: async () => {
+        historyReads += 1;
+        return {
+          sessionId: session.sessionId,
+          events: historyReads === 1 ? [] : [{
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T12:00:00.000Z",
+            sequence: 1,
+            event: { type: "user_message" as const, text: "Start the attached Linear issue." },
+          }],
+          truncated: false,
+          sessionFound: true,
+        };
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Start the attached Linear issue.", {}, { timeout: 2_000 })).toBeTruthy();
+    expect(historyReads).toBeGreaterThanOrEqual(2);
+  });
+
   it("rejects explicit foreign-session event-history snapshots", async () => {
     const session = buildSession("session-1", { title: "Foreign chat" });
     installAdeMocks({

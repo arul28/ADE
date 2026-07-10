@@ -114,37 +114,45 @@ describe("sessionListCache", () => {
     expect(listMock).toHaveBeenCalledWith({ toolTypes: ["codex-chat"] });
   });
 
-  it("shares an in-flight request with forced callers", async () => {
-    let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
-    listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
-      resolveRows = resolve;
-    }));
+  it("starts a fresh request when a forced caller supersedes an in-flight read", async () => {
+    let resolveFirst!: (rows: ReturnType<typeof makeRows>) => void;
+    listMock
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
+        resolveFirst = resolve;
+      }))
+      .mockResolvedValueOnce(makeRows(5));
 
     const first = listSessionsCached({ limit: 10 });
     const forced = listSessionsCached({ limit: 5 }, { force: true });
 
-    expect(listMock).toHaveBeenCalledTimes(1);
-    resolveRows(makeRows(10));
+    expect(listMock).toHaveBeenCalledTimes(2);
+    await expect(forced).resolves.toHaveLength(5);
+    resolveFirst(makeRows(10));
 
     await expect(first).resolves.toHaveLength(10);
-    await expect(forced).resolves.toHaveLength(5);
+    await expect(listSessionsCached({ limit: 5 })).resolves.toHaveLength(5);
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps in-flight requests coalesced after invalidation", async () => {
-    let resolveRows!: (rows: ReturnType<typeof makeRows>) => void;
-    listMock.mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
-      resolveRows = resolve;
-    }));
+  it("starts a fresh request after invalidation and ignores the stale completion", async () => {
+    let resolveFirst!: (rows: ReturnType<typeof makeRows>) => void;
+    listMock
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof makeRows>>((resolve) => {
+        resolveFirst = resolve;
+      }))
+      .mockResolvedValueOnce(makeRows(5));
 
     const first = listSessionsCached({ limit: 10 });
     invalidateSessionListCache();
     const second = listSessionsCached({ limit: 5 });
 
-    expect(listMock).toHaveBeenCalledTimes(1);
-    resolveRows(makeRows(10));
+    expect(listMock).toHaveBeenCalledTimes(2);
+    await expect(second).resolves.toHaveLength(5);
+    resolveFirst(makeRows(10));
 
     await expect(first).resolves.toHaveLength(10);
-    await expect(second).resolves.toHaveLength(5);
+    await expect(listSessionsCached({ limit: 5 })).resolves.toHaveLength(5);
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
   it("invalidates only the matching project and lane when scoped", async () => {

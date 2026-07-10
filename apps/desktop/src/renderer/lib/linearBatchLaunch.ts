@@ -11,6 +11,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatInteractionMode,
   AgentChatOpenCodePermissionMode,
+  AgentChatEventEnvelope,
   LaneLinearIssue,
   LaneSummary,
 } from "../../shared/types";
@@ -66,6 +67,8 @@ export type BatchLaunchItemStatus =
   | "pending"
   | "creating-lane"
   | "launching-agent"
+  | "initializing-agent"
+  | "agent-error"
   | "done"
   | "failed";
 
@@ -88,6 +91,114 @@ export type BatchLaunchResult = {
 
 /** Concurrency cap — keep the daemon git-worktree mutations and warmups bounded. */
 export const BATCH_LAUNCH_CONCURRENCY = 3;
+
+export function isBatchLaunchInFlight(status: BatchLaunchItemStatus): boolean {
+  return status === "pending"
+    || status === "creating-lane"
+    || status === "launching-agent"
+    || status === "initializing-agent";
+}
+
+export type BatchLaunchAgentOutcome =
+  | { status: "done"; error: null }
+  | { status: "agent-error"; error: string };
+
+type BatchLaunchAgentSignal = {
+  outcome: BatchLaunchAgentOutcome;
+  terminal: boolean;
+};
+
+function batchLaunchAgentSignal(
+  envelope: AgentChatEventEnvelope,
+): BatchLaunchAgentSignal | null {
+  if (
+    envelope.event.type === "user_message"
+    || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
+  ) {
+    return { outcome: { status: "done", error: null }, terminal: false };
+  }
+  if (envelope.event.type === "error") {
+    return {
+      outcome: { status: "agent-error", error: envelope.event.message },
+      terminal: true,
+    };
+  }
+  if (envelope.event.type === "status" && envelope.event.turnStatus === "failed") {
+    return {
+      outcome: {
+        status: "agent-error",
+        error: envelope.event.message?.trim() || "The session was created, but its kickoff turn failed.",
+      },
+      terminal: true,
+    };
+  }
+  if (envelope.event.type === "done") {
+    return envelope.event.status === "failed"
+      ? {
+          outcome: {
+            status: "agent-error",
+            error: "The session was created, but its kickoff turn failed.",
+          },
+          terminal: true,
+        }
+      : { outcome: { status: "done", error: null }, terminal: true };
+  }
+  return null;
+}
+
+/**
+ * Reconciles headless kickoff events that can arrive before the launch IPC
+ * resolves with its durable session id. Unknown events are buffered only while
+ * the current batch is registering sessions, so unrelated ADE chats cannot
+ * accumulate in component state.
+ */
+export class BatchLaunchAgentReadinessTracker {
+  private bufferingUnknownSessions = false;
+  private readonly issueIdBySessionId = new Map<string, string>();
+  private readonly earlySignalBySessionId = new Map<string, BatchLaunchAgentSignal>();
+
+  beginBatch(): void {
+    this.bufferingUnknownSessions = true;
+    this.issueIdBySessionId.clear();
+    this.earlySignalBySessionId.clear();
+  }
+
+  finishRegistration(): void {
+    this.bufferingUnknownSessions = false;
+    this.earlySignalBySessionId.clear();
+  }
+
+  registerSession(issueId: string, sessionId: string): BatchLaunchAgentOutcome | null {
+    const earlySignal = this.earlySignalBySessionId.get(sessionId) ?? null;
+    this.earlySignalBySessionId.delete(sessionId);
+    if (earlySignal) {
+      if (!earlySignal.terminal) this.issueIdBySessionId.set(sessionId, issueId);
+      return earlySignal.outcome;
+    }
+    this.issueIdBySessionId.set(sessionId, issueId);
+    return null;
+  }
+
+  observe(envelope: AgentChatEventEnvelope): {
+    issueId: string;
+    outcome: BatchLaunchAgentOutcome;
+  } | null {
+    const signal = batchLaunchAgentSignal(envelope);
+    if (!signal) return null;
+    const issueId = this.issueIdBySessionId.get(envelope.sessionId);
+    if (issueId) {
+      if (signal.terminal) this.issueIdBySessionId.delete(envelope.sessionId);
+      return { issueId, outcome: signal.outcome };
+    }
+    if (this.bufferingUnknownSessions) {
+      const existing = this.earlySignalBySessionId.get(envelope.sessionId);
+      if (!existing || !existing.terminal || signal.outcome.status === "agent-error") {
+        this.earlySignalBySessionId.set(envelope.sessionId, signal);
+      }
+    }
+    return null;
+  }
+}
 
 /**
  * Generic kickoff instruction — intentionally does NOT name a specific issue.
@@ -393,7 +504,11 @@ export async function runBatchLaunch(
         contextAttachments: [makeLinearIssueContextAttachment(issue, "lane_link")],
       });
       result.createdSessionIds.push(session.id);
-      options.onItem(issue.id, { sessionId: session.id, status: "done" });
+      // `agentChat.launch` intentionally returns as soon as the durable session
+      // exists; its kickoff turn continues in the background. Keep the launch
+      // visibly in progress until the renderer observes the first lifecycle
+      // event for this session instead of claiming the agent is already ready.
+      options.onItem(issue.id, { sessionId: session.id, status: "initializing-agent" });
     } catch (error) {
       let detail = error instanceof Error ? error.message : String(error);
       // If the agent launch failed but we created the lane this run, roll the

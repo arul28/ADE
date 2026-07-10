@@ -3,7 +3,10 @@ import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/t
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
-import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import {
+  shouldRefreshSessionListForChatEvent,
+  subscribeWorkChatSessionCreated,
+} from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
   forgetWorkPtyLaunchPin,
@@ -363,6 +366,13 @@ export function useLaneWorkSessions(laneId: string | null) {
       return next;
     });
   }, [currentLane?.name, laneId, lanes, scopeKey]);
+
+  useEffect(() => subscribeWorkChatSessionCreated((detail) => {
+    if (detail.projectRoot !== projectRootRef.current) return;
+    if (detail.session.laneId !== laneIdRef.current) return;
+    upsertOptimisticChatSession(detail.session);
+    scheduleBackgroundRefresh(80);
+  }), [scheduleBackgroundRefresh, upsertOptimisticChatSession]);
 
   useEffect(() => {
     sessionIdsRef.current = new Set(sessions.map((session) => session.id));

@@ -24211,12 +24211,15 @@ export function createAgentChatService(args: {
     };
   };
 
-  const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
-    const { managed } = prepared;
+  const emitManagedSendFailure = (
+    managed: ManagedChatSession,
+    error: unknown,
+    requestedTurnId?: string | null,
+  ): void => {
     if (managed.closed) return;
 
     const message = error instanceof Error ? error.message : String(error);
-    const turnId = prepared.turnId ?? randomUUID();
+    const turnId = requestedTurnId ?? randomUUID();
 
     // If the failure is "turn already active", the original turn is still running.
     // Do NOT clear activeTurnId or runtime state — that would corrupt the in-flight
@@ -24293,6 +24296,10 @@ export function createAgentChatService(args: {
 
     appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
+  };
+
+  const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
+    emitManagedSendFailure(prepared.managed, error, prepared.turnId);
   };
 
   const cursorSdkPoolKeyFor = (
@@ -32778,10 +32785,18 @@ export function createAgentChatService(args: {
       // runSessionTurn's bounded RPC timeout.
       timeoutMs: null,
     }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      // The durable session already exists, so surface a non-retryable kickoff
+      // failure to every renderer instead of leaving batch launch UI spinning
+      // forever (or tempting the user to create a duplicate lane/session).
+      const managed = managedSessions.get(session.id);
+      if (managed) {
+        emitManagedSendFailure(managed, err);
+      }
       logger.warn("agentChat.launchHeadless turn failed", {
         sessionId: session.id,
         laneId: createArgs.laneId,
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
     });
     return session;
