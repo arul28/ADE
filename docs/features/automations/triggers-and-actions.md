@@ -4,9 +4,9 @@ The complete surface of triggers the automation runtime listens for, and the act
 
 ## Source file map
 
-- `apps/desktop/src/main/services/automations/automationService.ts` — trigger normalization, dispatch, cron parsing, file-change watchers, queue matching, action-chain runner.
+- `apps/desktop/src/main/services/automations/automationService.ts` — trigger normalization, dispatch, cron parsing, file-change watchers, queue matching, action-chain runner, and persisted deferred-lane cleanup.
 - `apps/desktop/src/main/services/automations/automationIngressService.ts` — HTTP ingress for webhooks and relay polling.
-- `apps/desktop/src/main/services/automations/githubPollingService.ts` — GitHub REST polling that emits `github.issue_*` and `github.pr_*` events by diffing per-repo snapshots.
+- `apps/desktop/src/main/services/automations/githubPollingService.ts` — GitHub REST polling that emits `github.issue_*` and `github.pr_*` events by diffing per-repo snapshots, gated on the presence of an enabled `github.*` rule at each tick.
 - `apps/desktop/src/main/services/automations/linearAutomationDispatch.ts` — pure translation of a `LinearIngressEventRecord` (relay event) into the `LinearAutomationDispatch[]` it implies, including the added-label diff that produces a one-shot `linear.issue_labeled` and the dedupe that suppresses the generic `issue_updated` fallthrough. `main.ts` calls `buildLinearAutomationDispatches` on each relay event and feeds the results into `automationService.dispatchIngressTrigger`.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — natural-language rule authoring (creates triggers + actions from a free-text brief).
 - `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist for the `ade-action` action type.
@@ -47,6 +47,7 @@ GitHub triggers are emitted by three ingress paths: a real webhook (`github-webh
 
 - `lane.created` — new lane. Optional `namePattern` (glob).
 - `lane.archived` — lane archived. Optional `namePattern`.
+- `lane.merged` — the lane's PR transitioned to merged. Optional `namePattern` uses the same glob semantics as `lane.created`. Context includes `trigger.laneId`, `trigger.laneName`, `trigger.branch`, and structured `trigger.pr` fields. `notifyLaneMerged` persists a per-PR dedupe marker before dispatch, so repeated observations do not fire another run after restart.
 
 ### File-change
 
@@ -92,6 +93,7 @@ The service produces human summaries for the UI:
 - `linear.*` -> `"<type>:<project>/<team>/<assignee>"`
 - `github-webhook` -> `"github:<event>"`
 - `webhook` -> `"webhook:<event>"`
+- `lane.merged` -> `"Lane merged: <lane> (PR #<number>)"` when the PR number is present
 
 These summaries surface in the rule list and in run history.
 
@@ -100,6 +102,8 @@ These summaries surface in the rule list and in run history.
 `listMatches(expected, actual)` — case-insensitive OR: a populated expected list matches when any value is present in actual. Empty expected list matches anything.
 
 `triggerTypesMatch(ruleType, runtimeType)` — normalizes aliases before comparing (`commit` -> `git.commit`).
+
+Lane lifecycle `namePattern` values are globs matched against the resolved lane name. For `lane.merged`, the dispatcher supplies the name from the merge notification (or resolves lane metadata before matching), and PR fields remain available independently for title/repo/author/branch filters and templates.
 
 ## Ingress payload normalization
 
@@ -137,22 +141,25 @@ Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedToo
 `AutomationAction` is the shape of each action in a `built-in` rule. Each action has:
 
 - `type` — `AutomationActionType`.
-- Shared step controls: `condition` (gate string), `continueOnFailure`, `timeoutMs`, `retry`.
+- Shared step controls: `condition` (gate string), `continueOnFailure`, `alwaysRun`, `timeoutMs`, `retry`. Once a non-continuable action fails, ordinary trailing actions do not run; trailing actions with `alwaysRun: true` still execute as cleanup/finally steps. Their results are recorded normally, but they never erase the original failed run status.
 - Per-action overrides (apply on top of `execution.*` defaults):
   - `targetLaneId` — overrides the lane this action runs against. Resolves through `getConfiguredTargetLaneId(rule, action)` → `execution.targetLaneId` → trigger lane → primary lane.
   - `modelConfig` (`agent-session` only) — `{ modelId, thinkingLevel? }` overriding the rule's model for this step. `thinkingLevel` also feeds the agent-session reasoning effort.
   - `codexFastMode` (`agent-session` only) — boolean that enables Codex Fast Mode for this step. Only applied when the resolved provider group is `codex` AND the resolved model descriptor supports fast mode (`modelSupportsFastMode`); silently ignored otherwise. Forwarded to the chat service as `codexFastMode: true` on the session create, which causes Codex `thread/start` + `turn/start` JSON-RPC calls to carry `serviceTier: "fast"`. Mirrors the rule-level `execution.session.codexFastMode` toggle and stacks the same way as `modelConfig` / `permissionConfig`.
   - `permissionConfig` (`agent-session` only) — provider permission config whose `cli`/`providers`/`inProcess` fields are merged onto the rule's permission config; `providers.allowedTools` and `cli.allowedTools` extend (not replace) the rule's allow-list. The `cursor` provider key is supported alongside `claude`/`codex`/`opencode`.
-- Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`, `laneNameTemplate`, `laneDescriptionTemplate`, `parentLaneId`).
+- Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`, `laneNameTemplate`, `laneDescriptionTemplate`, `parentLaneId`, `laneDeleteOptions`, `afterMinutes`).
 
-Runtime `AutomationActionResult.status` is one of `running` | `succeeded` | `failed` | `skipped` | `cancelled`. Rows are persisted in the `automation_actions` table with `started_at`, `ended_at`, `output`, `error_message`.
+Runtime `AutomationActionResult.status` is one of `running` | `succeeded` | `failed` | `skipped` | `cancelled`. Rows are persisted in the `automation_action_results` table with `started_at`, `ended_at`, `output`, `error_message`.
 
 Action types (`AutomationActionType`):
 
 - `create-lane` — creates a new lane via `laneService.create` and binds the rest of the action chain to it. Subsequent actions see the new lane in `trigger.laneId` / `trigger.laneName` / `trigger.branch`.
-  - `laneNameTemplate` (default `"{{trigger.issue.title}}"`) — supports `{{trigger.*}}` placeholders; falls back to issue title, PR title, trigger summary, then rule name.
+  - `laneNameTemplate` (default `"{{trigger.issue.title}}"`) — supports `{{trigger.*}}` placeholders plus `{{date}}` (`YYYY-MM-DD`), `{{time}}` (`HH:mm`), and `{{rule.name}}`; falls back to issue title, PR title, trigger summary, then rule name. The same resolver is used by execution-level `laneMode: "create"` naming presets/templates.
   - `laneDescriptionTemplate` (optional) — placeholder-aware; defaults to a short auto-blurb that lists the issue number, source URL, and trigger summary.
   - `parentLaneId` (optional) — stack the new lane under an existing lane.
+- `delete-lane` — deletes only the resolved target lane: action `targetLaneId`, execution `targetLaneId`, a lane created earlier for this run, or the trigger lane. Missing context fails with a clear error instead of falling back to the primary lane.
+  - `laneDeleteOptions` — optional `deleteBranch`, `deleteRemoteBranch`, and `force` booleans forwarded to `laneService.delete`.
+  - `afterMinutes` — omitted or `0` deletes immediately. A positive value writes a durable scheduled-cleanup row and returns a succeeded action result whose JSON output includes `status: "scheduled"`, cleanup id, lane id, and due time.
 - `run-command` — shell command. `command` + optional `cwd`. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot`; must stay inside the target lane worktree or project root.
 - `run-tests` — invokes the ADE test runner for `suiteId`.
 - `predict-conflicts` — runs the conflicts service's prediction for the target lane; no extra config.
@@ -166,6 +173,12 @@ Action types (`AutomationActionType`):
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/registry.ts`.
 
 `AdeActionEditor` is split into two modes: a structured form driven by `adeActionSchemas.ts` (one input per declared `AdeActionParam`, with type-aware widgets — strings, numbers, booleans, comma-separated string arrays, enum dropdowns, and a JSON editor for free-form `json` params) and a raw JSON fallback (`Show JSON` toggle) for actions that have no schema entry or for users who want full control. The action picker filters by domain and search, surfaces `description` text, and inserts `{{trigger.*}}` placeholders (`trigger.lane.id`, `trigger.pr.id`, `trigger.pr.number`, `trigger.pr.title`, `trigger.pr.author`, `trigger.branch`) directly into the focused string input.
+
+### Deferred cleanup lifecycle
+
+`automation_scheduled_cleanups` stores the rule, originating run, lane, due time, serialized delete options, and `scheduled | executing | executed | failed | cancelled` state. `automationService` claims due work as `executing`, runs one sweep on startup and then every 60 seconds, and retries any crash-left `executing` row on the next service start. Execution calls `laneService.delete`; a missing lane is an executed no-op, while any other exception marks the cleanup failed.
+
+The outcome is appended to the originating run as a new `delete-lane` row in `automation_action_results`, incrementing that run's action totals. This keeps cleanup visible through the existing history contract without creating a synthetic second run. Public service methods expose `listScheduledCleanups()`, `cancelScheduledCleanup(id)`, and the test/operations hook `runScheduledCleanupSweep()`.
 
 ## Natural-language rule authoring
 
@@ -184,6 +197,8 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **`file.change` watchers are scoped per lane.** Moving a watched root requires tearing down the old watcher — don't mutate `WatchedFileRoot` in place.
 - **Webhook payloads must be normalized before matching.** Rules match `eventKey`, not raw payload shape.
 - **Relay polling needs a cursor.** Without `cursor` on `AutomationIngressEventRecord`, the relay replays the full backlog on every poll.
+- **Direct GitHub polling is demand-gated.** The rule predicate is checked every tick, so enabling or disabling the last `github.*` rule takes effect without restarting the runtime.
+- **External triggers must have a viable ingress capability before enable.** Canonical `github.*` accepts direct polling, relay, local webhook, or a ready public gateway; `github-webhook`, custom `webhook`, and `linear.*` use their narrower capability checks.
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
 - **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
 - **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state; if a placeholder resolves to `undefined`, the ADE action receives `undefined` rather than an empty string. Prefer explicit `resolvers` when a placeholder is load-bearing.

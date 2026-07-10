@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowClockwise } from "@phosphor-icons/react";
-import type { AutomationRun, AutomationRunDetail } from "../../../shared/types";
-import { Button } from "../ui/Button";
-import { EmptyState } from "../ui/EmptyState";
-import { cn } from "../ui/cn";
-import { RunHistoryRow } from "./components/RunHistoryRow";
-import { RunDetailPanel } from "./components/RunDetailPanel";
-import { extractError } from "./shared";
+import type { AutomationRun, AutomationRunDetail } from "../../../../shared/types";
+import { Button } from "../../ui/Button";
+import { EmptyState } from "../../ui/EmptyState";
+import { cn } from "../../ui/cn";
+import { extractError } from "../shared";
+import { RunRow } from "./RunRow";
+import { RunDetail } from "./RunDetail";
 
-export function RuleHistoryPanel({
-  automationId,
-  ruleName,
-}: {
-  automationId: string;
-  ruleName: string;
-}) {
+export function RuleHistory({ automationId, ruleName }: { automationId: string; ruleName: string }) {
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -51,9 +45,7 @@ export function RuleHistoryPanel({
       if (detailRequestId.current !== requestId) return;
       setError(extractError(err));
     } finally {
-      if (detailRequestId.current === requestId) {
-        setDetailLoading(false);
-      }
+      if (detailRequestId.current === requestId) setDetailLoading(false);
     }
   }, []);
 
@@ -68,65 +60,51 @@ export function RuleHistoryPanel({
   useEffect(() => {
     const unsubscribe = window.ade.automations.onEvent(() => {
       void load();
-      if (selectedRunId) {
-        void loadDetail(selectedRunId);
-      }
+      if (selectedRunId) void loadDetail(selectedRunId);
     });
     return () => unsubscribe();
   }, [load, loadDetail, selectedRunId]);
 
   useEffect(() => {
-    if (selectedRunId && !detail) {
-      void loadDetail(selectedRunId);
-    }
+    if (selectedRunId && !detail) void loadDetail(selectedRunId);
   }, [detail, loadDetail, selectedRunId]);
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex w-[340px] shrink-0 min-h-0 flex-col border-r border-white/[0.06]">
+      <div className="flex w-[320px] shrink-0 min-h-0 flex-col border-r border-white/[0.06]">
         <div className="shrink-0 border-b border-white/[0.06] px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-[#F5FAFF]">{ruleName}</div>
-              <div className="mt-0.5 text-[11px] text-[#93A4B8]">Runs for this rule</div>
+              <div className="truncate text-sm font-semibold text-fg">{ruleName}</div>
+              <div className="mt-0.5 text-[11px] text-muted-fg/60">Runs for this rule</div>
             </div>
             <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
               <ArrowClockwise size={12} weight="regular" className={cn(loading && "animate-spin")} />
             </Button>
           </div>
           {error ? (
-            <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-              {error}
-            </div>
+            <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div>
           ) : null}
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {runs.length === 0 ? (
             <EmptyState
               title="No runs yet"
-              description="This rule has not executed. Trigger it manually or wait for the next event."
+              description="Trigger it manually or wait for the next event."
             />
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {runs.map((run) => (
-                <RunHistoryRow
-                  key={run.id}
-                  run={run}
-                  selected={run.id === selectedRunId}
-                  onSelect={() => void loadDetail(run.id)}
-                />
+                <RunRow key={run.id} run={run} selected={run.id === selectedRunId} onSelect={() => void loadDetail(run.id)} />
               ))}
             </div>
           )}
         </div>
       </div>
 
-      <div className="flex-1 min-w-0 overflow-y-auto">
-        <RunDetailPanel
-          detail={detail}
-          loading={detailLoading}
-        />
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <RunDetail detail={detail} loading={detailLoading} />
       </div>
     </div>
   );

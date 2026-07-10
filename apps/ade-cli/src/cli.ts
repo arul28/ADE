@@ -194,6 +194,8 @@ type FormatterId =
   | "action-result"
   | "automation-run-detail"
   | "automation-ingress"
+  | "automation-linear-ingress"
+  | "automation-cleanups"
   | "search-results"
   | "search-status"
   | "external-sessions"
@@ -345,7 +347,7 @@ function isPackagedElectronCliRuntime(): boolean {
 function automationsCliEnabled(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+  return true;
 }
 
 function internalFeatureUnavailableHelp(title: string, message: string, enableEnv: string): string {
@@ -2066,6 +2068,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --role cto automations ingress set-url <https-url>
                                                      Save the public gateway URL
     $ ade --role cto automations ingress clear-url   Clear the public gateway URL
+    $ ade automations linear-ingress status [--text]  Show Linear webhook ingress status
+    $ ade --role cto automations linear-ingress connect
+                                                     Register the Linear webhook (CTO only)
+    $ ade --role cto automations linear-ingress disconnect
+                                                     Remove the Linear webhook (CTO only)
+    $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
+    $ ade automations cleanups list [--text]          List scheduled lane cleanups
+    $ ade automations cleanups cancel <id>            Cancel a scheduled lane cleanup
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
     $ ade automations example                       Print an example rule (stdout)
@@ -10270,6 +10280,71 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     );
   }
 
+  if (sub === "linear-ingress" || sub === "linear") {
+    const mode = firstPositional(args) ?? "status";
+    if (mode === "status" || mode === "show") {
+      return {
+        kind: "execute",
+        label: "automations linear-ingress status",
+        formatter: "automation-linear-ingress",
+        steps: [actionStep("result", "automations", "linearIngressGetStatus")],
+      };
+    }
+    if (mode === "connect" || mode === "setup" || mode === "enable") {
+      return {
+        kind: "execute",
+        label: "automations linear-ingress connect",
+        formatter: "automation-linear-ingress",
+        steps: [actionStep("result", "automations", "linearIngressSetup")],
+      };
+    }
+    if (mode === "disconnect" || mode === "teardown" || mode === "disable") {
+      return {
+        kind: "execute",
+        label: "automations linear-ingress disconnect",
+        formatter: "automation-linear-ingress",
+        steps: [actionStep("result", "automations", "linearIngressTeardown")],
+      };
+    }
+    if (mode === "poll" || mode === "poll-now" || mode === "sync") {
+      return {
+        kind: "execute",
+        label: "automations linear-ingress poll",
+        formatter: "automation-linear-ingress",
+        steps: [actionStep("result", "automations", "linearIngressPollNow")],
+      };
+    }
+    throw new CliUsageError(
+      "automations linear-ingress supports status, connect, disconnect, or poll.",
+    );
+  }
+
+  if (sub === "cleanups" || sub === "cleanup") {
+    const mode = firstPositional(args) ?? "list";
+    if (mode === "list" || mode === "ls") {
+      return {
+        kind: "execute",
+        label: "automations cleanups list",
+        formatter: "automation-cleanups",
+        steps: [actionStep("result", "automations", "listScheduledCleanups")],
+      };
+    }
+    if (mode === "cancel" || mode === "remove") {
+      const id = requireValue(
+        readValue(args, ["--id"]) ?? firstPositional(args),
+        "scheduled cleanup id",
+      );
+      return {
+        kind: "execute",
+        label: `automations cleanups cancel ${id}`,
+        steps: [actionStep("result", "automations", "cancelScheduledCleanup", { id })],
+      };
+    }
+    throw new CliUsageError(
+      "automations cleanups supports list or cancel <id>.",
+    );
+  }
+
   if (sub === "create") {
     const allowLegacy = readFlag(args, ["--allow-legacy"]);
     const raw = parseDraftInput(args);
@@ -10400,7 +10475,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   }
 
   throw new CliUsageError(
-    "automations supports list, show, create, update, delete, toggle, run, ingress, runs, run-show, or example.",
+    "automations supports list, show, create, update, delete, toggle, run, ingress, linear-ingress, cleanups, runs, run-show, or example.",
   );
 }
 
@@ -15162,6 +15237,39 @@ function formatAutomationIngress(value: unknown): string {
   return [gatewayLines, localLines, relayLines].filter(Boolean).join("\n\n");
 }
 
+function formatAutomationLinearIngress(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  return renderKeyValues("ADE Linear ingress", [
+    ["state", result.state],
+    ["appManaged", result.appManaged],
+    ["webhookId", result.webhookId],
+    ["organizationId", result.organizationId],
+    ["relayBaseUrl", result.relayBaseUrl],
+    ["lastEventAt", result.lastEventAt],
+    ["error", result.lastError],
+  ]);
+}
+
+function formatAutomationCleanups(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const cleanups = Array.isArray(result) ? result : [];
+  const rows = cleanups
+    .filter((entry): entry is JsonObject => isRecord(entry))
+    .map((entry) => [
+      entry.id,
+      entry.status,
+      entry.laneId,
+      entry.dueAt,
+      typeof entry.error === "string" ? entry.error : "",
+    ]);
+  return renderTable(
+    ["id", "status", "lane", "dueAt", "error"],
+    rows,
+    "(no scheduled cleanups)",
+  );
+}
+
 function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
@@ -16626,6 +16734,10 @@ function formatTextOutput(
       return formatAutomationRunDetail(value);
     case "automation-ingress":
       return formatAutomationIngress(value);
+    case "automation-linear-ingress":
+      return formatAutomationLinearIngress(value);
+    case "automation-cleanups":
+      return formatAutomationCleanups(value);
     case "search-results":
       return formatSearchResults(value);
     case "search-status":

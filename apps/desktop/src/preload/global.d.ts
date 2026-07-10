@@ -31,6 +31,8 @@ import type {
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
+  AutomationLinearIngressStatus,
+  AutomationScheduledCleanup,
   AutomationWebhookGatewayStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
@@ -993,6 +995,14 @@ declare global {
         simulate: (
           req: AutomationSimulateRequest,
         ) => Promise<AutomationSimulateResult>;
+        listScheduledCleanups: () => Promise<AutomationScheduledCleanup[]>;
+        cancelScheduledCleanup: (id: string) => Promise<boolean>;
+        linearIngress: {
+          getStatus: () => Promise<AutomationLinearIngressStatus>;
+          setup: () => Promise<AutomationLinearIngressStatus>;
+          teardown: () => Promise<AutomationLinearIngressStatus>;
+          pollNow: () => Promise<AutomationLinearIngressStatus>;
+        };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
       review: {

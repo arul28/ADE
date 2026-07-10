@@ -68,6 +68,8 @@ import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
+import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
+import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -225,6 +227,7 @@ export type AdeRuntime = {
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
@@ -271,7 +274,7 @@ const currentModulePath =
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutRuntimeModule(currentModulePath);
+  return true;
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
@@ -1116,6 +1119,52 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  const linearIngressService = automationService
+    ? createLinearIngressService({
+        db,
+        projectId,
+        credentialStore: new EncryptedFileCredentialStore({
+          secretsDir: path.join(paths.adeDir, "secrets"),
+        }),
+        getLinearClient: () => headlessLinearServices.linearClient,
+        getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
+        cursorStore: createKvIngressCursorStore(db),
+        hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+        isAdeAppConnection: () => {
+          const credentials = headlessLinearServices.linearCredentialService;
+          return credentials.getStatus().authMode === "oauth"
+            && credentials.getOAuthClientSource() === "ade-app";
+        },
+        dispatch: async (record) => {
+          if (!automationService) return;
+          // Rule dispatch is awaited so the relay cursor only advances once
+          // every trigger for the delivery has been handed to the engine; a
+          // failing rule logs and never wedges polling.
+          await Promise.all(buildLinearAutomationDispatches(record).map((dispatch) =>
+            automationService!.dispatchIngressTrigger(dispatch).catch((error) => {
+              logger.warn("automations.linear_relay_dispatch_failed", {
+                eventId: record.eventId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }),
+          ));
+        },
+        logger,
+      })
+    : null;
+  if (linearIngressService) {
+    // Availability keys off configuration, not the enabled-rule-dependent
+    // status.state ("disabled" while no Linear rule is enabled would make
+    // enabling the first Linear rule impossible).
+    automationService?.setLinearIngressAvailable(() => {
+      const status = linearIngressService.getStatus();
+      // App-connected workspaces are available before first setup: events
+        // already reach the relay, and enabling the first linear.* rule is
+        // what triggers the self-configuring poll.
+        return Boolean(status.appManaged || (status.webhookId && status.organizationId && !status.lastError));
+    });
+    linearIngressService.start();
+  }
   const configReloadService = createConfigReloadService({
     paths: {
       sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1537,6 +1586,7 @@ export async function createAdeRuntime(args: {
     budgetCapService,
     automationService,
     automationIngressService,
+    linearIngressService,
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
@@ -1557,6 +1607,7 @@ export async function createAdeRuntime(args: {
       // one project must not sever the relay for the others. The daemon's
       // shutdown path (disposeServeResources) stops it.
       swallow(() => automationIngressService?.dispose());
+      swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
       swallow(() => syncService?.dispose());

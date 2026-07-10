@@ -1,17 +1,18 @@
 import { type ReactElement, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AutomationRuleDraft } from "../../../shared/types";
-import { RulesTab } from "./RulesTab";
+import { AutomationsWorkspace } from "./AutomationsWorkspace";
 import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
+import { takeTemplateDraft } from "./templates/draftHandoff";
 
-type AppPackagingState = "checking" | "packaged" | "dev";
+type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
-function useAppPackagingState(): AppPackagingState {
-  const [state, setState] = useState<AppPackagingState>("checking");
+function useAutomationsAvailabilityState(): AutomationsAvailabilityState {
+  const [state, setState] = useState<AutomationsAvailabilityState>("checking");
 
   useEffect(() => {
     let cancelled = false;
-    let probe: Promise<{ isPackaged: boolean }> | null = null;
+    let probe: Promise<{ isPackaged: boolean; automationsEnabled?: boolean }> | null = null;
     try {
       const getInfo = window.ade?.app?.getInfo;
       probe = typeof getInfo === "function" ? getInfo() : null;
@@ -19,17 +20,20 @@ function useAppPackagingState(): AppPackagingState {
       probe = null;
     }
     if (!probe) {
-      setState("dev");
+      setState("enabled");
       return () => {
         cancelled = true;
       };
     }
     probe.then(
       (info) => {
-        if (!cancelled) setState(info.isPackaged ? "packaged" : "dev");
+        if (cancelled) return;
+        // Older runtimes without the flag fall back to the pre-flag rule.
+        const enabled = info.automationsEnabled ?? !info.isPackaged;
+        setState(enabled ? "enabled" : "disabled");
       },
       () => {
-        if (!cancelled) setState("dev");
+        if (!cancelled) setState("enabled");
       },
     );
     return () => {
@@ -41,22 +45,20 @@ function useAppPackagingState(): AppPackagingState {
 }
 
 export function AutomationsProductionGate({ children }: { children: ReactElement }) {
-  const state = useAppPackagingState();
+  const state = useAutomationsAvailabilityState();
 
   if (state === "checking") {
     return (
-      <div className="flex h-full min-w-0 flex-col bg-[#0D0F12]">
+      <div className="flex h-full min-w-0 flex-col bg-bg">
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
           <div className="h-4 w-48 animate-pulse rounded-md bg-white/[0.06]" />
-          <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#7D8794]">
-            Checking automation availability...
-          </div>
+          <div className="text-[11px] font-medium text-muted-fg/60">Checking automation availability…</div>
         </div>
       </div>
     );
   }
 
-  if (state === "packaged") return <ProductionAutomationsComingSoon />;
+  if (state === "disabled") return <ProductionAutomationsComingSoon />;
 
   return children;
 }
@@ -70,9 +72,16 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     console.info(`renderer.page ${JSON.stringify({ page: "automations" })}`);
   }, []);
 
-  // Templates screen navigates here with { draft } in location state to seed a new rule.
+  // The templates screen stashes its draft in the module mailbox (the tab
+  // host strips location.state — see templates/draftHandoff.ts). Keep the
+  // location.state read as a fallback for direct navigations outside the host.
   useEffect(() => {
     if (!active) return;
+    const stashed = takeTemplateDraft();
+    if (stashed) {
+      setPendingDraft(stashed);
+      return;
+    }
     const state = location.state as { draft?: AutomationRuleDraft } | null;
     if (state?.draft) {
       setPendingDraft(state.draft);
@@ -85,7 +94,7 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     <AutomationsProductionGate>
       <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
         <div className="flex-1 min-h-0 overflow-hidden">
-          <RulesTab
+          <AutomationsWorkspace
             active={active}
             pendingDraft={pendingDraft}
             onDraftConsumed={() => setPendingDraft(null)}

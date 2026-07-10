@@ -149,6 +149,8 @@ import { createAutomationPlannerService } from "./services/automations/automatio
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
+import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
+import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
@@ -2964,10 +2966,11 @@ app.whenReady().then(async () => {
     });
     githubRelaySecretService = automationSecretService;
 
+    const linearCredentialStore = createDesktopCredentialStore(path.join(adePaths.adeDir, "secrets"));
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
       logger,
-      credentialStore: createDesktopCredentialStore(path.join(adePaths.adeDir, "secrets")),
+      credentialStore: linearCredentialStore,
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -3153,8 +3156,51 @@ app.whenReady().then(async () => {
           logger,
           githubService,
           automationService,
+          hasEnabledGithubRules: () => automationService?.hasEnabledGithubRules() ?? false,
         })
       : null;
+
+    const linearIngressService = automationService
+      ? createLinearIngressService({
+          db,
+          projectId,
+          credentialStore: linearCredentialStore,
+          getLinearClient: () => linearClient,
+          getLinearAccessToken: createLinearAccessTokenGetter(linearCredentialService),
+          cursorStore: createKvIngressCursorStore(db),
+          hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+          isAdeAppConnection: () =>
+            linearCredentialService.getStatus().authMode === "oauth"
+            && linearCredentialService.getOAuthClientSource() === "ade-app",
+          dispatch: async (record) => {
+            if (!automationService) return;
+            // Rule dispatch is awaited so the relay cursor only advances once
+            // every trigger for the delivery has been handed to the engine; a
+            // failing rule logs and never wedges polling.
+            await Promise.all(buildLinearAutomationDispatches(record).map((dispatch) =>
+              automationService!.dispatchIngressTrigger(dispatch).catch((error) => {
+                logger.warn("automations.linear_relay_dispatch_failed", {
+                  eventId: record.eventId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }),
+            ));
+          },
+          logger,
+        })
+      : null;
+    if (linearIngressService) {
+      // Availability keys off configuration, not the enabled-rule-dependent
+      // status.state ("disabled" while no Linear rule is enabled would make
+      // enabling the first Linear rule impossible).
+      automationService?.setLinearIngressAvailable(() => {
+        const status = linearIngressService.getStatus();
+        // App-connected workspaces are available before first setup: events
+        // already reach the relay, and enabling the first linear.* rule is
+        // what triggers the self-configuring poll.
+        return Boolean(status.appManaged || (status.webhookId && status.organizationId && !status.lastError));
+      });
+    }
 
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
@@ -3617,6 +3663,20 @@ app.whenReady().then(async () => {
       );
     }
 
+    if (linearIngressService) {
+      scheduleBackgroundProjectTask(
+        "automations.linear_ingress_start",
+        () => linearIngressService.start(),
+        (error) => {
+          logger.warn("automations.linear_ingress_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        0,
+        "ADE_ENABLE_AUTOMATION_INGRESS",
+      );
+    }
+
     if (githubPollingService) {
       scheduleBackgroundProjectTask(
         "automations.github_polling_start",
@@ -3863,6 +3923,7 @@ app.whenReady().then(async () => {
       syncHostService: syncService.getHostService(),
       syncService,
       automationIngressService,
+      linearIngressService,
       feedbackReporterService,
       usageTrackingService,
       budgetCapService,
@@ -4116,6 +4177,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       automationIngressService,
+      linearIngressService,
       githubPollingService,
       usageTrackingService,
       budgetCapService,
@@ -4300,6 +4362,7 @@ app.whenReady().then(async () => {
       automationService: null,
       automationPlannerService: null,
       automationIngressService: null,
+      linearIngressService: null,
       githubPollingService: null,
       usageTrackingService,
       budgetCapService: null,
@@ -4394,6 +4457,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationIngressService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.linearIngressService?.stop();
     } catch {
       // ignore
     }

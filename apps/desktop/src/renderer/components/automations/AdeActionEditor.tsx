@@ -110,7 +110,7 @@ export function AdeActionEditor({
           onToggleJson={() => setShowJson((current) => !current)}
         />
       ) : (
-        <div className="rounded-lg border border-white/[0.12] bg-[#111C2B] px-3 py-3 text-[11px] text-[#AFC0D4]">
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-[11px] text-muted-fg/70">
           Pick a domain and action to fill in its parameters.
         </div>
       )}
@@ -186,14 +186,14 @@ function ActionPicker({
 
   const summary = value.domain && value.action ? (
     <span className="flex items-center gap-2 truncate">
-      <Code size={12} weight="bold" className="text-[#A78BFA]" />
-      <span className="truncate text-[12px] font-semibold text-[#F5FAFF]">{currentLabel}</span>
-      <span className="truncate text-[11px] text-[#AFC0D4]">
+      <Code size={12} weight="bold" className="text-accent" />
+      <span className="truncate text-[12px] font-semibold text-fg">{currentLabel}</span>
+      <span className="truncate text-[11px] text-muted-fg/70">
         {value.domain}.{value.action}
       </span>
     </span>
   ) : (
-    <span className="flex items-center gap-2 text-[12px] text-[#AFC0D4]">
+    <span className="flex items-center gap-2 text-[12px] text-muted-fg/70">
       <MagnifyingGlass size={12} weight="bold" />
       Search ADE actions…
     </span>
@@ -207,34 +207,34 @@ function ActionPicker({
         className={cn(
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 transition-colors",
           open
-            ? "border-[#A78BFA]/45 bg-[#1B2A40]"
-            : "border-white/[0.12] bg-[#111C2B] hover:border-white/[0.20] hover:bg-[#152235]",
+            ? "border-accent/45 bg-white/[0.04]"
+            : "border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.04]",
         )}
       >
         {summary}
         <CaretDown
           size={11}
           weight="bold"
-          className={cn("shrink-0 text-[#8FA1B8] transition-transform", open && "rotate-180")}
+          className={cn("shrink-0 text-muted-fg/70 transition-transform", open && "rotate-180")}
         />
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 z-30 mt-1.5 max-h-[420px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#162235] shadow-2xl">
-          <div className="flex items-center gap-2 border-b border-white/[0.10] bg-[#1B2A40] px-2.5 py-2">
-            <MagnifyingGlass size={11} weight="bold" className="text-[#8FA1B8]" />
+        <div className="absolute left-0 right-0 z-30 mt-1.5 max-h-[420px] overflow-hidden rounded-xl border border-white/[0.08] bg-surface-overlay shadow-2xl">
+          <div className="flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.04] px-2.5 py-2">
+            <MagnifyingGlass size={11} weight="bold" className="text-muted-fg/70" />
             <input
               autoFocus
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by domain, action, or description"
-              className="flex-1 bg-transparent text-[12px] text-[#F5FAFF] placeholder:text-[#94A3B8] focus:outline-none"
+              className="flex-1 bg-transparent text-[12px] text-fg placeholder:text-muted-fg/55 focus:outline-none"
             />
             {search ? (
               <button
                 type="button"
                 onClick={() => setSearch("")}
-                className="rounded p-0.5 text-[#8FA1B8] hover:text-[#F5FAFF]"
+                className="rounded p-0.5 text-muted-fg/70 hover:text-fg"
               >
                 <X size={11} weight="bold" />
               </button>
@@ -242,13 +242,13 @@ function ActionPicker({
           </div>
           <div className="max-h-[360px] overflow-y-auto p-1">
             {grouped.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[11px] text-[#AFC0D4]">
+              <div className="px-3 py-4 text-center text-[11px] text-muted-fg/70">
                 No actions match "{search}".
               </div>
             ) : (
               grouped.map(([domain, items]) => (
                 <div key={domain} className="mb-1">
-                  <div className="px-2 pb-1 pt-1.5 text-[9px] font-semibold uppercase tracking-[1.5px] text-[#5FA0E0]">
+                  <div className="px-2 pb-1 pt-1.5 text-[9px] font-semibold uppercase tracking-[1.5px] text-accent">
                     {domain}
                   </div>
                   {items.map((item) => {
@@ -264,17 +264,17 @@ function ActionPicker({
                         }}
                         className={cn(
                           "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
-                          active ? "bg-[#A78BFA]/15" : "hover:bg-[#1E2D42]",
+                          active ? "bg-accent/15" : "hover:bg-white/[0.05]",
                         )}
                       >
-                        <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[#A78BFA]" />
+                        <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-1.5">
-                            <span className="text-[12px] font-medium text-[#F5FAFF]">{item.label}</span>
-                            <span className="text-[10px] text-[#AFC0D4]">{item.action}</span>
+                            <span className="text-[12px] font-medium text-fg">{item.label}</span>
+                            <span className="text-[10px] text-muted-fg/70">{item.action}</span>
                           </span>
                           {item.description ? (
-                            <span className="mt-0.5 block text-[10.5px] leading-snug text-[#AFC0D4]">
+                            <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/70">
                               {item.description}
                             </span>
                           ) : null}
@@ -329,14 +329,14 @@ function ActionParamsEditor({
       {schema && schema.params.length > 0 ? (
         <>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">
-              <Sparkle size={10} weight="fill" className="text-[#A78BFA]" />
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[1px] text-muted-fg/70">
+              <Sparkle size={10} weight="fill" className="text-accent" />
               Parameters
             </div>
             <button
               type="button"
               onClick={onToggleJson}
-              className="text-[10px] text-[#7DD3FC] hover:text-[#F5FAFF]"
+              className="text-[10px] text-accent hover:text-fg"
             >
               {showJson ? "Hide JSON" : "Edit raw JSON"}
             </button>
@@ -353,11 +353,11 @@ function ActionParamsEditor({
           </div>
         </>
       ) : (
-        <div className="rounded-lg border border-white/[0.12] bg-[#111C2B] px-3 py-2.5 text-[11px] text-[#AFC0D4]">
-          <span className="block text-[#D8E3F2]">
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 text-[11px] text-muted-fg/70">
+          <span className="block text-fg/85">
             {schema?.description ?? "No structured form for this action yet."}
           </span>
-          <span className="mt-1 block text-[#AFC0D4]">Pass arguments as JSON below.</span>
+          <span className="mt-1 block text-muted-fg/70">Pass arguments as JSON below.</span>
         </div>
       )}
 
@@ -368,9 +368,9 @@ function ActionParamsEditor({
       ) : null}
 
       {schema ? (
-        <div className="flex items-center gap-1.5 text-[10px] text-[#AFC0D4]">
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-fg/70">
           <ArrowSquareOut size={10} weight="bold" />
-          Maps to <span className="font-mono text-[#9FB2C7]">ade {value.domain} {value.action}</span>
+          Maps to <span className="font-mono text-muted-fg/70">ade {value.domain} {value.action}</span>
         </div>
       ) : null}
     </div>
@@ -388,12 +388,12 @@ function ParamField({
 }) {
   const labelEl = (
     <div className="flex items-baseline justify-between">
-      <span className="text-[10.5px] font-semibold text-[#D8E3F2]">
+      <span className="text-[10.5px] font-semibold text-fg/85">
         {param.name}
-        {param.required ? <span className="ml-0.5 text-[#F472B6]">*</span> : null}
+        {param.required ? <span className="ml-0.5 text-accent">*</span> : null}
       </span>
       {param.description ? (
-        <span className="ml-2 truncate text-[10px] text-[#AFC0D4]" title={param.description}>
+        <span className="ml-2 truncate text-[10px] text-muted-fg/70" title={param.description}>
           {param.description}
         </span>
       ) : null}
@@ -403,14 +403,14 @@ function ParamField({
   if (param.type === "boolean") {
     const checked = value === true;
     return (
-      <label className="flex cursor-pointer items-center justify-between rounded-md border border-white/[0.12] bg-[#111C2B] px-3 py-2 text-[11px] text-[#D8E3F2] hover:border-white/[0.20]">
+      <label className="flex cursor-pointer items-center justify-between rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-fg/85 hover:border-white/[0.14]">
         <span className="min-w-0 flex-1">
-          <span className="block text-[10.5px] font-semibold text-[#D8E3F2]">
+          <span className="block text-[10.5px] font-semibold text-fg/85">
             {param.name}
-            {param.required ? <span className="ml-0.5 text-[#F472B6]">*</span> : null}
+            {param.required ? <span className="ml-0.5 text-accent">*</span> : null}
           </span>
           {param.description ? (
-            <span className="mt-0.5 block text-[10px] text-[#AFC0D4]">{param.description}</span>
+            <span className="mt-0.5 block text-[10px] text-muted-fg/70">{param.description}</span>
           ) : null}
         </span>
         <input
@@ -422,7 +422,7 @@ function ParamField({
             if (event.target.checked) onChange(true);
             else onChange(param.required ? false : undefined);
           }}
-          className="ml-2 h-3.5 w-3.5 accent-[#7DD3FC]"
+          className="ml-2 h-3.5 w-3.5 accent-accent"
         />
       </label>
     );
@@ -548,8 +548,8 @@ function PlaceholderRow() {
     }
   };
   return (
-    <details className="rounded-md border border-white/[0.12] bg-[#111C2B] px-2.5 py-1.5 text-[10px]">
-      <summary className="cursor-pointer text-[10px] uppercase tracking-[1px] text-[#8FA1B8] hover:text-[#D8E3F2]">
+    <details className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[10px]">
+      <summary className="cursor-pointer text-[10px] uppercase tracking-[1px] text-muted-fg/70 hover:text-fg/85">
         Trigger variables — click to copy
       </summary>
       <div className="mt-2 flex flex-wrap gap-1">
@@ -561,7 +561,7 @@ function PlaceholderRow() {
               "rounded border px-1.5 py-0.5 text-[10px] transition-colors",
               copied === placeholder.value
                 ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                : "border-[#35506B] bg-[#0F1B2A] text-[#9FB2C7] hover:border-[#5FA0E0] hover:text-[#F5FAFF]",
+                : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70 hover:border-accent/40 hover:text-fg",
             )}
             onClick={() => void copy(placeholder.value)}
             title={placeholder.value}
@@ -618,7 +618,7 @@ function JsonArgsEditor({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Raw arguments (JSON)</span>
+        <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">Raw arguments (JSON)</span>
         {parseError ? (
           <span className="text-[10px] text-amber-300">{parseError}</span>
         ) : null}

@@ -84,6 +84,8 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
 ];
 const AUTOMATION_TRIGGER_TYPE_SET = new Set<string>(AUTOMATION_TRIGGER_TYPES);
 const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
+  "create-lane",
+  "delete-lane",
   "agent-session",
   "predict-conflicts",
   "run-tests",
@@ -596,8 +598,26 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const cwd = asString(value.cwd);
   const condition = asString(value.condition);
   const continueOnFailure = asBool(value.continueOnFailure);
+  const alwaysRun = asBool(value.alwaysRun);
   const timeoutMs = asNumber(value.timeoutMs);
   const retry = asNumber(value.retry);
+  const afterMinutes = asNumber(value.afterMinutes);
+  const laneNameTemplate = asString(value.laneNameTemplate);
+  const laneDescriptionTemplate = asString(value.laneDescriptionTemplate);
+  const parentLaneId = asString(value.parentLaneId)?.trim();
+  const laneDeleteOptions = isRecord(value.laneDeleteOptions)
+    ? {
+        ...(asBool(value.laneDeleteOptions.deleteBranch) != null
+          ? { deleteBranch: asBool(value.laneDeleteOptions.deleteBranch) }
+          : {}),
+        ...(asBool(value.laneDeleteOptions.deleteRemoteBranch) != null
+          ? { deleteRemoteBranch: asBool(value.laneDeleteOptions.deleteRemoteBranch) }
+          : {}),
+        ...(asBool(value.laneDeleteOptions.force) != null
+          ? { force: asBool(value.laneDeleteOptions.force) }
+          : {}),
+      }
+    : undefined;
   const adeAction = coerceRunAdeActionConfig(value.adeAction);
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
@@ -611,8 +631,14 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (cwd != null) out.cwd = cwd;
   if (condition != null) out.condition = condition;
   if (continueOnFailure != null) out.continueOnFailure = continueOnFailure;
+  if (alwaysRun != null) out.alwaysRun = alwaysRun;
   if (timeoutMs != null) out.timeoutMs = timeoutMs;
   if (retry != null) out.retry = retry;
+  if (afterMinutes != null) out.afterMinutes = afterMinutes;
+  if (laneNameTemplate != null) out.laneNameTemplate = laneNameTemplate;
+  if (laneDescriptionTemplate != null) out.laneDescriptionTemplate = laneDescriptionTemplate;
+  if (parentLaneId) out.parentLaneId = parentLaneId;
+  if (laneDeleteOptions && Object.keys(laneDeleteOptions).length > 0) out.laneDeleteOptions = laneDeleteOptions;
   if (adeAction != null) out.adeAction = adeAction;
   if (prompt != null) out.prompt = prompt;
   if (sessionTitle != null) out.sessionTitle = sessionTitle;
@@ -2440,8 +2466,14 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
         ...(action.condition ? { condition: action.condition.trim() } : {}),
         ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+        ...(action.alwaysRun != null ? { alwaysRun: action.alwaysRun } : {}),
         ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
         ...(action.retry != null ? { retry: action.retry } : {}),
+        ...(action.afterMinutes != null ? { afterMinutes: action.afterMinutes } : {}),
+        ...(action.laneDeleteOptions ? { laneDeleteOptions: action.laneDeleteOptions } : {}),
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
+        ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
         ...(action.adeAction ? { adeAction: action.adeAction } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
@@ -2457,8 +2489,14 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
             ...(action.condition ? { condition: action.condition.trim() } : {}),
             ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+            ...(action.alwaysRun != null ? { alwaysRun: action.alwaysRun } : {}),
             ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
             ...(action.retry != null ? { retry: action.retry } : {}),
+            ...(action.afterMinutes != null ? { afterMinutes: action.afterMinutes } : {}),
+            ...(action.laneDeleteOptions ? { laneDeleteOptions: action.laneDeleteOptions } : {}),
+            ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+            ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
+            ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
             ...(action.adeAction ? { adeAction: action.adeAction } : {}),
             ...(action.prompt ? { prompt: action.prompt } : {}),
             ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),

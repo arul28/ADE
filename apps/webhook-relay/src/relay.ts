@@ -6,6 +6,14 @@ export type RelayEnv = {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_API_BASE_URL?: string;
+  LINEAR_API_BASE_URL?: string;
+  /**
+   * Signing secret of the ADE Linear OAuth application. OAuth-app webhooks
+   * sign every workspace's deliveries with this one app-level secret (unlike
+   * workspace webhooks, which each carry a per-organization secret registered
+   * in D1). Optional until the ADE Linear app exists.
+   */
+  LINEAR_APP_WEBHOOK_SECRET?: string;
 };
 
 type GitHubEventRow = {
@@ -23,6 +31,23 @@ type CursorRow = {
   event_seq: number;
   event_id: string;
 };
+
+type LinearEventRow = {
+  event_seq: number;
+  event_id: string;
+  event_type: string;
+  action: string;
+  received_at: string;
+  body: string;
+};
+
+type LinearOrganizationRow = {
+  webhook_secret: string;
+};
+
+type LinearViewerOrganizationResult =
+  | { authorized: true; organizationId: string }
+  | { authorized: false; response: Response };
 
 type GitHubRepoAccessStatus =
   | {
@@ -86,9 +111,17 @@ const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 500;
 const DEFAULT_RETENTION_DAYS = 30;
 const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
+const MAX_LINEAR_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const MAX_LINEAR_REGISTRATION_BODY_BYTES = 16 * 1024;
+const MAX_LINEAR_WEBHOOK_SECRET_LENGTH = 512;
+const LINEAR_WEBHOOK_REPLAY_WINDOW_MS = 60_000;
+const LINEAR_AUTH_CACHE_TTL_MS = 5 * 60_000;
+const MAX_LINEAR_AUTH_CACHE_ENTRIES = 1_000;
 const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
 const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
 const encoder = new TextEncoder();
+const linearOrganizationByTokenHash = new Map<string, { organizationId: string; expiresAt: number }>();
+const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
 
 function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -222,6 +255,18 @@ export async function signGitHubWebhookBody(secret: string, body: string | Array
   return `sha256=${toHex(digest)}`;
 }
 
+export async function signLinearWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const data = typeof body === "string" ? encoder.encode(body) : body;
+  return toHex(await crypto.subtle.sign("HMAC", key, data));
+}
+
 async function verifyGitHubSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
   if (!secret.trim()) return false;
   if (!signature.startsWith("sha256=")) return false;
@@ -229,8 +274,14 @@ async function verifyGitHubSignature(secret: string, body: ArrayBuffer, signatur
   return constantTimeEqual(expected, signature);
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  return toHex(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+async function verifyLinearSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
+  if (!secret.trim() || !/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const expected = await signLinearWebhookBody(secret, body);
+  return constantTimeEqual(expected.toLowerCase(), signature.toLowerCase());
+}
+
+async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
+  return toHex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? encoder.encode(value) : value));
 }
 
 async function createGitHubAppJwt(appId: string, privateKey: string): Promise<string> {
@@ -290,6 +341,15 @@ function routeProject(pathname: string): { projectId: string; action: "webhook" 
   return null;
 }
 
+function routeLinearOrganizationEvents(pathname: string): { organizationId: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length !== 4 || parts[0] !== "linear" || parts[1] !== "orgs" || parts[3] !== "events") {
+    return null;
+  }
+  const organizationId = decodeURIComponent(parts[2] ?? "").trim();
+  return organizationId ? { organizationId } : null;
+}
+
 function routeRepoEvents(pathname: string): { owner: string; name: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "events") {
@@ -332,6 +392,85 @@ function readBearerToken(request: Request): string {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(header);
   return match?.[1]?.trim() ?? "";
+}
+
+function readAuthorizationHeader(request: Request): string {
+  return request.headers.get("authorization")?.trim() ?? "";
+}
+
+function linearGraphqlUrl(env: RelayEnv): string {
+  const configured = env.LINEAR_API_BASE_URL?.trim() || "https://api.linear.app/graphql";
+  const url = new URL(configured);
+  if (url.pathname === "/") url.pathname = "/graphql";
+  return url.toString();
+}
+
+async function verifyLinearViewerOrganization(
+  request: Request,
+  env: RelayEnv,
+): Promise<LinearViewerOrganizationResult> {
+  const authorization = readAuthorizationHeader(request);
+  if (!authorization) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Linear authorization token is required" }, { status: 401 }),
+    };
+  }
+
+  const tokenHash = await sha256Hex(authorization);
+  const cached = linearOrganizationByTokenHash.get(tokenHash);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { authorized: true, organizationId: cached.organizationId };
+  }
+  if (cached) linearOrganizationByTokenHash.delete(tokenHash);
+
+  let response: Response;
+  try {
+    response = await fetch(linearGraphqlUrl(env), {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "query { viewer { organization { id } } }" }),
+    });
+  } catch {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Linear authorization check failed" }, { status: 502 }),
+    };
+  }
+
+  const payload = await response.json().catch(() => null) as unknown;
+  const record = isRecord(payload) ? payload : null;
+  const data = readNested(record, "data");
+  const viewer = readNested(data, "viewer");
+  const organization = readNested(viewer, "organization");
+  const organizationId = readString(organization, "id");
+  if (!response.ok || !organizationId || (Array.isArray(record?.errors) && record.errors.length > 0)) {
+    const status = response.status === 401 || response.status === 403 || response.ok ? 401 : 502;
+    return {
+      authorized: false,
+      response: json({ ok: false, error: status === 401 ? "Invalid Linear authorization token" : "Linear authorization check failed" }, { status }),
+    };
+  }
+
+  linearOrganizationByTokenHash.set(tokenHash, {
+    organizationId,
+    expiresAt: Date.now() + LINEAR_AUTH_CACHE_TTL_MS,
+  });
+  if (linearOrganizationByTokenHash.size > MAX_LINEAR_AUTH_CACHE_ENTRIES) {
+    const now = Date.now();
+    for (const [hash, entry] of linearOrganizationByTokenHash) {
+      if (entry.expiresAt <= now) linearOrganizationByTokenHash.delete(hash);
+    }
+    while (linearOrganizationByTokenHash.size > MAX_LINEAR_AUTH_CACHE_ENTRIES) {
+      const oldest = linearOrganizationByTokenHash.keys().next().value as string | undefined;
+      if (!oldest) break;
+      linearOrganizationByTokenHash.delete(oldest);
+    }
+  }
+  return { authorized: true, organizationId };
 }
 
 function assertRelayAuthorized(request: Request, env: RelayEnv): Response | null {
@@ -1392,10 +1531,305 @@ async function handleRepoStatus(request: Request, env: RelayEnv, repo: { project
   });
 }
 
+// Only workspace admins (or OAuth tokens carrying the admin scope) may read
+// webhooks in Linear. Probing that read is how registration proves the caller
+// has webhook authority — without it, any workspace member's token could
+// overwrite the org's signing secret and silently break ingest verification.
+async function verifyLinearWebhookAuthority(
+  request: Request,
+  env: RelayEnv,
+): Promise<{ authorized: true } | { authorized: false; response: Response }> {
+  const authorization = readAuthorizationHeader(request);
+  const tokenHash = await sha256Hex(authorization);
+  const cached = linearWebhookAuthorityByTokenHash.get(tokenHash);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { authorized: true };
+  }
+  if (cached) linearWebhookAuthorityByTokenHash.delete(tokenHash);
+  let response: Response;
+  try {
+    response = await fetch(linearGraphqlUrl(env), {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "query { webhooks(first: 1) { nodes { id } } }" }),
+    });
+  } catch {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Unable to verify Linear webhook authority" }, { status: 502 }),
+    };
+  }
+  const payload = await response.json().catch(() => null) as { data?: { webhooks?: unknown }; errors?: unknown[] } | null;
+  if (!response.ok || !payload || Array.isArray(payload.errors) && payload.errors.length > 0 || payload.data?.webhooks == null) {
+    return {
+      authorized: false,
+      response: json(
+        { ok: false, error: "Linear webhook authority required (workspace admin or admin-scoped token)" },
+        { status: 403 },
+      ),
+    };
+  }
+  linearWebhookAuthorityByTokenHash.set(tokenHash, { expiresAt: Date.now() + 5 * 60_000 });
+  return { authorized: true };
+}
+
+async function handleLinearOrganizationRegister(request: Request, env: RelayEnv): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  const auth = await verifyLinearViewerOrganization(request, env);
+  if (!auth.authorized) return auth.response;
+  const authority = await verifyLinearWebhookAuthority(request, env);
+  if (!authority.authorized) return authority.response;
+  if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_REGISTRATION_BODY_BYTES)) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_LINEAR_REGISTRATION_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    payload = parsed;
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+
+  const secret = typeof payload.secret === "string" ? payload.secret.trim() : "";
+  if (!secret) return json({ ok: false, error: "secret is required" }, { status: 400 });
+  if (secret.length > MAX_LINEAR_WEBHOOK_SECRET_LENGTH) {
+    return json({ ok: false, error: `secret must be at most ${MAX_LINEAR_WEBHOOK_SECRET_LENGTH} characters` }, { status: 400 });
+  }
+
+  const now = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert into linear_organizations(org_id, webhook_secret, registered_at, updated_at)
+      values (?, ?, ?, ?)
+      on conflict(org_id) do update set
+        webhook_secret = excluded.webhook_secret,
+        updated_at = excluded.updated_at
+    `)
+    .bind(auth.organizationId, secret, now, now)
+    .run();
+
+  return json({ organizationId: auth.organizationId });
+}
+
+async function pruneOldLinearEvents(env: RelayEnv): Promise<void> {
+  const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
+  const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from linear_events where received_at < ?")
+    .bind(cutoff)
+    .run();
+}
+
+async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_WEBHOOK_BODY_BYTES)) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_LINEAR_WEBHOOK_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
+  const rawBody = new TextDecoder().decode(body);
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    payload = parsed;
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+
+  const organizationId = readString(payload, "organizationId");
+  if (!organizationId) return json({ ok: false, error: "organizationId is required" }, { status: 400 });
+  const organization = await env.DB
+    .prepare("select webhook_secret from linear_organizations where org_id = ? limit 1")
+    .bind(organizationId)
+    .first<LinearOrganizationRow>();
+
+  // Two legitimate signers: the per-organization secret registered by a
+  // workspace webhook, and the ADE Linear OAuth app's single app-level
+  // secret (Linear signs every workspace's app deliveries with it, so app
+  // deliveries need no prior per-org registration).
+  const signature = request.headers.get("linear-signature")?.trim() ?? "";
+  const appSecret = env.LINEAR_APP_WEBHOOK_SECRET?.trim() || null;
+  const signedByOrganization = organization
+    ? await verifyLinearSignature(organization.webhook_secret, body, signature)
+    : false;
+  const signedByApp = !signedByOrganization && appSecret
+    ? await verifyLinearSignature(appSecret, body, signature)
+    : false;
+  if (!signedByOrganization && !signedByApp) {
+    if (!organization) {
+      // Indistinguishable from an accepted delivery so unauthenticated callers
+      // cannot probe which organizations have registered ADE ingestion. Nothing
+      // is stored; the registration status endpoint is the debugging surface.
+      return json({ ok: true });
+    }
+    return json({ ok: false, error: "signature mismatch" }, { status: 401 });
+  }
+
+  const webhookTimestamp = typeof payload.webhookTimestamp === "number"
+    ? payload.webhookTimestamp
+    : Number(payload.webhookTimestamp);
+  if (!Number.isFinite(webhookTimestamp) || Math.abs(Date.now() - webhookTimestamp) > LINEAR_WEBHOOK_REPLAY_WINDOW_MS) {
+    return json({ ok: false, error: "stale webhook timestamp" }, { status: 401 });
+  }
+
+  const eventType = request.headers.get("linear-event")?.trim() || readString(payload, "type");
+  const action = readString(payload, "action");
+  if (!eventType || !action) {
+    return json({ ok: false, error: "event type and action are required" }, { status: 400 });
+  }
+  const eventId = request.headers.get("linear-delivery")?.trim() || `sha256:${await sha256Hex(body)}`;
+  const existing = await env.DB
+    .prepare("select event_id from linear_events where org_id = ? and event_id = ? limit 1")
+    .bind(organizationId, eventId)
+    .first<{ event_id: string }>();
+  if (existing) return json({ ok: true, duplicate: true, eventId });
+
+  const receivedAt = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert or ignore into linear_events(org_id, event_id, event_type, action, received_at, body)
+      values (?, ?, ?, ?, ?, ?)
+    `)
+    .bind(organizationId, eventId, eventType, action, receivedAt, rawBody)
+    .run();
+  await pruneOldLinearEvents(env);
+
+  return json({ ok: true, duplicate: false, eventId });
+}
+
+function linearRowToEvent(row: LinearEventRow): Record<string, unknown> {
+  const cursor = `seq:${Math.max(0, Math.trunc(Number(row.event_seq) || 0))}`;
+  return {
+    cursor,
+    eventId: row.event_id,
+    eventType: row.event_type,
+    action: row.action,
+    createdAt: row.received_at,
+    body: row.body,
+  };
+}
+
+function nextLinearCursor(rows: LinearEventRow[], fallback: string): string | null {
+  const latest = rows.reduce((max, row) => Math.max(max, Math.trunc(Number(row.event_seq) || 0)), 0);
+  return latest > 0 ? `seq:${latest}` : fallback || null;
+}
+
+async function handleListLinearEvents(
+  request: Request,
+  env: RelayEnv,
+  organizationId: string,
+): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const auth = await verifyLinearViewerOrganization(request, env);
+  if (!auth.authorized) return auth.response;
+  if (auth.organizationId !== organizationId) {
+    return json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  // Membership alone must not expose the org-wide backlog: app-delivered
+  // events can include private-team payloads a plain member cannot see in
+  // Linear. Reads require the same webhook authority as registration.
+  const authority = await verifyLinearWebhookAuthority(request, env);
+  if (!authority.authorized) return authority.response;
+
+  const url = new URL(request.url);
+  const limit = parseLimit(url);
+  const after = url.searchParams.get("after")?.trim() || "";
+  let rows: LinearEventRow[];
+  let cursorExpired = false;
+
+  if (after) {
+    const sequenceCursor = parseSequenceCursor(after);
+    if (sequenceCursor != null) {
+      // Cursored reads page OLDEST-first: with desc ordering a page larger
+      // than `limit` would advance the cursor past rows it never returned,
+      // silently dropping them. Ascending pages + max-seq cursor drain the
+      // backlog without gaps.
+      rows = (await env.DB
+        .prepare(`
+          select rowid as event_seq, event_id, event_type, action, received_at, body
+            from linear_events
+           where org_id = ? and rowid > ?
+           order by rowid asc
+           limit ?
+        `)
+        .bind(organizationId, sequenceCursor, limit)
+        .all<LinearEventRow>()).results ?? [];
+    } else {
+      const cursor = await env.DB
+        .prepare("select rowid as event_seq, event_id from linear_events where org_id = ? and event_id = ? limit 1")
+        .bind(organizationId, after)
+        .first<CursorRow>();
+      if (cursor) {
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, event_type, action, received_at, body
+              from linear_events
+             where org_id = ? and rowid > ?
+             order by rowid asc
+             limit ?
+          `)
+          .bind(organizationId, cursor.event_seq, limit)
+          .all<LinearEventRow>()).results ?? [];
+      } else {
+        cursorExpired = true;
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, event_type, action, received_at, body
+              from linear_events
+             where org_id = ?
+             order by rowid desc
+             limit ?
+          `)
+          .bind(organizationId, limit)
+          .all<LinearEventRow>()).results ?? [];
+      }
+    }
+  } else {
+    rows = (await env.DB
+      .prepare(`
+        select rowid as event_seq, event_id, event_type, action, received_at, body
+          from linear_events
+         where org_id = ?
+         order by rowid desc
+         limit ?
+      `)
+      .bind(organizationId, limit)
+      .all<LinearEventRow>()).results ?? [];
+  }
+
+  return json({
+    events: rows.map(linearRowToEvent),
+    nextCursor: nextLinearCursor(rows, after),
+    cursorExpired,
+  });
+}
+
 export async function handleRequest(request: Request, env: RelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return json({ ok: true });
+  }
+
+  if (url.pathname === "/linear/orgs/register") return await handleLinearOrganizationRegister(request, env);
+  if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env);
+  const linearOrganizationEvents = routeLinearOrganizationEvents(url.pathname);
+  if (linearOrganizationEvents) {
+    return await handleListLinearEvents(request, env, linearOrganizationEvents.organizationId);
   }
 
   const repoWebhookAdmin = routeRepoWebhookAdmin(url.pathname);

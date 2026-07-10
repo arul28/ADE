@@ -250,7 +250,13 @@ export function createLinearOAuthService(args: {
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("scope", "read,write");
+    // The ADE app's data-change webhooks only deliver for a workspace whose
+    // authorization carries the admin scope (Linear's OAuth-app webhook rule).
+    // Custom OAuth clients keep the narrower grant.
+    authUrl.searchParams.set(
+      "scope",
+      args.credentials.getOAuthClientSource() === "ade-app" ? "read,write,admin" : "read,write",
+    );
     // Ask Linear for a consent screen; Linear still resolves the workspace
     // from the user's active browser session/workspace switcher.
     authUrl.searchParams.set("prompt", "consent");

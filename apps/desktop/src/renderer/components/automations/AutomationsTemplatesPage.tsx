@@ -3,7 +3,8 @@ import { ArrowLeft } from "@phosphor-icons/react";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { AutomationsProductionGate } from "./AutomationsPage";
-import { TemplatesTab } from "./TemplatesTab";
+import { TemplateGallery } from "./templates/TemplateGallery";
+import { stashTemplateDraft } from "./templates/draftHandoff";
 
 export function AutomationsTemplatesPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
@@ -20,13 +21,16 @@ export function AutomationsTemplatesPage({ active = true }: { active?: boolean }
             <ArrowLeft size={12} weight="regular" />
             Back to automations
           </Button>
-          <div className="text-sm font-semibold text-[#F5FAFF]">Templates</div>
+          <div className="text-sm font-semibold text-fg">Templates</div>
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          <TemplatesTab
+          <TemplateGallery
             onUseTemplate={(draft) => {
-              navigate("/automations", { state: { draft: draft as AutomationRuleDraft } });
+              // The tab host strips location.state (see draftHandoff.ts), so
+              // the draft travels through the module mailbox instead.
+              stashTemplateDraft(draft as AutomationRuleDraft);
+              navigate("/automations");
             }}
           />
         </div>

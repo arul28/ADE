@@ -11,6 +11,7 @@ import type {
   AutomationRunDetail,
   AutomationRunListArgs,
   AutomationRuleSummary,
+  AutomationScheduledCleanup,
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
@@ -27,6 +28,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
+import type { LinearIngressStatus } from "../automations/linearIngressService";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import type {
   AiConfig,
@@ -143,7 +145,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_oauth: ["startSession"],
   github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
   update: ["quitAndInstall"],
-  automations: ["setWebhookGatewayPublicUrl"],
+  // Linear webhook lifecycle mutates account-level state (registers/deletes a
+  // webhook against the user's Linear organization), so it stays CTO-only;
+  // status/poll/cleanup reads remain open to agents.
+  // cancelScheduledCleanup can silently defeat a cleanup policy another
+  // automation scheduled, so it is operator-only like the webhook lifecycle.
+  automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
@@ -642,6 +649,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "refreshWebhookGatewayStatus",
     "setWebhookGatewayPublicUrl",
     "listIngressEvents",
+    "listScheduledCleanups",
+    "cancelScheduledCleanup",
+    "linearIngressGetStatus",
+    "linearIngressSetup",
+    "linearIngressTeardown",
+    "linearIngressPollNow",
   ],
   review: [
     "cancelRun",
@@ -800,6 +813,12 @@ type AutomationsDomainService = {
   refreshWebhookGatewayStatus(): Promise<AutomationIngressStatus["webhookGateway"]>;
   setWebhookGatewayPublicUrl(args?: { publicUrl?: string | null }): Promise<AutomationIngressStatus["webhookGateway"]>;
   listIngressEvents(args?: { limit?: number }): AutomationIngressEventRecord[];
+  listScheduledCleanups(): AutomationScheduledCleanup[];
+  cancelScheduledCleanup(args: { id: string }): boolean;
+  linearIngressGetStatus(): LinearIngressStatus;
+  linearIngressSetup(): Promise<LinearIngressStatus>;
+  linearIngressTeardown(): Promise<LinearIngressStatus>;
+  linearIngressPollNow(): Promise<LinearIngressStatus>;
 };
 
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
@@ -830,7 +849,23 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     refreshWebhookGatewayStatus: () => automationService.refreshWebhookGatewayStatus(),
     setWebhookGatewayPublicUrl: (args = {}) => automationService.setWebhookGatewayPublicUrl(args),
     listIngressEvents: (args = {}) => automationService.listIngressEvents(args.limit),
+    listScheduledCleanups: () => automationService.listScheduledCleanups(),
+    cancelScheduledCleanup: ({ id }) => automationService.cancelScheduledCleanup(id),
+    linearIngressGetStatus: () => requireLinearIngress(runtime).getStatus(),
+    linearIngressSetup: () => requireLinearIngress(runtime).setup(),
+    linearIngressTeardown: () => requireLinearIngress(runtime).teardown(),
+    linearIngressPollNow: async () => {
+      const service = requireLinearIngress(runtime);
+      await service.pollNow();
+      return service.getStatus();
+    },
   };
+}
+
+function requireLinearIngress(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
+  const service = runtime.linearIngressService;
+  if (!service) throw new Error("Linear ingress is not available on this runtime.");
+  return service;
 }
 
 type IssueDomainService = {

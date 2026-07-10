@@ -26,6 +26,7 @@ function makeHarness(overrides?: {
   reviewsByCall?: Array<Array<Parameters<typeof makeReview>[0]>>;
   extraRepos?: Array<{ owner: string; name: string }>;
   initialCursor?: string;
+  hasEnabledGithubRules?: () => boolean;
 }) {
   const cursors = new Map<string, string>();
   if (overrides?.initialCursor) {
@@ -43,6 +44,7 @@ function makeHarness(overrides?: {
   const reviewsByCall = overrides?.reviewsByCall ?? [];
 
   const automationService = {
+    hasEnabledGithubRules: overrides?.hasEnabledGithubRules ?? (() => true),
     getIngressCursor: (source: string) => cursors.get(source) ?? null,
     setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
       if (cursor == null) cursors.delete(source);
@@ -55,7 +57,7 @@ function makeHarness(overrides?: {
   };
 
   const githubService = {
-    detectRepo: overrides?.detectRepo ?? (async () => ({ owner: "acme", name: "ade" })),
+    detectRepo: vi.fn(overrides?.detectRepo ?? (async () => ({ owner: "acme", name: "ade" }))),
     listRepoIssues: vi.fn(async () => {
       const batch = issuesByCall[issuesIdx] ?? [];
       issuesIdx += 1;
@@ -732,6 +734,24 @@ describe("githubPollingService — lifecycle", () => {
     expect(githubService.listRepoIssues.mock.calls.length).toBe(callsBefore);
   });
 
+  it("checks the enabled-rule gate on every tick", async () => {
+    let enabled = false;
+    const { service, githubService } = makeHarness({
+      hasEnabledGithubRules: () => enabled,
+      issuesByCall: [[]],
+      pullsByCall: [[]],
+    });
+
+    await service.pollNow();
+    expect(githubService.detectRepo).not.toHaveBeenCalled();
+    expect(githubService.listRepoIssues).not.toHaveBeenCalled();
+
+    enabled = true;
+    await service.pollNow();
+    expect(githubService.detectRepo).toHaveBeenCalledTimes(1);
+    expect(githubService.listRepoIssues).toHaveBeenCalledTimes(1);
+  });
+
   it("skips overlapping invocations (no re-entrancy)", async () => {
     // Arrange a listRepoIssues that resolves after a tick so two pollNow
     // calls overlap. The second one should short-circuit via the `running` flag.
@@ -742,6 +762,7 @@ describe("githubPollingService — lifecycle", () => {
 
     const cursors = new Map<string, string>();
     const automationService = {
+      hasEnabledGithubRules: () => true,
       getIngressCursor: (s: string) => cursors.get(s) ?? null,
       setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
         if (cursor == null) cursors.delete(source);
@@ -851,6 +872,7 @@ describe("githubPollingService — error resilience", () => {
         listPullRequestReviews: vi.fn(async () => []),
       } as any,
       automationService: {
+        hasEnabledGithubRules: () => true,
         getIngressCursor: (s: string) => cursors.get(s) ?? null,
         setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
           if (cursor == null) cursors.delete(source);
@@ -902,6 +924,7 @@ describe("githubPollingService — error resilience", () => {
         listPullRequestReviews: vi.fn(async () => []),
       } as any,
       automationService: {
+        hasEnabledGithubRules: () => true,
         getIngressCursor: (s: string) => cursors.get(s) ?? null,
         setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
           if (cursor == null) cursors.delete(source);

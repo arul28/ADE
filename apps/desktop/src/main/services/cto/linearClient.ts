@@ -175,7 +175,7 @@ export type LinearClientArgs = {
   fetchImpl?: typeof fetch;
 };
 
-type LinearWebhookSummary = {
+export type LinearWebhookSummary = {
   id: string;
   url: string;
   enabled: boolean;
@@ -1389,6 +1389,29 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const deleteWebhook = async (webhookId: string): Promise<void> => {
+    const id = webhookId.trim();
+    if (!id) throw new Error("Linear webhook id is required.");
+    const data = await request<{
+      webhookDelete?: {
+        success?: boolean;
+      };
+    }>({
+      query: `
+        mutation DeleteWebhook($id: String!) {
+          webhookDelete(id: $id) {
+            success
+          }
+        }
+      `,
+      variables: { id },
+      maxRetries: 1,
+    });
+    if (data.webhookDelete?.success !== true) {
+      throw new Error("Linear webhookDelete did not report success.");
+    }
+  };
+
   const fetchIssueComments = async (issueId: string): Promise<Array<{
     id: string;
     body: string;
@@ -1458,6 +1481,7 @@ export function createLinearClient(args: LinearClientArgs) {
     listLabels,
     listWebhooks,
     createWebhook,
+    deleteWebhook,
     searchIssues,
     fetchCandidateIssues,
     fetchIssueById,

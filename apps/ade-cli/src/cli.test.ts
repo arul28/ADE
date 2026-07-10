@@ -255,7 +255,7 @@ describe("ADE CLI", () => {
         ADE_ENABLE_AUTOMATIONS: undefined,
       },
       () => {
-        expect(() => buildCliPlan(["automations", "list"])).toThrow(/coming soon/);
+        expect(() => buildCliPlan(["automations", "list"])).toThrow(/disabled on this build/);
 
         const automationHelp = buildCliPlan(["help", "automations"]);
         expect(automationHelp.kind).toBe("help");
@@ -5520,6 +5520,64 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("automations linear-ingress maps status/connect/disconnect/poll to runtime actions", () => {
+    const cases: Array<[string, string]> = [
+      ["status", "linearIngressGetStatus"],
+      ["connect", "linearIngressSetup"],
+      ["disconnect", "linearIngressTeardown"],
+      ["poll", "linearIngressPollNow"],
+    ];
+    for (const [mode, action] of cases) {
+      const plan = buildCliPlan(["automations", "linear-ingress", mode]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.formatter).toBe("automation-linear-ingress");
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: { domain: "automations", action, args: {} },
+      });
+    }
+  });
+
+  it("automations linear-ingress rejects unknown modes", () => {
+    expect(() =>
+      buildCliPlan(["automations", "linear-ingress", "nope"]),
+    ).toThrow(/status, connect, disconnect, or poll/);
+  });
+
+  it("automations cleanups list and cancel map to runtime actions", () => {
+    const list = buildCliPlan(["automations", "cleanups", "list"]);
+    expect(list.kind).toBe("execute");
+    if (list.kind !== "execute") return;
+    expect(list.formatter).toBe("automation-cleanups");
+    expect(list.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "listScheduledCleanups",
+        args: {},
+      },
+    });
+
+    const cancel = buildCliPlan(["automations", "cleanups", "cancel", "cleanup-7"]);
+    expect(cancel.kind).toBe("execute");
+    if (cancel.kind !== "execute") return;
+    expect(cancel.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "cancelScheduledCleanup",
+        args: { id: "cleanup-7" },
+      },
+    });
+  });
+
+  it("automations cleanups cancel requires an id", () => {
+    expect(() => buildCliPlan(["automations", "cleanups", "cancel"])).toThrow(
+      /scheduled cleanup id/,
+    );
+  });
+
   it("automations toggle errors when --enabled is omitted", () => {
     expect(() => buildCliPlan(["automations", "toggle", "rule-42"])).toThrow(
       /--enabled <true\|false>/,
@@ -5641,7 +5699,7 @@ describe("ADE CLI", () => {
 
   it("automations rejects unknown subcommands with a usage error", () => {
     expect(() => buildCliPlan(["automations", "nope"])).toThrow(
-      /list, show, create, update, delete, toggle, run, ingress, runs/,
+      /list, show, create, update, delete, toggle, run, ingress, linear-ingress, cleanups, runs/,
     );
   });
 

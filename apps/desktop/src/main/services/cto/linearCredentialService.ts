@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
+import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "./linearAppClient";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
@@ -19,7 +20,7 @@ import {
 // out of the box without configuring their own OAuth app.
 // This is a public value (visible in the auth URL); no secret is bundled (we use PKCE).
 const BUNDLED_LINEAR_OAUTH_CLIENT_ID: string | null =
-  process.env.ADE_LINEAR_CLIENT_ID || "432fb2ddb16f939ae5d5270e2c86571f";
+  process.env.ADE_LINEAR_CLIENT_ID || ADE_LINEAR_APP_CLIENT_ID;
 
 const TOKEN_FILE = "linear-token.v1.bin";
 const OAUTH_CLIENT_FILE = "linear-oauth-client.v1.bin";
@@ -684,12 +685,24 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         authMode: stored?.authMode ?? null,
         tokenExpiresAt: stored?.expiresAt ?? null,
         refreshTokenStored: Boolean(stored?.refreshToken),
-        oauthConfigured: readOAuthClientCredentials() != null,
+        // The bundled ADE app client makes OAuth always available; a custom
+        // client (if configured) takes precedence over it.
+        oauthConfigured: true,
       };
     },
 
     getOAuthClientCredentials(): LinearOAuthClientCredentials | null {
+      // Resolution order lives in readOAuthClientCredentials: user-configured
+      // client, then config file, then the bundled ADE Linear app (PKCE — no
+      // client secret ships with ADE).
       return readOAuthClientCredentials();
+    },
+
+    getOAuthClientSource(): LinearOAuthClientSource {
+      // Compare by client id, not by which branch resolved: the bundled id is
+      // the ADE app even when a user pasted it in as a "custom" client.
+      const credentials = readOAuthClientCredentials();
+      return credentials?.clientId === BUNDLED_LINEAR_OAUTH_CLIENT_ID ? "ade-app" : "custom";
     },
 
     ensureFreshToken,

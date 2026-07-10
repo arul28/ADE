@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createAutomationPlannerService } from "./automationPlannerService";
+import { TEMPLATES } from "../../../renderer/components/automations/templates/templateData";
 import type { AutomationRuleDraft } from "../../../shared/types";
 
 function createPlannerForTests(args: {
@@ -569,7 +570,42 @@ describe("automationPlannerService.validateDraft", () => {
       mode: "dry-run",
     });
   });
+
+  describe("shipped templates", () => {
+    const { planner } = getPlanner({ suites: [{ id: "default", name: "Default suite" }] });
+
+    for (const template of TEMPLATES) {
+      it(`template "${template.id}" passes draft validation`, () => {
+        const result = planner.validateDraft({ draft: template.draft as AutomationRuleDraft });
+        // A template may ship a deliberately BLANK test-suite pick, but only
+        // when its card tells the user they'll configure it. A stale non-empty
+        // suite reference must still fail.
+        const declaresSuiteBlank = template.whatYouConfigure.some((entry) => /test suite/i.test(entry));
+        const shipsOnlyBlankSuites = (template.draft.actions ?? []).every(
+          (action) => action.type !== "run-tests" || !(action as { suite?: string }).suite,
+        );
+        const blocking = result.issues.filter(
+          (issue) => issue.level === "error"
+            && !(declaresSuiteBlank && shipsOnlyBlankSuites && issue.path.endsWith(".suite")),
+        );
+        expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
+      });
+
+      it(`template "${template.id}" keeps a runnable execution surface`, () => {
+        const draft = template.draft as AutomationRuleDraft;
+        if (draft.execution?.kind === "built-in") {
+          // A built-in template with an empty chain saves a rule that does nothing.
+          expect(draft.actions?.length ?? 0).toBeGreaterThan(0);
+          expect(draft.execution.builtIn?.actions?.length ?? 0).toBeGreaterThan(0);
+        } else {
+          expect(draft.execution?.kind).toBe("agent-session");
+          expect((draft.prompt ?? "").length).toBeGreaterThan(0);
+        }
+      });
+    }
+  });
 });
+
  
 function createDraft(
   overrides: Partial<AutomationRuleDraft>,

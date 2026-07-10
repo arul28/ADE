@@ -22,6 +22,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       return {
         appVersion: "web",
         isPackaged: false,
+        automationsEnabled: true,
         platform: browserPlatform(),
         arch: "web",
         versions: {

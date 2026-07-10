@@ -280,12 +280,14 @@ describe("linearCredentialService", () => {
 
 function createCredentialsMock(overrides?: {
   clientSecret?: string | null;
+  clientSource?: "ade-app" | "custom";
 }) {
   return {
     getOAuthClientCredentials: vi.fn(() => ({
       clientId: "test-client-id",
       clientSecret: overrides?.clientSecret ?? "test-client-secret",
     })),
+    getOAuthClientSource: vi.fn(() => overrides?.clientSource ?? "custom"),
     setOAuthToken: vi.fn(),
   };
 }
@@ -394,13 +396,29 @@ describe("linearOAuthService", () => {
     expect(result.authUrl).toContain("linear.app/oauth/authorize");
     expect(result.authUrl).toContain("client_id=test-client-id");
     expect(result.authUrl).toContain("response_type=code");
-    expect(result.authUrl).toContain("scope=read");
+    // Custom OAuth clients keep the narrow grant; the bundled ADE app needs
+    // admin for Linear to deliver its data-change webhooks (asserted below).
+    expect(result.authUrl).toContain(`scope=${encodeURIComponent("read,write")}`);
+    expect(result.authUrl).not.toContain("admin");
     expect(result.authUrl).toContain("prompt=consent");
     expect(result.redirectUri).toContain("/oauth/callback");
 
     const session = service.getSession(result.sessionId);
     expect(session.status).toBe("pending");
     expect(session.error).toBeNull();
+  });
+
+  it("requests the admin scope when signing in through the bundled ADE app", async () => {
+    const credentials = createCredentialsMock({ clientSource: "ade-app" });
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+    });
+    activeServices.push(service);
+
+    const result = await service.startSession();
+
+    expect(result.authUrl).toContain(`scope=${encodeURIComponent("read,write,admin")}`);
   });
 
   it("throws an actionable error when another service instance holds the callback port", async () => {

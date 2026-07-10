@@ -3,6 +3,13 @@
 useDefault = true
 
 [allowlist]
+regexes = [
+  # The bundled ADE Linear OAuth app CLIENT ID (public by design — it appears
+  # in every user's authorize URL; sign-in uses PKCE and no client secret
+  # ships in the repo). Gitleaks' linear-client-secret rule cannot tell a
+  # 32-hex client id from a client secret.
+  '''e552c738cd63ea5967f08bbc9c09b54c''',
+]
 paths = [
   '''\.env\.example$''',
   '''node_modules/''',

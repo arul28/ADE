@@ -492,6 +492,16 @@ ade automations create --from-file rule.json \
 # Filter run history by status.
 ade automations runs --rule rule-1 --status failed
 ade automations run-show <runId> --text
+
+# Linear webhook ingress (setup/teardown are CTO-only).
+ade automations linear-ingress status --text
+ade --role cto automations linear-ingress connect
+ade automations linear-ingress poll --text
+ade --role cto automations linear-ingress disconnect
+
+# Scheduled lane cleanups (from delete-lane actions with afterMinutes).
+ade automations cleanups list --text
+ade automations cleanups cancel <cleanupId>
 ```
 
 The standalone `create-lane` action is deprecated. By default the CLI auto-migrates a rule whose first action is `create-lane` into `execution.laneMode: "create"` and carries the template forward. Pass `--allow-legacy` on `create` / `update` to opt out of the migration.

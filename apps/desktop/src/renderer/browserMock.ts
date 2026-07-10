@@ -3158,6 +3158,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getInfo: resolved({
         appVersion: "0.0.0-browser",
         isPackaged: false,
+        automationsEnabled: true,
         platform: "browser",
         arch: "web",
         versions: {

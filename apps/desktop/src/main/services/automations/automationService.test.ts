@@ -5,7 +5,13 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
-import { createAutomationService, normalizeRuntimeRule, presetToTemplate, triggerMatches } from "./automationService";
+import {
+  createAutomationService,
+  normalizeRuntimeRule,
+  presetToTemplate,
+  resolveLaneNameTemplate,
+  triggerMatches,
+} from "./automationService";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
 
@@ -130,6 +136,35 @@ describe("triggerMatches", () => {
       undefined,
     )).toBe(false);
   });
+
+  it("matches lane.merged name and branch globs against lane context", () => {
+    const trigger = {
+      triggerType: "lane.merged" as const,
+      laneId: "lane-42",
+      laneName: "Release train",
+      branch: "release/2026-07",
+      pr: { number: 42, title: "Release", merged: true },
+    };
+
+    expect(triggerMatches(
+      { type: "lane.merged", namePattern: "Release*", branch: "release/*" },
+      trigger,
+      trigger.branch,
+      trigger.laneName,
+    )).toBe(true);
+    expect(triggerMatches(
+      { type: "lane.merged", namePattern: "Nightly*" },
+      trigger,
+      trigger.branch,
+      trigger.laneName,
+    )).toBe(false);
+    expect(triggerMatches(
+      { type: "lane.created", namePattern: "Release*" },
+      trigger,
+      trigger.branch,
+      trigger.laneName,
+    )).toBe(false);
+  });
 });
 
 describe("normalizeRuntimeRule", () => {
@@ -158,7 +193,7 @@ describe("normalizeRuntimeRule", () => {
   });
 });
 
-describe("webhook gateway gating", () => {
+describe("automation ingress enable gating", () => {
   function makeProjectConfigHarness(rule: any, ui: Record<string, unknown> = {}) {
     let snapshot: any = {
       trust: { requiresSharedTrust: false },
@@ -187,7 +222,11 @@ describe("webhook gateway gating", () => {
     };
   }
 
-  function createServiceForRule(rule: any, ui: Record<string, unknown> = {}) {
+  function createServiceForRule(
+    rule: any,
+    ui: Record<string, unknown> = {},
+    capabilities: { githubPollingAvailable?: () => boolean; linearIngressAvailable?: () => boolean } = {},
+  ) {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectConfig = makeProjectConfigHarness(rule, ui);
@@ -201,11 +240,12 @@ describe("webhook gateway gating", () => {
         getLaneWorktreePath: () => "/tmp",
       } as any,
       projectConfigService: projectConfig.service,
+      ...capabilities,
     });
     return { service, projectConfig };
   }
 
-  it("blocks enabling external event automations until the webhook gateway is ready", () => {
+  it("blocks Linear rules without event ingress and allows them once the capability is connected", () => {
     const rule = normalizeRuntimeRule({
       id: "linear-label",
       name: "Linear label",
@@ -227,7 +267,38 @@ describe("webhook gateway gating", () => {
     });
     const { service } = createServiceForRule(rule);
 
-    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Webhook Gateway/);
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow("Connect Linear events in Automations settings.");
+    service.setLinearIngressAvailable(() => true);
+    expect(() => service.toggle({ id: rule.id, enabled: true })).not.toThrow();
+    expect(service.list()[0]?.enabled).toBe(true);
+    expect(service.hasEnabledLinearRules()).toBe(true);
+  });
+
+  it("allows GitHub rules with direct polling and blocks them without any ingress path", () => {
+    const rule = normalizeRuntimeRule({
+      id: "github-polling-gate",
+      name: "GitHub polling gate",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "github.issue_labeled" }],
+      trigger: { type: "github.issue_labeled" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:github-polling-gate",
+      actions: [],
+    });
+    const blocked = createServiceForRule(rule, {}, { githubPollingAvailable: () => false });
+    expect(() => blocked.service.toggle({ id: rule.id, enabled: true })).toThrow(/Connect a GitHub repository/);
+
+    const allowed = createServiceForRule(rule, {}, { githubPollingAvailable: () => true });
+    expect(() => allowed.service.toggle({ id: rule.id, enabled: true })).not.toThrow();
+    expect(allowed.service.hasEnabledGithubRules()).toBe(true);
   });
 
   it("allows external event automations when a public gateway URL is configured", () => {
@@ -286,7 +357,7 @@ describe("webhook gateway gating", () => {
     expect(status.publicUrl).toBe("https://ade-dev.tail000000.ts.net/ade-webhooks");
     expect(status.ready).toBe(false);
     expect(status.status).toBe("pending-approval");
-    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Webhook Gateway/);
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Connect a GitHub repository/);
   });
 
   it("saves and clears the public gateway URL through the automation runtime", async () => {
@@ -421,6 +492,7 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       primary key(project_id, source)
     )
   `);
+  raw.run("create table kv(key text primary key, value text not null)");
 
   const run = (sql: string, params: SqlValue[] = []) => raw.run(sql, params);
   const all = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] =>
@@ -1709,6 +1781,232 @@ describe("automationService integration", () => {
     }
   });
 
+  describe("lane lifecycle automation contracts", () => {
+    const buildRule = (args: {
+      id: string;
+      actions: any[];
+      trigger?: { type: "manual" | "lane.merged"; namePattern?: string };
+    }) => {
+      const trigger = args.trigger ?? { type: "manual" as const };
+      return {
+        id: args.id,
+        name: args.id,
+        enabled: true,
+        mode: "review" as const,
+        reviewProfile: "quick" as const,
+        trigger,
+        triggers: [trigger],
+        executor: { mode: "automation-bot" as const },
+        toolPalette: ["repo"] as const,
+        contextSources: [],
+        guardrails: { maxDurationMin: 5 },
+        outputs: { disposition: "comment-only" as const, createArtifact: true },
+        verification: { verifyBeforePublish: false, mode: "intervention" as const },
+        billingCode: `auto:${args.id}`,
+        execution: { kind: "built-in" as const, builtIn: { actions: args.actions } },
+        actions: [],
+      };
+    };
+
+    const createHarness = (rule: ReturnType<typeof buildRule>, laneOverrides: Record<string, unknown> = {}) => {
+      const { db, raw } = createInMemoryAdeDb();
+      const laneService = {
+        list: async () => [{ id: "lane-1", name: "Feature lane", laneType: "worktree", branchRef: "feature/lane" }],
+        getLaneWorktreePath: () => "/tmp",
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "feature/lane", worktreePath: "/tmp" }),
+        ...laneOverrides,
+      } as any;
+      const service = createAutomationService({
+        db: db as any,
+        logger: createLogger(),
+        projectId: "proj",
+        projectRoot: "/tmp",
+        laneService,
+        projectConfigService: {
+          get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } }),
+        } as any,
+      });
+      return { service, raw, laneService };
+    };
+
+    it("deduplicates lane.merged delivery while preserving lane and PR trigger context", async () => {
+      const rule = buildRule({
+        id: "lane-merged-dedupe",
+        trigger: { type: "lane.merged", namePattern: "Feature*" },
+        actions: [{ type: "run-command", command: "echo merged", timeoutMs: 10_000 }],
+      });
+      const { service, raw } = createHarness(rule);
+      try {
+        const notification = {
+          laneId: "lane-1",
+          laneName: "Feature lane",
+          branch: "feature/lane",
+          prNumber: 42,
+          prUrl: "https://github.com/acme/repo/pull/42",
+          prTitle: "Ship feature",
+          targetBranch: "main",
+          repo: "acme/repo",
+        };
+        await expect(service.notifyLaneMerged(notification)).resolves.toBe(true);
+        await expect(service.notifyLaneMerged(notification)).resolves.toBe(false);
+        const started = Date.now();
+        while (Date.now() - started < 2_000) {
+          const rows = mapExecRows(raw.exec("select trigger_metadata from automation_runs where automation_id = 'lane-merged-dedupe'"));
+          if (rows.length > 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const runs = mapExecRows(raw.exec("select trigger_metadata from automation_runs where automation_id = 'lane-merged-dedupe'"));
+        expect(runs).toHaveLength(1);
+        expect(JSON.parse(String(runs[0]?.trigger_metadata))).toMatchObject({
+          laneId: "lane-1",
+          laneName: "Feature lane",
+          branch: "feature/lane",
+          pr: { number: 42, url: "https://github.com/acme/repo/pull/42", merged: true },
+        });
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("deletes the explicitly targeted lane immediately with configured options", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({
+        id: "delete-lane-now",
+        actions: [{
+          type: "delete-lane",
+          targetLaneId: "lane-1",
+          laneDeleteOptions: { deleteBranch: false, deleteRemoteBranch: true, force: true },
+        }],
+      });
+      const { service, raw } = createHarness(rule, { delete: deleteLane });
+      try {
+        const run = await service.triggerManually({ id: rule.id });
+        expect(run.status).toBe("succeeded");
+        expect(deleteLane).toHaveBeenCalledWith({
+          laneId: "lane-1",
+          deleteBranch: false,
+          deleteRemoteBranch: true,
+          force: true,
+        });
+        expect(mapExecRows(raw.exec("select status, output from automation_action_results"))).toMatchObject([
+          { status: "succeeded", output: expect.stringContaining('"status":"deleted"') },
+        ]);
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("fails delete-lane clearly when no explicit, chain-created, or trigger lane exists", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({ id: "delete-lane-no-target", actions: [{ type: "delete-lane" }] });
+      const { service, raw } = createHarness(rule, { delete: deleteLane });
+      try {
+        const run = await service.triggerManually({ id: rule.id });
+        expect(run.status).toBe("failed");
+        expect(run.errorMessage).toContain("requires an explicit target lane");
+        expect(deleteLane).not.toHaveBeenCalled();
+        expect(mapExecRows(raw.exec("select status from automation_action_results"))).toEqual([{ status: "failed" }]);
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("runs alwaysRun cleanup after an earlier step aborts and preserves the original failure", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({
+        id: "always-run-delete",
+        actions: [
+          { type: "run-command", command: "exit 9", timeoutMs: 10_000 },
+          { type: "delete-lane", targetLaneId: "lane-1", alwaysRun: true },
+        ],
+      });
+      const { service, raw } = createHarness(rule, { delete: deleteLane });
+      try {
+        const run = await service.triggerManually({ id: rule.id });
+        expect(run.status).toBe("failed");
+        expect(run.errorMessage).toContain("Command exited with code 9");
+        expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-1" });
+        expect(mapExecRows(raw.exec("select action_type, status from automation_action_results order by action_index"))).toEqual([
+          { action_type: "run-command", status: "failed" },
+          { action_type: "delete-lane", status: "succeeded" },
+        ]);
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("persists deferred cleanup and executes due work with an appended history result", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({
+        id: "delete-lane-deferred",
+        actions: [{ type: "delete-lane", targetLaneId: "lane-1", afterMinutes: 10, laneDeleteOptions: { force: true } }],
+      });
+      const { service, raw } = createHarness(rule, { delete: deleteLane });
+      try {
+        const run = await service.triggerManually({ id: rule.id });
+        const scheduled = service.listScheduledCleanups();
+        expect(run.status).toBe("succeeded");
+        expect(deleteLane).not.toHaveBeenCalled();
+        expect(scheduled).toMatchObject([{ laneId: "lane-1", status: "scheduled", options: { force: true } }]);
+
+        raw.run("update automation_scheduled_cleanups set due_at = '2000-01-01T00:00:00.000Z'");
+        await service.runScheduledCleanupSweep();
+
+        expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-1", force: true });
+        expect(service.listScheduledCleanups()[0]?.status).toBe("executed");
+        expect(mapExecRows(raw.exec("select action_type, status from automation_action_results order by action_index"))).toEqual([
+          { action_type: "delete-lane", status: "succeeded" },
+          { action_type: "delete-lane", status: "succeeded" },
+        ]);
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("treats an already-missing deferred lane as executed instead of failed", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({
+        id: "delete-lane-missing",
+        actions: [{ type: "delete-lane", targetLaneId: "lane-gone", afterMinutes: 1 }],
+      });
+      const { service, raw } = createHarness(rule, { list: async () => [], delete: deleteLane });
+      try {
+        await service.triggerManually({ id: rule.id });
+        raw.run("update automation_scheduled_cleanups set due_at = '2000-01-01T00:00:00.000Z'");
+        await service.runScheduledCleanupSweep();
+
+        expect(deleteLane).not.toHaveBeenCalled();
+        expect(service.listScheduledCleanups()).toMatchObject([{ status: "executed", error: null }]);
+        expect(mapExecRows(raw.exec("select status, output from automation_action_results order by action_index desc limit 1"))).toMatchObject([
+          { status: "succeeded", output: expect.stringContaining("already deleted") },
+        ]);
+      } finally {
+        service.dispose();
+      }
+    });
+
+    it("cancels scheduled cleanup idempotently and excludes it from later sweeps", async () => {
+      const deleteLane = vi.fn(async () => undefined);
+      const rule = buildRule({
+        id: "delete-lane-cancel",
+        actions: [{ type: "delete-lane", targetLaneId: "lane-1", afterMinutes: 1 }],
+      });
+      const { service, raw } = createHarness(rule, { delete: deleteLane });
+      try {
+        await service.triggerManually({ id: rule.id });
+        const cleanupId = service.listScheduledCleanups()[0]!.id;
+        expect(service.cancelScheduledCleanup(cleanupId)).toBe(true);
+        expect(service.cancelScheduledCleanup(cleanupId)).toBe(false);
+        raw.run("update automation_scheduled_cleanups set due_at = '2000-01-01T00:00:00.000Z'");
+        await service.runScheduledCleanupSweep();
+        expect(deleteLane).not.toHaveBeenCalled();
+        expect(service.listScheduledCleanups()[0]?.status).toBe("cancelled");
+      } finally {
+        service.dispose();
+      }
+    });
+  });
+
   describe("laneMode: 'create'", () => {
     it("presetToTemplate maps known presets and returns empty for custom/unknown", () => {
       expect(presetToTemplate("issue-title")).toBe("{{trigger.issue.title}}");
@@ -1716,6 +2014,19 @@ describe("automationService integration", () => {
       expect(presetToTemplate("pr-title-author")).toBe("{{trigger.pr.title}} – {{trigger.pr.author}}");
       expect(presetToTemplate("custom")).toBe("");
       expect(presetToTemplate(undefined)).toBe("");
+    });
+
+    it("resolves date, time, rule.name, and trigger placeholders in lane names", () => {
+      const scheduled = new Date(2026, 6, 9, 21, 7, 0);
+      const resolved = resolveLaneNameTemplate(
+        "{{rule.name}} {{date}} {{time}} {{trigger.laneName}}",
+        { triggerType: "schedule", scheduledAt: scheduled.toISOString(), laneName: "audit" },
+        "Nightly audit",
+      );
+
+      expect(resolved).toContain("Nightly audit");
+      expect(resolved).toContain("2026-07-09 21:07");
+      expect(resolved.endsWith("audit")).toBe(true);
     });
 
     function buildLaneModeFixtures() {

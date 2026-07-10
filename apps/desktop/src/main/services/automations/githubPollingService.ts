@@ -7,6 +7,7 @@ import type {
 import type { GithubService, GitHubIssue, GitHubPullRequest } from "../github/githubService";
 
 type AutomationServiceHandle = {
+  hasEnabledGithubRules?: () => boolean;
   getIngressCursor(source: "github-polling" | "linear-relay" | "github-relay" | "local-webhook"): string | null;
   setIngressCursor(args: { source: "github-polling"; cursor: string | null }): void;
   dispatchIngressTrigger(args: {
@@ -38,6 +39,7 @@ type GithubPollingServiceArgs = {
   /** Extra repos to poll in addition to the detected origin. */
   extraRepos?: RepoRef[];
   pollIntervalMs?: number;
+  hasEnabledGithubRules?: () => boolean;
 };
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -183,6 +185,9 @@ function hasPrContentChange(prev: PrSnapshot, current: PrSnapshot): boolean {
 export function createGithubPollingService(args: GithubPollingServiceArgs) {
   const { logger, githubService, automationService } = args;
   const pollIntervalMs = Math.max(10_000, Math.floor(args.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
+  const hasEnabledGithubRules = args.hasEnabledGithubRules
+    ?? automationService.hasEnabledGithubRules
+    ?? (() => false);
 
   // Per-repo memory of last-seen issue/PR state so we can diff on each poll
   // and emit `edited`/`labeled`/`closed` events without a webhook feed.
@@ -531,6 +536,14 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
 
   const pollOnce = async () => {
     if (running || stopped) return;
+    try {
+      if (!hasEnabledGithubRules()) return;
+    } catch (error) {
+      logger.warn("automations.github_polling.rule_gate_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     running = true;
     try {
       const repos = await listRepos();

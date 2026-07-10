@@ -4,7 +4,7 @@ export const AUTOMATIONS_ENABLE_ENV = "ADE_ENABLE_AUTOMATIONS";
 export const AUTOMATIONS_DISABLE_ENV = "ADE_DISABLE_AUTOMATIONS";
 
 export const AUTOMATIONS_COMING_SOON_MESSAGE =
-  "Automations are coming soon in production builds.";
+  "Automations are disabled on this build.";
 
 function envFlagEnabled(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
@@ -16,11 +16,14 @@ export function readAutomationsEnvOverride(env: EnvLike = process.env): boolean 
   return null;
 }
 
+// Automations ship enabled in all builds; ADE_DISABLE_AUTOMATIONS remains as a
+// kill switch. The packaged/dev split this signature reflects is retained so
+// callers don't churn if packaged builds ever need a different default again.
 export function areAutomationsEnabledForPackagedState(
-  isPackaged: boolean,
+  _isPackaged: boolean,
   env: EnvLike = process.env,
 ): boolean {
   const override = readAutomationsEnvOverride(env);
   if (override !== null) return override;
-  return !isPackaged;
+  return true;
 }

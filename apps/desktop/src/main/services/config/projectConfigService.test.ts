@@ -869,7 +869,7 @@ describe("projectConfigService - project UI", () => {
 });
 
 describe("projectConfigService - automation execution", () => {
-  it("preserves lane creation fields from config", () => {
+  it("preserves lane creation and cleanup fields from config", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-automation-execution-");
 
     fs.writeFileSync(
@@ -956,6 +956,28 @@ describe("projectConfigService - automation execution", () => {
               },
             },
           },
+          {
+            id: "lane-cleanup-rule",
+            trigger: { type: "lane.merged", namePattern: "Release*" },
+            execution: {
+              kind: "built-in",
+              builtIn: {
+                actions: [
+                  {
+                    type: "delete-lane",
+                    targetLaneId: "lane-release",
+                    afterMinutes: 15,
+                    alwaysRun: true,
+                    laneDeleteOptions: {
+                      deleteBranch: false,
+                      deleteRemoteBranch: true,
+                      force: true,
+                    },
+                  },
+                ],
+              },
+            },
+          },
         ],
       }),
       "utf8",
@@ -976,6 +998,7 @@ describe("projectConfigService - automation execution", () => {
       legacyPromptAtRunRule,
       builtInAgentRule,
       legacyLaunchMissionRule,
+      laneCleanupRule,
     ] = service.get().effective.automations;
 
     expect(customRule.execution).toMatchObject({
@@ -1024,6 +1047,20 @@ describe("projectConfigService - automation execution", () => {
       session: { title: "Launch nightly" },
     });
     expect(legacyLaunchMissionRule.prompt).toBe("Launch nightly");
+    expect(laneCleanupRule.trigger).toEqual({ type: "lane.merged", namePattern: "Release*" });
+    expect(laneCleanupRule.execution).toMatchObject({
+      kind: "built-in",
+      builtIn: {
+        actions: [{
+          type: "delete-lane",
+          targetLaneId: "lane-release",
+          afterMinutes: 15,
+          alwaysRun: true,
+          laneDeleteOptions: { deleteBranch: false, deleteRemoteBranch: true, force: true },
+        }],
+      },
+    });
+    expect(laneCleanupRule.enabled).toBe(true);
   });
 
   it("flags fixed target lanes on require-on-trigger automation execution", () => {

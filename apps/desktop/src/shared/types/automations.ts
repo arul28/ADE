@@ -70,6 +70,41 @@ export type AutomationActionResult = {
   output: string | null;
 };
 
+export type AutomationScheduledCleanupStatus =
+  | "scheduled"
+  | "executing"
+  | "executed"
+  | "failed"
+  | "cancelled";
+
+export type AutomationLinearIngressStatus = {
+  state: "unconfigured" | "ready" | "error" | "disabled";
+  webhookId: string | null;
+  organizationId: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  relayBaseUrl: string;
+  /** Events arrive via the ADE Linear OAuth app; no workspace webhook to manage. */
+  appManaged?: boolean;
+};
+
+export type AutomationScheduledCleanup = {
+  id: string;
+  ruleId: string;
+  runId: string;
+  laneId: string;
+  dueAt: string;
+  options: {
+    deleteBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+    force?: boolean;
+  };
+  status: AutomationScheduledCleanupStatus;
+  createdAt: string;
+  executedAt: string | null;
+  error: string | null;
+};
+
 export type AutomationRuleSummary = AutomationRule & {
   lastRunAt: string | null;
   nextRunAt: string | null;
@@ -142,6 +177,19 @@ export const WEBHOOK_GATEWAY_TRIGGER_TYPES = [
 ] as const satisfies readonly AutomationTriggerType[];
 
 export type WebhookGatewayTriggerType = (typeof WEBHOOK_GATEWAY_TRIGGER_TYPES)[number];
+
+// Every external-event trigger type must be gateway-gated. `satisfies` above
+// catches invalid names; this catches a github.*/linear.* union member that
+// was never added to the list (the assignment errors while any is missing).
+type ExternalEventTriggerType = Extract<
+  AutomationTriggerType,
+  `github.${string}` | `linear.${string}` | "github-webhook" | "webhook"
+>;
+const WEBHOOK_GATEWAY_COMPLETENESS_CHECK: Record<
+  Exclude<ExternalEventTriggerType, WebhookGatewayTriggerType>,
+  never
+> = {};
+void WEBHOOK_GATEWAY_COMPLETENESS_CHECK;
 
 export function isWebhookGatewayTriggerType(type: AutomationTriggerType | string | null | undefined): type is WebhookGatewayTriggerType {
   return WEBHOOK_GATEWAY_TRIGGER_TYPES.includes(type as WebhookGatewayTriggerType);
@@ -256,6 +304,7 @@ export type AutomationDraftActionBase = {
   targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
+  alwaysRun?: boolean;
   timeoutMs?: number;
   retry?: number;
 };
@@ -266,6 +315,11 @@ export type AutomationDraftAction =
       laneNameTemplate?: string;
       laneDescriptionTemplate?: string;
       parentLaneId?: string | null;
+    })
+  | (AutomationDraftActionBase & {
+      type: "delete-lane";
+      laneDeleteOptions?: AutomationAction["laneDeleteOptions"];
+      afterMinutes?: number;
     })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })

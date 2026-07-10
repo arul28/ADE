@@ -490,6 +490,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Deferred lane deletion is machine-local. Replicating a due cleanup could
+  // delete a same-id lane on another machine that did not schedule it.
+  "automation_scheduled_cleanups",
   // Per-device bookkeeping of which remote changes to suppress locally.
   // Syncing it is circular (it describes the sync process itself) and ships
   // rows to phones whose schema may not have the table — a changeset that an
@@ -2202,6 +2205,51 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)");
+
+  // Must stay in lockstep with the defensive DDL in automationService.ts —
+  // whichever runs first wins the `if not exists`, so a column drift between
+  // them breaks the other's queries at startup.
+  db.run(`
+    create table if not exists automation_scheduled_cleanups (
+      id text primary key,
+      project_id text not null,
+      rule_id text not null,
+      run_id text not null,
+      lane_id text not null,
+      due_at text not null,
+      options_json text not null,
+      status text not null,
+      created_at text not null,
+      executed_at text,
+      error text,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  // Heal databases created while the base migration lacked project_id (the
+  // table shipped nowhere, so dropping any stray rows is safe). Must run
+  // BEFORE the index below — it references project_id and would throw on the
+  // legacy shape.
+  const scheduledCleanupColumns = db.all<{ name: string }>("pragma table_info(automation_scheduled_cleanups)");
+  if (!scheduledCleanupColumns.some((column) => column.name === "project_id")) {
+    db.run("drop table automation_scheduled_cleanups");
+    db.run(`
+      create table automation_scheduled_cleanups (
+        id text primary key,
+        project_id text not null,
+        rule_id text not null,
+        run_id text not null,
+        lane_id text not null,
+        due_at text not null,
+        options_json text not null,
+        status text not null,
+        created_at text not null,
+        executed_at text,
+        error text,
+        foreign key(project_id) references projects(id)
+      )
+    `);
+  }
+  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
 
   // Phase 8+ PR groups (queue / integration).
   db.run(`
