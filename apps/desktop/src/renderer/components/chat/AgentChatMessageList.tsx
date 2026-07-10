@@ -2643,6 +2643,7 @@ function renderEvent(
     surfaceProfile?: ChatSurfaceProfile;
     assistantLabel?: string;
     turnActive?: boolean;
+    sessionTurnActive?: boolean;
     sessionEnded?: boolean;
     onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
     respondingApprovalIds?: Set<string>;
@@ -3687,7 +3688,7 @@ function renderEvent(
           {recovery ? (
             <ProviderFailureRecoveryCard
               recovery={recovery}
-              disabled={Boolean(options?.turnActive)}
+              disabled={Boolean(options?.sessionTurnActive)}
               onRetry={options?.onRetryProviderFailure
                 ? () => options.onRetryProviderFailure?.(event.turnId ?? null)
                 : undefined}
@@ -4167,6 +4168,7 @@ type EventRowProps = {
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   turnActive?: boolean;
+  sessionTurnActive?: boolean;
   sessionEnded?: boolean;
   isLatestWorkLog?: boolean;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
@@ -4202,6 +4204,7 @@ const EventRow = React.memo(function EventRow({
   surfaceProfile = "standard",
   assistantLabel,
   turnActive,
+  sessionTurnActive,
   sessionEnded,
   isLatestWorkLog,
   onOpenWorkspacePath,
@@ -4272,6 +4275,7 @@ const EventRow = React.memo(function EventRow({
             surfaceProfile,
             assistantLabel,
             turnActive,
+            sessionTurnActive,
             sessionEnded,
             onOpenWorkspacePath,
             respondingApprovalIds,
@@ -4600,6 +4604,7 @@ function AgentChatMessageListMain({
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
+  sessionTurnActive = false,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
@@ -4626,6 +4631,7 @@ function AgentChatMessageListMain({
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
+  sessionTurnActive?: boolean;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -5431,6 +5437,7 @@ function AgentChatMessageListMain({
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
           turnActive={rowTurnActive}
+          sessionTurnActive={sessionTurnActive}
           sessionEnded={sessionEnded}
           isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
@@ -5469,6 +5476,7 @@ function AgentChatMessageListMain({
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
         turnActive={rowTurnActive}
+        sessionTurnActive={sessionTurnActive}
         sessionEnded={sessionEnded}
         isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
@@ -5490,7 +5498,7 @@ function AgentChatMessageListMain({
         assistantTurnCopy={assistantTurnCopy}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

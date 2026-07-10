@@ -2656,7 +2656,43 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
     fireEvent.click(modelTrigger);
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry turn" }));
+    const retryButton = screen.getByRole("button", { name: "Retry turn" }) as HTMLButtonElement;
+    const chooseModelButton = screen.getByRole("button", { name: "Choose model" }) as HTMLButtonElement;
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:54.000Z",
+        sequence: 6,
+        event: { type: "status", turnStatus: "started", turnId: "turn-next" },
+      });
+    });
+    await waitFor(() => {
+      expect(retryButton.disabled).toBe(true);
+      expect(chooseModelButton.disabled).toBe(true);
+    });
+    fireEvent.click(retryButton);
+    expect(send).not.toHaveBeenCalled();
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:55.000Z",
+        sequence: 7,
+        event: { type: "status", turnStatus: "completed", turnId: "turn-next" },
+      });
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:55.001Z",
+        sequence: 8,
+        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.4" },
+      });
+    });
+    await waitFor(() => {
+      expect(retryButton.disabled).toBe(false);
+      expect(chooseModelButton.disabled).toBe(false);
+    });
+
+    fireEvent.click(retryButton);
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -2670,8 +2706,8 @@ describe("AgentChatPane submit recovery", () => {
     act(() => {
       emitChatEvent({
         sessionId: session.sessionId,
-        timestamp: "2026-07-10T18:18:54.000Z",
-        sequence: 6,
+        timestamp: "2026-07-10T18:18:56.000Z",
+        sequence: 9,
         event: { type: "system_notice", noticeKind: "info", message: "Session metadata refreshed." },
       });
     });

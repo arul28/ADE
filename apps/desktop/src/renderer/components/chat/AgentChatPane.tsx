@@ -11109,6 +11109,7 @@ export function AgentChatPane({
                         : subagentView
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
+                      sessionTurnActive={turnActive}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
@@ -11143,7 +11144,7 @@ export function AgentChatPane({
                       onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
                         window.ade.agentChat.recoverCodexTurn(args)}
                       onRetryProviderFailure={(failedTurnId) => {
-                        if (!selectedSessionId) return;
+                        if (!selectedSessionId || turnActive) return;
                         void resendLastUserMessage(selectedSessionId, failedTurnId);
                       }}
                       onChooseProviderFailureModel={() => {
