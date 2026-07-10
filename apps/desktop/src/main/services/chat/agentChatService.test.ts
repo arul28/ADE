@@ -13681,6 +13681,125 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("emits one Codex failure when error precedes turn/completed with the same payload", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue shipping the fix.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-capacity", status: "inProgress" } },
+      });
+      const error = {
+        message: "Selected model is at capacity. Please try a different model.",
+        codexErrorInfo: "serverOverloaded",
+      };
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "error",
+        params: { turnId: "turn-capacity", error, willRetry: false },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-capacity",
+            status: "failed",
+            error,
+          },
+        },
+      });
+
+      await expect(turn).resolves.toEqual(expect.objectContaining({ turnId: "turn-capacity" }));
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(1);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "status",
+            turnStatus: "failed",
+            turnId: "turn-capacity",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "failed",
+            turnId: "turn-capacity",
+          }),
+        }),
+      ]));
+      await expect(service.getSessionSummary(session.id)).resolves.toEqual(
+        expect.objectContaining({ status: "idle" }),
+      );
+    });
+
+    it("keeps Codex willRetry errors non-terminal until turn/completed", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const turn = service.runSessionTurn({ sessionId: session.id, text: "Retry transiently." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-retry", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "error",
+        params: {
+          turnId: "turn-retry",
+          willRetry: true,
+          error: { message: "Temporary upstream failure.", codexErrorInfo: "serverOverloaded" },
+        },
+      });
+
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "provider_health",
+            turnId: "turn-retry",
+          }),
+        }),
+      ]));
+      await expect(service.getSessionSummary(session.id)).resolves.toEqual(
+        expect.objectContaining({ status: "active" }),
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-retry", status: "completed" } },
+      });
+      await expect(turn).resolves.toEqual(expect.objectContaining({ turnId: "turn-retry" }));
+    });
+
     it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {
       const events: Array<{ type: string; turnId?: string; text?: string }> = [];
       const { service } = createService({

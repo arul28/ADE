@@ -84,6 +84,7 @@ Two helpers summarise a parsed stream:
 | `pending_input_resolved` | Hidden row; consumed by pending-input derivation to clear UI state. |
 | `status` | Turn-level lifecycle: `started`, `completed`, `interrupted`, `failed`. |
 | `done` | Final turn marker with model, model id, usage, cost. Also clears non-question pending inputs when status is not `completed`. |
+| `error` | Provider/runtime failure with message, detail, and semantic `errorInfo`. Codex can report the same terminal failure first as an app-server `error` notification and again on failed `turn/completed`; ADE keeps one visible row for the same turn/error identity while preserving distinct failures. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
 | `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId`, `parentAgentId`, and `agentType`: for Claude / ade-code `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Codex app-server `subAgentActivity` items also flow into these rows and may carry `label`, `model`, and `reasoningEffort` for richer roster labels. Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) are filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. Two additional producers fan into the same three event types: **Claude Workflow runs** — the SDK's undocumented `workflow_progress` snapshot on `system:task_progress` is normalized by `claudeWorkflowProgress.ts` (defensive: malformed entries dropped, previews clipped, counts capped, unknown states degrade to queued/running; an unparseable snapshot leaves the generic task rendering untouched) and diffed per tick into started/progress/result transitions under a stable `<taskId>::a<index>` / latched-agentId identity, so each workflow agent renders as its own row with phase, tokens, and duration, reconnects upsert instead of duplicating, and agents left running when the workflow ends are closed out as `stopped`; and **child chat spawns** — a session created with `orchestrationParentSessionId` outside an orchestration run (e.g. `ade chat create` from a tracked agent shell) emits synthetic `subagent_started`/`subagent_result` events keyed `chat:<childSessionId>` into the parent so the child lists in the parent's subagents panel, its first finished turn reporting completed/failed/stopped. |
@@ -170,6 +171,10 @@ implements a two-layer transform:
    - `transcript_retraction` is also hidden, but mutates the accumulated
      rows by removing prior assistant `text` rows whose provider
      `messageId` was retracted or superseded.
+   - Exact duplicate `error` rows are collapsed by turn id, message, detail,
+     and semantic `errorInfo`. This replay guard handles historical
+     transcripts written before provider-side dedupe without hiding distinct
+     failures from the same turn.
 
 2. **Grouped envelopes.** Adjacent work-log render events in the same
    turn merge into `work_log_group` blocks. When a `tool_use_summary`
@@ -321,8 +326,12 @@ Persisted-history consumers see the stored preview on replay.
   can use the same session instead of creating a new one.
 
 Codex adapters deduplicate repeated lifecycle notifications before
-converting them to envelope events, so a restart does not yield
-duplicate rows.
+converting them to envelope events. Terminal app-server failures use a
+bounded semantic key (turn id + message + detail + error identity) shared by
+the early notification and failed completion path; retrying notifications stay
+non-terminal provider-health notices. The renderer applies the same exact
+identity rule while replaying persisted history, so older transcripts do not
+regain duplicate visible failures after restart.
 
 ## Gotchas
 

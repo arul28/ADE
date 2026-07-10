@@ -91,6 +91,7 @@ import {
 import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard } from "./SubagentActivityCards";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
+import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
@@ -2635,6 +2636,8 @@ function renderEvent(
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onRetryProviderFailure?: (turnId: string | null) => void;
+    onChooseProviderFailureModel?: () => void;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -3617,6 +3620,7 @@ function renderEvent(
     const errorCopyValue = event.detail?.trim().length
       ? `${event.message}\n\n${event.detail}`
       : event.message;
+    const recovery = classifyProviderFailure(event);
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
@@ -3680,10 +3684,24 @@ function renderEvent(
               {event.detail}
             </div>
           ) : null}
+          {recovery ? (
+            <ProviderFailureRecoveryCard
+              recovery={recovery}
+              disabled={Boolean(options?.turnActive)}
+              onRetry={options?.onRetryProviderFailure
+                ? () => options.onRetryProviderFailure?.(event.turnId ?? null)
+                : undefined}
+              onChooseModel={options?.onChooseProviderFailureModel}
+            />
+          ) : null}
           {renderAgentCliAuthCard()}
           {event.errorInfo && !agentCliInfo ? (
-            <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
-              {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
+            <div
+              className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"
+              title={typeof event.errorInfo === "string" ? event.errorInfo : undefined}
+            >
+              {recovery?.label
+                ?? (typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`)}
             </div>
           ) : null}
         </div>
@@ -4143,6 +4161,8 @@ type EventRowProps = {
   turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onRetryProviderFailure?: (turnId: string | null) => void;
+  onChooseProviderFailureModel?: () => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -4176,6 +4196,8 @@ const EventRow = React.memo(function EventRow({
   turnEndDurationMs,
   onApproval,
   onCodexRecovery,
+  onRetryProviderFailure,
+  onChooseProviderFailureModel,
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -4243,6 +4265,8 @@ const EventRow = React.memo(function EventRow({
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
             onCodexRecovery,
+            onRetryProviderFailure,
+            onChooseProviderFailureModel,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -4571,6 +4595,8 @@ function AgentChatMessageListMain({
     className,
   onApproval,
   onCodexRecovery,
+  onRetryProviderFailure,
+  onChooseProviderFailureModel,
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -4595,6 +4621,8 @@ function AgentChatMessageListMain({
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onRetryProviderFailure?: (turnId: string | null) => void;
+  onChooseProviderFailureModel?: () => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -5397,6 +5425,8 @@ function AgentChatMessageListMain({
           turnEndDurationMs={turnEndDurationMs}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
+          onRetryProviderFailure={onRetryProviderFailure}
+          onChooseProviderFailureModel={onChooseProviderFailureModel}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
@@ -5433,6 +5463,8 @@ function AgentChatMessageListMain({
         turnModel={turnModel}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
+        onRetryProviderFailure={onRetryProviderFailure}
+        onChooseProviderFailureModel={onChooseProviderFailureModel}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
@@ -5458,7 +5490,7 @@ function AgentChatMessageListMain({
         assistantTurnCopy={assistantTurnCopy}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

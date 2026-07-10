@@ -91,7 +91,10 @@ import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModel
 import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
-import { AgentChatMessageList, type MosaicRenderContext } from "./AgentChatMessageList";
+import {
+  AgentChatMessageList,
+  type MosaicRenderContext,
+} from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -129,6 +132,7 @@ import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoIt
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
+import { findUserMessageForTurn, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
@@ -980,14 +984,6 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     pendingInputs: derivePendingInputRequests(events),
     pendingSteers: Array.from(steerMap.values()),
   };
-}
-
-function chatSummaryIndicatesActiveTurn(summary: AgentChatSessionSummary | null | undefined): boolean {
-  return summary?.status === "active" && summary.awaitingInput !== true;
-}
-
-function chatEventEndsTurn(event: AgentChatEventEnvelope["event"]): boolean {
-  return event.type === "done" || (event.type === "status" && event.turnStatus !== "started");
 }
 
 type AgentChatSessionViewCache = {
@@ -3044,6 +3040,7 @@ export function AgentChatPane({
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
+  const [modelPickerOpenRequestKey, setModelPickerOpenRequestKey] = useState<number | undefined>();
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
@@ -5146,7 +5143,10 @@ export function AgentChatPane({
 
     setSessions(summary ? [summary] : []);
     setTurnActiveBySession((prev) => {
-      const nextRunning = Boolean(summary && summary.status === "active" && summary.awaitingInput !== true);
+      const residentEvents = eventsBySessionRef.current[lockSessionId] ?? [];
+      const nextRunning = residentEvents.length > 0
+        ? resolveTurnActive(residentEvents, deriveRuntimeState(residentEvents).turnActive, summary)
+        : Boolean(summary?.status === "active" && summary.awaitingInput !== true);
       return prev[lockSessionId] === nextRunning
         ? prev
         : { ...prev, [lockSessionId]: nextRunning };
@@ -5369,7 +5369,7 @@ export function AgentChatPane({
       ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
     setTurnActiveBySession((prev) => ({
       ...prev,
-      [sessionId]: cached.turnActive || (cached.events.length > 0 && chatSummaryIndicatesActiveTurn(sessionSummary)),
+      [sessionId]: resolveTurnActive(cached.events, cached.turnActive, sessionSummary),
     }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
@@ -5463,7 +5463,6 @@ export function AgentChatPane({
       const derived = deriveRuntimeState(merged);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
-      const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
       const historyCursor = usedSnapshotPath ? snapshotTailStartOffset : null;
       writeAgentChatSessionViewCache(sessionId, merged, derived, historyCursor);
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
@@ -5471,7 +5470,7 @@ export function AgentChatPane({
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({
         ...prev,
-        [sessionId]: derived.turnActive || (merged.length > 0 && allowRunningFromSummary),
+        [sessionId]: resolveTurnActive(merged, derived.turnActive, sessionSummary),
       }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
       setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
@@ -6110,13 +6109,9 @@ export function AgentChatPane({
     // after a "done" event.
     let next = eventsBySessionRef.current;
     const touchedSessionIds = new Set<string>();
-    const endingEventSessionIds = new Set<string>();
 
     for (const envelope of queued) {
       const sessionId = envelope.sessionId;
-      if (chatEventEndsTurn(envelope.event)) {
-        endingEventSessionIds.add(sessionId);
-      }
       const sessionEvents = next === eventsBySessionRef.current
         ? (eventsBySessionRef.current[sessionId] ?? [])
         : (next[sessionId] ?? []);
@@ -6150,10 +6145,6 @@ export function AgentChatPane({
       const derived = deriveRuntimeState(next[sessionId] ?? []);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
-      const keepActiveFromSummary =
-        chatSummaryIndicatesActiveTurn(sessionSummary)
-        && (next[sessionId]?.length ?? 0) > 0
-        && !endingEventSessionIds.has(sessionId);
       const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
@@ -6164,7 +6155,7 @@ export function AgentChatPane({
         olderHistoryCursorRef.current[sessionId] ?? null,
         maxEvents,
       );
-      activePatch[sessionId] = derived.turnActive || keepActiveFromSummary;
+      activePatch[sessionId] = resolveTurnActive(next[sessionId] ?? [], derived.turnActive, sessionSummary);
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
     }
@@ -6709,27 +6700,27 @@ export function AgentChatPane({
     insertComposerDraft,
   ]);
 
-  // Resend the most recent user message for a session that fast-failed on a
-  // Claude logout — fired by the inline re-login card's "Retry turn" button. A
-  // forced provider refresh clears cached auth-failed runtime health first; if
-  // Claude is still logged out the new turn fast-fails again and a fresh card
-  // appears.
+  // Resend the most recent user message after a recoverable provider failure.
+  // A forced provider refresh clears stale auth/capacity health before the new
+  // turn starts in the same durable thread.
   const rejectAuthRetry = useCallback((sessionId: string) => {
     window.dispatchEvent(new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId } }));
   }, []);
 
-  const resendLastUserMessageForAuthRetry = useCallback(async (sessionId: string) => {
+  const resendLastUserMessage = useCallback(async (sessionId: string, failedTurnId?: string | null) => {
     if (submitInFlightRef.current) {
       rejectAuthRetry(sessionId);
       return;
     }
     const events = selectedEventsForDisplayRef.current;
-    let userEvent: Extract<AgentChatEvent, { type: "user_message" }> | null = null;
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const evt = events[index]?.event;
-      if (evt?.type === "user_message" && typeof evt.text === "string" && evt.text.trim().length > 0) {
-        userEvent = evt;
-        break;
+    let userEvent = failedTurnId ? findUserMessageForTurn(events, failedTurnId) : null;
+    if (!failedTurnId) {
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const evt = events[index]?.event;
+        if (evt?.type === "user_message" && typeof evt.text === "string" && evt.text.trim().length > 0) {
+          userEvent = evt;
+          break;
+        }
       }
     }
     if (!userEvent) {
@@ -6806,11 +6797,11 @@ export function AgentChatPane({
       const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
       const sessionId = detail?.sessionId;
       if (typeof sessionId !== "string" || sessionId !== selectedSessionIdRef.current) return;
-      void resendLastUserMessageForAuthRetry(sessionId);
+      void resendLastUserMessage(sessionId);
     };
     window.addEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);
     return () => window.removeEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);
-  }, [resendLastUserMessageForAuthRetry]);
+  }, [resendLastUserMessage]);
 
   // When a turn succeeds after a logout, tell visible re-login cards for this
   // session to collapse into a quiet "Reconnected" confirmation.
@@ -10239,6 +10230,8 @@ export function AgentChatPane({
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
+            modelPickerOpenRequestKey={modelPickerOpenRequestKey}
+            onModelPickerOpenRequestHandled={() => setModelPickerOpenRequestKey(undefined)}
             availableModelIds={effectiveAvailableModelIds}
             constrainModelSelection={modelSelectionConstrained}
             modelUnavailableMessage={constrainedModelSelectionError ?? undefined}
@@ -11146,6 +11139,14 @@ export function AgentChatPane({
                       }}
                       onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
                         window.ade.agentChat.recoverCodexTurn(args)}
+                      onRetryProviderFailure={(failedTurnId) => {
+                        if (!selectedSessionId) return;
+                        void resendLastUserMessage(selectedSessionId, failedTurnId);
+                      }}
+                      onChooseProviderFailureModel={() => {
+                        if (turnActive) return;
+                        setModelPickerOpenRequestKey((key) => (key ?? 0) + 1);
+                      }}
                       mosaic={subagentView || mainTranscriptView ? undefined : mosaicContext}
                       scrollToRowKeyRequest={subagentView || mainTranscriptView ? null : wakeJumpRequest}
                     />

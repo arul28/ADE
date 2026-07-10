@@ -2593,6 +2593,147 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.getByLabelText("Stop active turn")).toBeTruthy();
   });
 
+  it("lets terminal history beat a stale active summary and send the next message", async () => {
+    const session = buildSession("session-1", { status: "active", awaitingInput: false });
+    const terminalEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:52.000Z",
+        sequence: 1,
+        // ADE persists Codex user input before turn/started supplies the
+        // provider turn id. Recovery must associate this by turn boundaries.
+        event: { type: "user_message", text: "Keep shipping the fix." },
+      },
+      ...[2, 3].map((sequence) => ({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.000Z",
+        sequence,
+        event: {
+          type: "error" as const,
+          message: "Selected model is at capacity. Please try a different model.",
+          turnId: "turn-capacity",
+          errorInfo: "serverOverloaded",
+        },
+      })),
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.050Z",
+        sequence: 4,
+        event: {
+          type: "status",
+          turnStatus: "failed",
+          turnId: "turn-capacity",
+          message: "Selected model is at capacity. Please try a different model.",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.066Z",
+        sequence: 5,
+        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+      },
+    ];
+    const { emitChatEvent, send } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: terminalEvents,
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Provider capacity")).toBeTruthy();
+    expect(screen.getAllByText("Error")).toHaveLength(1);
+    expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+
+    const modelTrigger = screen.getByRole("button", { name: /^Select model/ });
+    fireEvent.click(screen.getByRole("button", { name: "Choose model" }));
+    await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
+    fireEvent.click(modelTrigger);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry turn" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Keep shipping the fix.",
+      }));
+    });
+    send.mockClear();
+
+    // A later non-terminal live event must use the same invariant as snapshot
+    // hydration and cannot revive the already-failed turn from the stale summary.
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:54.000Z",
+        sequence: 6,
+        event: { type: "system_notice", noticeKind: "info", message: "Session metadata refreshed." },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Continue in a new turn." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Continue in a new turn.",
+      }));
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5", "anthropic/claude-sonnet-5"],
+    ["cursor", "composer", "cursor/composer"],
+    ["droid", "claude-sonnet-4-5", "droid/claude-sonnet-4-5"],
+    ["opencode", "gpt-5.4-mini", "opencode/openai/gpt-5.4-mini"],
+  ] as const)("keeps %s idle when terminal transcript evidence conflicts with an active summary", async (provider, model, modelId) => {
+    const session = buildSession(`session-${provider}`, {
+      provider,
+      model,
+      modelId,
+      status: "active",
+      awaitingInput: false,
+    });
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+      cursorModels: [{ id: "composer" }],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.050Z",
+            sequence: 1,
+            event: { type: "status", turnStatus: "failed", turnId: `turn-${provider}`, message: "Provider failed." },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 2,
+            event: { type: "done", status: "failed", turnId: `turn-${provider}`, model },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.queryByLabelText("Stop active turn")).toBeNull();
+  });
+
   it("stops active-turn controls immediately when a terminal event streams", async () => {
     const session = buildSession("session-1", { status: "active", awaitingInput: false });
     const { emitChatEvent } = installAdeMocks({
@@ -2623,6 +2764,12 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
       expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
     });
+
+    // The terminal event schedules a locked-session summary refresh. Its stale
+    // active snapshot must not revive the turn after that refresh lands.
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
   it("falls back to a normal send when the active-turn marker is stale", async () => {

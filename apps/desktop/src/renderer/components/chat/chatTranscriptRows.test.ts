@@ -23,6 +23,43 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  it("collapses duplicate semantic failures for the same turn without hiding distinct errors", () => {
+    const base = {
+      sessionId: "session-1",
+      timestamp: "2026-07-10T18:18:53.000Z",
+    };
+    const duplicateFailure = {
+      type: "error" as const,
+      message: "Selected model is at capacity. Please try a different model.",
+      turnId: "turn-capacity",
+      errorInfo: "serverOverloaded",
+    };
+    const rows = collapseChatTranscriptEvents([
+      { ...base, sequence: 1, event: duplicateFailure },
+      { ...base, sequence: 2, event: { ...duplicateFailure } },
+      {
+        ...base,
+        sequence: 3,
+        event: {
+          type: "error",
+          message: "A separate transport failure occurred.",
+          turnId: "turn-capacity",
+          errorInfo: "responseStreamDisconnected",
+        },
+      },
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "error")).toHaveLength(2);
+    expect(rows.map((row) => row.event.type === "error" ? row.event.message : null)).toEqual([
+      duplicateFailure.message,
+      "A separate transport failure occurred.",
+    ]);
+    expect(rows[1]?.event).toEqual(expect.objectContaining({
+      type: "error",
+      errorInfo: "responseStreamDisconnected",
+    }));
+  });
+
   it("extracts and normalizes localhost URLs from tool output text", () => {
     expect(
       extractLocalhostUrlsFromText("Local: http://localhost:5173/\nNetwork: http://0.0.0.0:5173/"),

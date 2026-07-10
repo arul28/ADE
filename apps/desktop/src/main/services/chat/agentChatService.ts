@@ -704,6 +704,7 @@ type CodexRuntime = {
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
+  emittedErrorKeys: Set<string>;
   reconciledItemSignaturesByTurn: Map<string, Set<string>>;
   noFirstEventWatchdog: {
     turnId: string;
@@ -20105,6 +20106,38 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   }
 
+  function emitCodexErrorOnce(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    input: {
+      turnId?: string | null;
+      message: unknown;
+      errorInfo?: unknown;
+      detail?: unknown;
+    },
+  ): void {
+    const turnId = typeof input.turnId === "string" && input.turnId.trim().length
+      ? input.turnId.trim()
+      : null;
+    const message = String(input.message ?? "Codex app-server error.");
+    const errorInfo = formatCodexErrorInfo(input.errorInfo);
+    const detail = typeof input.detail === "string" && input.detail.trim().length
+      ? input.detail.trim()
+      : undefined;
+    if (turnId) {
+      const semanticKey = JSON.stringify([turnId, message.trim(), errorInfo ?? null, detail ?? null]);
+      if (runtime.emittedErrorKeys.has(semanticKey)) return;
+      rememberBoundedId(runtime.emittedErrorKeys, semanticKey, 512);
+    }
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      ...(turnId ? { turnId } : {}),
+      ...(errorInfo ? { errorInfo } : {}),
+      ...(detail ? { detail } : {}),
+    });
+  }
+
   async function finishCodexTurnFromReconciledState(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -20148,11 +20181,11 @@ export function createAgentChatService(args: {
     const error = asRecord(turn.error);
     const errorMessage = stringOrNull(error?.message);
     if (status === "failed" && errorMessage) {
-      emitChatEvent(managed, {
-        type: "error",
-        message: errorMessage,
+      emitCodexErrorOnce(managed, runtime, {
         turnId,
-        errorInfo: formatCodexErrorInfo(error?.codexErrorInfo),
+        message: errorMessage,
+        errorInfo: error?.codexErrorInfo,
+        detail: error?.additionalDetails,
       });
     }
 
@@ -20599,11 +20632,11 @@ export function createAgentChatService(args: {
       }
 
       if (status === "failed" && turn?.error?.message) {
-        emitChatEvent(managed, {
-          type: "error",
-          message: String(turn.error.message),
+        emitCodexErrorOnce(managed, runtime, {
           turnId,
-          errorInfo: formatCodexErrorInfo(turn.error.codexErrorInfo)
+          message: turn.error.message,
+          errorInfo: turn.error.codexErrorInfo,
+          detail: (turn.error as { additionalDetails?: unknown }).additionalDetails,
         });
       }
 
@@ -20997,12 +21030,28 @@ export function createAgentChatService(args: {
     }
 
     if (method === "error") {
-      const error = (params.error as { message?: unknown; codexErrorInfo?: unknown } | null) ?? null;
-      emitChatEvent(managed, {
-        type: "error",
-        message: String(error?.message ?? "Codex app-server error."),
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-        errorInfo: formatCodexErrorInfo(error?.codexErrorInfo)
+      const error = (params.error as {
+        message?: unknown;
+        codexErrorInfo?: unknown;
+        additionalDetails?: unknown;
+      } | null) ?? null;
+      const turnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? undefined;
+      if (params.willRetry === true) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          severity: "warning",
+          message: "Codex hit a provider error and is retrying automatically.",
+          detail: String(error?.message ?? "The provider request failed."),
+          ...(turnId ? { turnId } : {}),
+        });
+        return;
+      }
+      emitCodexErrorOnce(managed, runtime, {
+        turnId,
+        message: error?.message ?? "Codex app-server error.",
+        errorInfo: error?.codexErrorInfo,
+        detail: error?.additionalDetails,
       });
       return;
     }
@@ -21224,6 +21273,7 @@ export function createAgentChatService(args: {
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
+      emittedErrorKeys: new Set<string>(),
       reconciledItemSignaturesByTurn: new Map<string, Set<string>>(),
       noFirstEventWatchdog: null,
       stalledTurnIds: new Set<string>(),

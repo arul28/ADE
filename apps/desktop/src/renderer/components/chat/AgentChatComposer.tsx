@@ -1051,6 +1051,8 @@ export function AgentChatComposer({
   appControlContextItems = [],
   builtInBrowserContextItems = [],
   modelSelectionLocked = false,
+  modelPickerOpenRequestKey,
+  onModelPickerOpenRequestHandled,
   permissionModeLocked = false,
   hideNativeControls = false,
   orchestrationRole = null,
@@ -1183,6 +1185,8 @@ export function AgentChatComposer({
   builtInBrowserContextItems?: BuiltInBrowserContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
+  modelPickerOpenRequestKey?: number;
+  onModelPickerOpenRequestHandled?: () => void;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
   /**
@@ -3849,6 +3853,8 @@ export function AgentChatComposer({
                   value={modelId}
                   onChange={onModelChange}
                   surfaceKey="chat-composer"
+                  openRequestKey={modelPickerOpenRequestKey}
+                  onOpenRequestHandled={onModelPickerOpenRequestHandled}
                   {...(availableModelIds ? { availableModelIds } : {})}
                   constrainToAvailableModelIds={constrainModelSelection}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}

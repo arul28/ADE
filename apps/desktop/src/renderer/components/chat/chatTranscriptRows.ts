@@ -246,10 +246,12 @@ type CollapseTranscriptContext = {
   latestTodoItemsByTurn: Map<string, TodoUpdateTranscriptEvent["items"]>;
   /** Subagent lifecycle state keyed by agentKey (agentId ?? taskId). */
   subagentAnchors: Map<string, SubagentAnchorState>;
+  /** Semantic provider failures already rendered for a specific turn. */
+  errorKeysByTurn: Set<string>;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
-  return { latestTodoItemsByTurn: new Map(), subagentAnchors: new Map() };
+  return { latestTodoItemsByTurn: new Map(), subagentAnchors: new Map(), errorKeysByTurn: new Set() };
 }
 
 function todoSnapshotKey(turnId: string | null): string {
@@ -1126,6 +1128,17 @@ export function appendCollapsedChatTranscriptEvent(
     ) {
       return;
     }
+  }
+
+  if (event.type === "error" && event.turnId?.trim()) {
+    const semanticKey = JSON.stringify([
+      event.turnId.trim(),
+      event.message.trim(),
+      event.detail?.trim() ?? null,
+      event.errorInfo ?? null,
+    ]);
+    if (context?.errorKeysByTurn.has(semanticKey)) return;
+    context?.errorKeysByTurn.add(semanticKey);
   }
 
   if (event.type === "system_notice") {
