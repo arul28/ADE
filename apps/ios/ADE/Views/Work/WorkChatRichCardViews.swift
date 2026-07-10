@@ -1392,8 +1392,6 @@ struct WorkResolvedQuestionCard: View {
     return trimmed
   }
 
-  private var isResolved: Bool { resolution != nil }
-
   private var isDeclined: Bool {
     switch (resolution ?? "").lowercased() {
     case "declined", "rejected", "cancelled", "canceled": return true
@@ -1415,124 +1413,82 @@ struct WorkResolvedQuestionCard: View {
     return nil
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      header
-
-      if let model {
-        ForEach(Array(model.questions.enumerated()), id: \.offset) { _, question in
-          questionSection(question)
-        }
-      } else if let body = card.body, !body.isEmpty {
-        Text(body)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-
-      if isResolved {
-        resolutionPill
-      }
-    }
-    .padding(14)
-    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(accent.opacity(0.22), lineWidth: 1)
-    )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(accessibilityText)
+  private var isMultiQuestion: Bool {
+    (model?.questions.count ?? 0) > 1
   }
 
-  private var header: some View {
+  /// Any question in the set requested a secret. When true the resolution is
+  /// never echoed — the answer could restate the secret value.
+  private var isSecretResolution: Bool {
+    model?.questions.contains(where: { $0.isSecret }) ?? false
+  }
+
+  /// Plain status words carry no user-authored content worth echoing; a typed
+  /// freeform answer is anything else.
+  private func isPlainStatus(_ value: String) -> Bool {
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "accepted", "answered", "declined", "rejected", "cancelled", "canceled", "resolved", "ok", "done":
+      return true
+    default:
+      return false
+    }
+  }
+
+  private var collapsedIcon: String {
+    isDeclined ? "xmark.circle" : "checkmark.circle.fill"
+  }
+
+  private var collapsedTint: Color {
+    isDeclined ? ADEColor.textMuted : ADEColor.success
+  }
+
+  /// One-line summary mirroring Claude Code's resolved-question row: the chosen
+  /// option, a truncated typed answer, a decline, or a bare count for multiple
+  /// questions. Secret answers collapse to "Answered" and are never echoed.
+  private var collapsedText: String {
+    if isDeclined {
+      return pendingInputResolutionLabel(for: (resolution ?? "declined").lowercased())
+    }
+    if isMultiQuestion {
+      let count = model?.questions.count ?? 0
+      return "\(count) questions answered"
+    }
+    if let chosen = chosenOption {
+      return "Answered · \(chosen.label)"
+    }
+    if isSecretResolution {
+      return "Answered"
+    }
+    if let resolution, !isPlainStatus(resolution) {
+      return "Answered · \u{201C}\(resolution)\u{201D}"
+    }
+    return "Answered"
+  }
+
+  var body: some View {
     HStack(spacing: 8) {
-      WorkProviderBareLogo(
-        provider: resolvedProvider,
-        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
-        tint: accent,
-        size: 16
-      )
-      Text("\(workChatSurfaceProviderName(resolvedProvider)) asked")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(accent)
+      Image(systemName: collapsedIcon)
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(collapsedTint)
+      Text(collapsedText)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
       Spacer(minLength: 8)
       Text(relativeTimestamp(card.timestamp))
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
     }
-  }
-
-  @ViewBuilder
-  private func questionSection(_ question: WorkPendingQuestion) -> some View {
-    let questionText = question.isSecret ? "Secure response requested" : question.question
-    VStack(alignment: .leading, spacing: 8) {
-      if let header = question.header, !header.isEmpty {
-        Text(header.uppercased())
-          .font(.caption2.weight(.bold))
-          .tracking(0.6)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      if !questionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Text(questionText)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      // Secure-response questions mask more than the prompt: option labels and
-      // descriptions can restate the secret, so the whole option list is hidden.
-      if !question.isSecret, !question.options.isEmpty {
-        VStack(alignment: .leading, spacing: 6) {
-          ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
-            optionRow(option)
-          }
-        }
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  @ViewBuilder
-  private func optionRow(_ option: WorkPendingQuestionOption) -> some View {
-    let selected = isSelected(option)
-    HStack(alignment: .top, spacing: 8) {
-      Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(selected ? accent : ADEColor.textMuted.opacity(0.55))
-      VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: 6) {
-          Text(option.label)
-            .font(.caption.weight(selected ? .semibold : .regular))
-            .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          if option.recommended {
-            Text("Recommended")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(accent)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .background(accent.opacity(0.12), in: Capsule(style: .continuous))
-          }
-        }
-        if let description = option.description, !description.isEmpty {
-          Text(description)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-      }
-    }
-    .padding(.vertical, 5)
-    .padding(.horizontal, 8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      selected ? accent.opacity(0.08) : Color.clear,
-      in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-    )
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .stroke(selected ? accent.opacity(0.30) : Color.clear, lineWidth: 1)
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(collapsedTint.opacity(0.20), lineWidth: 0.8)
     )
-    .opacity(isDeclined ? 0.55 : 1)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityText)
   }
 
   private func isSelected(_ option: WorkPendingQuestionOption) -> Bool {
@@ -1542,28 +1498,6 @@ struct WorkResolvedQuestionCard: View {
       return true
     }
     return normalized == option.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  }
-
-  private var resolutionPill: some View {
-    let key = (resolution ?? "").lowercased()
-    let tint = pendingInputResolutionTint(for: key).color
-    let label: String = {
-      if let chosen = chosenOption {
-        return "Answered · \(chosen.label)"
-      }
-      return isDeclined ? pendingInputResolutionLabel(for: key) : "Answered"
-    }()
-    return HStack(spacing: 5) {
-      Image(systemName: pendingInputResolutionIcon(for: key))
-        .font(.system(size: 11, weight: .semibold))
-      Text(label)
-        .font(.caption2.weight(.semibold))
-        .lineLimit(1)
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 4)
-    .background(tint.opacity(0.10), in: Capsule(style: .continuous))
   }
 
   private var accessibilityText: String {

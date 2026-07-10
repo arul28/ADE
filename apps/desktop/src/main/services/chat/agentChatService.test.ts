@@ -22920,6 +22920,82 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("steer", () => {
+    it("routes a send during an active Claude turn through the queued steer path", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-send-to-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Queued send delivered" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-send-to-steer",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      const result = await service.sendMessage({
+        sessionId: session.id,
+        text: "Follow up when the active turn finishes",
+      }, { routeActiveToSteer: true });
+      expect(result).toMatchObject({ queued: true, steerId: expect.any(String) });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text === "Follow up when the active turn finishes"
+        && event.event.deliveryState === "queued"
+      )).toBe(true);
+
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledWith(expect.stringContaining("Follow up when the active turn finishes"));
+      });
+    });
+
     it("defers wake messages to the active Claude turn boundary", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);

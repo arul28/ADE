@@ -27366,12 +27366,42 @@ export function createAgentChatService(args: {
     return true;
   };
 
-  const sendMessage = async (
+  const canRouteActiveSendToSteer = (managed: ManagedChatSession): boolean => {
+    const runtime = managed.runtime;
+    if (!runtime) return false;
+    if (runtime.kind === "codex") {
+      return Boolean(managed.session.threadId && runtime.activeTurnId);
+    }
+    if (runtime.kind === "claude" || runtime.kind === "opencode") {
+      return runtime.busy || managed.session.status === "active";
+    }
+    return runtime.busy;
+  };
+
+  async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean },
-  ): Promise<void> => {
+    options: { awaitDispatch?: boolean; routeActiveToSteer: true },
+  ): Promise<void | AgentChatSteerResult>;
+  async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: { awaitDispatch?: boolean; routeActiveToSteer?: false },
+  ): Promise<void>;
+  async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: { awaitDispatch?: boolean; routeActiveToSteer?: boolean },
+  ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
+    const managed = ensureManagedSession(args.sessionId);
+    if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
+      return steer({
+        sessionId: args.sessionId,
+        text: args.text,
+        attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
+      });
+    }
     const prepared = prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
@@ -27475,7 +27505,7 @@ export function createAgentChatService(args: {
     if (dispatchPromise) {
       await dispatchPromise;
     }
-  };
+  }
 
   const steer = async ({ sessionId, text, attachments = [], contextAttachments = [], metadata }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();

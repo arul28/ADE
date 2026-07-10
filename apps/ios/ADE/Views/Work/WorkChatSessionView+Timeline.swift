@@ -157,7 +157,8 @@ extension WorkChatSessionView {
             }
           }
         },
-        fallbackProvider: chatSummaryContext.provider
+        fallbackProvider: chatSummaryContext.provider,
+        viewportHeight: scrollViewportHeight
       )
       .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
@@ -503,7 +504,8 @@ extension WorkChatSessionView {
             await onDeclineQuestion(model.id)
           }
         },
-        fallbackProvider: chatSummaryContext.provider
+        fallbackProvider: chatSummaryContext.provider,
+        viewportHeight: scrollViewportHeight
       )
     case .modelSelection(let model):
       WorkModelSelectionPendingCard(

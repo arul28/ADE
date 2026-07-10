@@ -44,21 +44,23 @@ struct WorkArtifactView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Image(systemName: artifact.artifactKind == "video_recording" ? "video.fill" : "photo.fill")
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: workArtifactKindIcon(artifact))
+          .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.accent)
+          .frame(width: 36, height: 36)
+          .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         VStack(alignment: .leading, spacing: 3) {
           Text(artifact.title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text(artifact.artifactKind.replacingOccurrences(of: "_", with: " ").capitalized)
+            .lineLimit(2)
+            .truncationMode(.tail)
+          Text([workArtifactKindLabel(artifact.artifactKind), relativeTimestamp(artifact.createdAt)].joined(separator: " · "))
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
         }
-        Spacer()
-        Text(relativeTimestamp(artifact.createdAt))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
+        Spacer(minLength: 0)
       }
 
       Group {
@@ -98,9 +100,7 @@ struct WorkArtifactView: View {
         case .text(let text):
           WorkStructuredOutputBlock(title: "Artifact", text: text)
         case .error(let message):
-          Text(message)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
+          WorkArtifactInlineStatus(icon: "photo", message: message, tint: ADEColor.textMuted)
         case .none:
           HStack(spacing: 10) {
             ProgressView()
@@ -873,7 +873,8 @@ private struct WorkArtifactSelectedPreview: View {
           Text(artifact.title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(2)
+            .truncationMode(.tail)
 
           Text([workArtifactKindLabel(artifact.artifactKind), artifact.backendName, relativeTimestamp(artifact.createdAt)].joined(separator: " · "))
             .font(.caption)

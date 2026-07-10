@@ -3668,11 +3668,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return summarizeChatSessionForRemote(agentChatService, session);
   });
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
       parseAgentChatSendArgs(payload),
-      { awaitDispatch: false },
+      { awaitDispatch: false, routeActiveToSteer: true },
     );
-    return { ok: true };
+    return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
   register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));

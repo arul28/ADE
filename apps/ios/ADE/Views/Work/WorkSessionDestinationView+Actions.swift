@@ -489,7 +489,16 @@ extension WorkSessionDestinationView {
         setArtifactContent(.text(blob.content), for: artifact.id)
       }
     } catch {
-      setArtifactContent(.error(error.localizedDescription), for: artifact.id)
+      let raw = error.localizedDescription
+      let friendly: String
+      if raw.contains("must resolve within")
+        || raw.contains("Remote artifact URLs are not supported")
+        || raw.contains("file URL is invalid") {
+        friendly = "Preview isn't available on this device."
+      } else {
+        friendly = "Preview unavailable."
+      }
+      setArtifactContent(.error(friendly), for: artifact.id)
     }
   }
 
