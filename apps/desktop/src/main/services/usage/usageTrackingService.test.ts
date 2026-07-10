@@ -1258,6 +1258,53 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
+  it("falls back to Codex RPC after retryable HTTP server errors", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "ok-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const result = await pollCodexUsage(createLogger() as any);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.windows).toHaveLength(2);
+      expect(result.source).toBe("cli");
+      expect(result.errors).toEqual([]);
+      expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the Codex RPC when a successful HTTP response drifts", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
@@ -1422,6 +1469,33 @@ describe("createUsageTrackingService", () => {
     expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
 
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("does not reschedule after stop while the startup poll is in flight", async () => {
+    const logger = createLogger();
+    let resolveClaude!: (result: { windows: never[]; extraUsage: null; errors: never[] }) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      pollClaudeUsage: vi.fn(() => new Promise<Parameters<typeof resolveClaude>[0]>((resolve) => {
+        resolveClaude = resolve;
+      })),
+    };
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    service.start();
+    await Promise.resolve();
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    service.stop();
+    const timeoutCallsAfterStop = setTimeoutSpy.mock.calls.length;
+
+    resolveClaude({ windows: [], extraUsage: null, errors: [] });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(timeoutCallsAfterStop);
+    service.dispose();
     setTimeoutSpy.mockRestore();
   });
 

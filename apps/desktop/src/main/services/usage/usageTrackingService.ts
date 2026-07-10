@@ -904,7 +904,7 @@ async function pollCodexUsage(
           };
     }
 
-    if (!result.ok && result.status === 401) {
+    if (!result.ok && (result.status === 401 || RETRYABLE_STATUS.has(result.status))) {
       const fallback = await measureUsagePhase(
         logger,
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
@@ -915,7 +915,8 @@ async function pollCodexUsage(
         ...fallback,
         source: "cli",
         errors: [`codex: API returned ${result.status}`, ...fallback.errors],
-        errorKind: fallback.errorKind ?? "auth",
+        errorKind: fallback.errorKind ?? errorKindForHttpStatus(result.status),
+        ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
       };
     }
 
@@ -2567,6 +2568,7 @@ export function createUsageTrackingService({
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollReason: UsageRefreshReason | null = null;
   let inFlightHistoryRefresh: Promise<UsageSnapshot> | null = null;
@@ -2913,25 +2915,32 @@ export function createUsageTrackingService({
   }
 
   function scheduleNextPoll(): void {
+    if (!pollingEnabled) return;
     if (pollTimer) clearTimeout(pollTimer);
     pollTimer = setTimeout(() => {
       pollTimer = null;
       void poll({ reason: "automatic" })
         .catch(() => {})
-        .finally(scheduleNextPoll);
+        .finally(() => {
+          if (pollingEnabled) scheduleNextPoll();
+        });
     }, nextPollDelayMs());
     pollTimer.unref?.();
   }
 
   function start() {
-    if (pollTimer) return;
+    if (pollingEnabled) return;
+    pollingEnabled = true;
     scheduleNextPoll();
     void poll({ reason: "automatic" })
       .catch(() => {})
-      .finally(scheduleNextPoll);
+      .finally(() => {
+        if (pollingEnabled) scheduleNextPoll();
+      });
   }
 
   function stop() {
+    pollingEnabled = false;
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
