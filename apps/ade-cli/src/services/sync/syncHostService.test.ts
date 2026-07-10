@@ -225,6 +225,8 @@ describe("buildSyncHostHelloOkPayload", () => {
     expect(payload.features.fileAccess).toBe(true);
     expect(payload.features.terminalStreaming).toBe(true);
     expect(payload.features.chatStreaming).toEqual({ enabled: true });
+    expect(payload.features.rpcChannel).toBe(true);
+    expect(payload.features.portForward).toBe(true);
     expect(payload.features.commandRouting).toEqual({
       mode: "allowlisted",
       supportedActions: [remoteCommand.action, localPresenceCommand.action],

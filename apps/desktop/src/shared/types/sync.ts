@@ -15,6 +15,7 @@ import type {
   ExternalSessionSummary,
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
+import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -1351,4 +1352,5 @@ export type SyncEnvelope =
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope
-  | SyncEnvelopeChunkEnvelope;
+  | SyncEnvelopeChunkEnvelope
+  | PairedRuntimeSyncEnvelope;

@@ -1,0 +1,423 @@
+import {
+  generateKeyPairSync,
+  randomUUID,
+} from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import type {
+  DesktopPairedMachineCredentials,
+  DesktopPairedMachinesFile,
+  PairedRuntimeHelloOkPayload,
+} from "../../../shared/types/pairedRuntime";
+import type {
+  SyncPairingHostIdentity,
+  SyncPairingResultPayload,
+  SyncPeerMetadata,
+} from "../../../shared/types/sync";
+import {
+  buildDesktopPairedHello,
+  normalizeSyncEndpoint,
+  openSyncEnvelopeConnection,
+  waitForSyncEnvelope,
+  type OpenSyncEnvelopeConnectionOptions,
+} from "./syncRuntimeTransport";
+
+const STORE_FILE_NAME = "desktop-paired-machines.json";
+const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
+
+export type PairWithMachineOptions = Omit<
+  OpenSyncEnvelopeConnectionOptions,
+  "endpoint"
+> & {
+  appVersion?: string;
+  pairingTimeoutMs?: number;
+};
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function requiredString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function coerceHostIdentity(value: unknown): SyncPairingHostIdentity | null {
+  if (!isRecord(value)) return null;
+  const deviceId = requiredString(value.deviceId);
+  const siteId = requiredString(value.siteId);
+  const name = requiredString(value.name);
+  const platform = value.platform;
+  const deviceType = value.deviceType;
+  if (!deviceId || !siteId || !name) return null;
+  if (
+    platform !== "macOS"
+    && platform !== "linux"
+    && platform !== "windows"
+    && platform !== "iOS"
+    && platform !== "unknown"
+  ) return null;
+  if (
+    deviceType !== "desktop"
+    && deviceType !== "phone"
+    && deviceType !== "vps"
+    && deviceType !== "browser"
+    && deviceType !== "unknown"
+  ) return null;
+  return { deviceId, siteId, name, platform, deviceType };
+}
+
+function coerceMachine(value: unknown): DesktopPairedMachineCredentials | null {
+  if (!isRecord(value) || value.version !== 1) return null;
+  const hostIdentity = coerceHostIdentity(value.hostIdentity);
+  const deviceId = requiredString(value.deviceId);
+  const siteId = requiredString(value.siteId);
+  const deviceName = requiredString(value.deviceName);
+  const secret = requiredString(value.secret);
+  const dpopPrivateKey = requiredString(value.dpopPrivateKey);
+  const dpopPublicKey = requiredString(value.dpopPublicKey);
+  const createdAt = requiredString(value.createdAt);
+  const updatedAt = requiredString(value.updatedAt);
+  const endpoints = Array.isArray(value.endpoints)
+    ? [...new Set(value.endpoints.flatMap((entry) => {
+        if (typeof entry !== "string" || !entry.trim()) return [];
+        try {
+          return [normalizeSyncEndpoint(entry)];
+        } catch {
+          return [];
+        }
+      }))]
+    : [];
+  if (
+    !hostIdentity
+    || !deviceId
+    || !siteId
+    || !deviceName
+    || !secret
+    || !dpopPrivateKey
+    || !dpopPublicKey
+    || !createdAt
+    || !updatedAt
+    || endpoints.length === 0
+  ) return null;
+  return {
+    version: 1,
+    hostIdentity,
+    machineKey: requiredString(value.machineKey),
+    deviceId,
+    siteId,
+    deviceName,
+    secret,
+    dpopPrivateKey,
+    dpopPublicKey,
+    endpoints,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function hostIdentityFromPeer(
+  peer: SyncPeerMetadata | null | undefined,
+): SyncPairingHostIdentity {
+  if (!peer) throw new Error("Paired sync host did not provide an identity.");
+  const deviceId = requiredString(peer?.deviceId);
+  const siteId = requiredString(peer?.siteId);
+  const name = requiredString(peer?.deviceName);
+  if (!deviceId || !siteId || !name) {
+    throw new Error("Paired sync host did not provide a valid identity.");
+  }
+  return {
+    deviceId,
+    siteId,
+    name,
+    platform: peer.platform,
+    deviceType: peer.deviceType,
+  };
+}
+
+function generateDpopKeyPair(): { privateKey: string; publicKey: string } {
+  const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const jwk = pair.publicKey.export({ format: "jwk" }) as { x?: string; y?: string };
+  if (!jwk.x || !jwk.y) throw new Error("Could not export the desktop pairing public key.");
+  return {
+    privateKey: pair.privateKey.export({
+      format: "der",
+      type: "pkcs8",
+    }).toString("base64"),
+    publicKey: Buffer.concat([
+      Buffer.from([0x04]),
+      Buffer.from(jwk.x, "base64url"),
+      Buffer.from(jwk.y, "base64url"),
+    ]).toString("base64"),
+  };
+}
+
+function machineKeyFromEndpoint(endpoint: string): string | null {
+  try {
+    const segments = new URL(endpoint).pathname.split("/").filter(Boolean);
+    const connectIndex = segments.lastIndexOf("connect");
+    return connectIndex >= 0 && segments[connectIndex + 1]
+      ? decodeURIComponent(segments[connectIndex + 1]!)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function uniqueEndpoints(...values: Array<string | null | undefined>): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value?.trim()) continue;
+    let endpoint: string;
+    try {
+      endpoint = normalizeSyncEndpoint(value);
+    } catch {
+      continue;
+    }
+    if (seen.has(endpoint)) continue;
+    seen.add(endpoint);
+    normalized.push(endpoint);
+  }
+  return normalized;
+}
+
+export class DesktopPairedMachineStore {
+  readonly path: string;
+
+  constructor(options: { filePath?: string } = {}) {
+    this.path = options.filePath
+      ?? path.join(resolveMachineAdeLayout().secretsDir, STORE_FILE_NAME);
+  }
+
+  list(): DesktopPairedMachineCredentials[] {
+    return this.read().machines;
+  }
+
+  get(hostDeviceIdOrMachineKey: string): DesktopPairedMachineCredentials | null {
+    const id = hostDeviceIdOrMachineKey.trim();
+    if (!id) return null;
+    return this.list().find((machine) =>
+      machine.hostIdentity.deviceId === id || machine.machineKey === id
+    ) ?? null;
+  }
+
+  save(credentials: DesktopPairedMachineCredentials): DesktopPairedMachineCredentials {
+    const machine = coerceMachine(credentials);
+    if (!machine) throw new Error("Desktop paired machine credentials are invalid.");
+    const file = this.read();
+    const existing = file.machines.find((entry) =>
+      entry.hostIdentity.deviceId === machine.hostIdentity.deviceId
+      || (machine.machineKey && entry.machineKey === machine.machineKey)
+    );
+    const saved: DesktopPairedMachineCredentials = {
+      ...machine,
+      createdAt: existing?.createdAt ?? machine.createdAt,
+      updatedAt: nowIso(),
+      endpoints: uniqueEndpoints(...machine.endpoints, ...(existing?.endpoints ?? [])),
+    };
+    this.write({
+      version: 1,
+      machines: [
+        saved,
+        ...file.machines.filter((entry) =>
+          entry.hostIdentity.deviceId !== saved.hostIdentity.deviceId
+          && (!saved.machineKey || entry.machineKey !== saved.machineKey)
+        ),
+      ],
+    });
+    return saved;
+  }
+
+  remove(hostDeviceIdOrMachineKey: string): boolean {
+    const id = hostDeviceIdOrMachineKey.trim();
+    if (!id) return false;
+    const file = this.read();
+    const machines = file.machines.filter((machine) =>
+      machine.hostIdentity.deviceId !== id && machine.machineKey !== id
+    );
+    if (machines.length === file.machines.length) return false;
+    this.write({ version: 1, machines });
+    return true;
+  }
+
+  async pairWithMachine(
+    endpointValue: string,
+    pinValue: string,
+    deviceNameValue: string,
+    options: PairWithMachineOptions = {},
+  ): Promise<DesktopPairedMachineCredentials> {
+    const endpoint = normalizeSyncEndpoint(endpointValue);
+    const pin = pinValue.trim();
+    const deviceName = deviceNameValue.trim();
+    if (!/^\d{6}$/.test(pin)) throw new Error("Pairing PIN must contain exactly 6 digits.");
+    if (!deviceName) throw new Error("Desktop device name is required.");
+
+    const keys = generateDpopKeyPair();
+    const localDeviceId = randomUUID();
+    const siteId = randomUUID();
+    const createdAt = nowIso();
+    const connection = await openSyncEnvelopeConnection({
+      endpoint,
+      connectTimeoutMs: options.connectTimeoutMs,
+      createWebSocket: options.createWebSocket,
+    });
+    try {
+      const pairingRequestId = `pair-${randomUUID()}`;
+      const pairingResponse = waitForSyncEnvelope(
+        connection,
+        (envelope) => envelope.type === "pairing_result"
+          && envelope.requestId === pairingRequestId,
+        options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+      );
+      try {
+        connection.send("pairing_request", {
+          code: pin,
+          peer: {
+            deviceId: localDeviceId,
+            deviceName,
+            platform: process.platform === "darwin"
+              ? "macOS"
+              : process.platform === "win32"
+                ? "windows"
+                : process.platform === "linux"
+                  ? "linux"
+                  : "unknown",
+            deviceType: "desktop",
+            siteId,
+            dbVersion: 0,
+          },
+          dpopPublicKey: keys.publicKey,
+        }, pairingRequestId);
+      } catch (error) {
+        void pairingResponse.catch(() => {});
+        throw error;
+      }
+      const pairingEnvelope = await pairingResponse;
+      const pairing = pairingEnvelope.payload as SyncPairingResultPayload;
+      if (!pairing?.ok) {
+        throw new Error(pairing?.error?.message?.trim() || "Pairing request failed.");
+      }
+      const returnedDeviceId = requiredString(pairing.deviceId);
+      if (returnedDeviceId && returnedDeviceId !== localDeviceId) {
+        throw new Error("Pairing host returned credentials for a different device id.");
+      }
+      const deviceId = returnedDeviceId ?? localDeviceId;
+      const secret = requiredString(pairing.secret);
+      if (!secret) throw new Error("Pairing host did not return a device secret.");
+
+      const provisional: DesktopPairedMachineCredentials = {
+        version: 1,
+        hostIdentity: {
+          deviceId: "pending",
+          siteId: "pending",
+          name: "pending",
+          platform: "unknown",
+          deviceType: "unknown",
+        },
+        machineKey: machineKeyFromEndpoint(endpoint),
+        deviceId,
+        siteId,
+        deviceName,
+        secret,
+        dpopPrivateKey: keys.privateKey,
+        dpopPublicKey: keys.publicKey,
+        endpoints: [endpoint],
+        createdAt,
+        updatedAt: createdAt,
+      };
+
+      const helloRequestId = `hello-${randomUUID()}`;
+      const helloResponse = waitForSyncEnvelope(
+        connection,
+        (envelope) => envelope.requestId === helloRequestId
+          && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
+        options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+      );
+      try {
+        connection.send(
+          "hello",
+          buildDesktopPairedHello(provisional, options.appVersion),
+          helloRequestId,
+        );
+      } catch (error) {
+        void helloResponse.catch(() => {});
+        throw error;
+      }
+      const helloEnvelope = await helloResponse;
+      if (helloEnvelope.type === "hello_error") {
+        const payload = helloEnvelope.payload as { message?: unknown };
+        throw new Error(
+          typeof payload?.message === "string" && payload.message.trim()
+            ? payload.message.trim()
+            : "The host rejected the new desktop pairing.",
+        );
+      }
+      const hello = helloEnvelope.payload as PairedRuntimeHelloOkPayload;
+      const hostIdentity = hostIdentityFromPeer(hello.brain);
+      const endpoints = uniqueEndpoints(endpoint, hello.cloudRelayWssUrl);
+      return this.save({
+        ...provisional,
+        hostIdentity,
+        machineKey: provisional.machineKey
+          ?? (hello.cloudRelayWssUrl ? machineKeyFromEndpoint(hello.cloudRelayWssUrl) : null),
+        endpoints,
+      });
+    } finally {
+      connection.close(1000, "Desktop pairing finished.");
+    }
+  }
+
+  private read(): DesktopPairedMachinesFile {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.path, "utf8")) as unknown;
+      if (!isRecord(parsed) || !Array.isArray(parsed.machines)) {
+        return { version: 1, machines: [] };
+      }
+      return {
+        version: 1,
+        machines: parsed.machines
+          .map(coerceMachine)
+          .filter((machine): machine is DesktopPairedMachineCredentials => machine != null),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { version: 1, machines: [] };
+      }
+      throw error;
+    }
+  }
+
+  private write(file: DesktopPairedMachinesFile): void {
+    fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
+    const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.renameSync(tmp, this.path);
+      fs.chmodSync(this.path, 0o600);
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // Rename removes the temp path; cleanup only matters after a failure.
+      }
+    }
+  }
+}
+
+export async function pairWithMachine(
+  endpoint: string,
+  pin: string,
+  deviceName: string,
+  options: PairWithMachineOptions & { store?: DesktopPairedMachineStore } = {},
+): Promise<DesktopPairedMachineCredentials> {
+  const { store = new DesktopPairedMachineStore(), ...connectionOptions } = options;
+  return await store.pairWithMachine(endpoint, pin, deviceName, connectionOptions);
+}

@@ -54,10 +54,10 @@ import type {
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
-  SyncHelloOkPayload,
   SyncHelloPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
+  PairedRuntimeHelloOkPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
   SyncProjectOpenRequestPayload,
@@ -115,6 +115,10 @@ import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJson
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createSyncPairedChannelService,
+  isPairedRuntimeEnvelopeType,
+} from "./syncPairedChannelService";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
@@ -906,7 +910,7 @@ export function buildSyncHostHelloOkPayload(args: {
   compressionThresholdBytes?: number;
   maxProjectCatalogEnvelopeBytes?: number;
   cloudRelayWssUrl?: string | null;
-}): SyncHelloOkPayload {
+}): PairedRuntimeHelloOkPayload {
   const actions = [
     ...args.remoteCommandDescriptors,
     ...args.localCommandDescriptors,
@@ -916,7 +920,7 @@ export function buildSyncHostHelloOkPayload(args: {
     ...args.localCommandDescriptors.map((entry) => entry.action),
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
-  const payload: SyncHelloOkPayload = {
+  const payload: PairedRuntimeHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
     serverDbVersion: args.serverDbVersion,
@@ -964,6 +968,8 @@ export function buildSyncHostHelloOkPayload(args: {
         requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
         missingActions: mobileCompatibility.missingActions,
       },
+      rpcChannel: true,
+      portForward: true,
     },
   };
   const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
@@ -2174,6 +2180,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const sessionId of peer.subscribedSessionIds) {
         restoreDesktopTerminalSizeIfUnwatched(sessionId);
       }
+      pairedChannelService.closePeer(peer.ws, "Sync socket closed.", false);
       args.onStateChanged?.();
       broadcastBrainStatus();
     });
@@ -2887,6 +2894,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return peer.backpressuredSinceMs != null
       && Date.now() - peer.backpressuredSinceMs >= backpressureTimeoutMs;
   }
+
+  const pairedChannelService = createSyncPairedChannelService<WebSocket>({
+    logger: args.logger,
+    getBufferedAmount: (ws) => ws.bufferedAmount,
+    send: (ws, type, payload) => {
+      const peer = peerForSocket(ws);
+      return peer ? sendRequired(peer, type, payload) : false;
+    },
+  });
 
   function shouldDeferBackgroundChangesForChat(peer: PeerState): boolean {
     return shouldDeferSyncHostBackgroundChangesForChat({
@@ -4580,6 +4596,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
+    if (isPairedRuntimeEnvelopeType(envelope.type)) {
+      await pairedChannelService.handleEnvelope(
+        peer.ws,
+        envelope.type,
+        envelope.payload,
+        peer.authKind === "paired",
+      );
+      return;
+    }
+
     const envelopePayload = safeObjectValue(envelope.payload);
     const personalChatEnvelope =
       (envelope.type === "chat_subscribe" || envelope.type === "chat_unsubscribe")
@@ -5219,6 +5245,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         revokedConnectedPeer = true;
         const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? deviceId;
         const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");
+        pairedChannelService.closePeer(peer.ws, "Pairing revoked.", true);
         peer.authenticated = false;
         peer.metadata = null;
         peer.authKind = null;
@@ -5359,6 +5386,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         detachSharedListener = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
+          pairedChannelService.closePeer(peer.ws, "Sync host changed.", true);
           clearPeerAuthTimeout(peer);
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
@@ -5413,6 +5441,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await new Promise<void>((resolve) => {
           const finish = () => resolve();
           for (const peer of peers) {
+            pairedChannelService.closePeer(peer.ws, "Sync host stopped.", false);
             clearPeerAuthTimeout(peer);
             try {
               peer.ws.close();
@@ -5431,6 +5460,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
         });
       }
+      pairedChannelService.dispose();
       if (bonjourAnnouncement) {
         try {
           bonjourAnnouncement.stop?.();

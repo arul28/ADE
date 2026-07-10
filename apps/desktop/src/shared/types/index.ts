@@ -27,6 +27,7 @@ export * from "./sync";
 export * from "./devTools";
 export * from "./adeCli";
 export * from "./remoteRuntime";
+export * from "./pairedRuntime";
 export * from "./projectSecrets";
 export * from "./personalChats";
 

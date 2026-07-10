@@ -151,6 +151,29 @@ describe("parseSyncEnvelopeChunkPayload", () => {
 });
 
 describe("parseSyncEnvelope", () => {
+  it("round-trips every paired runtime channel envelope", () => {
+    const cases = [
+      ["rpc_open", { channelId: "rpc-1" }],
+      ["rpc_data", { channelId: "rpc-1", data: Buffer.from("{}\n").toString("base64") }],
+      ["rpc_close", { channelId: "rpc-1", reason: "done" }],
+      ["fwd_open", { forwardId: "fwd-1", host: "127.0.0.1", port: 4173 }],
+      ["fwd_data", { forwardId: "fwd-1", data: Buffer.from("hello").toString("base64") }],
+      ["fwd_close", { forwardId: "fwd-1", reason: "remote closed" }],
+    ] as const;
+
+    for (const [type, payload] of cases) {
+      const decoded = parseSyncEnvelope(encodeSyncEnvelope({
+        type,
+        requestId: `${type}-request`,
+        payload,
+        compressionThresholdBytes: Number.POSITIVE_INFINITY,
+      }));
+      expect(decoded.type).toBe(type);
+      expect(decoded.requestId).toBe(`${type}-request`);
+      expect(decoded.payload).toEqual(payload);
+    }
+  });
+
   it("rejects declared oversized compressed payloads before inflating", () => {
     const encoded = JSON.stringify({
       version: 1,
