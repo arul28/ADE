@@ -4053,6 +4053,58 @@ final class ADETests: XCTestCase {
     XCTAssertNil(stats.summary.totalInteractions)
     XCTAssertNil(stats.clients)
     XCTAssertNil(stats.freshness)
+    XCTAssertNil(stats.daily.first?.cachedTokens)
+    XCTAssertNil(stats.scope)
+    XCTAssertNil(stats.githubActivity)
+    XCTAssertNil(stats.localActivity)
+    XCTAssertNil(stats.providers)
+  }
+
+  func testMobileAdeUsageStatsDecodesNewOptionalBreakdowns() throws {
+    let json = """
+    {
+      "generatedAt": "2026-07-10T12:00:00.000Z",
+      "scope": "project",
+      "summary": { "totalTokens": 100, "currentStreakDays": 6, "activeDays": 4 },
+      "daily": [
+        {
+          "date": "2026-07-10",
+          "inputTokens": 40,
+          "outputTokens": 20,
+          "cachedTokens": 15,
+          "insertions": 30,
+          "deletions": 5,
+          "sessions": 2,
+          "githubCommits": 3,
+          "githubPrs": 1,
+          "githubAdditions": 88,
+          "githubDeletions": 9
+        }
+      ],
+      "githubActivity": { "commits": 12, "prsMerged": 4, "prAdditions": 500, "prDeletions": 60 },
+      "localActivity": { "commits": 7, "prLandings": 2, "insertions": 300, "deletions": 40 },
+      "providers": [
+        { "provider": "claude", "totalTokens": 80, "estimation": "exact", "scopeSupported": true, "adeOriginatedTokens": 70, "externalTokens": 10 },
+        { "provider": 42 },
+        { "provider": "cursor", "totalTokens": 20, "estimation": "chars", "scopeSupported": false }
+      ]
+    }
+    """
+
+    let stats = try JSONDecoder().decode(MobileAdeUsageStats.self, from: Data(json.utf8))
+
+    XCTAssertEqual(stats.scope, "project")
+    XCTAssertEqual(stats.daily.first?.cachedTokens, 15)
+    XCTAssertEqual(stats.daily.first?.githubCommits, 3)
+    XCTAssertEqual(stats.daily.first?.githubAdditions, 88)
+    XCTAssertEqual(stats.githubActivity?.prsMerged, 4)
+    XCTAssertEqual(stats.localActivity?.prLandings, 2)
+    // The malformed middle provider entry is dropped, the valid ones survive.
+    XCTAssertEqual(stats.providers?.count, 2)
+    XCTAssertEqual(stats.providers?.first?.provider, "claude")
+    XCTAssertEqual(stats.providers?.first?.adeOriginatedTokens, 70)
+    XCTAssertEqual(stats.providers?.last?.estimation, "chars")
+    XCTAssertEqual(stats.providers?.last?.scopeSupported, false)
   }
 
   func testMobileUsageQuotaSnapshotDecodesSourceFreshnessAndUnknownFields() throws {

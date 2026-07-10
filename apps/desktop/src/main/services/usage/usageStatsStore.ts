@@ -12,6 +12,10 @@ import type {
   AdeUsageProviderSummary,
 } from "../../../shared/types";
 import type { AdeDb, SqlValue } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
+import { localDayKey, localDayOffset, localDayOrdinal } from "./localDay";
+
+const DAILY_BUCKET_SCAN_MAX_ROWS = 250_000;
 
 export type AdeUsageStatsRange = {
   since: string | null;
@@ -320,8 +324,7 @@ function isChatSession(row: { tool_type: string | null; chat_session_id: string 
 
 function isoDate(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : null;
+  return localDayKey(value) || null;
 }
 
 function calculateStreaks(activeDateValues: Iterable<string>, until: string): { activeDays: number; current: number; longest: number } {
@@ -329,23 +332,22 @@ function calculateStreaks(activeDateValues: Iterable<string>, until: string): { 
   const ordered = [...activeDates].sort();
   let longest = 0;
   let run = 0;
-  let previousMs: number | null = null;
+  let previousOrdinal: number | null = null;
   for (const date of ordered) {
-    const timestamp = Date.parse(`${date}T00:00:00.000Z`);
-    if (!Number.isFinite(timestamp)) continue;
-    run = previousMs != null && timestamp - previousMs === 86_400_000 ? run + 1 : 1;
+    const ordinal = localDayOrdinal(date);
+    if (ordinal == null) continue;
+    run = previousOrdinal != null && ordinal - previousOrdinal === 1 ? run + 1 : 1;
     longest = Math.max(longest, run);
-    previousMs = timestamp;
+    previousOrdinal = ordinal;
   }
 
   let current = 0;
-  const cursor = new Date(until);
-  if (!Number.isFinite(cursor.getTime())) return { activeDays: activeDates.size, current, longest };
-  cursor.setUTCHours(0, 0, 0, 0);
-  if (!activeDates.has(cursor.toISOString().slice(0, 10))) cursor.setUTCDate(cursor.getUTCDate() - 1);
-  while (activeDates.has(cursor.toISOString().slice(0, 10))) {
+  let cursor = localDayOffset(until, 0);
+  if (!cursor) return { activeDays: activeDates.size, current, longest };
+  if (!activeDates.has(localDayKey(cursor))) cursor = localDayOffset(cursor, -1);
+  while (cursor && activeDates.has(localDayKey(cursor))) {
     current += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    cursor = localDayOffset(cursor, -1);
   }
   return { activeDays: activeDates.size, current, longest };
 }
@@ -353,6 +355,7 @@ function calculateStreaks(activeDateValues: Iterable<string>, until: string): { 
 export function collectAdeDatabaseUsageStats(
   db: AdeDb | null | undefined,
   range: AdeUsageStatsRange,
+  logger?: Pick<Logger, "debug">,
 ): AdeDatabaseUsageStats | null {
   if (!db) return null;
 
@@ -415,28 +418,26 @@ export function collectAdeDatabaseUsageStats(
     client_surface: AdeUsageClientSurface;
     interactions: number;
     sessions: number;
-    active_days: number;
     last_active_at: string | null;
   }>(db, `
     select client_surface, count(*) interactions,
            count(distinct session_id) sessions,
-           count(distinct substr(occurred_at, 1, 10)) active_days,
            max(occurred_at) last_active_at
       from usage_events
      where ${eventRange.sql}
      group by client_surface
   `, eventRange.params);
 
-  const clientDailyRows = safeAll<{
-    date: string;
+  const clientEventRows = safeAll<{
+    occurred_at: string;
     client_surface: AdeUsageClientSurface;
-    interactions: number;
   }>(db, `
-    select substr(occurred_at, 1, 10) date, client_surface, count(*) interactions
+    select occurred_at, client_surface
       from usage_events
      where ${eventRange.sql}
-     group by date, client_surface
-  `, eventRange.params);
+     order by occurred_at desc
+     limit ?
+  `, [...eventRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
 
   const interactionRows = safeAll<{ action: string; count: number }>(db, `
     select action, count(*) count
@@ -453,14 +454,15 @@ export function collectAdeDatabaseUsageStats(
        and kind in ('git_commit', 'git_push', 'pr_land', 'git_pull', 'git_sync_merge', 'git_sync_rebase')
      group by kind
   `, operationRange.params);
-  const operationDailyRows = safeAll<{ date: string; kind: string; count: number }>(db, `
-    select substr(started_at, 1, 10) date, kind, count(*) count
+  const operationDailyRows = safeAll<{ started_at: string; kind: string }>(db, `
+    select started_at, kind
       from operations
      where ${operationRange.sql}
        and status = 'succeeded'
        and kind in ('git_commit', 'pr_land')
-     group by date, kind
-  `, operationRange.params);
+     order by started_at desc
+     limit ?
+  `, [...operationRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
   const operationCounts = new Map(operationRows.map((row) => [row.kind, int(row.count)]));
   const activityCounts = new Map(interactionRows.map((row) => [row.action, int(row.count)]));
   const operationActivityNames: Record<string, string> = {
@@ -597,25 +599,39 @@ export function collectAdeDatabaseUsageStats(
     return existing;
   };
   const aiDailyRows = safeAll<{
-    date: string;
+    timestamp: string;
     input_tokens: number;
     output_tokens: number;
     duration_ms: number;
   }>(db, `
-    select substr(timestamp, 1, 10) date,
-           sum(coalesce(input_tokens, 0)) input_tokens,
-           sum(coalesce(output_tokens, 0)) output_tokens,
-           sum(coalesce(duration_ms, 0)) duration_ms
+    select timestamp,
+           coalesce(input_tokens, 0) input_tokens,
+           coalesce(output_tokens, 0) output_tokens,
+           coalesce(duration_ms, 0) duration_ms
       from ai_usage_log
      where ${aiRange.sql}
-     group by date
-  `, aiRange.params);
+     order by timestamp desc
+     limit ?
+  `, [...aiRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
+  const cappedDailySources = [
+    clientEventRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
+    operationDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "operations" : null,
+    aiDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "ai_usage_log" : null,
+  ].filter((source): source is string => source !== null);
+  if (cappedDailySources.length > 0) {
+    logger?.debug("usage.daily_bucket_scan_capped", {
+      maxRows: DAILY_BUCKET_SCAN_MAX_ROWS,
+      sources: cappedDailySources,
+    });
+  }
   for (const row of aiDailyRows) {
-    const day = ensureDay(row.date);
-    day.inputTokens = int(row.input_tokens);
-    day.outputTokens = int(row.output_tokens);
-    day.totalTokens = int(row.input_tokens) + int(row.output_tokens);
-    day.durationMs = int(row.duration_ms);
+    const date = isoDate(row.timestamp);
+    if (!date) continue;
+    const day = ensureDay(date);
+    day.inputTokens = int(day.inputTokens) + int(row.input_tokens);
+    day.outputTokens = int(day.outputTokens) + int(row.output_tokens);
+    day.totalTokens = int(day.totalTokens) + int(row.input_tokens) + int(row.output_tokens);
+    day.durationMs = int(day.durationMs) + int(row.duration_ms);
   }
   for (const row of sessionRows) {
     const date = isoDate(row.started_at);
@@ -631,15 +647,26 @@ export function collectAdeDatabaseUsageStats(
     day.insertions = int(day.insertions) + int(row.insertions);
     day.deletions = int(day.deletions) + int(row.deletions);
   }
-  for (const row of clientDailyRows) {
-    const day = ensureDay(row.date);
-    day.interactions = int(day.interactions) + int(row.interactions);
-    day.clients = { ...(day.clients ?? {}), [row.client_surface]: int(row.interactions) };
+  const activeDaysByClient = new Map<AdeUsageClientSurface, Set<string>>();
+  for (const row of clientEventRows) {
+    const date = isoDate(row.occurred_at);
+    if (!date) continue;
+    const day = ensureDay(date);
+    day.interactions = int(day.interactions) + 1;
+    day.clients = {
+      ...(day.clients ?? {}),
+      [row.client_surface]: int(day.clients?.[row.client_surface]) + 1,
+    };
+    const activeDays = activeDaysByClient.get(row.client_surface) ?? new Set<string>();
+    activeDays.add(date);
+    activeDaysByClient.set(row.client_surface, activeDays);
   }
   for (const row of operationDailyRows) {
-    const day = ensureDay(row.date);
-    if (row.kind === "git_commit") day.commits = int(day.commits) + int(row.count);
-    if (row.kind === "pr_land") day.prs = int(day.prs) + int(row.count);
+    const date = isoDate(row.started_at);
+    if (!date) continue;
+    const day = ensureDay(date);
+    if (row.kind === "git_commit") day.commits = int(day.commits) + 1;
+    if (row.kind === "pr_land") day.prs = int(day.prs) + 1;
   }
 
   const activeDates = new Set<string>();
@@ -667,7 +694,7 @@ export function collectAdeDatabaseUsageStats(
     .map((row) => ({
       client: row.client_surface,
       interactions: int(row.interactions),
-      activeDays: int(row.active_days),
+      activeDays: activeDaysByClient.get(row.client_surface)?.size ?? 0,
       sessions: int(row.sessions),
       lastActiveAt: row.last_active_at,
     }))

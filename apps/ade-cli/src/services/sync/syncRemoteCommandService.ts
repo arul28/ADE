@@ -176,7 +176,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset } from "../../../../desktop/src/shared/types";
+import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import { PERSONAL_CHAT_ACTIONS, isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import {
@@ -4527,8 +4527,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (preset && !isAdeUsageRangePreset(preset)) {
       throw new Error("usage.getAdeStats preset must be today, 7d, 30d, year, or all.");
     }
+    const scope = asTrimmedString(payload.scope);
+    if (scope && !isAdeUsageScope(scope)) {
+      throw new Error("usage.getAdeStats scope must be machine or project.");
+    }
     return await args.usageTrackingService.getAdeUsageStats({
       ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(isAdeUsageScope(scope) ? { scope } : {}),
     });
   });
 

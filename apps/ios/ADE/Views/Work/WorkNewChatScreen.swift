@@ -661,10 +661,10 @@ struct WorkNewChatScreen: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      Spacer(minLength: 24)
+      Spacer(minLength: 8)
 
       ScrollView {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
           brandMark
           VStack(spacing: 6) {
             Text("Start a new conversation")
@@ -817,9 +817,8 @@ struct WorkNewChatScreen: View {
       .renderingMode(.original)
       .interpolation(.high)
       .aspectRatio(contentMode: .fit)
-      .frame(maxWidth: 260)
-      .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 22)
-    .padding(.top, 8)
+      .frame(maxWidth: 240)
+    .padding(.top, 0)
     .accessibilityLabel("ADE")
   }
 

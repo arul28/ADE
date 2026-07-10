@@ -63,10 +63,35 @@ export function isAdeUsageRangePreset(value: unknown): value is AdeUsageRangePre
 
 export type AdeUsageClientSurface = "desktop" | "mobile" | "tui" | "web" | "api";
 
+/**
+ * Scope of provider-ledger metrics.
+ * - `machine` — every session found in the provider's local ledgers (codeburn-comparable).
+ * - `project` — only sessions attributable to the current project root (cwd match).
+ * GitHub and ADE-DB metrics are always project/repo scoped regardless of this value.
+ */
+export const ADE_USAGE_SCOPES = ["machine", "project"] as const;
+
+export type AdeUsageScope = (typeof ADE_USAGE_SCOPES)[number];
+
+export function isAdeUsageScope(value: unknown): value is AdeUsageScope {
+  return typeof value === "string" && (ADE_USAGE_SCOPES as readonly string[]).includes(value);
+}
+
+/**
+ * How a provider's token counts were obtained.
+ * - `exact` — provider-recorded token counts.
+ * - `chars` — estimated from character length (chars/4).
+ * - `distribution` — real session totals spread across calls/days (per-day values synthetic).
+ * - `mixed` — some entries exact, some estimated.
+ */
+export type AdeUsageEstimationKind = "exact" | "chars" | "distribution" | "mixed";
+
 export type GetAdeUsageStatsArgs = {
   preset?: AdeUsageRangePreset;
   since?: string | null;
   until?: string | null;
+  /** Defaults to "machine" (legacy behavior). */
+  scope?: AdeUsageScope;
 };
 
 export type AdeUsageProviderSummary = {
@@ -78,6 +103,14 @@ export type AdeUsageProviderSummary = {
   rangeCostUsd: number;
   todayCostUsd: number;
   last30dCostUsd: number;
+  /** Omitted/`exact` when counts are provider-recorded. */
+  estimation?: AdeUsageEstimationKind;
+  /** False when this provider's ledger cannot be filtered to a project (machine-only). */
+  scopeSupported?: boolean;
+  /** Tokens attributed to ADE-originated sessions (subset of totalTokens). */
+  adeOriginatedTokens?: number;
+  /** Tokens from sessions launched outside ADE (subset of totalTokens). */
+  externalTokens?: number;
 };
 
 export type AdeUsageModelSummary = {
@@ -138,10 +171,14 @@ export type AdeUsageClientSummary = {
 };
 
 export type AdeUsageDailyPoint = {
+  /** Local calendar day (YYYY-MM-DD in the machine's timezone). */
   date: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Cache-read tokens for the day (provider ledgers). */
+  cachedTokens?: number;
+  /** Local (ADE DB / git operations) measures — never merged with GitHub values. */
   commits: number;
   prs: number;
   insertions: number;
@@ -151,10 +188,38 @@ export type AdeUsageDailyPoint = {
   durationMs?: number;
   interactions?: number;
   clients?: Partial<Record<AdeUsageClientSurface, number>>;
+  /** GitHub-reported measures for the same day, kept separate from local ones. */
+  githubCommits?: number;
+  githubPrs?: number;
+  githubAdditions?: number;
+  githubDeletions?: number;
+};
+
+/** GitHub-scoped activity, reported separately from local activity (never max-merged). */
+export type AdeUsageGithubActivity = {
+  commits: number;
+  prsTracked: number;
+  prsOpen: number;
+  prsMerged: number;
+  prsClosed: number;
+  prAdditions: number;
+  prDeletions: number;
+};
+
+/** Current-project ADE DB / git-operation activity, reported separately from GitHub. */
+export type AdeUsageLocalActivity = {
+  commits: number;
+  pushOperations: number;
+  prLandings: number;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
 };
 
 export type AdeUsageStats = {
   generatedAt: string;
+  /** Scope the provider-ledger metrics were computed at. Absent = machine (legacy hosts). */
+  scope?: AdeUsageScope;
   range: {
     preset: AdeUsageRangePreset;
     since: string | null;
@@ -213,6 +278,12 @@ export type AdeUsageStats = {
     longestStreakDays?: number;
     longestSessionMs?: number;
   };
+  /**
+   * GitHub vs local activity as separate labeled groups. When present, the UI
+   * must prefer these over the legacy max-merged summary fields.
+   */
+  githubActivity?: AdeUsageGithubActivity;
+  localActivity?: AdeUsageLocalActivity;
   providers: AdeUsageProviderSummary[];
   models: AdeUsageModelSummary[];
   adeProviders?: AdeUsageProviderSummary[];
@@ -349,6 +420,12 @@ export type CostSnapshot = {
   tokenBreakdownByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, CostTokenBreakdown>>>;
   dailyTokenBreakdownByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, Record<string, CostTokenBreakdown>>>>;
   dailyTokensByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, number>>>;
+  /** How this provider's token counts were obtained. Omitted = exact. */
+  estimation?: AdeUsageEstimationKind;
+  /** False when this ledger cannot be filtered to a project scope. */
+  scopeSupported?: boolean;
+  /** Tokens attributed to ADE-originated sessions, by preset. */
+  adeOriginatedTokensByPreset?: Partial<Record<AdeUsageRangePreset, number>>;
 };
 
 export type ExtraUsage = {

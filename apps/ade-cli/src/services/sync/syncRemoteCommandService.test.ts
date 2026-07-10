@@ -146,6 +146,13 @@ describe("createSyncRemoteCommandService", () => {
     });
     expect(getUsageSnapshot).toHaveBeenCalledTimes(1);
     expect(forceRefresh).toHaveBeenCalledWith({ allowInteractiveAuth: false });
+
+    getAdeUsageStats.mockClear();
+    await service.execute(makePayload("usage.getAdeStats", { preset: "7d", scope: "project" }));
+    expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "7d", scope: "project" });
+    await expect(service.execute(makePayload("usage.getAdeStats", { scope: "galaxy" }))).rejects.toThrow(
+      "usage.getAdeStats scope must be machine or project.",
+    );
   });
 
   it("advertises and executes machine personal chats as runtime commands", async () => {

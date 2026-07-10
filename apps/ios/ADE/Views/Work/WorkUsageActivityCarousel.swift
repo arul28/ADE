@@ -1,63 +1,97 @@
 import Foundation
 import SwiftUI
 
+// The struct name is kept for source stability (referenced from WorkNewChatScreen
+// and the Xcode project), but this is the tabbed activity module that matches the
+// desktop redesign — named tabs, a unified range control, split token/code bars,
+// tap tooltips, a warm empty state, exact lifetime totals, and live limits.
+
 private enum WorkUsageRange: String, CaseIterable, Identifiable {
-  case day = "today"
+  case today
   case week = "7d"
   case month = "30d"
   case year
+  case all
 
   var id: String { rawValue }
   var title: String {
     switch self {
-    case .day: return "Day"
-    case .week: return "Week"
-    case .month: return "Month"
+    case .today: return "Today"
+    case .week: return "7d"
+    case .month: return "30d"
     case .year: return "Year"
+    case .all: return "All"
     }
   }
 }
 
-private enum WorkUsageChart: Int, CaseIterable {
+private enum WorkUsageTab: String, CaseIterable, Identifiable {
   case activity
   case tokens
   case code
   case clients
   case limits
 
+  var id: String { rawValue }
   var title: String {
     switch self {
-    case .activity: return "ADE activity"
-    case .tokens: return "AI token flow"
-    case .code: return "Code movement"
-    case .clients: return "Where you use ADE"
-    case .limits: return "AI limits"
-    }
-  }
-
-  var detail: String {
-    switch self {
-    case .activity: return "Your daily rhythm"
-    case .tokens: return "Input and output"
-    case .code: return "Additions and deletions"
-    case .clients: return "Desktop, mobile, terminal, and web"
-    case .limits: return "Live quota from your machine"
+    case .activity: return "Activity"
+    case .tokens: return "Tokens"
+    case .code: return "Code"
+    case .clients: return "Clients"
+    case .limits: return "Limits"
     }
   }
 }
 
+private enum WorkUsageColors {
+  static let tokenInput = ADEColor.info
+  static let tokenOutput = ADEColor.warning
+  static let tokenCache = ADEColor.textMuted
+  static let insertions = ADEColor.success
+  static let deletions = ADEColor.danger
+  static let github = ADEColor.textMuted
+  static let heatmap = ADEColor.info
+  static let client: [String: Color] = [
+    "desktop": ADEColor.info,
+    "mobile": Color.pink,
+    "tui": ADEColor.success,
+    "web": Color.teal,
+    "api": ADEColor.warning,
+  ]
+}
+
 private struct WorkUsageVisualBucket: Identifiable {
   var id: String
+  var date: String
   var inputTokens: Int
   var outputTokens: Int
+  var cachedTokens: Int
   var insertions: Int
   var deletions: Int
+  var githubAdditions: Int
+  var githubDeletions: Int
   var sessions: Int
   var interactions: Int
 
-  var tokens: Int { inputTokens + outputTokens }
+  var tokens: Int { inputTokens + outputTokens + cachedTokens }
   var code: Int { insertions + deletions }
+  var githubCode: Int { githubAdditions + githubDeletions }
   var activity: Int { tokens + sessions * 4_000 + interactions * 1_500 }
+}
+
+/// Compact day detail surfaced by a tap on a bar or heatmap cell.
+private struct WorkUsageBucketDetail: Equatable {
+  var date: String
+  var inputTokens: Int
+  var outputTokens: Int
+  var cachedTokens: Int
+  var insertions: Int
+  var deletions: Int
+  var sessions: Int
+
+  var totalTokens: Int { inputTokens + outputTokens + cachedTokens }
+  var code: Int { insertions + deletions }
 }
 
 private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: Int) -> [WorkUsageVisualBucket] {
@@ -68,10 +102,14 @@ private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: In
     let chunk = ordered[start..<min(start + chunkSize, ordered.count)]
     return WorkUsageVisualBucket(
       id: chunk.last?.date ?? String(start),
+      date: chunk.last?.date ?? "",
       inputTokens: chunk.reduce(0) { $0 + ($1.inputTokens ?? 0) },
       outputTokens: chunk.reduce(0) { $0 + ($1.outputTokens ?? 0) },
+      cachedTokens: chunk.reduce(0) { $0 + ($1.cachedTokens ?? 0) },
       insertions: chunk.reduce(0) { $0 + ($1.insertions ?? 0) },
       deletions: chunk.reduce(0) { $0 + ($1.deletions ?? 0) },
+      githubAdditions: chunk.reduce(0) { $0 + ($1.githubAdditions ?? 0) },
+      githubDeletions: chunk.reduce(0) { $0 + ($1.githubDeletions ?? 0) },
       sessions: chunk.reduce(0) { $0 + ($1.sessions ?? 0) },
       interactions: chunk.reduce(0) { $0 + ($1.interactions ?? 0) }
     )
@@ -85,175 +123,241 @@ private func workUsageCompact(_ value: Int) -> String {
   return value.formatted()
 }
 
+private let workUsageDayParser: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.dateFormat = "yyyy-MM-dd"
+  return formatter
+}()
+
+private let workUsageDayDisplay: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("MMMd")
+  return formatter
+}()
+
+private func workUsageFormatDay(_ date: String) -> String {
+  guard let parsed = workUsageDayParser.date(from: date) else { return date }
+  return workUsageDayDisplay.string(from: parsed)
+}
+
 struct WorkUsageActivityCarousel: View {
   @EnvironmentObject private var syncService: SyncService
-  @AppStorage("ade.work.usageChart.v1") private var chartRaw = WorkUsageChart.limits.rawValue
-  @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.week.rawValue
+  @AppStorage("ade.work.activityTab.v1") private var tabRaw = WorkUsageTab.activity.rawValue
+  @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.all.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @ObservedObject private var quotaStore = MobileUsageQuotaStore.shared
   @State private var stats: MobileAdeUsageStats?
   @State private var loadedRange: String?
   @State private var loading = false
-  @State private var direction: CGFloat = 1
-  @ObservedObject private var quotaStore = MobileUsageQuotaStore.shared
+  @State private var selection: WorkUsageBucketDetail?
 
-  private var chart: WorkUsageChart { WorkUsageChart(rawValue: chartRaw) ?? .activity }
-  private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .week }
-  private var statsLoadKey: String {
-    "\(chart == .limits ? "limits" : "activity"):\(rangeRaw):\(syncService.connectionState.rawValue)"
+  private var tab: WorkUsageTab { WorkUsageTab(rawValue: tabRaw) ?? .activity }
+  private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .all }
+  private var loadKey: String { "\(tabRaw):\(rangeRaw):\(syncService.connectionState.rawValue)" }
+
+  private var summary: MobileAdeUsageSummary? {
+    loadedRange == rangeRaw ? stats?.summary : nil
   }
 
-  private var chartHeading: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(chart.title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Text(chart.detail)
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
+  private var hasActivity: Bool {
+    guard let daily = stats?.daily else { return false }
+    return daily.contains { point in
+      (point.totalTokens ?? 0) > 0 || (point.sessions ?? 0) > 0
+        || (point.insertions ?? 0) > 0 || (point.deletions ?? 0) > 0
+        || (point.githubCommits ?? 0) > 0 || (point.githubPrs ?? 0) > 0
+        || (point.githubAdditions ?? 0) > 0 || (point.githubDeletions ?? 0) > 0
+        || (point.interactions ?? 0) > 0
     }
-    .accessibilityElement(children: .combine)
   }
 
-  private var rangeSelector: some View {
-    HStack(spacing: 2) {
-      ForEach(WorkUsageRange.allCases) { option in
-        Button(option.title) { rangeRaw = option.rawValue }
-          .font(.caption2.weight(range == option ? .semibold : .medium))
-          .foregroundStyle(range == option ? ADEColor.textPrimary : ADEColor.textMuted)
-          .frame(minWidth: 44, minHeight: 44)
-          .background(
-            range == option ? ADEColor.surfaceBackground.opacity(0.92) : .clear,
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-          )
-          .contentShape(Rectangle())
-          .buttonStyle(.plain)
-          .accessibilityLabel("\(option.title) activity range")
-          .accessibilityAddTraits(range == option ? .isSelected : [])
-      }
+  private var footerChip: (system: String, label: String)? {
+    guard let summary else { return nil }
+    if range == .all, let totalTokens = summary.totalTokens, totalTokens > 0 {
+      return ("trophy.fill", "\(workUsageCompact(totalTokens)) lifetime tokens")
     }
-    .padding(2)
-    .background(ADEColor.recessedBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    if let streak = summary.currentStreakDays, streak >= 3 {
+      return ("flame.fill", "\(streak)-day streak")
+    }
+    return nil
   }
 
   var body: some View {
-    VStack(spacing: 8) {
-      ViewThatFits(in: .horizontal) {
-        HStack(alignment: .top, spacing: 10) {
-          chartHeading
-          Spacer(minLength: 4)
-          if chart != .limits { rangeSelector }
-        }
+    VStack(spacing: 10) {
+      header
 
-        VStack(alignment: .leading, spacing: 4) {
-          chartHeading
-          if chart != .limits {
-            rangeSelector
-              .frame(maxWidth: .infinity, alignment: .trailing)
-          }
+      ZStack(alignment: .top) {
+        chartArea
+          .frame(height: 84)
+        if let selection {
+          WorkUsageTooltip(detail: selection)
+            .padding(.top, -6)
+            .transition(.opacity)
         }
       }
 
-      ZStack {
-        Group {
-          if chart == .limits {
-            WorkUsageQuotaCompact(snapshot: quotaStore.snapshot)
-          } else if let stats, loadedRange == rangeRaw {
-            switch chart {
-            case .activity: WorkUsageHeatmap(points: stats.daily)
-            case .tokens: WorkUsageBars(points: stats.daily, mode: .tokens)
-            case .code: WorkUsageBars(points: stats.daily, mode: .code)
-            case .clients: WorkUsageClientMix(clients: stats.clients ?? [])
-            case .limits: EmptyView()
-            }
-          } else if loading {
-            ProgressView().controlSize(.small).tint(ADEColor.purpleAccent)
-          } else {
-            Text("Activity appears after your first ADE session.")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .id(chart.rawValue)
-        .transition(reduceMotion ? .opacity : .asymmetric(
-          insertion: .move(edge: direction > 0 ? .trailing : .leading).combined(with: .opacity),
-          removal: .move(edge: direction > 0 ? .leading : .trailing).combined(with: .opacity)
-        ))
-      }
-      .frame(height: 76)
-      .clipped()
-
-      HStack(spacing: 8) {
-        Button { changeChart(by: -1) } label: {
-          Image(systemName: "chevron.left")
-            .font(.caption.weight(.semibold))
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Previous activity chart")
-        Spacer(minLength: 0)
-        if chart == .limits, let snapshot = quotaStore.snapshot {
-          Text("Checked \(mobileUsageRelativeTime(snapshot.lastPolledAt))")
-          if quotaStore.refreshing { ProgressView().controlSize(.mini) }
-        } else if loadedRange == rangeRaw, let summary = stats?.summary {
-          Text("\(workUsageCompact(summary.totalTokens ?? 0)) tokens")
-          Text("·")
-          Text("\(workUsageCompact((summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0))) sessions")
-          if let activeDays = summary.activeDays, activeDays > 0 {
-            Text("·")
-            Text("\(activeDays)d active")
-          }
-        } else {
-          Text("Cross-client activity")
-        }
-        Spacer(minLength: 0)
-        Button { changeChart(by: 1) } label: {
-          Image(systemName: "chevron.right")
-            .font(.caption.weight(.semibold))
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Next activity chart")
-      }
-      .font(.system(.caption2, design: .monospaced))
-      .foregroundStyle(ADEColor.textMuted)
-      .overlay(alignment: .top) { Divider().opacity(0.12) }
+      footer
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
     .background {
-      RoundedRectangle(cornerRadius: 15, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.82))
-        .overlay(alignment: .topTrailing) {
-          Circle()
-            .fill(ADEColor.purpleAccent.opacity(0.13))
-            .frame(width: 120, height: 120)
-            .blur(radius: 30)
-            .offset(x: 26, y: -60)
-        }
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.9))
     }
-    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-    .overlay { RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
-    .task(id: statsLoadKey) { await loadStats() }
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(accessibilitySummary)
+    .task(id: loadKey) { await loadStats() }
     .task(id: syncService.connectionState.rawValue) {
       await quotaStore.load(using: syncService)
     }
+    .onChange(of: rangeRaw) { _, _ in selection = nil }
+    .onChange(of: tabRaw) { _, _ in selection = nil }
   }
 
-  private func changeChart(by delta: Int) {
-    let cases = WorkUsageChart.allCases
-    let next = (chart.rawValue + delta + cases.count) % cases.count
-    direction = delta >= 0 ? 1 : -1
-    withAnimation(reduceMotion ? .linear(duration: 0.08) : .snappy(duration: 0.28)) {
-      chartRaw = next
+  private var accessibilitySummary: String {
+    if tab == .limits { return "Live Claude and Codex limits from the connected machine." }
+    guard let summary else { return "Activity for \(range.title). Loading." }
+    let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
+    return "Activity for \(range.title): \(workUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
+  }
+
+  private var header: some View {
+    HStack(spacing: 8) {
+      tabRow
+      Spacer(minLength: 6)
+      if tab != .limits { rangeControl }
+    }
+  }
+
+  private var tabRow: some View {
+    HStack(spacing: 2) {
+      ForEach(WorkUsageTab.allCases) { option in
+        Button(option.title) {
+          withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { tabRaw = option.rawValue }
+        }
+        .font(.caption.weight(tab == option ? .semibold : .medium))
+        .foregroundStyle(tab == option ? ADEColor.textPrimary : ADEColor.textMuted)
+        .padding(.horizontal, 8)
+        .frame(minHeight: 34)
+        .background(
+          tab == option ? ADEColor.recessedBackground.opacity(0.9) : .clear,
+          in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(option.title) chart")
+        .accessibilityAddTraits(tab == option ? .isSelected : [])
+      }
+    }
+  }
+
+  private var rangeControl: some View {
+    Menu {
+      Picker("Time range", selection: $rangeRaw) {
+        ForEach(WorkUsageRange.allCases) { option in
+          Text(option.title).tag(option.rawValue)
+        }
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Text(range.title)
+          .font(.caption.weight(.medium))
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+      }
+      .foregroundStyle(ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .frame(minHeight: 34)
+      .background(ADEColor.recessedBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .accessibilityLabel("Time range, \(range.title)")
+  }
+
+  @ViewBuilder
+  private var chartArea: some View {
+    if tab == .limits {
+      WorkUsageQuotaCompact(snapshot: quotaStore.snapshot)
+    } else if let stats, loadedRange == rangeRaw {
+      if !hasActivity {
+        WorkUsageWarmEmpty()
+      } else {
+        switch tab {
+        case .activity:
+          WorkUsageHeatmap(points: stats.daily, selectedId: selection?.date, onSelect: select)
+        case .tokens:
+          WorkUsageBars(points: stats.daily, mode: .tokens, selectedId: selection?.date, onSelect: select)
+        case .code:
+          WorkUsageBars(points: stats.daily, mode: .code, selectedId: selection?.date, onSelect: select)
+        case .clients:
+          WorkUsageClientMix(clients: stats.clients ?? [])
+        case .limits:
+          EmptyView()
+        }
+      }
+    } else if loading {
+      WorkUsageSkeleton()
+    } else {
+      WorkUsageWarmEmpty()
+    }
+  }
+
+  private var footer: some View {
+    HStack(spacing: 6) {
+      Group {
+        if tab == .limits, let snapshot = quotaStore.snapshot {
+          Text("Checked \(mobileUsageRelativeTime(snapshot.lastPolledAt))")
+          if quotaStore.refreshing { ProgressView().controlSize(.mini) }
+        } else if let summary {
+          let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
+          Text("\(workUsageCompact(summary.totalTokens ?? 0)) tokens")
+          Text("·")
+          Text("\(workUsageCompact(sessions)) sessions")
+          if let activeDays = summary.activeDays, activeDays > 0 {
+            Text("·")
+            Text("\(activeDays) active \(activeDays == 1 ? "day" : "days")")
+          }
+        } else if loading {
+          Text("Loading activity…")
+        } else {
+          Text("No activity yet")
+        }
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(1)
+
+      Spacer(minLength: 0)
+
+      if tab != .limits, let chip = footerChip {
+        Label(chip.label, systemImage: chip.system)
+          .labelStyle(.titleAndIcon)
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.accent)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 3)
+          .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+          .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6))
+          .accessibilityLabel(chip.label)
+      }
+    }
+    .overlay(alignment: .top) { Divider().opacity(0.12) }
+    .padding(.top, 2)
+  }
+
+  private func select(_ detail: WorkUsageBucketDetail) {
+    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+      selection = (selection?.date == detail.date) ? nil : detail
     }
   }
 
   @MainActor
   private func loadStats() async {
-    guard chart != .limits else {
+    guard tab != .limits else {
       loading = false
       return
     }
@@ -268,11 +372,12 @@ struct WorkUsageActivityCarousel: View {
     do {
       let first = try await syncService.fetchAdeUsageStats(preset: requestedRange)
       guard !Task.isCancelled, range.rawValue == requestedRange else { return }
-      withAnimation(.easeOut(duration: 0.2)) {
+      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
         stats = first
         loadedRange = requestedRange
       }
       loading = false
+      // Pick up a background ledger refresh the host signals as still warming.
       if first.freshness?.state == "refreshing" {
         try? await Task.sleep(nanoseconds: 2_800_000_000)
         guard !Task.isCancelled, range.rawValue == requestedRange else { return }
@@ -287,6 +392,37 @@ struct WorkUsageActivityCarousel: View {
       loadedRange = nil
       loading = false
     }
+  }
+}
+
+private struct WorkUsageTooltip: View {
+  let detail: WorkUsageBucketDetail
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(workUsageFormatDay(detail.date))
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text("\(workUsageCompact(detail.totalTokens)) tokens · \(workUsageCompact(detail.inputTokens)) in / \(workUsageCompact(detail.outputTokens)) out")
+        .font(.system(size: 11))
+        .foregroundStyle(ADEColor.textMuted)
+      if detail.cachedTokens > 0 || detail.sessions > 0 {
+        Text("\(workUsageCompact(detail.cachedTokens)) cache · \(detail.sessions) \(detail.sessions == 1 ? "session" : "sessions")")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if detail.code > 0 {
+        Text("+\(workUsageCompact(detail.insertions)) / -\(workUsageCompact(detail.deletions)) lines")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, 9)
+    .padding(.vertical, 6)
+    .background(ADEColor.cardBackground.opacity(0.98), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
+    .shadow(color: Color.black.opacity(0.2), radius: 6, y: 2)
+    .accessibilityElement(children: .combine)
   }
 }
 
@@ -346,21 +482,63 @@ private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> Str
 
 private struct WorkUsageHeatmap: View {
   let points: [MobileAdeUsageDailyPoint]
+  let selectedId: String?
+  let onSelect: (WorkUsageBucketDetail) -> Void
 
   var body: some View {
     let buckets = workUsageBuckets(points, maxCount: 70)
     let maximum = max(1, buckets.map(\.activity).max() ?? 1)
-    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 14), spacing: 3) {
-      ForEach(buckets) { bucket in
-        RoundedRectangle(cornerRadius: 2, style: .continuous)
-          .fill(bucket.activity == 0
-            ? ADEColor.textMuted.opacity(0.10)
-            : Color.blue.opacity(0.25 + 0.75 * Double(bucket.activity) / Double(maximum)))
-          .frame(height: 11)
-          .accessibilityLabel("\(bucket.id), \(workUsageCompact(bucket.tokens)) tokens")
+    // Fill the box: a short range is one tall row of large cells; longer ranges
+    // use a 7-row calendar grid (columns = weeks). Cells stretch to fill both
+    // dimensions instead of leaving the chart area mostly blank.
+    let rows = buckets.count <= 7 ? 1 : 7
+    let columns = stride(from: 0, to: buckets.count, by: rows).map { start in
+      Array(buckets[start..<min(start + rows, buckets.count)])
+    }
+    HStack(spacing: 3) {
+      ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+        VStack(spacing: 3) {
+          ForEach(column) { bucket in
+            cell(bucket, maximum: maximum)
+          }
+          if column.count < rows {
+            ForEach(0..<(rows - column.count), id: \.self) { _ in
+              Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+          }
+        }
       }
     }
-    .frame(maxHeight: .infinity, alignment: .center)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  private func cell(_ bucket: WorkUsageVisualBucket, maximum: Int) -> some View {
+    RoundedRectangle(cornerRadius: 2, style: .continuous)
+      .fill(bucket.activity == 0
+        ? ADEColor.textMuted.opacity(0.10)
+        : WorkUsageColors.heatmap.opacity(0.25 + 0.72 * Double(bucket.activity) / Double(maximum)))
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .overlay {
+        if selectedId == bucket.date {
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .stroke(ADEColor.textPrimary.opacity(0.6), lineWidth: 1)
+        }
+      }
+      .contentShape(Rectangle())
+      .onTapGesture { onSelect(detail(bucket)) }
+      .accessibilityLabel("\(workUsageFormatDay(bucket.date)), \(workUsageCompact(bucket.tokens)) tokens")
+  }
+
+  private func detail(_ bucket: WorkUsageVisualBucket) -> WorkUsageBucketDetail {
+    WorkUsageBucketDetail(
+      date: bucket.date,
+      inputTokens: bucket.inputTokens,
+      outputTokens: bucket.outputTokens,
+      cachedTokens: bucket.cachedTokens,
+      insertions: bucket.insertions,
+      deletions: bucket.deletions,
+      sessions: bucket.sessions
+    )
   }
 }
 
@@ -370,36 +548,34 @@ private struct WorkUsageBars: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let points: [MobileAdeUsageDailyPoint]
   let mode: WorkUsageBarMode
+  let selectedId: String?
+  let onSelect: (WorkUsageBucketDetail) -> Void
 
   var body: some View {
     let buckets = workUsageBuckets(points, maxCount: 36)
-    let values = buckets.map { mode == .tokens ? $0.tokens : $0.code }
-    let maximum = max(1, values.max() ?? 1)
-    GeometryReader { proxy in
-      HStack(alignment: .bottom, spacing: 2) {
-        ForEach(Array(buckets.enumerated()), id: \.element.id) { index, bucket in
-          let primary = mode == .tokens ? bucket.inputTokens : bucket.insertions
-          let secondary = mode == .tokens ? bucket.outputTokens : bucket.deletions
-          let total = primary + secondary
-          let height = total == 0 ? 2 : max(3, proxy.size.height * CGFloat(total) / CGFloat(maximum))
-          let split = total == 0 ? 0 : CGFloat(secondary) / CGFloat(total)
-          VStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-              .fill(mode == .tokens ? Color.blue : Color.green)
-              .overlay(alignment: .bottom) {
-                Rectangle()
-                  .fill(mode == .tokens ? ADEColor.purpleAccent : Color.pink)
-                  .frame(height: height * split)
-              }
+    let anyGithub = mode == .code && buckets.contains { $0.githubCode > 0 }
+    let localMax = buckets.map { mode == .tokens ? $0.tokens : $0.code }.max() ?? 1
+    let githubMax = anyGithub ? (buckets.map(\.githubCode).max() ?? 1) : 1
+    let maximum = max(1, localMax, githubMax)
+    let anyCache = mode == .tokens && buckets.contains { $0.cachedTokens > 0 }
+    let hasData = buckets.contains { (mode == .tokens ? $0.tokens : $0.code + $0.githubCode) > 0 }
+
+    VStack(spacing: 6) {
+      if hasData {
+        GeometryReader { proxy in
+          HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(buckets.enumerated()), id: \.element.id) { index, bucket in
+              bar(bucket: bucket, index: index, height: proxy.size.height, maximum: maximum, anyGithub: anyGithub)
+            }
           }
-          .frame(maxWidth: .infinity)
-          .frame(height: height)
-          .animation(
-            reduceMotion ? nil : .snappy(duration: 0.45).delay(Double(min(index, 24)) * 0.01),
-            value: total
-          )
         }
+      } else {
+        Text(mode == .tokens ? "No token usage in this range." : "No code changes in this range.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
+      legend(anyCache: anyCache, anyGithub: anyGithub)
     }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(mode == .tokens ? "AI token flow" : "Code movement")
@@ -407,17 +583,101 @@ private struct WorkUsageBars: View {
       ? "\(workUsageCompact(buckets.reduce(0) { $0 + $1.inputTokens })) input and \(workUsageCompact(buckets.reduce(0) { $0 + $1.outputTokens })) output tokens"
       : "\(workUsageCompact(buckets.reduce(0) { $0 + $1.insertions })) additions and \(workUsageCompact(buckets.reduce(0) { $0 + $1.deletions })) deletions")
   }
+
+  @ViewBuilder
+  private func bar(bucket: WorkUsageVisualBucket, index: Int, height: CGFloat, maximum: Int, anyGithub: Bool) -> some View {
+    let total = mode == .tokens ? bucket.tokens : bucket.code
+    let barHeight = total == 0 ? 2 : max(3, height * CGFloat(total) / CGFloat(maximum))
+    let githubHeight = anyGithub && bucket.githubCode > 0
+      ? max(2, height * CGFloat(bucket.githubCode) / CGFloat(maximum))
+      : 0
+    ZStack(alignment: .bottom) {
+      if githubHeight > 0 {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+          .fill(WorkUsageColors.github.opacity(0.3))
+          .frame(height: githubHeight)
+      }
+      stackedSegments(bucket: bucket, barHeight: barHeight)
+        .frame(height: barHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+      if selectedId == bucket.date {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+          .stroke(ADEColor.textPrimary.opacity(0.55), lineWidth: 1)
+          .frame(height: max(barHeight, githubHeight))
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .frame(height: max(barHeight, githubHeight), alignment: .bottom)
+    .contentShape(Rectangle())
+    .onTapGesture { onSelect(detail(bucket)) }
+    .animation(reduceMotion ? nil : .snappy(duration: 0.4).delay(Double(min(index, 24)) * 0.008), value: total)
+  }
+
+  /// Explicit proportional segment heights so a stacked bar reads input/output/
+  /// cache (or additions/deletions) bottom-to-top without ambiguous flex layout.
+  @ViewBuilder
+  private func stackedSegments(bucket: WorkUsageVisualBucket, barHeight: CGFloat) -> some View {
+    if mode == .tokens {
+      let total = CGFloat(max(1, bucket.tokens))
+      VStack(spacing: 0) {
+        Rectangle().fill(WorkUsageColors.tokenCache)
+          .frame(height: barHeight * CGFloat(bucket.cachedTokens) / total)
+        Rectangle().fill(WorkUsageColors.tokenOutput)
+          .frame(height: barHeight * CGFloat(bucket.outputTokens) / total)
+        Rectangle().fill(WorkUsageColors.tokenInput)
+          .frame(maxHeight: .infinity)
+      }
+    } else {
+      let total = CGFloat(max(1, bucket.code))
+      VStack(spacing: 0) {
+        Rectangle().fill(WorkUsageColors.deletions)
+          .frame(height: barHeight * CGFloat(bucket.deletions) / total)
+        Rectangle().fill(WorkUsageColors.insertions)
+          .frame(maxHeight: .infinity)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func legend(anyCache: Bool, anyGithub: Bool) -> some View {
+    HStack(spacing: 10) {
+      if mode == .tokens {
+        legendItem(WorkUsageColors.tokenInput, "Input")
+        legendItem(WorkUsageColors.tokenOutput, "Output")
+        if anyCache { legendItem(WorkUsageColors.tokenCache, "Cache") }
+      } else {
+        legendItem(WorkUsageColors.insertions, "Added")
+        legendItem(WorkUsageColors.deletions, "Removed")
+        if anyGithub { legendItem(WorkUsageColors.github.opacity(0.5), "GitHub") }
+      }
+      Spacer(minLength: 0)
+    }
+    .font(.system(size: 11))
+    .foregroundStyle(ADEColor.textMuted)
+  }
+
+  private func legendItem(_ color: Color, _ label: String) -> some View {
+    HStack(spacing: 4) {
+      RoundedRectangle(cornerRadius: 2, style: .continuous).fill(color).frame(width: 8, height: 8)
+      Text(label)
+    }
+  }
+
+  private func detail(_ bucket: WorkUsageVisualBucket) -> WorkUsageBucketDetail {
+    WorkUsageBucketDetail(
+      date: bucket.date,
+      inputTokens: bucket.inputTokens,
+      outputTokens: bucket.outputTokens,
+      cachedTokens: bucket.cachedTokens,
+      insertions: bucket.insertions,
+      deletions: bucket.deletions,
+      sessions: bucket.sessions
+    )
+  }
 }
 
 private struct WorkUsageClientMix: View {
   let clients: [MobileAdeUsageClientSummary]
-  private let colors: [String: Color] = [
-    "desktop": ADEColor.purpleAccent,
-    "mobile": Color.pink,
-    "tui": Color.green,
-    "web": Color.cyan,
-    "api": Color.orange,
-  ]
 
   private func label(_ client: String) -> String {
     switch client {
@@ -433,17 +693,14 @@ private struct WorkUsageClientMix: View {
     let visible = clients.filter { $0.interactions > 0 }.sorted { $0.interactions > $1.interactions }
     let total = max(1, visible.reduce(0) { $0 + $1.interactions })
     if visible.isEmpty {
-      Text("Client mix appears as you use ADE across devices.")
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      WorkUsageTabEmptyHint(message: "No client activity in this range.")
     } else {
       VStack(spacing: 10) {
         GeometryReader { proxy in
           HStack(spacing: 0) {
             ForEach(visible) { client in
               Rectangle()
-                .fill(colors[client.client] ?? Color.orange)
+                .fill(WorkUsageColors.client[client.client] ?? ADEColor.warning)
                 .frame(width: proxy.size.width * CGFloat(client.interactions) / CGFloat(total))
             }
           }
@@ -457,7 +714,7 @@ private struct WorkUsageClientMix: View {
         ) {
           ForEach(visible.prefix(4)) { client in
             HStack(spacing: 4) {
-              Circle().fill(colors[client.client] ?? Color.orange).frame(width: 6, height: 6)
+              Circle().fill(WorkUsageColors.client[client.client] ?? ADEColor.warning).frame(width: 6, height: 6)
               Text(label(client.client))
               Text("\(Int(round(Double(client.interactions) / Double(total) * 100)))%")
                 .foregroundStyle(ADEColor.textPrimary)
@@ -472,5 +729,60 @@ private struct WorkUsageClientMix: View {
       .accessibilityElement(children: .combine)
       .accessibilityLabel("Where you use ADE")
     }
+  }
+}
+
+/// Muted, centered hint for a tab whose own series is empty while the module has
+/// data on other tabs (so the global warm-empty state does not apply).
+private struct WorkUsageTabEmptyHint: View {
+  let message: String
+  var body: some View {
+    Text(message)
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textMuted)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .accessibilityLabel(message)
+  }
+}
+
+private struct WorkUsageWarmEmpty: View {
+  private let fractions: [CGFloat] = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.66, 0.4, 0.54]
+
+  var body: some View {
+    VStack(spacing: 8) {
+      HStack(alignment: .bottom, spacing: 3) {
+        ForEach(Array(fractions.enumerated()), id: \.offset) { _, fraction in
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(ADEColor.textMuted.opacity(0.12))
+            .frame(height: 34 * fraction)
+            .frame(maxWidth: .infinity)
+        }
+      }
+      .frame(height: 34)
+      Text("Your activity will appear here after your first chat.")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .multilineTextAlignment(.center)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    .accessibilityLabel("Your activity will appear here after your first chat.")
+  }
+}
+
+private struct WorkUsageSkeleton: View {
+  private let fractions: [CGFloat] = (0..<20).map { 0.3 + CGFloat(($0 * 37) % 60) / 100 }
+
+  var body: some View {
+    HStack(alignment: .bottom, spacing: 3) {
+      ForEach(Array(fractions.enumerated()), id: \.offset) { _, fraction in
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+          .fill(ADEColor.textMuted.opacity(0.1))
+          .frame(height: max(4, 76 * fraction))
+          .frame(maxWidth: .infinity)
+      }
+    }
+    .frame(maxHeight: .infinity, alignment: .bottom)
+    .accessibilityLabel("Loading activity")
   }
 }

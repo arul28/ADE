@@ -70,7 +70,7 @@ Browser `window.ade` adapter:
   web implementations of desktop renderer namespaces, mixing remote commands,
   sync sub-protocols, and local browser-only state. `misc.ts` routes
   `window.ade.usage.getAdeStats` through the viewer-allowed
-  `usage.getAdeStats` command so the reused empty-Work activity carousel shows
+  `usage.getAdeStats` command so the reused empty-Work activity module shows
   the runtime's cached cross-client aggregate instead of an empty native stub.
   `personalChats.ts` invokes
   runtime-scoped `personalChats.*` actions with `requireProject: false`, adds

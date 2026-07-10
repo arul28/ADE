@@ -4299,10 +4299,12 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   usage: {
-    getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> =>
-      callProjectRuntimeActionOr("usage", "getAdeUsageStats", { args }, () =>
-        ipcRenderer.invoke(IPC.usageGetAdeStats, args),
-      ),
+    getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> => {
+      const normalizedArgs: GetAdeUsageStatsArgs = { ...args, scope: args.scope ?? "machine" };
+      return callProjectRuntimeActionOr("usage", "getAdeUsageStats", { args: normalizedArgs }, () =>
+        ipcRenderer.invoke(IPC.usageGetAdeStats, normalizedArgs),
+      );
+    },
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
       callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),

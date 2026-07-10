@@ -12,7 +12,7 @@ import { areAutomationsEnabledForPackagedState } from "../../../shared/automatio
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
-import { buildPrAiResolutionContextKey } from "../../../shared/types";
+import { buildPrAiResolutionContextKey, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
@@ -4876,6 +4876,10 @@ export function registerIpc({
   // ── Usage tracking + budget cap IPC ──────────────────────────
   ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
     const ctx = getCtx();
+    if (arg != null && !isRecord(arg)) throw new Error("usage stats expects an object payload.");
+    if (arg?.scope != null && !isAdeUsageScope(arg.scope)) {
+      throw new Error("usage stats scope must be machine or project.");
+    }
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });
 
