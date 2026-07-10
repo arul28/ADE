@@ -57,7 +57,6 @@ const baseProps: EditorGroupProps = {
     workspaceId: "workspace-1",
     rootPath: "/repo",
     laneId: "lane-1",
-    canEdit: true,
     canRevealInFinder: true,
   }),
   theme: "dark",
@@ -107,6 +106,7 @@ describe("EditorGroup", () => {
     render(<EditorGroup {...baseProps} />);
     expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
     expect(screen.getByTestId("viewer-button")).toBeTruthy();
+    expect(screen.getByTitle("Save (⌘S)")).toBeTruthy();
   });
 
   it("marks the visible fallback tab active when lane scope hides the stored active tab", () => {

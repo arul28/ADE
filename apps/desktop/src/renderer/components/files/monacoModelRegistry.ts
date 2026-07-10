@@ -108,6 +108,34 @@ export function createMonacoModelRegistry() {
       return Boolean(entry && !entry.model.isDisposed());
     },
 
+    /**
+     * Move a cached model to a new key (tab-id remap). The live buffer, undo
+     * stack, and dirty baseline follow the new key. When the new key already
+     * holds a live model — the remap collision case, where the stale tab was
+     * dropped in favor of an authoritative one — the old entry is disposed.
+     */
+    rekey(oldKey: string, newKey: string): void {
+      if (oldKey === newKey) return;
+      const entry = models.get(oldKey);
+      if (!entry) return;
+      models.delete(oldKey);
+      const existing = models.get(newKey);
+      if (existing && !existing.model.isDisposed()) {
+        // Collision: keep whichever buffer holds unsaved edits.
+        const entryDirty = !entry.model.isDisposed()
+          && entry.model.getAlternativeVersionId() !== entry.baseVersionId;
+        const existingDirty = existing.model.getAlternativeVersionId() !== existing.baseVersionId;
+        if (entryDirty && !existingDirty) {
+          safeDispose(existing.model);
+          models.set(newKey, entry);
+        } else {
+          safeDispose(entry.model);
+        }
+        return;
+      }
+      models.set(newKey, entry);
+    },
+
     dispose(modelKey: string): void {
       const entry = models.get(modelKey);
       if (!entry) return;

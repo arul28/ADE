@@ -205,6 +205,21 @@ lane/worktree. Selecting an already-open tab from a different workspace moves
 the explorer back to that tab's workspace so the tree, mutation controls, and
 file actions stay aligned.
 
+Workspace ids are not portable across binding identities. The module-level
+workspace and root-tree caches are keyed by `bindingKey::projectRoot` (where
+`bindingKey` is `local` or `remote:<targetId>`), so a local and a remote
+session for the same path keep separate caches. Editor sessions, however, are
+keyed by project root alone, so a local↔remote rebind keeps tabs and dirty
+buffers open. Because a remote host lists workspaces under its own machine's
+lane UUIDs, a persisted tab's `workspaceId` can be stale after a rebind. After
+each `listWorkspaces`, `remapTabWorkspaces` repairs those tabs — matching by
+`laneId` to the corresponding host workspace, else falling back to the primary
+workspace — recomputing composite tab ids, deduping collisions to the
+authoritative tab, and leaving `external-local:*` tabs untouched. Live Monaco
+models follow via `registry.rekey`, and dirty/reload state is migrated with the
+new ids. See [editor-surfaces.md](./editor-surfaces.md) for the full remap and
+rekey rules.
+
 ## Editor modes
 
 Three modes, each driven by a tab's internal state (no service-side
@@ -376,6 +391,11 @@ For deeper detail on the watcher + trust boundary, see
 - Workspace switching is navigation, not a discard action. Dirty tabs remain
   open and published to the dirty-buffer map under their own workspace root
   until the user saves, closes, renames, deletes, or unloads the tab.
+- `listWorkspaces` failures are retried with a capped backoff
+  (`1s → 2s → 5s → 10s`, then steady) rather than swallowed, so a Files tab
+  opened before a remote runtime finishes connecting fills in its workspace
+  list once the host answers instead of staying empty. Individual file
+  reads/writes are still strict (a bound-runtime failure surfaces to the tab).
 - File watcher subscriptions are per sender (BrowserWindow /
   webContents). Closing a window calls `stopAllForSender` to tear
   down every subscription for that window.

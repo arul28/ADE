@@ -165,6 +165,62 @@ describe("monacoModelRegistry", () => {
     expect(registry.isDirty("a")).toBe(true);
   });
 
+  it("rekey moves the live buffer, dirty state, and identity to the new key", () => {
+    const { monaco, createdCount } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    const model = registry.getOrCreate(monaco, "stale-ws::src/a.ts", "draft", "typescript") as any;
+    model.__edit();
+    registry.rekey("stale-ws::src/a.ts", "host-ws::src/a.ts");
+
+    expect(registry.has("stale-ws::src/a.ts")).toBe(false);
+    expect(registry.getValue("host-ws::src/a.ts")).toBe("draft");
+    expect(registry.isDirty("host-ws::src/a.ts")).toBe(true);
+    // Reopening under the new key reuses the moved model — no rebuild from disk.
+    const reopened = registry.getOrCreate(monaco, "host-ws::src/a.ts", "disk content", "typescript");
+    expect(reopened).toBe(model);
+    expect(createdCount()).toBe(1);
+    expect(model.dispose).not.toHaveBeenCalled();
+  });
+
+  it("rekey collision keeps the dirty buffer and disposes the clean one", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    // Dirty incoming, clean existing → incoming wins.
+    const dirtyIncoming = registry.getOrCreate(monaco, "old-a", "edited", "plaintext") as any;
+    dirtyIncoming.__edit();
+    const cleanExisting = registry.getOrCreate(monaco, "new-a", "disk", "plaintext") as any;
+    registry.rekey("old-a", "new-a");
+    expect(cleanExisting.dispose).toHaveBeenCalledTimes(1);
+    expect(registry.getValue("new-a")).toBe("edited");
+    expect(registry.isDirty("new-a")).toBe(true);
+
+    // Dirty existing → existing wins, incoming disposed.
+    const cleanIncoming = registry.getOrCreate(monaco, "old-b", "stale", "plaintext") as any;
+    const dirtyExisting = registry.getOrCreate(monaco, "new-b", "kept edit", "plaintext") as any;
+    dirtyExisting.__edit();
+    registry.rekey("old-b", "new-b");
+    expect(cleanIncoming.dispose).toHaveBeenCalledTimes(1);
+    expect(dirtyExisting.dispose).not.toHaveBeenCalled();
+    expect(registry.getValue("new-b")).toBe("kept edit");
+    expect(registry.has("old-b")).toBe(false);
+  });
+
+  it("rekey is a no-op for identical or unknown keys", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    const model = registry.getOrCreate(monaco, "a", "x", "plaintext") as any;
+    registry.rekey("a", "a");
+    registry.rekey("missing", "b");
+
+    expect(registry.has("a")).toBe(true);
+    expect(registry.has("b")).toBe(false);
+    expect(registry.getValue("a")).toBe("x");
+    expect(model.dispose).not.toHaveBeenCalled();
+  });
+
   it("recreates a model whose underlying instance was disposed externally", () => {
     const { monaco, createdCount } = createFakeMonaco();
     const registry = createMonacoModelRegistry();

@@ -17,6 +17,7 @@ import {
   splitGroup,
   splitTabToNewGroup,
   upgradeLegacySession,
+  useEditorGroupsStore,
 } from "./editorGroupsStore";
 
 const WS_A = "workspace-a";
@@ -242,6 +243,38 @@ describe("editorGroupsStore reducers", () => {
     expect(state.groupOrder).toEqual([g1]);
     expect(group(state).tabs).toEqual([]);
     expect(group(state).activeTabId).toBeNull();
+  });
+
+  it("remaps stale workspace ids, dedupes collisions, and preserves the active tab", () => {
+    const sessionKey = "project-session";
+    const stale = tab("same.ts", { workspaceId: "stale-workspace", laneId: LANE_B });
+    const authoritative = tab("same.ts", { workspaceId: WS_B, laneId: LANE_B });
+    const external = tab("outside.ts", {
+      id: "preserved-external-tab-id",
+      workspaceId: "external-local:outside",
+      laneId: null,
+    });
+    let state = createInitialGroupsState();
+    state = openInGroup(state, g1, stale);
+    state = openInGroup(state, g1, authoritative);
+    state = openInGroup(state, g1, external);
+    state = activateTab(state, g1, stale.id);
+    useEditorGroupsStore.setState({ sessions: { [sessionKey]: state } });
+
+    const mappedWorkspaceIds: string[] = [];
+    const tabIdChanges = useEditorGroupsStore.getState().remapTabWorkspaces(sessionKey, (candidate) => {
+      mappedWorkspaceIds.push(candidate.workspaceId);
+      return candidate.workspaceId === stale.workspaceId ? WS_B : candidate.workspaceId;
+    });
+    const remapped = useEditorGroupsStore.getState().getSession(sessionKey)!;
+
+    expect(group(remapped).tabs).toEqual([authoritative, external]);
+    expect(group(remapped).activeTabId).toBe(authoritative.id);
+    expect(group(remapped).recentTabIds).toEqual([authoritative.id, external.id]);
+    expect(tabIdChanges.get(stale.id)).toBe(authoritative.id);
+    expect(mappedWorkspaceIds).not.toContain(external.workspaceId);
+
+    useEditorGroupsStore.setState({ sessions: {} });
   });
 
   it("merges simple legacy per-lane sessions into one tab strip", () => {

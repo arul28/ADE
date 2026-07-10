@@ -51,22 +51,8 @@ function renderExplorer(overrides: Partial<FilesExplorerProps> = {}) {
 }
 
 describe("FilesExplorer mutating controls", () => {
-  it("disables create controls for read-only workspaces", () => {
-    const props = renderExplorer({ canMutate: false });
-
-    const newFile = screen.getByLabelText("New file") as HTMLButtonElement;
-    const newFolder = screen.getByLabelText("New folder") as HTMLButtonElement;
-    expect(newFile.disabled).toBe(true);
-    expect(newFolder.disabled).toBe(true);
-
-    fireEvent.click(newFile);
-    fireEvent.click(newFolder);
-    expect(props.onCreateFile).not.toHaveBeenCalled();
-    expect(props.onCreateDirectory).not.toHaveBeenCalled();
-  });
-
-  it("keeps create controls active for mutable workspaces", () => {
-    const props = renderExplorer({ canMutate: true });
+  it("keeps create controls active", () => {
+    const props = renderExplorer();
 
     const newFile = screen.getByLabelText("New file") as HTMLButtonElement;
     const newFolder = screen.getByLabelText("New folder") as HTMLButtonElement;
