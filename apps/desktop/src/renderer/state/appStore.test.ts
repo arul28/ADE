@@ -46,7 +46,13 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
+import {
+  createProjectAppStore,
+  useAppStore,
+  THEME_IDS,
+  DEFAULT_TERMINAL_PREFERENCES,
+  DEFAULT_CHAT_FONT_SIZE_PX,
+} from "./appStore";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +67,8 @@ function resetStore() {
     showWelcome: true,
     projectTransition: null,
     projectTransitionError: null,
+    isNewTabOpen: false,
+    personalChatsTabOpen: false,
     laneSnapshots: [],
     lanes: [],
     lanesLoading: false,
@@ -113,6 +121,56 @@ describe("appStore", () => {
     mockStorage.clear();
     vi.clearAllMocks();
     resetStore();
+  });
+
+  describe("personal Chats tab", () => {
+    it("defaults closed, toggles through its session actions, and is not persisted", () => {
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(false);
+
+      useAppStore.getState().setPersonalChatsTabOpen(true);
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+
+      useAppStore.getState().closePersonalChatsTab();
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(false);
+      expect(mockLocalStorage.setItem).not.toHaveBeenCalled();
+    });
+
+    it("starts closed in a project-scoped store even when the root machine tab is open", () => {
+      useAppStore.getState().setPersonalChatsTabOpen(true);
+
+      const projectStore = createProjectAppStore({
+        rootPath: "/p/a",
+        displayName: "A",
+        baseRef: "main",
+      } as any);
+
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+      expect(projectStore.getState().personalChatsTabOpen).toBe(false);
+      expect(projectStore.getState().isNewTabOpen).toBe(false);
+    });
+
+    it("survives opening, switching, and closing projects", async () => {
+      useAppStore.getState().setPersonalChatsTabOpen(true);
+      (window.ade.project.openRepo as any).mockResolvedValueOnce({
+        rootPath: "/p/a",
+        displayName: "A",
+        baseRef: "main",
+      });
+
+      await useAppStore.getState().openRepo();
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce({
+        rootPath: "/p/b",
+        displayName: "B",
+        baseRef: "main",
+      });
+      await useAppStore.getState().switchProjectToPath("/p/b");
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+
+      await useAppStore.getState().closeProject();
+      expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────

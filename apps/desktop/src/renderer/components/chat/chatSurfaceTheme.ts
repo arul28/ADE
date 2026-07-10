@@ -117,6 +117,14 @@ function isLightChatAccent(accent: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.72;
 }
 
+/// Readable foreground for content painted on top of a `--chat-accent` fill
+/// (e.g. a send-button icon). Light provider accents such as Codex/OpenAI need
+/// a dark glyph; everything else stays white.
+export function chatAccentContrast(accentColor?: string | null): string {
+  const trimmed = accentColor?.trim();
+  return trimmed && isLightChatAccent(trimmed) ? "#1c1917" : "#ffffff";
+}
+
 const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
 

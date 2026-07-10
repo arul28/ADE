@@ -1,20 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Archive,
-  ArrowLeft,
-  ChatCircleDots,
-  DotsThree,
-  Globe,
-  House,
-  MagnifyingGlass,
-  PaperPlaneTilt,
-  Plus,
-  SpinnerGap,
-  Stop,
-  TerminalWindow,
-  Trash,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -38,11 +23,12 @@ import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
+import { ProjectlessComposer } from "./ProjectlessComposer";
+import { ProjectlessHero } from "./ProjectlessHero";
+import { ProjectlessSidebar } from "./ProjectlessSidebar";
+import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
-import { ToolLogo } from "../terminals/ToolLogos";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 
@@ -76,29 +62,6 @@ function resultOf<T>(response: PersonalChatCallResponse | T): T {
 async function callPersonal<T>(action: PersonalChatAction, args?: Record<string, unknown>): Promise<T> {
   const request = (args === undefined ? { action } : { action, args }) as PersonalChatCallArgs;
   return resultOf<T>(await bridge().call(request));
-}
-
-function sessionTitle(session: AgentChatSessionSummary): string {
-  const title = session.title?.trim() || session.goal?.trim() || session.summary?.trim();
-  if (title) return title;
-  return getModelById(session.modelId ?? "")?.displayName ?? "New chat";
-}
-
-function sessionPreview(session: AgentChatSessionSummary): string {
-  return session.lastOutputPreview?.trim() || session.summary?.trim() || "Start a conversation";
-}
-
-function relativeTime(value: string | null | undefined): string {
-  if (!value) return "";
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return "";
-  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return days < 7 ? `${days}d` : new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function groupLabel(value: string | null | undefined): string {
@@ -213,14 +176,6 @@ function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEvent
   return next;
 }
 
-function providerToolType(provider: string): Parameters<typeof ToolLogo>[0]["toolType"] {
-  if (provider === "claude") return "claude-chat";
-  if (provider === "codex") return "codex-chat";
-  if (provider === "cursor") return "cursor";
-  if (provider === "droid") return "droid-chat";
-  return "opencode-chat";
-}
-
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
   const projectBinding = useAppStore((state) => state.projectBinding);
@@ -247,6 +202,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const cursorRef = useRef(0);
   const targetGenerationRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
@@ -478,158 +434,123 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const browserAvailable = !isWebClientMode() && Boolean(window.ade?.builtInBrowser);
   const turnActive = selectedSession?.status === "active";
   const selectedDescriptor = models.find((model) => model.id === modelId) ?? getModelById(modelId);
+  const accentColor = selectedDescriptor?.color ?? "#A78BFA";
+  const isRemote = projectBinding?.kind === "remote";
+  const machineLabel = isRemote ? projectBinding.runtimeName : "This machine";
+  const providerUnavailable = availableModelIds.length === 0;
+  const canStartSend = Boolean(selectedSession) || hasValidNewSessionModel;
+  // Hero only for a brand-new chat: a selected session docks immediately even
+  // while its event history is still loading, so the greeting never flashes.
+  const heroMode = selectedId == null && selectedEvents.length === 0;
+  const showReconnecting = Boolean(error) && isRemote;
+
+  const applyPrompt = useCallback((prefill: string) => {
+    setDraft(prefill);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, []);
+
+  const composer = (
+    <ProjectlessComposer
+      variant={heroMode ? "hero" : "docked"}
+      appearanceStyle={appearanceStyle}
+      accentColor={accentColor}
+      draft={draft}
+      onDraftChange={setDraft}
+      onSubmit={() => void submit()}
+      sending={sending}
+      turnActive={turnActive}
+      models={models}
+      availableModelIds={availableModelIds}
+      modelId={modelId}
+      onModelChange={handleModelChange}
+      catalogReady={catalog !== null}
+      reasoningEffort={reasoningEffort}
+      onReasoningChange={(next) => { setReasoningEffort(next); void updateSelected({ reasoningEffort: next }); }}
+      permissionMode={permissionMode}
+      onPermissionChange={(next) => { setPermissionMode(next); void updateSelected({ permissionMode: next }); }}
+      fastMode={fastMode}
+      onFastModeToggle={(next) => { setFastMode(next); void updateSelected({ fastMode: next }); }}
+      selectedDescriptor={selectedDescriptor}
+      canStartSend={canStartSend}
+      showInterrupt={turnActive && Boolean(selectedId)}
+      onInterrupt={() => { if (selectedId) void callPersonal<void>("interrupt", { sessionId: selectedId }); }}
+      error={error}
+      onDismissError={() => setError(null)}
+      textareaRef={textareaRef}
+    />
+  );
 
   return (
     <div className="flex h-full min-h-0 bg-bg text-fg" data-testid="personal-chats-page" data-target={targetKey}>
-      <aside className={cn(
-        "relative w-[286px] shrink-0 border-r border-white/[0.06] bg-black/[0.12]",
-        "max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[min(88vw,320px)] max-md:shadow-2xl",
-        !mobileListOpen && "max-md:hidden",
-      )}>
-        <div aria-hidden className="pointer-events-none absolute inset-0 hidden max-md:block" style={{ background: "var(--color-bg)" }} />
-        <div className="relative z-10 flex h-full min-h-0 flex-col">
-          <div className="flex items-center gap-2 px-3 pb-2 pt-3">
-            {standalone ? (
-              <button type="button" onClick={() => navigate("/work")} className="flex h-8 w-8 items-center justify-center rounded-lg text-fg/55 hover:bg-white/[0.06] hover:text-fg" aria-label="Back to home">
-                <House size={16} />
-              </button>
-            ) : null}
-            <div className="min-w-0 flex-1">
-              <div className="font-sans text-[15px] font-semibold tracking-tight">Chats</div>
-              <div className="truncate text-[10px] text-muted-fg/45">
-                {projectBinding?.kind === "remote" ? projectBinding.runtimeName : "This machine"}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-accent/25 bg-accent/10 px-2.5 font-sans text-[11px] font-medium text-accent hover:bg-accent/15"
-              onClick={() => { setSelectedId(null); setDraft(""); setMobileListOpen(false); }}
-            >
-              <Plus size={13} weight="bold" /> New
-            </button>
-          </div>
-          <div className="relative mx-3 mb-2">
-            <MagnifyingGlass size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/40" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search chats" aria-label="Search chats" className="h-8 w-full rounded-lg border border-white/[0.06] bg-white/[0.025] pl-8 pr-2 font-sans text-[11px] text-fg outline-none placeholder:text-muted-fg/35 focus:border-accent/30" />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-            {loading ? <div className="flex justify-center py-10 text-muted-fg/35"><SpinnerGap size={17} className="animate-spin" /></div> : null}
-            {!loading && grouped.length === 0 ? <div className="px-4 py-10 text-center font-sans text-[11px] leading-5 text-muted-fg/40">No chats yet.<br />Start with anything on your mind.</div> : null}
-            {grouped.map(([label, rows]) => (
-              <div key={label} className="mb-3">
-                <div className="px-2 pb-1 pt-2 font-mono text-[8px] font-semibold uppercase tracking-[0.14em] text-muted-fg/35">{label}</div>
-                <div className="space-y-0.5">
-                  {rows.map((session) => {
-                    const active = session.sessionId === selectedId;
-                    return (
-                      <div key={session.sessionId} className="group relative">
-                        <button type="button" onClick={() => setSelectedId(session.sessionId)} className={cn("flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition-colors", active ? "bg-white/[0.075]" : "hover:bg-white/[0.04]")}>
-                          <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-black/20"><ToolLogo toolType={providerToolType(session.provider)} size={15} /></span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate font-sans text-[12px] font-medium text-fg/82">{sessionTitle(session)}</span>
-                            <span className="mt-0.5 block truncate font-sans text-[10px] text-muted-fg/42">{sessionPreview(session)}</span>
-                          </span>
-                          <span className="mt-0.5 shrink-0 font-mono text-[8px] text-muted-fg/30 group-hover:hidden">{relativeTime(session.lastActivityAt)}</span>
-                        </button>
-                        <button type="button" onClick={(event) => { event.stopPropagation(); setMenuId((current) => current === session.sessionId ? null : session.sessionId); }} className="absolute right-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md text-muted-fg/45 hover:bg-white/[0.08] hover:text-fg group-hover:flex" aria-label={`More actions for ${sessionTitle(session)}`}><DotsThree size={15} weight="bold" /></button>
-                        {menuId === session.sessionId ? (
-                          <div className="absolute right-2 top-9 z-30 w-32 rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl">
-                            <button type="button" onClick={() => void removeSession(session.sessionId, "archive")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-white/[0.06]"><Archive size={12} />Archive</button>
-                            <button type="button" onClick={() => void removeSession(session.sessionId, "delete")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-rose-300/75 hover:bg-rose-500/10"><Trash size={12} />Delete</button>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </aside>
+      <ProjectlessSidebar
+        standalone={standalone}
+        machineLabel={machineLabel}
+        grouped={grouped}
+        loading={loading}
+        query={query}
+        onQueryChange={setQuery}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onNewChat={() => { setSelectedId(null); setDraft(""); setMobileListOpen(false); }}
+        onBack={() => navigate("/work")}
+        mobileListOpen={mobileListOpen}
+        menuId={menuId}
+        onToggleMenu={setMenuId}
+        onRemove={(id, action) => void removeSession(id, action)}
+      />
 
       <main className="relative min-w-0 flex-1">
         <ChatSurfaceShell
           mode="standard"
-          accentColor={selectedDescriptor?.color ?? "#A78BFA"}
+          accentColor={accentColor}
           chromeTint={chatChromeTint}
           shellGeometry={chatShellGeometry}
           header={(
             <div className="flex h-11 items-center gap-2 border-b border-white/[0.055] px-3">
               <button type="button" className="hidden h-7 w-7 items-center justify-center rounded-md text-muted-fg/55 hover:bg-white/[0.06] max-md:flex" onClick={() => setMobileListOpen(true)} aria-label="Show chats"><ArrowLeft size={15} /></button>
               <div className="min-w-0 flex-1 truncate font-sans text-[12px] font-medium text-fg/75">{selectedSession ? sessionTitle(selectedSession) : "New chat"}</div>
+              {showReconnecting ? (
+                <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 font-sans text-[10px] text-amber-200/80">
+                  <SpinnerGap size={11} className="animate-spin" /> Reconnecting…
+                </span>
+              ) : null}
               {browserAvailable ? (
                 <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-white/[0.06] bg-white/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
               ) : null}
               <button type="button" onClick={() => setToolPanel((current) => current === "terminal" ? null : "terminal")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "terminal" ? "border-violet-300/25 bg-violet-500/10 text-violet-200" : "border-white/[0.06] bg-white/[0.025] text-muted-fg/45 hover:text-fg")} title="Terminal" aria-label="Toggle terminal"><TerminalWindow size={14} /></button>
             </div>
           )}
-          footer={(
-            <div data-chat-appearance-root style={appearanceStyle} className="mx-auto w-full max-w-[860px]">
-              {error ? <div role="alert" className="mb-1.5 flex items-start justify-between gap-2 rounded-lg border border-rose-400/15 bg-rose-500/[0.07] px-3 py-2 font-sans text-[10px] text-rose-200/70"><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><X size={12} /></button></div> : null}
-              <div className="rounded-2xl border border-white/[0.09] bg-[color:var(--color-surface-raised)]/95 p-2 shadow-[0_24px_80px_-42px_rgba(0,0,0,0.9)] backdrop-blur-xl focus-within:border-accent/25">
-                <textarea
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void submit();
-                    }
-                  }}
-                  rows={2}
-                  autoFocus
-                  placeholder="Message an ADE agent…"
-                  aria-label="Message an ADE agent"
-                  className="max-h-44 min-h-[54px] w-full resize-none bg-transparent px-2 py-1.5 font-sans text-[13px] leading-5 text-fg/88 outline-none placeholder:text-muted-fg/32"
-                />
-                <div className="flex min-w-0 items-center gap-1.5 pt-1">
-                  <ModelPicker value={modelId} onChange={handleModelChange} surfaceKey="personal-chat" models={models} availableModelIds={availableModelIds} constrainToAvailableModelIds compact disabled={sending || turnActive || catalog === null || availableModelIds.length === 0} fastModeActive={fastMode} fastModeSupported={modelSupportsFastMode(selectedDescriptor)} onFastModeToggle={(next) => { setFastMode(next); void updateSelected({ fastMode: next }); }} />
-                  <ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} compact disabled={sending || turnActive} onChange={(next) => { setReasoningEffort(next); void updateSelected({ reasoningEffort: next }); }} />
-                  <select value={permissionMode} disabled={sending || turnActive} onChange={(event) => { const next = event.target.value as AgentChatPermissionMode; setPermissionMode(next); void updateSelected({ permissionMode: next }); }} className="h-7 max-w-[112px] rounded-md border border-white/[0.06] bg-white/[0.025] px-2 font-sans text-[10px] text-fg/60 outline-none" aria-label="Permission mode">
-                    <option value="default">Default</option>
-                    <option value="plan">Plan</option>
-                    <option value="full-auto">Full access</option>
-                  </select>
-                  <div className="flex-1" />
-                  {turnActive && selectedId ? (
-                    <button type="button" onClick={() => void callPersonal<void>("interrupt", { sessionId: selectedId })} className="flex h-8 w-8 items-center justify-center rounded-full border border-rose-300/20 bg-rose-500/10 text-rose-200" aria-label="Stop response"><Stop size={13} weight="fill" /></button>
-                  ) : (
-                    <button type="button" disabled={!draft.trim() || sending || (!selectedSession && !hasValidNewSessionModel)} onClick={() => void submit()} className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-[var(--color-accent-contrast)] transition-opacity disabled:opacity-30" aria-label="Send message">{sending ? <SpinnerGap size={14} className="animate-spin" /> : <PaperPlaneTilt size={14} weight="fill" />}</button>
-                  )}
-                </div>
-              </div>
-              <div className="pt-1.5 text-center font-sans text-[9px] text-muted-fg/25">Projectless chat · agents have no project working directory</div>
-            </div>
-          )}
+          footer={heroMode ? undefined : composer}
         >
           <div data-chat-appearance-root style={appearanceStyle} className="relative flex h-full min-h-0">
             <div className="min-w-0 flex-1">
-              {selectedEvents.length ? (
-                <AgentChatMessageList
-                  events={selectedEvents}
-                  showStreamingIndicator={turnActive}
-                  laneId={null}
-                  sessionId={selectedId}
-                  assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}
-                  onApproval={(itemId, decision, responseText, answers) => {
-                    if (!selectedId) return;
-                    void callPersonal<void>("respondToInput", { sessionId: selectedId, itemId, decision, responseText, answers });
-                  }}
-                  onInsertDraft={(text) => setDraft((current) => current ? `${current}\n${text}` : text)}
-                />
+              {loading ? (
+                <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
+              ) : selectedEvents.length ? (
+                <div className="h-full motion-safe:animate-[ade-chat-dock-in_0.28s_ease-out]">
+                  <AgentChatMessageList
+                    events={selectedEvents}
+                    showStreamingIndicator={turnActive}
+                    laneId={null}
+                    sessionId={selectedId}
+                    assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}
+                    onApproval={(itemId, decision, responseText, answers) => {
+                      if (!selectedId) return;
+                      void callPersonal<void>("respondToInput", { sessionId: selectedId, itemId, decision, responseText, answers });
+                    }}
+                    onInsertDraft={(text) => setDraft((current) => current ? `${current}\n${text}` : text)}
+                  />
+                </div>
+              ) : heroMode ? (
+                <ProjectlessHero composer={composer} onSelectPrompt={applyPrompt} providerUnavailable={providerUnavailable} />
               ) : (
-                <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-10">
-                  <div className="w-full max-w-[660px] text-center">
-                    <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-accent/20 bg-accent/10 text-accent"><ChatCircleDots size={23} weight="duotone" /></span>
-                    <h1 className="mt-4 font-sans text-[24px] font-semibold tracking-[-0.025em] text-fg/88">What can I help with?</h1>
-                    <p className="mx-auto mt-2 max-w-[470px] font-sans text-[12px] leading-5 text-muted-fg/45">Think, write, research, plan, or work through an idea with any agent already connected to ADE.</p>
-                    <div className="mt-6 grid grid-cols-2 gap-2 max-sm:grid-cols-1">
-                      {["Help me think through a decision", "Draft something from a rough idea", "Research a topic with me", "Turn my notes into an action plan"].map((prompt) => (
-                        <button key={prompt} type="button" onClick={() => setDraft(prompt)} className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-3 text-left font-sans text-[11px] leading-4 text-fg/55 transition-colors hover:border-accent/20 hover:bg-accent/[0.05] hover:text-fg/75">{prompt}</button>
-                      ))}
-                    </div>
-                  </div>
+                <div className="flex h-full items-center justify-center">
+                  <SpinnerGap size={18} className="animate-spin text-muted-fg/25" />
                 </div>
               )}
             </div>

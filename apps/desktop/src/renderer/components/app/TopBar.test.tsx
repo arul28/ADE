@@ -163,6 +163,9 @@ function resetStore() {
     isNewTabOpen: false,
     openNewTab: vi.fn(),
     cancelNewTab: vi.fn(),
+    personalChatsTabOpen: false,
+    setPersonalChatsTabOpen: vi.fn(),
+    closePersonalChatsTab: vi.fn(),
     projectTransition: null,
     projectTransitionError: null,
     openProjectTabRoots: [],
@@ -358,16 +361,107 @@ describe("TopBar", () => {
   });
 
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
-    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
-    const onClose = vi.fn();
+    useAppStore.setState({
+      project: null,
+      projectHydrated: true,
+      showWelcome: true,
+      personalChatsTabOpen: true,
+    } as any);
+    const onNavigate = vi.fn();
 
-    render(<TopBar standaloneChatsActive onCloseStandaloneChats={onClose} />);
+    render(
+      <TopBar
+        personalChatsRouteActive
+        onNavigate={onNavigate}
+      />,
+    );
 
     expect(screen.getByText("Chats")).toBeTruthy();
     const closeButton = screen.getByTitle("Close chats");
-    expect(onClose).not.toHaveBeenCalled();
+    expect(useAppStore.getState().closePersonalChatsTab).not.toHaveBeenCalled();
     fireEvent.click(closeButton);
-    expect(onClose).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().closePersonalChatsTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/work", { replace: true });
+  });
+
+  it("opens and activates New Tab from projectless Chats without closing Chats", () => {
+    useAppStore.setState({
+      project: null,
+      projectHydrated: true,
+      showWelcome: true,
+      personalChatsTabOpen: true,
+    } as any);
+    const onNavigate = vi.fn();
+    const { rerender } = render(
+      <TopBar personalChatsRouteActive onNavigate={onNavigate} />,
+    );
+
+    fireEvent.click(screen.getByTitle("Open another project"));
+
+    expect(useAppStore.getState().openNewTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/work");
+
+    useAppStore.setState({ isNewTabOpen: true } as any);
+    rerender(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+
+    expect(screen.getByText("New Tab").parentElement?.getAttribute("data-state")).toBe("active");
+    expect(screen.getByText("Chats").parentElement?.getAttribute("data-state")).toBeNull();
+  });
+
+  it("navigates to an inactive Chats tab", () => {
+    useAppStore.setState({
+      project: null,
+      projectHydrated: true,
+      showWelcome: true,
+      personalChatsTabOpen: true,
+      isNewTabOpen: true,
+    } as any);
+    const onNavigate = vi.fn();
+
+    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+
+    fireEvent.click(screen.getByText("Chats").parentElement!);
+
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/chats");
+  });
+
+  it("returns to Chats when the projectless New Tab is closed", () => {
+    useAppStore.setState({
+      project: null,
+      projectHydrated: true,
+      showWelcome: true,
+      personalChatsTabOpen: true,
+      isNewTabOpen: true,
+    } as any);
+    const onNavigate = vi.fn();
+
+    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+
+    fireEvent.click(screen.getByTitle("Close new tab"));
+
+    expect(useAppStore.getState().cancelNewTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/chats");
+  });
+
+  it("closes an inactive Chats tab without navigating away from New Tab", () => {
+    useAppStore.setState({
+      project: null,
+      projectHydrated: true,
+      showWelcome: true,
+      personalChatsTabOpen: true,
+      isNewTabOpen: true,
+    } as any);
+    const onNavigate = vi.fn();
+
+    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+
+    fireEvent.click(screen.getByTitle("Close chats"));
+
+    expect(useAppStore.getState().closePersonalChatsTab).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().cancelNewTab).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 
   it("keeps the phone sync drawer open before a project is open", async () => {

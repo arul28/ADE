@@ -871,13 +871,14 @@ function ProjectTabIcon({
 }
 
 export function TopBar({
-  standaloneChatsActive = false,
-  onCloseStandaloneChats,
+  personalChatsRouteActive = false,
+  onNavigate,
 }: {
-  standaloneChatsActive?: boolean;
-  onCloseStandaloneChats?: () => void;
+  personalChatsRouteActive?: boolean;
+  onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -887,6 +888,8 @@ export function TopBar({
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const openNewTab = useAppStore((s) => s.openNewTab);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
+  const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const clearProjectTransitionError = useAppStore(
@@ -1336,7 +1339,8 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-  }, [isProjectBusy, openNewTab]);
+    if (personalChatsRouteActive) onNavigate?.("/work");
+  }, [isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
@@ -1951,7 +1955,7 @@ export function TopBar({
         {openRemoteProjectTabs.length > 0 ||
         projectTabs.length > 0 ||
         isNewTabOpen ||
-        standaloneChatsActive ? (
+        personalChatsTabOpen ? (
           <>
             {openRemoteProjectTabs.map((remoteTab) => {
               const isCurrentRemote = remoteBinding?.key === remoteTab.key;
@@ -2216,14 +2220,29 @@ export function TopBar({
                 </div>
               );
             })}
-            {standaloneChatsActive ? (
+            {personalChatsTabOpen ? (
               <div
+                role="button"
+                tabIndex={0}
                 className={cn(
                   "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
                   "font-semibold transition-[background-color,color,border-color,box-shadow] duration-150",
+                  "cursor-pointer",
                 )}
-                data-state="active"
+                data-state={personalChatsRouteActive ? "active" : undefined}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                onClick={() => {
+                  if (!personalChatsRouteActive) onNavigate?.("/chats");
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    !personalChatsRouteActive &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    onNavigate?.("/chats");
+                  }
+                }}
               >
                 <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
@@ -2231,22 +2250,42 @@ export function TopBar({
                   type="button"
                   className="ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                   data-variant="ghost"
-                  onClick={onCloseStandaloneChats}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePersonalChatsTab();
+                    if (personalChatsRouteActive) {
+                      onNavigate?.("/work", { replace: true });
+                    }
+                  }}
                   title="Close chats"
                 >
                   <X size={12} weight="regular" />
                 </button>
               </div>
             ) : null}
-            {isNewTabOpen && !standaloneChatsActive && (
+            {isNewTabOpen && (
               <div
+                role="button"
+                tabIndex={0}
                 className={cn(
                   "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
-                  "font-semibold",
+                  "cursor-pointer font-semibold",
                 )}
-                data-state="active"
+                data-state={!personalChatsRouteActive ? "active" : undefined}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                onClick={() => {
+                  if (personalChatsRouteActive) onNavigate?.("/work");
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    personalChatsRouteActive &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    onNavigate?.("/work");
+                  }
+                }}
               >
                 {projectTransition?.kind === "opening" ? (
                   <CircleNotch
@@ -2279,6 +2318,9 @@ export function TopBar({
                     e.stopPropagation();
                     if (isProjectBusy) return;
                     cancelNewTab();
+                    if (!hasProject && personalChatsTabOpen) {
+                      onNavigate?.("/chats");
+                    }
                   }}
                   title="Close new tab"
                 >
