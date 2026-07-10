@@ -339,9 +339,6 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         }
       }
       const remoteArgs = [
-        ...(destinationAuthHeader
-          ? ["-c", `http.https://github.com/.extraheader=${destinationAuthHeader}`]
-          : []),
         "ls-remote",
         "--heads",
         originUrl,
@@ -355,6 +352,15 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
           env: {
             GIT_TERMINAL_PROMPT: "0",
             GCM_INTERACTIVE: "Never",
+            ...(destinationAuthHeader
+              ? {
+                  // Keep destination-owned credentials out of command-line
+                  // arguments, which may be visible to other local processes.
+                  GIT_CONFIG_COUNT: "1",
+                  GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+                  GIT_CONFIG_VALUE_0: destinationAuthHeader,
+                }
+              : {}),
           },
           maxOutputBytes: 64_000,
         },
