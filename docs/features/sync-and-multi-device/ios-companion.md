@@ -1513,9 +1513,9 @@ does not duplicate the full desktop Stats page.
   rows. The OpenAI picker always promotes GPT-5.6 Sol, Terra, Luna in that
   order even when a host returns another order; Sol is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
-  tiers/defaults, filters raw `max` for GPT-5.6, and falls back to Light /
-  Medium / High / Extra High / Ultra on Sol/Terra and through Extra High on
-  Luna (`low` for Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
+  tiers/defaults in their original order and falls back to Light / Medium /
+  High / Extra High / Max / Ultra on Sol/Terra and through Max on Luna
+  (`low` for Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to
   `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /

@@ -142,7 +142,7 @@ describe("modelRegistry", () => {
       displayName: "GPT-5.6 Sol",
       providerModelId: "gpt-5.6-sol",
       contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
       defaultReasoningEffort: "low",
       serviceTiers: ["fast"],
     });
@@ -150,7 +150,7 @@ describe("modelRegistry", () => {
       displayName: "GPT-5.6 Terra",
       providerModelId: "gpt-5.6-terra",
       contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
       defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
     });
@@ -158,7 +158,7 @@ describe("modelRegistry", () => {
       displayName: "GPT-5.6 Luna",
       providerModelId: "gpt-5.6-luna",
       contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "medium",
       serviceTiers: ["fast"],
     });

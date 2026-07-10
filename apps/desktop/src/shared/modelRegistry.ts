@@ -406,9 +406,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 372_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    // Codex keeps `max` behind an opt-in model-feature flag. ADE aligns with
-    // the default product-facing ladder while exposing Ultra orchestration.
-    reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultReasoningEffort: "low",
     serviceTiers: ["fast"],
     color: "#10A37F",
@@ -430,7 +428,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 372_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
     color: "#22B88A",
@@ -452,7 +450,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 372_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
     color: "#34D399",

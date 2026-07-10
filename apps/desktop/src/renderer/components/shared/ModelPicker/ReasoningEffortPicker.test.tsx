@@ -206,8 +206,8 @@ describe("ReasoningEffortPicker", () => {
     expect(trigger.textContent).toContain("ULTRA");
     await user.click(trigger);
 
-    expect(screen.getAllByRole("radio")).toHaveLength(5);
-    expect(screen.queryByRole("radio", { name: "Max" })).toBeNull();
+    expect(screen.getAllByRole("radio")).toHaveLength(6);
+    expect(screen.getByRole("radio", { name: "Max" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Light" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Ultra" })).toBeTruthy();
     expect(screen.getByText(/automatically delegates work to multiple agents/i)).toBeTruthy();
@@ -317,7 +317,7 @@ describe("ReasoningEffortPicker", () => {
     firePointer("pointerup", 236);
 
     expect(track!.hasAttribute("data-dragging")).toBe(false);
-    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("75%");
+    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("60%");
     expect(releasePointerCapture).toHaveBeenCalledWith(7);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("xhigh");
@@ -375,7 +375,7 @@ describe("ReasoningEffortPicker", () => {
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("xhigh");
-    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("75%");
+    expect(track!.style.getPropertyValue("--reasoning-slider-thumb-position")).toContain("60%");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 

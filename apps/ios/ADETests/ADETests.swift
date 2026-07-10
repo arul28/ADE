@@ -13129,18 +13129,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sol?.displayName, "GPT-5.6 Sol")
     XCTAssertEqual(sol?.tier, .flagship)
     XCTAssertEqual(sol?.tagline, "Flagship · 372k context")
-    XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(sol?.defaultReasoningEffort, "low")
     XCTAssertTrue(sol?.supportsCodexFastMode == true)
 
     let terra = codexModels?.first(where: { $0.id == "gpt-5.6-terra" })
     XCTAssertEqual(terra?.tier, .balanced)
-    XCTAssertEqual(terra?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(terra?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(terra?.defaultReasoningEffort, "medium")
 
     let luna = codexModels?.first(where: { $0.id == "gpt-5.6-luna" })
     XCTAssertEqual(luna?.tier, .fast)
-    XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh"])
+    XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
     XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
@@ -13164,9 +13164,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "ultra"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "ultra"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
   }
@@ -13267,7 +13267,7 @@ final class ADETests: XCTestCase {
               ["id": "gpt-5.5", "runtimeModelId": "gpt-5.5", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.5", "isDefault": false, "isAvailable": true],
               ["id": "gpt-5.6-luna", "runtimeModelId": "gpt-5.6-luna", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Luna", "isDefault": false, "defaultReasoningEffort": "medium", "isAvailable": true],
               ["id": "gpt-5.6-sol", "runtimeModelId": "gpt-5.6-sol", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Sol", "isDefault": true, "defaultReasoningEffort": "low", "reasoningEfforts": [["effort": "low", "description": "fast"], ["effort": "medium", "description": "balanced"], ["effort": "high", "description": "deep"], ["effort": "xhigh", "description": "extended"], ["effort": "max", "description": "optional"], ["effort": "ultra", "description": "delegates"]], "isAvailable": true],
-              ["id": "gpt-5.6-terra", "runtimeModelId": "gpt-5.6-terra", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Terra", "isDefault": false, "defaultReasoningEffort": "medium", "isAvailable": true],
+              ["id": "gpt-5.6-terra", "runtimeModelId": "gpt-5.6-terra", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Terra", "isDefault": false, "defaultReasoningEffort": "max", "isAvailable": true],
             ],
           ]],
         ]],
@@ -13284,7 +13284,8 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(models?.map(\.id), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
     XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
-    XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-terra" })?.defaultReasoningEffort, "max")
 
     let legacyListData = try JSONSerialization.data(withJSONObject: [
       "id": "gpt-5.6-luna",
@@ -13299,7 +13300,7 @@ final class ADETests: XCTestCase {
       ],
     ])
     let legacyListModel = try JSONDecoder().decode(AgentChatModelInfo.self, from: legacyListData)
-    XCTAssertEqual(workVisibleReasoningEfforts(for: legacyListModel).map(\.effort), ["low", "medium", "high", "xhigh"])
+    XCTAssertEqual(workVisibleReasoningEfforts(for: legacyListModel).map(\.effort), ["low", "medium", "high", "xhigh", "max"])
 
     let flatListData = try JSONSerialization.data(withJSONObject: [
       ["id": "gpt-5.5", "displayName": "GPT-5.5", "isDefault": false],

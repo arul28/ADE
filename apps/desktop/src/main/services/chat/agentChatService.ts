@@ -2143,21 +2143,6 @@ const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> =
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
-function isGpt56CodexDescriptor(descriptor: ModelDescriptor): boolean {
-  return /^gpt-5\.6-(?:sol|terra|luna)$/i.test(descriptor.providerModelId);
-}
-
-function visibleCodexReasoningEfforts(
-  descriptor: ModelDescriptor,
-  efforts: Array<{ effort: string; description: string }>,
-): Array<{ effort: string; description: string }> {
-  if (!isGpt56CodexDescriptor(descriptor)) return efforts;
-  // Codex Desktop keeps `max` behind an opt-in model-feature flag. ADE does
-  // not expose that flag, so omit only that internal/optional tier while still
-  // retaining unknown app-server values for forward compatibility.
-  return efforts.filter((entry) => entry.effort !== "max");
-}
-
 function codexModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
   overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "defaultReasoningEffort" | "serviceTiers">>,
@@ -2170,7 +2155,7 @@ function codexModelInfoFromDescriptor(
     displayName: descriptor.displayName,
     description: overrides?.description ?? describeCodexModel(descriptor.displayName),
     isDefault: overrides?.isDefault ?? descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
-    reasoningEfforts: visibleCodexReasoningEfforts(descriptor, advertisedReasoningEfforts),
+    reasoningEfforts: advertisedReasoningEfforts,
     defaultReasoningEffort: overrides?.defaultReasoningEffort
       ?? descriptor.defaultReasoningEffort
       ?? null,

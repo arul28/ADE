@@ -15565,16 +15565,15 @@ describe("createAgentChatService", () => {
           expect.objectContaining({ effort: "medium" }),
           expect.objectContaining({ effort: "high" }),
           expect.objectContaining({ effort: "xhigh" }),
+          expect.objectContaining({ effort: "max" }),
           expect.objectContaining({ effort: "ultra" }),
         ],
         serviceTiers: ["fast"],
       });
       expect(models[1]).toMatchObject({ isDefault: false, defaultReasoningEffort: "medium" });
       expect(models[2]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
-        "low", "medium", "high", "xhigh",
+        "low", "medium", "high", "xhigh", "max",
       ]);
-      expect(models.slice(0, 3).flatMap((model) => model.reasoningEfforts ?? []))
-        .not.toContainEqual(expect.objectContaining({ effort: "max" }));
       expect(models[3]?.isDefault).toBe(false);
 
       const aggregate = await service.getAvailableModels({});
