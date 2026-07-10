@@ -238,6 +238,18 @@ describe("Linear webhook relay", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects an events read from a member token without webhook authority", async () => {
+    const env = makeEnv();
+    stubLinearViewer({ "Bearer lin_oauth_member": "org-1" }, { webhookAuthority: false });
+    const response = await handleRequest(
+      new Request("https://relay.test/linear/orgs/org-1/events", {
+        headers: { authorization: "Bearer lin_oauth_member" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(403);
+  });
+
   it("rejects registration from a token without webhook authority", async () => {
     const env = makeEnv();
     stubLinearViewer({ "lin_api_member": "org-1" }, { webhookAuthority: false });

@@ -121,6 +121,7 @@ const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
 const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
 const encoder = new TextEncoder();
 const linearOrganizationByTokenHash = new Map<string, { organizationId: string; expiresAt: number }>();
+const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
 
 function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -1539,6 +1540,12 @@ async function verifyLinearWebhookAuthority(
   env: RelayEnv,
 ): Promise<{ authorized: true } | { authorized: false; response: Response }> {
   const authorization = readAuthorizationHeader(request);
+  const tokenHash = await sha256Hex(authorization);
+  const cached = linearWebhookAuthorityByTokenHash.get(tokenHash);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { authorized: true };
+  }
+  if (cached) linearWebhookAuthorityByTokenHash.delete(tokenHash);
   let response: Response;
   try {
     response = await fetch(linearGraphqlUrl(env), {
@@ -1565,6 +1572,7 @@ async function verifyLinearWebhookAuthority(
       ),
     };
   }
+  linearWebhookAuthorityByTokenHash.set(tokenHash, { expiresAt: Date.now() + 5 * 60_000 });
   return { authorized: true };
 }
 
@@ -1732,6 +1740,11 @@ async function handleListLinearEvents(
   if (auth.organizationId !== organizationId) {
     return json({ ok: false, error: "forbidden" }, { status: 403 });
   }
+  // Membership alone must not expose the org-wide backlog: app-delivered
+  // events can include private-team payloads a plain member cannot see in
+  // Linear. Reads require the same webhook authority as registration.
+  const authority = await verifyLinearWebhookAuthority(request, env);
+  if (!authority.authorized) return authority.response;
 
   const url = new URL(request.url);
   const limit = parseLimit(url);
