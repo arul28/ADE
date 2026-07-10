@@ -358,6 +358,8 @@ export function AutomationsWorkspace({
 
   const selectedRule = selectedRuleId ? rules.find((r) => r.id === selectedRuleId) ?? null : null;
   const delivery = ingressStatus?.delivery ?? null;
+  // Computed on the UNFILTERED rules so a search can't hide the trust recovery CTA.
+  const sharedTrustBlocked = configTrustRequired && rules.some((rule) => rule.source !== "local");
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }} className="flex h-full min-h-0">
@@ -367,7 +369,7 @@ export function AutomationsWorkspace({
         search={search}
         loading={loading}
         error={error}
-        configTrustRequired={configTrustRequired}
+        configTrustRequired={sharedTrustBlocked}
         ingressStatus={ingressStatus}
         delivery={delivery}
         onSearch={setSearch}

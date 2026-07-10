@@ -80,7 +80,8 @@ export function RuleList({
 
       <IngressStatusStrip ingressStatus={ingressStatus} />
 
-      {configTrustRequired && rules.some((rule) => rule.source !== "local") ? (
+      {/* The parent computes this from the UNFILTERED rules so search can't hide the recovery CTA. */}
+      {configTrustRequired ? (
         <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-100">
           <div className="font-semibold">Shared automations are paused</div>
           <div className="mt-0.5 leading-relaxed text-amber-100/80">
