@@ -92,8 +92,10 @@ export const ModelPicker = memo(function ModelPicker({
   const { recents } = useModelRecents({ hydrate: open });
 
   useEffect(() => {
-    if (openRequestKey == null || disabled) return;
-    setOpen(true);
+    if (openRequestKey == null) return;
+    if (!disabled) {
+      setOpen(true);
+    }
     onOpenRequestHandled?.();
   }, [disabled, onOpenRequestHandled, openRequestKey]);
 
