@@ -12,6 +12,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
@@ -24,14 +25,6 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
-
-/* ── Formatting helpers ── */
-
-function formatDurationMs(value: number | null | undefined): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 60_000) return `${Math.round(value / 60_000)}m`;
-  return `${Math.max(1, Math.round(value / 1000))}s`;
-}
 
 const GLYPH_SIZE = 16;
 
@@ -148,7 +141,7 @@ function elapsedText(snapshot: ChatSubagentSnapshot, nowMs?: number): string | n
   const elapsedMs = snapshot.usage?.durationMs
     ?? liveElapsedMs
     ?? Math.max(0, updatedAt - startedAt);
-  return formatDurationMs(elapsedMs);
+  return formatSubagentDurationMs(elapsedMs);
 }
 
 // A runtime can emit more than one *kind* of subagent (Claude surfaces five via
@@ -333,7 +326,7 @@ function backgroundDurationLabel(snapshot: ChatScheduledWorkSnapshot): string | 
   const start = Date.parse(snapshot.createdAt);
   const end = Date.parse(snapshot.updatedAt);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-  return formatDurationMs(end - start);
+  return formatSubagentDurationMs(end - start);
 }
 
 /**

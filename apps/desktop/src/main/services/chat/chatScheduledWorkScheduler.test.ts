@@ -295,4 +295,40 @@ describe("createChatScheduledWorkScheduler", () => {
     }));
     scheduler.dispose();
   });
+
+  it("clears a native cron claim's active turn before re-arming", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: createFireMock(),
+    });
+    await scheduler.upsert(wakeup({
+      id: "cron-1",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START + 500,
+    }));
+
+    expect(scheduler.claimNativeFire("session-1", "native-turn-1")).toMatchObject({
+      id: "cron-1",
+      status: "fired",
+      activeTurnId: "native-turn-1",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(scheduler.list()[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START + 60_000,
+    }));
+    expect(scheduler.list()[0]?.activeTurnId).toBeUndefined();
+    expect(requireState(state).schedules[0]?.activeTurnId).toBeUndefined();
+    scheduler.dispose();
+  });
 });

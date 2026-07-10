@@ -2068,6 +2068,90 @@ describe("subagent two-row rendering", () => {
     expect(legacy).toEqual(full);
   });
 
+  it("repairs subagent anchor positions after retracting an earlier text row", () => {
+    const stream: AgentChatEventEnvelope[] = [
+      env("2026-06-01T10:00:00.000Z", {
+        type: "text",
+        text: "Retracted parent text",
+        messageId: "message-m",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-a",
+        agentType: "Explore",
+        description: "Inspect the transcript",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "text",
+        text: "Parent text that remains",
+        messageId: "message-stays",
+      }),
+      env("2026-06-01T10:00:03.000Z", {
+        type: "transcript_retraction",
+        messageIds: ["message-m"],
+        reason: "assistant_supersedes",
+      }),
+      env("2026-06-01T10:00:04.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-a",
+        summary: "Reading transcript rows",
+        lastToolName: "Read",
+        usage: { toolUses: 2 },
+      }),
+      env("2026-06-01T10:00:05.000Z", {
+        type: "subagent_result",
+        taskId: "agent-a",
+        status: "completed",
+        summary: "Anchor positions verified",
+      }),
+    ];
+
+    const full = collapseChatTranscriptEvents(stream);
+    expect(full.map((row) => row.event.type)).toEqual([
+      "subagent_spawn_anchor",
+      "text",
+      "subagent_result_card",
+    ]);
+    const [anchor, remainingText, result] = full;
+    expect(anchor?.key).toBe("subagent-spawn:agent-a");
+    expect(anchor?.event).toMatchObject({
+      type: "subagent_spawn_anchor",
+      agentKey: "agent-a",
+      description: "Inspect the transcript",
+      status: "completed",
+      statusLine: "Reading transcript rows",
+      toolCount: 2,
+    });
+    expect(remainingText?.event).toMatchObject({
+      type: "text",
+      text: "Parent text that remains",
+      messageId: "message-stays",
+    });
+    expect(result).toMatchObject({
+      key: "subagent-result:agent-a",
+      event: {
+        type: "subagent_result_card",
+        agentKey: "agent-a",
+        status: "completed",
+        summaryPreview: "Anchor positions verified",
+      },
+    });
+
+    let previousEvents: AgentChatEventEnvelope[] = [];
+    let incremental = collapseChatTranscriptEventsWithContext(previousEvents);
+    for (let index = 1; index <= stream.length; index += 1) {
+      const nextEvents = stream.slice(0, index);
+      incremental = collapseChatTranscriptEventsIncrementalWithContext(
+        nextEvents,
+        previousEvents,
+        incremental.rows,
+        incremental.context,
+      );
+      previousEvents = nextEvents;
+    }
+    expect(incremental.rows).toEqual(full);
+  });
+
   it("renders old-style background shell subagent events as one finish chip, no cards", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {

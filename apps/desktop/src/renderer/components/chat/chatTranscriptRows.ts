@@ -6,8 +6,10 @@ import {
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import {
   isBackgroundShellCommand,
+  longerSubagentText,
   normalizeSubagentLifecycleEvent,
   preferSubagentSummary,
+  preferredSubagentAgentType,
   subagentAgentKey,
   SUBAGENT_PLACEHOLDER_SUMMARY,
   type NormalizedSubagentLifecycleEvent,
@@ -205,8 +207,8 @@ type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }
 /**
  * Live per-subagent state threaded through the collapse pass. `rowIndex` lets an
  * appended progress/result event index back into the rows array and mutate the
- * anchor in place (the incremental append path relies on this — collapse NEVER
- * splices rows, so stored indices stay valid).
+ * anchor in place. Subagent lifecycle handling never splices rows; transcript
+ * retractions repair every stored position after removing a text row.
  */
 type SubagentAnchorState = {
   agentKey: string;
@@ -772,18 +774,6 @@ function subagentText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function longerSubagentText(existing: string | null, incoming: string | null): string | null {
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-  return incoming.length > existing.length ? incoming : existing;
-}
-
-function preferredSubagentAgentType(existing: string | null, incoming: string | null): string | null {
-  if (!incoming) return existing;
-  if (!existing || (existing === "background" && incoming !== "background")) return incoming;
-  return existing;
-}
-
 function meaningfulProgressSummary(summary: string | null): string | null {
   return summary && !SUBAGENT_PLACEHOLDER_SUMMARY.test(summary) ? summary : null;
 }
@@ -798,6 +788,40 @@ function subagentResultKey(agentKey: string): string {
 
 function backgroundChipKey(agentKey: string): string {
   return `background-chip:${agentKey}`;
+}
+
+type SubagentRowPosition = "rowIndex" | "resultRowIndex" | "chipRowIndex";
+
+function resolveSubagentRowPosition(
+  rows: ChatTranscriptRenderEnvelope[],
+  state: SubagentAnchorState,
+  position: SubagentRowPosition,
+  expectedKey: string,
+): number | null {
+  const storedIndex = state[position];
+  if (storedIndex != null && rows[storedIndex]?.key === expectedKey) return storedIndex;
+
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]?.key !== expectedKey) continue;
+    state[position] = index;
+    return index;
+  }
+
+  state[position] = null;
+  return null;
+}
+
+function repairSubagentRowPositionsAfterSplice(
+  context: CollapseTranscriptContext,
+  removedIndex: number,
+): void {
+  for (const state of new Set(context.subagentAnchors.values())) {
+    for (const position of ["rowIndex", "resultRowIndex", "chipRowIndex"] as const) {
+      const storedIndex = state[position];
+      if (storedIndex === removedIndex) state[position] = null;
+      else if (storedIndex != null && storedIndex > removedIndex) state[position] = storedIndex - 1;
+    }
+  }
 }
 
 function durationMsBetween(startedAt: string | null, endedAt: string): number | null {
@@ -828,7 +852,7 @@ function spawnAnchorEvent(state: SubagentAnchorState): SubagentSpawnAnchorRender
     toolCount: state.toolCount,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
-  } as SubagentSpawnAnchorRenderEvent;
+  };
 }
 
 // The single-line live status (statusLine) always prefers the last MEANINGFUL
@@ -870,8 +894,8 @@ function classificationInput(state: SubagentAnchorState) {
  * was consumed (caller should stop). Mutates rows and context in place.
  *
  * INVARIANT: this never SPLICES rows — only pushes at the tail or replaces an
- * existing row by its stored index. Stored `rowIndex` values in the anchor state
- * depend on that (the incremental append path reuses them).
+ * existing row by its stored index. Every replacement verifies the stable key
+ * and repairs a stale position before mutating.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -953,10 +977,11 @@ function handleSubagentLifecycleEvent(
 
     // Mutate the anchor row IN PLACE — a NEW object with the SAME key.
     if (state.rowIndex != null) {
-      const existing = rows[state.rowIndex];
-      if (existing) {
-        rows[state.rowIndex] = {
-          key: existing.key,
+      const expectedKey = subagentSpawnKey(state.renderKeyBase);
+      const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
+      if (rowIndex != null) {
+        rows[rowIndex] = {
+          key: expectedKey,
           timestamp,
           event: spawnAnchorEvent(state),
         };
@@ -989,8 +1014,9 @@ function handleSubagentLifecycleEvent(
       state.chipRowIndex = rows.length;
       rows.push({ key: backgroundChipKey(state.renderKeyBase), timestamp, event: chipEvent });
     } else {
-      const existing = rows[state.chipRowIndex];
-      if (existing) rows[state.chipRowIndex] = { key: existing.key, timestamp, event: chipEvent };
+      const expectedKey = backgroundChipKey(state.renderKeyBase);
+      const rowIndex = resolveSubagentRowPosition(rows, state, "chipRowIndex", expectedKey);
+      if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: chipEvent };
     }
     return true;
   }
@@ -1005,10 +1031,9 @@ function handleSubagentLifecycleEvent(
 
   // Flip the anchor terminal (freezes the live line) if it exists.
   if (state.rowIndex != null) {
-    const existing = rows[state.rowIndex];
-    if (existing) {
-      rows[state.rowIndex] = { key: existing.key, timestamp, event: spawnAnchorEvent(state) };
-    }
+    const expectedKey = subagentSpawnKey(state.renderKeyBase);
+    const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
+    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: spawnAnchorEvent(state) };
   }
 
   const resultEvent: SubagentResultCardRenderEvent = {
@@ -1025,8 +1050,9 @@ function handleSubagentLifecycleEvent(
     state.resultRowIndex = rows.length;
     rows.push({ key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent });
   } else {
-    const existing = rows[state.resultRowIndex];
-    if (existing) rows[state.resultRowIndex] = { key: existing.key, timestamp, event: resultEvent };
+    const expectedKey = subagentResultKey(state.renderKeyBase);
+    const rowIndex = resolveSubagentRowPosition(rows, state, "resultRowIndex", expectedKey);
+    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: resultEvent };
   }
   return true;
 }
@@ -1168,6 +1194,7 @@ export function appendCollapsedChatTranscriptEvent(
       const row = rows[index];
       if (row?.event.type === "text" && row.event.messageId && retractedIds.has(row.event.messageId)) {
         rows.splice(index, 1);
+        if (context) repairSubagentRowPositionsAfterSplice(context, index);
       }
     }
     return;
@@ -1349,8 +1376,8 @@ export function collapseChatTranscriptEvents(events: AgentChatEventEnvelope[]): 
  * Incremental collapse that carries its {@link CollapseTranscriptContext} so
  * appended progress/result events index back into `previousRows.slice()` and
  * mutate the subagent anchor row by its stored `rowIndex`. Falls back to a fresh
- * full recompute on divergence/shrink/todo (those rebuild the context, so stale
- * indices can never leak). The full-recompute path MUST produce identical output
+ * full recompute on divergence/shrink/todo (those rebuild the context). Retraction
+ * splices repair the carried positions. The full-recompute path MUST produce identical output
  * to the incremental path (guarded by a parity test).
  */
 export function collapseChatTranscriptEventsIncrementalWithContext(

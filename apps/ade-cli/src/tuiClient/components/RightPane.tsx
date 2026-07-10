@@ -19,7 +19,10 @@ import {
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
-import { backgroundCommandLabel } from "../../../../desktop/src/shared/chatScheduledWork";
+import {
+  backgroundCommandLabel,
+  compactRelativeDuration,
+} from "../../../../desktop/src/shared/chatScheduledWork";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
@@ -1048,14 +1051,7 @@ function nextWakeCountdown(value: string | null | undefined, nowMs: number): str
   if (!value) return null;
   const timestampMs = Date.parse(value);
   if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
-  const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const totalHours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (totalHours < 24) return minutes ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours % 24;
-  return hours ? `${days}d ${hours}h` : `${days}d`;
+  return compactRelativeDuration(Math.max(60_000, timestampMs - nowMs));
 }
 
 function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, CaretDown, CaretRight, CheckCircle, Circle, XCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import type {
@@ -15,16 +16,10 @@ import type {
 // (soft-tinted card, no red error blocks). Background shell commands render a
 // single compact finish chip instead of cards.
 
-function formatDurationMs(value: number | null | undefined): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 60_000) return `${Math.round(value / 60_000)}m`;
-  return `${Math.max(1, Math.round(value / 1000))}s`;
-}
-
 function liveElapsedText(startedAt: string, nowMs: number): string | null {
   const start = Date.parse(startedAt);
   if (!Number.isFinite(start)) return null;
-  return formatDurationMs(Math.max(0, nowMs - start));
+  return formatSubagentDurationMs(Math.max(0, nowMs - start));
 }
 
 function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatSubagentSnapshot["status"] {
@@ -56,7 +51,7 @@ export function SubagentSpawnCard({
   const color = chatSubagentColor(event.agentKey);
   const elapsed = isRunning
     ? liveElapsedText(event.startedAt, nowMs)
-    : formatDurationMs(
+    : formatSubagentDurationMs(
         event.endedAt ? Math.max(0, Date.parse(event.endedAt) - Date.parse(event.startedAt)) : null,
       );
 
@@ -147,7 +142,7 @@ export function SubagentResultCard({
   const isSuccess = event.status === "completed";
   const isStopped = event.status === "stopped";
   const isFailed = event.status === "failed";
-  const duration = formatDurationMs(event.durationMs);
+  const duration = formatSubagentDurationMs(event.durationMs);
 
   const toneCard = isSuccess
     ? "border-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_5%,transparent)]"
@@ -240,7 +235,7 @@ export function SubagentResultCard({
  */
 export function BackgroundFinishChip({ event }: { event: BackgroundFinishChipRenderEvent }) {
   const ok = event.status === "completed";
-  const duration = formatDurationMs(event.durationMs);
+  const duration = formatSubagentDurationMs(event.durationMs);
   const parts = [
     "background command finished",
     typeof event.exitCode === "number" ? `exit ${event.exitCode}` : null,

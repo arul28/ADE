@@ -208,23 +208,43 @@ function parseCronField(
 ): ParsedCronField | null {
   if (!source || /\s/.test(source)) return null;
   const values = new Set<number>();
-  for (const part of source.split(",")) {
-    if (!part) return null;
-    if (part === "*") {
-      for (let value = minimum; value <= maximum; value += 1) values.add(normalize(value));
+
+  const addRange = (start: number, end: number, step: number): boolean => {
+    if (
+      !Number.isInteger(start)
+      || !Number.isInteger(end)
+      || !Number.isInteger(step)
+      || step <= 0
+      || start < minimum
+      || end > maximum
+      || start > end
+    ) return false;
+    for (let value = start; value <= end; value += step) values.add(normalize(value));
+    return true;
+  };
+
+  for (const segment of source.split(",")) {
+    if (!segment) return null;
+    const stepParts = segment.split("/");
+    if (stepParts.length > 2) return null;
+    const [base, stepSource] = stepParts;
+    const step = stepSource == null ? 1 : Number(stepSource);
+    if (!base || !Number.isInteger(step) || step <= 0) return null;
+
+    if (base === "*") {
+      if (!addRange(minimum, maximum, step)) return null;
       continue;
     }
-    const stepMatch = /^\*\/(\d+)$/.exec(part);
-    if (stepMatch) {
-      const step = Number(stepMatch[1]);
-      if (!Number.isInteger(step) || step <= 0) return null;
-      for (let value = minimum; value <= maximum; value += step) values.add(normalize(value));
+
+    const rangeMatch = /^(\d+)-(\d+)$/.exec(base);
+    if (rangeMatch) {
+      if (!addRange(Number(rangeMatch[1]), Number(rangeMatch[2]), step)) return null;
       continue;
     }
-    if (!/^\d+$/.test(part)) return null;
-    const value = Number(part);
-    if (!Number.isInteger(value) || value < minimum || value > maximum) return null;
-    values.add(normalize(value));
+
+    if (!/^\d+$/.test(base)) return null;
+    const value = Number(base);
+    if (!addRange(value, stepSource == null ? value : maximum, step)) return null;
   }
 
   const allValues = new Set<number>();
@@ -273,7 +293,7 @@ export function nextCronFireAt(cron: string, nowMs: number): number | null {
   return null;
 }
 
-function compactRelativeDuration(durationMs: number): string {
+export function compactRelativeDuration(durationMs: number): string {
   const totalMinutes = Math.max(0, Math.ceil(durationMs / 60_000));
   if (totalMinutes < 60) return `${totalMinutes}m`;
   const totalHours = Math.floor(totalMinutes / 60);

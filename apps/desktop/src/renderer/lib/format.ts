@@ -58,6 +58,13 @@ export function formatDurationMs(ms: number | null): string {
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
+/** Format subagent activity durations using the chat cards' rounded compact style. */
+export function formatSubagentDurationMs(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value >= 60_000) return `${Math.round(value / 60_000)}m`;
+  return `${Math.max(1, Math.round(value / 1000))}s`;
+}
+
 /** Format elapsed time since a given ISO timestamp. */
 export function formatElapsedSince(startIso: string): string {
   const ms = Math.max(0, Date.now() - Date.parse(startIso));

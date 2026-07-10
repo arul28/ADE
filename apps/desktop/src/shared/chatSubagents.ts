@@ -177,13 +177,16 @@ type SubagentTimelineState = {
   backgroundChip: SubagentTimelineBackgroundRow | null;
 };
 
-function longerText(existing: string | null, incoming: string | null): string | null {
+export function longerSubagentText(existing: string | null, incoming: string | null): string | null {
   if (!existing) return incoming;
   if (!incoming) return existing;
   return incoming.length > existing.length ? incoming : existing;
 }
 
-function preferredAgentType(existing: string | null, incoming: string | null): string | null {
+export function preferredSubagentAgentType(
+  existing: string | null,
+  incoming: string | null,
+): string | null {
   if (!incoming) return existing;
   if (!existing || (existing === "background" && incoming !== "background")) return incoming;
   return existing;
@@ -219,18 +222,18 @@ export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTi
         ? secondary.firstLifecycleEventIndex
         : Math.min(primary.firstLifecycleEventIndex, secondary.firstLifecycleEventIndex);
     }
-    primary.description = longerText(primary.description, secondary.description);
-    primary.agentType = preferredAgentType(primary.agentType, secondary.agentType);
+    primary.description = longerSubagentText(primary.description, secondary.description);
+    primary.agentType = preferredSubagentAgentType(primary.agentType, secondary.agentType);
     primary.taskType = primary.taskType ?? secondary.taskType;
-    primary.command = longerText(primary.command, secondary.command);
+    primary.command = longerSubagentText(primary.command, secondary.command);
     primary.background = primary.background || secondary.background;
     primary.progressSummary = preferSubagentSummary(primary.progressSummary, secondary.progressSummary);
 
     if (!primary.spawn && secondary.spawn) {
       primary.spawn = secondary.spawn;
     } else if (primary.spawn && secondary.spawn) {
-      primary.spawn.description = longerText(primary.spawn.description, secondary.spawn.description) ?? "Subagent task";
-      primary.spawn.agentType = preferredAgentType(primary.spawn.agentType, secondary.spawn.agentType);
+      primary.spawn.description = longerSubagentText(primary.spawn.description, secondary.spawn.description) ?? "Subagent task";
+      primary.spawn.agentType = preferredSubagentAgentType(primary.spawn.agentType, secondary.spawn.agentType);
       primary.spawn.background = primary.spawn.background || secondary.spawn.background;
       primary.spawn.startedAtEventIndex = Math.min(
         primary.spawn.startedAtEventIndex,
@@ -258,7 +261,7 @@ export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTi
     if (!primary.backgroundChip && secondary.backgroundChip) {
       primary.backgroundChip = secondary.backgroundChip;
     } else if (primary.backgroundChip && secondary.backgroundChip) {
-      primary.backgroundChip.label = longerText(
+      primary.backgroundChip.label = longerSubagentText(
         primary.backgroundChip.label,
         secondary.backgroundChip.label,
       ) ?? "Background command";
@@ -331,13 +334,13 @@ export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTi
       description?: unknown;
     };
     const eventRecord = originalEvent as AgentChatEvent & { command?: unknown; description?: unknown };
-    state.description = longerText(
+    state.description = longerSubagentText(
       state.description,
       textField(lifecycleRecord.description ?? eventRecord.description),
     );
-    state.agentType = preferredAgentType(state.agentType, textField(event.agentType));
+    state.agentType = preferredSubagentAgentType(state.agentType, textField(event.agentType));
     state.taskType = textField(event.taskType) ?? state.taskType;
-    state.command = longerText(state.command, textField(eventRecord.command));
+    state.command = longerSubagentText(state.command, textField(eventRecord.command));
     state.background = state.background || lifecycleRecord.background === true;
 
     const backgroundShell = isBackgroundShellCommand(state);
@@ -405,7 +408,7 @@ export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTi
         };
         rows.push(state.backgroundChip);
       } else {
-        state.backgroundChip.label = longerText(state.backgroundChip.label, label) ?? "Background command";
+        state.backgroundChip.label = longerSubagentText(state.backgroundChip.label, label) ?? "Background command";
         state.backgroundChip.status = event.status;
       }
       state.lastSettledEventIndex = eventIndex;

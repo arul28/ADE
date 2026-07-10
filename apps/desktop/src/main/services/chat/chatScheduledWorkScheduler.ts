@@ -1,3 +1,7 @@
+import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/chatScheduledWork";
+
+export { nextChatScheduledCronFireAt };
+
 export type ChatScheduledWorkKind = "wakeup" | "cron" | "loop";
 
 export type ChatScheduledWorkStatus =
@@ -74,19 +78,6 @@ export type ChatScheduledWorkScheduler = {
   recordTurnFinished(turnId: string, outcomeSummary?: string): Promise<void>;
 };
 
-type ParsedCronField = {
-  values: Set<number>;
-  unrestricted: boolean;
-};
-
-type ParsedCron = {
-  minute: ParsedCronField;
-  hour: ParsedCronField;
-  dayOfMonth: ParsedCronField;
-  month: ParsedCronField;
-  dayOfWeek: ParsedCronField;
-};
-
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
 
@@ -94,101 +85,6 @@ const defaultTimers: ChatScheduledWorkTimerApi = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
-
-function parseCronField(
-  source: string,
-  minimum: number,
-  maximum: number,
-  normalize: (value: number) => number = (value) => value,
-): ParsedCronField | null {
-  if (!source || /\s/.test(source)) return null;
-  const values = new Set<number>();
-
-  const addRange = (start: number, end: number, step: number): boolean => {
-    if (
-      !Number.isInteger(start) ||
-      !Number.isInteger(end) ||
-      !Number.isInteger(step) ||
-      step <= 0 ||
-      start < minimum ||
-      end > maximum ||
-      start > end
-    ) return false;
-    for (let value = start; value <= end; value += step) values.add(normalize(value));
-    return true;
-  };
-
-  for (const segment of source.split(",")) {
-    if (!segment) return null;
-    const stepParts = segment.split("/");
-    if (stepParts.length > 2) return null;
-    const [base, stepSource] = stepParts;
-    const step = stepSource == null ? 1 : Number(stepSource);
-    if (!base || !Number.isInteger(step) || step <= 0) return null;
-
-    if (base === "*") {
-      if (!addRange(minimum, maximum, step)) return null;
-      continue;
-    }
-
-    const rangeMatch = /^(\d+)-(\d+)$/.exec(base);
-    if (rangeMatch) {
-      if (!addRange(Number(rangeMatch[1]), Number(rangeMatch[2]), step)) return null;
-      continue;
-    }
-
-    if (stepSource != null || !/^\d+$/.test(base)) return null;
-    const value = Number(base);
-    if (!addRange(value, value, 1)) return null;
-  }
-
-  const allValues = new Set<number>();
-  for (let value = minimum; value <= maximum; value += 1) allValues.add(normalize(value));
-  return { values, unrestricted: values.size === allValues.size };
-}
-
-function parseCron(source: string): ParsedCron | null {
-  const fields = source.trim().split(/\s+/);
-  if (fields.length !== 5) return null;
-  const minute = parseCronField(fields[0]!, 0, 59);
-  const hour = parseCronField(fields[1]!, 0, 23);
-  const dayOfMonth = parseCronField(fields[2]!, 1, 31);
-  const month = parseCronField(fields[3]!, 1, 12);
-  const dayOfWeek = parseCronField(fields[4]!, 0, 7, (value) => value === 7 ? 0 : value);
-  return minute && hour && dayOfMonth && month && dayOfWeek
-    ? { minute, hour, dayOfMonth, month, dayOfWeek }
-    : null;
-}
-
-function cronMatches(cron: ParsedCron, date: Date): boolean {
-  if (!cron.minute.values.has(date.getMinutes())) return false;
-  if (!cron.hour.values.has(date.getHours())) return false;
-  if (!cron.month.values.has(date.getMonth() + 1)) return false;
-
-  const dayOfMonthMatches = cron.dayOfMonth.values.has(date.getDate());
-  const dayOfWeekMatches = cron.dayOfWeek.values.has(date.getDay());
-  if (cron.dayOfMonth.unrestricted) return dayOfWeekMatches;
-  if (cron.dayOfWeek.unrestricted) return dayOfMonthMatches;
-  return dayOfMonthMatches || dayOfWeekMatches;
-}
-
-/** Returns the first local-time cron match strictly after `afterMs`. */
-export function nextChatScheduledCronFireAt(cron: string, afterMs: number): number | null {
-  const parsed = parseCron(cron);
-  if (!parsed || !Number.isFinite(afterMs)) return null;
-
-  const candidate = new Date(afterMs);
-  if (!Number.isFinite(candidate.getTime())) return null;
-  candidate.setSeconds(0, 0);
-  candidate.setMinutes(candidate.getMinutes() + 1);
-
-  const maxMinutes = 60 * 24 * 366 * 5;
-  for (let minute = 0; minute < maxMinutes; minute += 1) {
-    if (cronMatches(parsed, candidate)) return candidate.getTime();
-    candidate.setMinutes(candidate.getMinutes() + 1);
-  }
-  return null;
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === "object" && !Array.isArray(value)
@@ -564,6 +460,7 @@ export function createChatScheduledWorkScheduler(
           await persist();
           await emitTransition(schedule, "fired");
           if (schedule.kind === "cron" && schedule.status === "fired") {
+            delete schedule.activeTurnId;
             schedule.fireAt = schedule.cron
               ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
               : undefined;
