@@ -255,9 +255,10 @@ describe("PersonalChatsPage", () => {
     fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
 
     const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
-    const sendish = bridge.ade.personalChats.call.mock.calls.filter(
-      ([{ action }]: [CallArgs]) => action === "create" || action === "send",
-    );
+    const sendish = bridge.ade.personalChats.call.mock.calls.filter((call) => {
+      const arg = call[0] as CallArgs | undefined;
+      return arg?.action === "create" || arg?.action === "send";
+    });
     expect(sendish).toHaveLength(0);
     expect((textarea as HTMLTextAreaElement).value).toBe("こんにちは");
   });
