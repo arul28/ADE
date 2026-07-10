@@ -14228,6 +14228,7 @@ export function createAgentChatService(args: {
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -14293,6 +14294,13 @@ export function createAgentChatService(args: {
     let currentClaudeStreamMessageId: string | null = null;
     let pendingWorkerShutdownReason: string | null = null;
     let recentClaudeTextDeltaBuffer = "";
+    let onBackendDispatched = args.onBackendDispatched;
+    const markBackendDispatched = (): void => {
+      if (!onBackendDispatched) return;
+      const callback = onBackendDispatched;
+      onBackendDispatched = undefined;
+      callback();
+    };
     // Track a running boundary for assistant messages whose snapshot has no id
     // (and whose stream preamble didn't carry a `message_start` id either — real
     // Claude streams always do, but mocks and older SDK paths don't). Each new
@@ -15530,6 +15538,10 @@ export function createAgentChatService(args: {
           if (assistantMsg.error === "authentication_failed") {
             failClaudeTurnUnauthenticated();
           }
+          if (assistantMsg.error && onBackendDispatched) {
+            throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
+          }
+          markBackendDispatched();
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
           const assistantWireUuid = compactString(assistantMsg.uuid);
@@ -15674,6 +15686,7 @@ export function createAgentChatService(args: {
           const streamMsg = msg as any;
           const event = streamMsg.event;
           if (!event) continue;
+          markBackendDispatched();
           const contentIndex = typeof event.index === "number" ? event.index : null;
 
           if (event.type === "content_block_delta") {
@@ -15880,6 +15893,7 @@ export function createAgentChatService(args: {
 
         // tool_progress
         if (msg.type === "tool_progress") {
+          markBackendDispatched();
           const progressMsg = msg as any;
           emitChatEvent(managed, {
             type: "activity",
@@ -15914,6 +15928,9 @@ export function createAgentChatService(args: {
             if (isClaudeRuntimeAuthError(resultMsg.errors.map(String).join(" "))) {
               failClaudeTurnUnauthenticated();
             }
+            if (onBackendDispatched) {
+              throw new Error(resultMsg.errors.map(String).join("\n"));
+            }
             for (const err of resultMsg.errors) {
               emitChatEvent(managed, {
                 type: "error",
@@ -15921,6 +15938,12 @@ export function createAgentChatService(args: {
                 turnId,
               });
             }
+          }
+          if (resultMsg.is_error && onBackendDispatched) {
+            throw new Error("Claude rejected the prompt before starting the turn.");
+          }
+          if (!resultMsg.is_error) {
+            markBackendDispatched();
           }
           if (Array.isArray(resultMsg.permission_denials) && resultMsg.permission_denials.length > 0) {
             const denials = resultMsg.permission_denials as Array<{ tool_name: string; tool_use_id?: string }>;
@@ -16016,6 +16039,9 @@ export function createAgentChatService(args: {
       if (timeoutError) {
         throw timeoutError;
       }
+      if (onBackendDispatched) {
+        throw new Error("Claude ended the stream before acknowledging the prompt.");
+      }
 
       // ── Turn completion ──
       if (pendingWorkerShutdownReason && !runtime.interrupted) {
@@ -16094,6 +16120,8 @@ export function createAgentChatService(args: {
         startClaudeIdleReader(managed, runtime, "turn_completed");
       }
     } catch (error) {
+      const failedBeforeBackendDispatch = Boolean(onBackendDispatched);
+      onBackendDispatched = undefined;
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
@@ -16239,6 +16267,7 @@ export function createAgentChatService(args: {
 
       persistChatState(managed);
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      if (failedBeforeBackendDispatch) throw effectiveError;
       return;
     }
   };
@@ -28242,7 +28271,8 @@ export function createAgentChatService(args: {
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
-      onDispatched: onBackendDispatched ?? onDispatched,
+      onDispatched,
+      onBackendDispatched,
     });
   };
 

@@ -4795,6 +4795,83 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("rejects a Claude handoff when authentication fails before the backend acknowledges the prompt", async () => {
+      const branchRef = "feature/handoff-claude-auth";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+      ] as any);
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-handoff-auth", slash_commands: [] };
+            yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-handoff-auth" };
+            return;
+          }
+          yield { type: "system", subtype: "init", session_id: "sdk-handoff-auth", slash_commands: [] };
+          yield {
+            type: "assistant",
+            error: "authentication_failed",
+            message: {
+              content: [{ type: "text", text: "Failed to authenticate. API Error: 401" }],
+            },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-handoff-auth",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-claude-auth-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: null,
+          laneName: "Claude auth handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "anthropic/claude-sonnet-5" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await expect(service.acceptCrossMachineHandoff({
+        capsule,
+        capsuleFingerprint: fingerprint,
+      })).rejects.toThrow("Claude authentication failed");
+
+      expect(events.some((event) => event.event.type === "user_message")).toBe(true);
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          handoffId: capsule.handoffId,
+          state: "failed",
+          lastError: expect.stringMatching(/authentication failed/i),
+        }),
+      ]));
+    });
+
     it("rejects a handoff capsule whose fingerprint changed in transit", async () => {
       const { service } = createService();
       const capsule = {

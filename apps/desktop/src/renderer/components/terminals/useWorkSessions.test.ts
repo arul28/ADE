@@ -743,6 +743,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
+    await waitFor(() => {
+      expect(setWorkViewStateSpy).toHaveBeenCalled();
+    });
     focusSessionSpy.mockClear();
     selectLaneSpy.mockClear();
     setWorkViewStateSpy.mockClear();
