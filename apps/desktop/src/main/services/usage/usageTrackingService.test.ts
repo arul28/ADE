@@ -3728,6 +3728,64 @@ describe("ADE database usage aggregation", () => {
     });
   });
 
+  it("keeps active-day and streak summaries exact when usage events exceed the daily chart cap", async () => {
+    const db = await createStatsDb();
+    const logger = createLogger();
+    const firstDayAtNoon = new Date(2026, 6, 6, 12).toISOString();
+    const secondDayAtNoon = new Date(2026, 6, 7, 12).toISOString();
+    const thirdDayAtNoon = new Date(2026, 6, 8, 12).toISOString();
+    const firstDay = localDayKey(firstDayAtNoon);
+    const secondDay = localDayKey(secondDayAtNoon);
+    const thirdDay = localDayKey(thirdDayAtNoon);
+
+    db.run(`
+      with recursive sequence(value) as (
+        select 1
+        union all
+        select value + 1 from sequence where value < 250001
+      )
+      insert into usage_events(
+        id, project_id, client_surface, action, feature, session_id, occurred_at
+      )
+      select 'bulk-' || value, 'project-1', 'desktop', 'chat.send', 'chat', 'bulk-session',
+             case value when 1 then ? when 2 then ? else ? end
+        from sequence
+    `, [firstDayAtNoon, secondDayAtNoon, thirdDayAtNoon]);
+
+    const stats = collectAdeDatabaseUsageStats(db, {
+      since: new Date(2026, 6, 6, 0, 0, 0, 0).toISOString(),
+      until: new Date(2026, 6, 8, 23, 59, 59, 999).toISOString(),
+    }, logger);
+
+    expect(stats?.summary).toMatchObject({
+      totalInteractions: 250_001,
+      activeDays: 3,
+      currentStreakDays: 3,
+      longestStreakDays: 3,
+    });
+    expect(stats?.clients).toContainEqual(expect.objectContaining({
+      client: "desktop",
+      interactions: 250_001,
+      activeDays: 3,
+      sessions: 1,
+      lastActiveAt: thirdDayAtNoon,
+    }));
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: secondDay,
+      interactions: 1,
+    }));
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: thirdDay,
+      interactions: 249_999,
+    }));
+    expect(stats?.daily.some((point) => point.date === firstDay)).toBe(false);
+    expect(stats?.daily.reduce((sum, point) => sum + (point.interactions ?? 0), 0)).toBe(250_000);
+    expect(logger.debug).toHaveBeenCalledWith("usage.daily_bucket_scan_capped", {
+      maxRows: 250_000,
+      sources: ["usage_events"],
+    });
+  });
+
   it("combines successful ADE operations, sessions, tokens, and client activity without double-counting", async () => {
     const db = await createStatsDb();
     db.run(

@@ -363,6 +363,7 @@ export function collectAdeDatabaseUsageStats(
   const sessionRange = rangeClause("started_at", range);
   const eventRange = rangeClause("occurred_at", range);
   const operationRange = rangeClause("started_at", range);
+  const deltaRange = rangeClause("d.started_at", range);
   const artifactRange = rangeClause("created_at", range);
 
   const aiRows = safeAll<{
@@ -411,16 +412,18 @@ export function collectAdeDatabaseUsageStats(
            d.files_changed, d.insertions, d.deletions
       from session_deltas d
       left join lanes l on l.id = d.lane_id
-     where ${rangeClause("d.started_at", range).sql}
-  `, rangeClause("d.started_at", range).params);
+     where ${deltaRange.sql}
+  `, deltaRange.params);
 
   const clientRows = safeAll<{
     client_surface: AdeUsageClientSurface;
     interactions: number;
+    active_days: number;
     sessions: number;
     last_active_at: string | null;
   }>(db, `
     select client_surface, count(*) interactions,
+           count(distinct date(occurred_at, 'localtime')) active_days,
            count(distinct session_id) sessions,
            max(occurred_at) last_active_at
       from usage_events
@@ -428,7 +431,7 @@ export function collectAdeDatabaseUsageStats(
      group by client_surface
   `, eventRange.params);
 
-  const clientEventRows = safeAll<{
+  const clientDailyRows = safeAll<{
     occurred_at: string;
     client_surface: AdeUsageClientSurface;
   }>(db, `
@@ -438,6 +441,46 @@ export function collectAdeDatabaseUsageStats(
      order by occurred_at desc
      limit ?
   `, [...eventRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
+
+  // Summary day counts and streaks must not depend on the capped chart scans
+  // below. This query returns at most one row per local calendar day even when
+  // the underlying event tables contain millions of rows.
+  const activeDateRows = safeAll<{ active_date: string }>(db, `
+    select active_date
+      from (
+        select date(timestamp, 'localtime') active_date
+          from ai_usage_log
+         where ${aiRange.sql}
+           and (coalesce(input_tokens, 0) > 0 or coalesce(output_tokens, 0) > 0)
+        union
+        select date(started_at, 'localtime') active_date
+          from terminal_sessions
+         where ${sessionRange.sql}
+        union
+        select date(d.started_at, 'localtime') active_date
+          from session_deltas d
+         where ${deltaRange.sql}
+           and (coalesce(d.insertions, 0) > 0 or coalesce(d.deletions, 0) > 0)
+        union
+        select date(occurred_at, 'localtime') active_date
+          from usage_events
+         where ${eventRange.sql}
+        union
+        select date(started_at, 'localtime') active_date
+          from operations
+         where ${operationRange.sql}
+           and status = 'succeeded'
+           and kind in ('git_commit', 'pr_land')
+      )
+     where active_date is not null
+     order by active_date
+  `, [
+    ...aiRange.params,
+    ...sessionRange.params,
+    ...deltaRange.params,
+    ...eventRange.params,
+    ...operationRange.params,
+  ]);
 
   const interactionRows = safeAll<{ action: string; count: number }>(db, `
     select action, count(*) count
@@ -614,7 +657,7 @@ export function collectAdeDatabaseUsageStats(
      limit ?
   `, [...aiRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
   const cappedDailySources = [
-    clientEventRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
+    clientDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
     operationDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "operations" : null,
     aiDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "ai_usage_log" : null,
   ].filter((source): source is string => source !== null);
@@ -647,8 +690,7 @@ export function collectAdeDatabaseUsageStats(
     day.insertions = int(day.insertions) + int(row.insertions);
     day.deletions = int(day.deletions) + int(row.deletions);
   }
-  const activeDaysByClient = new Map<AdeUsageClientSurface, Set<string>>();
-  for (const row of clientEventRows) {
+  for (const row of clientDailyRows) {
     const date = isoDate(row.occurred_at);
     if (!date) continue;
     const day = ensureDay(date);
@@ -657,9 +699,6 @@ export function collectAdeDatabaseUsageStats(
       ...(day.clients ?? {}),
       [row.client_surface]: int(day.clients?.[row.client_surface]) + 1,
     };
-    const activeDays = activeDaysByClient.get(row.client_surface) ?? new Set<string>();
-    activeDays.add(date);
-    activeDaysByClient.set(row.client_surface, activeDays);
   }
   for (const row of operationDailyRows) {
     const date = isoDate(row.started_at);
@@ -669,13 +708,7 @@ export function collectAdeDatabaseUsageStats(
     if (row.kind === "pr_land") day.prs = int(day.prs) + 1;
   }
 
-  const activeDates = new Set<string>();
-  for (const [date, point] of daily) {
-    if (int(point.totalTokens) + int(point.sessions) + int(point.interactions) + int(point.insertions) + int(point.deletions) + int(point.commits) + int(point.prs) > 0) {
-      activeDates.add(date);
-    }
-  }
-  const streaks = calculateStreaks(activeDates, range.until);
+  const streaks = calculateStreaks(activeDateRows.map((row) => row.active_date), range.until);
   const longestSessionMs = sessionRows.reduce((max, row) => {
     const start = Date.parse(row.started_at);
     const end = Date.parse(row.ended_at ?? range.until);
@@ -694,7 +727,7 @@ export function collectAdeDatabaseUsageStats(
     .map((row) => ({
       client: row.client_surface,
       interactions: int(row.interactions),
-      activeDays: activeDaysByClient.get(row.client_surface)?.size ?? 0,
+      activeDays: int(row.active_days),
       sessions: int(row.sessions),
       lastActiveAt: row.last_active_at,
     }))
