@@ -297,6 +297,35 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("no subagents yet");
   });
 
+  it("renders the active session's next wake in the Schedule block", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ nextWakeAt }) }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("⏰ next wake 12m");
+  });
+
+  it("does not render a next wake line for invalid or past timestamps", () => {
+    for (const nextWakeAt of ["not-a-date", new Date(Date.now() - 1_000).toISOString()]) {
+      const result = render(
+        <RightPane
+          content={{ kind: "chat-info", info: chatInfo({ nextWakeAt }) }}
+          focused
+          width={80}
+        />,
+      );
+      const frame = stripAnsi(result.lastFrame() ?? "");
+      expect(frame).not.toContain("next wake");
+    }
+  });
+
   it("caps scheduled work rows in narrow chat info panes", () => {
     const scheduledWork: ChatInfoSnapshot["scheduledWork"] = Array.from({ length: 7 }, (_, index) => {
       const ordinal = String(index + 1).padStart(2, "0");

@@ -1792,6 +1792,7 @@ describe("optimistic chat summaries", () => {
       lastActivityAt: "2026-05-25T11:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
   }
 

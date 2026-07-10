@@ -3003,6 +3003,7 @@ app.whenReady().then(async () => {
       sessionService,
       processRegistry,
       projectConfigService,
+      db,
       aiIntegrationService,
       ctoStateService,
       ctoMemoryService,

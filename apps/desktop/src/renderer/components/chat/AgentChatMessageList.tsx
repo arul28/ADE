@@ -80,6 +80,7 @@ import {
   type ChatActivityBundleEvent,
   type ChatActivityBundleItem,
   type CollapseTranscriptResult,
+  type ScheduledWakeDividerRenderEvent,
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
@@ -530,7 +531,8 @@ type RenderEnvelope = {
   }
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
-  | BackgroundFinishChipRenderEvent;
+  | BackgroundFinishChipRenderEvent
+  | ScheduledWakeDividerRenderEvent;
 };
 
 function MessageCopyButton({
@@ -2543,6 +2545,20 @@ function renderEvent(
 ) {
   const event = envelope.event;
 
+  if (event.type === "scheduled_wake_divider") {
+    const reason = event.reason?.trim();
+    return (
+      <div
+        className="my-3 flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-200/65"
+        data-scheduled-wake-id={event.scheduleId}
+      >
+        <span className="h-px flex-1 bg-amber-200/[0.08]" />
+        <span className="shrink-0">⏰ Woke on schedule · {formatTime(event.firedAt)}{reason ? ` · ${reason}` : ""}{event.late ? " · late" : ""}</span>
+        <span className="h-px flex-1 bg-amber-200/[0.08]" />
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message") {
     const deliveryChip = describeUserDeliveryState(event);
@@ -4467,6 +4483,7 @@ function AgentChatMessageListMain({
   loadingOlderHistory = false,
   onLoadOlderHistory,
   mosaic,
+  scrollToRowKeyRequest,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -4493,6 +4510,8 @@ function AgentChatMessageListMain({
   onLoadOlderHistory?: () => void;
   /** Present only for Claude-family sessions; enables interactive mosaic cards. */
   mosaic?: MosaicRenderContext;
+  /** Imperative jump request used by the while-you-were-away wake digest. */
+  scrollToRowKeyRequest?: { key: string; requestId: number } | null;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
@@ -4872,6 +4891,11 @@ function AgentChatMessageListMain({
     const rowIndex = groupedRowKeys.indexOf(rowKey);
     if (rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
   }, [groupedRowKeys, scrollToRowIndexNearTop]);
+
+  useEffect(() => {
+    if (!scrollToRowKeyRequest?.key) return;
+    scrollToRowKey(scrollToRowKeyRequest.key);
+  }, [scrollToRowKey, scrollToRowKeyRequest]);
 
   const scheduleAnchoredRowCorrection = useCallback((rowKey: string) => {
     if (anchorCorrectionRafRef.current !== null) {

@@ -81,6 +81,7 @@ export function deriveChatInfoSnapshot(args: {
     todos: deriveTodoItems(args.events),
     // Schedule kinds only — background command tasks render in their own block.
     scheduledWork: deriveScheduleItems(args.events),
+    nextWakeAt: args.activeSession?.nextWakeAt ?? null,
     backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,
     // Merge subagents into one roster and drop historical command-as-subagent

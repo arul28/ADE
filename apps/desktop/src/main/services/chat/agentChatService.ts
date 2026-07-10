@@ -55,6 +55,12 @@ import {
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
 import {
+  createChatScheduledWorkScheduler,
+  nextChatScheduledCronFireAt,
+  type ChatScheduledWorkScheduler,
+  type ChatScheduledWorkStatus,
+} from "./chatScheduledWorkScheduler";
+import {
   drainRunningClaudeWorkflowAgents,
   parseClaudeWorkflowProgress,
   planClaudeWorkflowAgentTransitions,
@@ -90,6 +96,7 @@ import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { AdeDb } from "../state/kvDb";
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
@@ -175,6 +182,8 @@ import type {
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
   AgentChatSetClaudeOutputStyleArgs,
+  AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkPausedResult,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatKillDroidWorkerArgs,
@@ -5464,6 +5473,7 @@ export function createAgentChatService(args: {
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  db?: Pick<AdeDb, "getJson" | "setJson"> | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
@@ -5502,6 +5512,7 @@ export function createAgentChatService(args: {
     sessionService,
     processRegistry,
     projectConfigService,
+    db,
     aiIntegrationService,
     logger,
     appVersion,
@@ -5934,6 +5945,29 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const scheduledWorkStateKey = "agent-chat:scheduled-work:v1";
+  let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
+  let scheduledWorkReady: Promise<void> = Promise.resolve();
+  const durableScheduleUiStatusById = new Map<string, ChatScheduledWorkStatus>();
+  type PendingNativeScheduledWake = {
+    scheduleId: string;
+    kind: "wakeup" | "cron" | "loop";
+    prompt: string;
+    reason?: string;
+    firedAt: string;
+    late: boolean;
+  };
+  const pendingNativeScheduledWakeBySession = new Map<string, PendingNativeScheduledWake[]>();
+
+  const runScheduledWorkMutation = (operation: string, mutation: Promise<unknown>): void => {
+    void mutation.catch((error) => {
+      logger.warn("agent_chat.scheduled_work_mutation_failed", {
+        operation,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   const runSessionIntelligencePrompt = async (args: {
     cwd: string;
@@ -10117,6 +10151,32 @@ export function createAgentChatService(args: {
       managed.todoItems = normalizedEvent.items;
     }
 
+    if (
+      normalizedEvent.type === "user_message"
+      && normalizedEvent.deliveryState !== "queued"
+      && normalizedEvent.turnId
+      && normalizedEvent.metadata?.scheduledWake?.scheduleId
+      && scheduledWorkScheduler
+    ) {
+      runScheduledWorkMutation(
+        "record_turn_started",
+        scheduledWorkScheduler.recordTurnStarted(
+          normalizedEvent.metadata.scheduledWake.scheduleId,
+          normalizedEvent.turnId,
+        ),
+      );
+    }
+
+    if (normalizedEvent.type === "done" && normalizedEvent.turnId && scheduledWorkScheduler) {
+      runScheduledWorkMutation(
+        "record_turn_finished",
+        scheduledWorkScheduler.recordTurnFinished(
+          normalizedEvent.turnId,
+          managed.preview?.trim() || undefined,
+        ),
+      );
+    }
+
     const compactionEvent = mapLegacyCompactionEvent(
       managed.compactionEmitterState,
       managed.session,
@@ -10462,6 +10522,25 @@ export function createAgentChatService(args: {
     });
   };
 
+  const isClaudeLoopPrompt = (prompt: string | undefined): boolean => {
+    if (!prompt) return false;
+    const normalized = prompt.trim().toLowerCase();
+    return normalized === "<<autonomous-loop-dynamic>>"
+      || normalized === "<<autonomous-loop>>"
+      || normalized === "/loop"
+      || normalized.startsWith("/loop ");
+  };
+
+  const nextClaudeWakeupId = (
+    sessionId: string,
+    sourceId: string,
+  ): string => {
+    const baseId = `wakeup:${sessionId}`;
+    const hasPriorWakeup = scheduledWorkScheduler?.list(sessionId).some((schedule) =>
+      schedule.id === baseId || schedule.id.startsWith(`${baseId}:`)) === true;
+    return hasPriorWakeup ? `${baseId}:${sourceId}` : baseId;
+  };
+
   const maybeEmitClaudeScheduledWorkFromToolCall = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -10474,42 +10553,106 @@ export function createAgentChatService(args: {
     const args = asRecord(input) ?? {};
     if (tool === "ScheduleWakeup") {
       const stop = args.stop === true;
-      const wakeupId = `wakeup:${managed.session.id}`;
+      const activeWakeupForStop = stop
+        ? scheduledWorkScheduler?.list(managed.session.id)
+          .filter((schedule) =>
+            (schedule.kind === "wakeup" || schedule.kind === "loop")
+            && schedule.status !== "done"
+            && schedule.status !== "cancelled")
+          .at(-1)
+        : null;
+      const wakeupId = stop
+        ? activeWakeupForStop?.id ?? `wakeup:${managed.session.id}`
+        : nextClaudeWakeupId(managed.session.id, itemId);
+      const prompt = compactString(args.prompt) ?? compactString(args.reason) ?? "Continue scheduled work.";
+      const kind: "wakeup" | "loop" = isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
+      const rawDelaySeconds = typeof args.delaySeconds === "number" ? args.delaySeconds : 60;
+      const delaySeconds = Math.min(3_600, Math.max(60, Number.isFinite(rawDelaySeconds) ? rawDelaySeconds : 60));
+      const fireAt = Date.now() + delaySeconds * 1_000;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
         id: wakeupId,
-        kind: "wakeup",
+        kind,
         status: stop ? "stopped" : "scheduled",
-        origin: "schedule_wakeup",
-        title: stop ? "Wakeup stopped" : "Wakeup scheduled",
+        origin: kind === "loop" ? "loop" : "schedule_wakeup",
+        title: stop ? "Wakeup stopped" : compactString(args.reason) ?? prompt,
         reason: compactString(args.reason),
-        prompt: compactString(args.prompt),
+        prompt,
+        ...(!stop ? { nextRunAt: new Date(fireAt).toISOString() } : {}),
+        durable: true,
         sourceToolUseId: itemId,
         ...(turnId ? { turnId } : {}),
       });
+      durableScheduleUiStatusById.set(wakeupId, stop ? "cancelled" : "scheduled");
+      if (scheduledWorkScheduler) {
+        if (stop) {
+          const activeWakeups = scheduledWorkScheduler.list(managed.session.id).filter((schedule) =>
+            (schedule.kind === "wakeup" || schedule.kind === "loop")
+            && schedule.status !== "done"
+            && schedule.status !== "cancelled");
+          for (const schedule of activeWakeups.length ? activeWakeups : [{ id: wakeupId }]) {
+            runScheduledWorkMutation("cancel_wakeup", scheduledWorkScheduler.cancel(schedule.id));
+          }
+        } else {
+          runScheduledWorkMutation("arm_wakeup", scheduledWorkScheduler.upsert({
+            id: wakeupId,
+            sessionId: managed.session.id,
+            kind,
+            prompt,
+            ...(compactString(args.reason) ? { reason: compactString(args.reason) } : {}),
+            fireAt,
+            status: "scheduled",
+            lateFlag: false,
+          }));
+        }
+      }
       return;
     }
 
     if (tool === "CronCreate") {
-      const cronId = scheduledWorkInputId(args);
-      if (!cronId) return;
-      if (args.recurring !== false) {
+      const cron = compactString(args.cron);
+      const prompt = compactString(args.prompt);
+      if (!cron || !prompt) return;
+      const explicitCronId = scheduledWorkInputId(args);
+      const cronId = explicitCronId ?? `cron-tool:${managed.session.id}:${itemId}`;
+      const recurring = args.recurring !== false;
+      const kind: "cron" | "wakeup" | "loop" = recurring
+        ? "cron"
+        : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
+      const fireAt = nextChatScheduledCronFireAt(cron, Date.now()) ?? undefined;
+      if (recurring && explicitCronId) {
         rememberActiveProviderCron(runtime, cronId, args);
       }
-      emitClaudeScheduledWorkUpdate(managed, runtime, {
-        type: "scheduled_work_update",
-        id: cronId,
-        kind: "cron",
-        status: "scheduled",
-        origin: "cron",
-        title: "Cron scheduled",
-        cron: compactString(args.cron),
-        prompt: compactString(args.prompt),
-        recurring: args.recurring !== false,
-        durable: args.durable === true,
-        sourceToolUseId: itemId,
-        ...(turnId ? { turnId } : {}),
-      });
+      if (explicitCronId) {
+        emitClaudeScheduledWorkUpdate(managed, runtime, {
+          type: "scheduled_work_update",
+          id: cronId,
+          kind,
+          status: "scheduled",
+          origin: kind === "loop" ? "loop" : kind === "wakeup" ? "schedule_wakeup" : "cron",
+          title: prompt,
+          cron,
+          prompt,
+          ...(fireAt != null ? { nextRunAt: new Date(fireAt).toISOString() } : {}),
+          recurring,
+          durable: true,
+          sourceToolUseId: itemId,
+          ...(turnId ? { turnId } : {}),
+        });
+        durableScheduleUiStatusById.set(cronId, "scheduled");
+      }
+      if (scheduledWorkScheduler) {
+        runScheduledWorkMutation("arm_cron", scheduledWorkScheduler.upsert({
+          id: cronId,
+          sessionId: managed.session.id,
+          kind,
+          prompt,
+          cron,
+          fireAt,
+          status: "scheduled",
+          lateFlag: false,
+        }));
+      }
       return;
     }
 
@@ -10530,6 +10673,10 @@ export function createAgentChatService(args: {
         sourceToolUseId: itemId,
         ...(turnId ? { turnId } : {}),
       });
+      durableScheduleUiStatusById.set(id, "cancelled");
+      if (scheduledWorkScheduler) {
+        runScheduledWorkMutation("cancel_cron", scheduledWorkScheduler.cancel(id));
+      }
       return;
     }
 
@@ -10616,20 +10763,65 @@ export function createAgentChatService(args: {
       if (recurring) {
         rememberActiveProviderCron(runtime, id, cron);
       }
-      const scheduledWorkId = recurring ? id : `wakeup:${managed.session.id}`;
+      const cronSchedule = compactString(cron.schedule);
+      const prompt = compactString(cron.prompt);
+      const activeDurableWakeup = !recurring && scheduledWorkScheduler
+        ? scheduledWorkScheduler.list(managed.session.id)
+          .filter((schedule) =>
+            (schedule.kind === "wakeup" || schedule.kind === "loop")
+            && (schedule.status === "scheduled" || schedule.status === "paused")
+            && (!prompt || schedule.prompt === prompt))
+          .at(-1)
+        : null;
+      const scheduledWorkId = recurring
+        ? id
+        : activeDurableWakeup?.id ?? nextClaudeWakeupId(managed.session.id, id);
+      const kind: "cron" | "wakeup" | "loop" = recurring
+        ? "cron"
+        : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
         id: scheduledWorkId,
-        kind: recurring ? "cron" : "wakeup",
+        kind,
         status: "scheduled",
-        origin: recurring ? "cron" : "schedule_wakeup",
-        title: recurring ? "Cron scheduled" : "Wakeup scheduled",
-        cron: compactString(cron.schedule),
-        prompt: compactString(cron.prompt),
+        origin: kind === "loop" ? "loop" : kind === "cron" ? "cron" : "schedule_wakeup",
+        title: prompt ?? (recurring ? "Cron scheduled" : "Wakeup scheduled"),
+        cron: cronSchedule,
+        prompt,
         recurring,
+        durable: true,
         sourceTaskId: id,
         ...(turnId ? { turnId } : {}),
       });
+      durableScheduleUiStatusById.set(scheduledWorkId, "scheduled");
+      if (scheduledWorkScheduler && prompt) {
+        if (recurring) {
+          for (const temporary of scheduledWorkScheduler.list(managed.session.id)) {
+            if (
+              temporary.id.startsWith(`cron-tool:${managed.session.id}:`)
+              && temporary.prompt === prompt
+              && temporary.cron === cronSchedule
+            ) {
+              runScheduledWorkMutation(
+                "replace_temporary_cron",
+                scheduledWorkScheduler.cancel(temporary.id),
+              );
+            }
+          }
+        }
+        runScheduledWorkMutation("sync_session_cron", scheduledWorkScheduler.upsert({
+          id: scheduledWorkId,
+          sessionId: managed.session.id,
+          kind,
+          prompt,
+          ...(cronSchedule ? { cron: cronSchedule } : {}),
+          ...(cronSchedule
+            ? { fireAt: nextChatScheduledCronFireAt(cronSchedule, Date.now()) ?? undefined }
+            : {}),
+          status: "scheduled",
+          lateFlag: false,
+        }));
+      }
     }
   };
 
@@ -12840,6 +13032,7 @@ export function createAgentChatService(args: {
     toolInputJsonByContentIndex: Map<number, string>;
     toolUseMetaByContentIndex: Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>;
     currentStreamMessageId: string | null;
+    scheduledWakeAttached: boolean;
   };
 
   const startClaudeIdleTurn = (
@@ -12855,6 +13048,46 @@ export function createAgentChatService(args: {
     runtime.busy = true;
     runtime.activeTurnId = turnId;
     setSessionActive(managed);
+    const pendingScheduledWakes = pendingNativeScheduledWakeBySession.get(managed.session.id) ?? [];
+    const pendingScheduledWake = pendingScheduledWakes[0];
+    const claimedSchedule = !pendingScheduledWake
+      ? scheduledWorkScheduler?.claimNativeFire(managed.session.id, turnId) ?? null
+      : null;
+    const scheduledWake = pendingScheduledWake ?? (claimedSchedule
+      ? {
+          scheduleId: claimedSchedule.id,
+          kind: claimedSchedule.kind,
+          prompt: claimedSchedule.prompt,
+          ...(claimedSchedule.reason ? { reason: claimedSchedule.reason } : {}),
+          firedAt: new Date(claimedSchedule.lastFiredAt ?? Date.now()).toISOString(),
+          late: claimedSchedule.lateFlag,
+        }
+      : null);
+    if (scheduledWake) {
+      if (pendingScheduledWake) {
+        pendingScheduledWakes.shift();
+        if (pendingScheduledWakes.length) {
+          pendingNativeScheduledWakeBySession.set(managed.session.id, pendingScheduledWakes);
+        } else {
+          pendingNativeScheduledWakeBySession.delete(managed.session.id);
+        }
+      }
+      state.scheduledWakeAttached = true;
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: scheduledWake.prompt,
+        metadata: {
+          scheduledWake: {
+            scheduleId: scheduledWake.scheduleId,
+            kind: scheduledWake.kind,
+            firedAt: scheduledWake.firedAt,
+            reason: scheduledWake.reason ?? scheduledWake.prompt,
+            ...(scheduledWake.late ? { late: true } : {}),
+          },
+        },
+        turnId,
+      });
+    }
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     emitChatEvent(managed, {
       type: "activity",
@@ -13493,7 +13726,7 @@ export function createAgentChatService(args: {
   const startClaudeIdleReader = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
-    reason: "turn_completed" | "query_ready" = "turn_completed",
+    reason: "turn_completed" | "query_ready" | "durable_schedule_fire" = "turn_completed",
   ): void => {
     if (managed.closed || managed.deleted) return;
     if (!runtime.query || !runtime.inputPump) return;
@@ -13511,6 +13744,7 @@ export function createAgentChatService(args: {
       toolInputJsonByContentIndex: new Map(),
       toolUseMetaByContentIndex: new Map(),
       currentStreamMessageId: null,
+      scheduledWakeAttached: false,
     };
 
     logger.debug("agent_chat.claude_idle_reader_start", {
@@ -21152,7 +21386,7 @@ export function createAgentChatService(args: {
         append: [
           "## Runtime Environment",
           "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-            "**Wake-up semantics:** ADE keeps the Claude Agent SDK query alive after a visible turn completes and continues reading the session stream while this chat is idle. You may use Claude Code's scheduled/background capabilities (`ScheduleWakeup`, `CronCreate`, `/loop`, background tasks) when they fit the task. ADE will surface scheduled work, wakeups, background-task notifications, and later resumed output in Chat Info.",
+            "**Wake-up semantics:** ADE durably supports Claude Code scheduled self-resume. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn even after the ADE brain restarts; overdue work fires once when ADE resumes, then recurring cron work returns to its normal cadence. The user can pause this chat's schedules in Chat Info or pause all scheduled work in Settings.",
             "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer the SDK's scheduled/background tools and include a concise reason/prompt so ADE can show the pending work clearly.",
           "",
           "## ADE Workspace",
@@ -21539,7 +21773,7 @@ export function createAgentChatService(args: {
     resolvedAttachments: ResolvedAgentChatFileRef[] = [],
     metadata?: AgentChatEventMetadata | null,
   ): boolean => {
-    if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
+    if (runtime.pendingSteers.length >= MAX_PENDING_STEERS && !metadata?.scheduledWake) {
       logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
       emitChatEvent(managed, {
         type: "system_notice",
@@ -21550,12 +21784,15 @@ export function createAgentChatService(args: {
       return false;
     }
     runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments, ...(metadata ? { metadata } : {}) });
+    const queuedMetadata = metadata?.scheduledWake
+      ? Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== "scheduledWake"))
+      : metadata;
     emitChatEvent(managed, {
       type: "user_message",
       text,
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
-      ...(metadata ? { metadata } : {}),
+      ...(queuedMetadata && Object.keys(queuedMetadata).length ? { metadata: queuedMetadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -23222,7 +23459,7 @@ export function createAgentChatService(args: {
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
     const visibleText = rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
 
-    if (hasLivePendingInput(managed)) {
+    if (hasLivePendingInput(managed) && !metadata?.scheduledWake) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
@@ -26662,7 +26899,7 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
-    if (hasLivePendingInput(managed)) {
+    if (hasLivePendingInput(managed) && !metadata?.scheduledWake) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
 
@@ -26990,13 +27227,13 @@ export function createAgentChatService(args: {
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
     const awaitingInputBefore = hasLivePendingInput(managed);
-    if (awaitingInputBefore) {
+    if (awaitingInputBefore && normalizedKind !== "wake") {
       throw new Error(`${PENDING_INPUT_SEND_BLOCKED_MESSAGE} Use chat.respondToInput for the pending input instead.`);
     }
 
     const steerTarget =
       normalizedKind === "queue" ||
-      (normalizedKind === "auto" && statusBefore === "active");
+      ((normalizedKind === "auto" || normalizedKind === "wake") && statusBefore === "active");
     if (steerTarget) {
       const result = await steer({
         sessionId,
@@ -27907,6 +28144,13 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
+      nextWakeAt: (() => {
+        const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
+        return next == null ? null : new Date(next).toISOString();
+      })(),
+      scheduledWorkPaused:
+        scheduledWorkScheduler?.isSessionPaused(row.id) === true
+        || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(liveSession?.threadId || persisted?.threadId
@@ -27923,6 +28167,7 @@ export function createAgentChatService(args: {
     laneId?: string,
     options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
   ): Promise<AgentChatSessionSummary[]> => {
+    await scheduledWorkReady;
     const rows = sessionService.list({
       ...(laneId ? { laneId } : {}),
       limit: 500,
@@ -27941,11 +28186,42 @@ export function createAgentChatService(args: {
   };
 
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
+    await scheduledWorkReady;
     const trimmed = sessionId.trim();
     if (!trimmed.length) return null;
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
     return summarizeSessionRow(row);
+  };
+
+  const setScheduledWorkPaused = async ({
+    sessionId,
+    paused,
+  }: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isChatToolType(row.toolType)) {
+      throw new Error(`Chat session '${normalizedSessionId}' was not found.`);
+    }
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) {
+      throw new Error("Scheduled work is unavailable for this project runtime.");
+    }
+    await scheduledWorkScheduler.setSessionPaused(normalizedSessionId, paused);
+    const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId);
+    const effectivelyPaused = scheduledWorkScheduler.isSessionPaused(normalizedSessionId)
+      || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
+    return {
+      sessionId: normalizedSessionId,
+      paused: effectivelyPaused,
+      nextWakeAt: nextWakeAt == null ? null : new Date(nextWakeAt).toISOString(),
+    };
+  };
+
+  const refreshScheduledWork = async (): Promise<void> => {
+    await scheduledWorkReady;
+    await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
   const hasActiveWorkloads = (): boolean => {
@@ -29263,6 +29539,14 @@ export function createAgentChatService(args: {
     // a running row in the parent's subagents panel forever.
     reportChildSpawnEnded(trimmedSessionId, "interrupted");
 
+    await scheduledWorkReady;
+    if (scheduledWorkScheduler) {
+      await Promise.all(
+        scheduledWorkScheduler.list(trimmedSessionId).map((schedule) =>
+          scheduledWorkScheduler!.cancel(schedule.id)),
+      );
+    }
+
     if (existing.status === "running") {
       await dispose({ sessionId: trimmedSessionId });
     }
@@ -29295,6 +29579,7 @@ export function createAgentChatService(args: {
     }
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
+    pendingNativeScheduledWakeBySession.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
@@ -29316,6 +29601,13 @@ export function createAgentChatService(args: {
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    await scheduledWorkReady;
+    if (scheduledWorkScheduler) {
+      await Promise.all(
+        scheduledWorkScheduler.list(trimmedSessionId).map((schedule) =>
+          scheduledWorkScheduler!.cancel(schedule.id)),
+      );
+    }
     sessionService.archiveSession(trimmedSessionId);
   };
 
@@ -29330,6 +29622,7 @@ export function createAgentChatService(args: {
 
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
+    scheduledWorkScheduler?.dispose();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await dispose({ sessionId });
@@ -29337,12 +29630,14 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
+    pendingNativeScheduledWakeBySession.clear();
     flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("dispose_all");
   };
 
   const forceDisposeAll = (): void => {
     clearInterval(sessionCleanupTimer);
+    scheduledWorkScheduler?.dispose();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -29366,6 +29661,7 @@ export function createAgentChatService(args: {
       }
     }
     managedSessions.clear();
+    pendingNativeScheduledWakeBySession.clear();
     flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
@@ -31883,6 +32179,116 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  let fallbackScheduledWorkState: unknown = null;
+  scheduledWorkScheduler = createChatScheduledWorkScheduler({
+    loadState: () => db?.getJson(scheduledWorkStateKey) ?? fallbackScheduledWorkState,
+    saveState: (state) => {
+      fallbackScheduledWorkState = state;
+      db?.setJson(scheduledWorkStateKey, state);
+    },
+    isGlobalPaused: () =>
+      projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true,
+    sessionState: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      if (!row) return "missing";
+      return row.archivedAt ? "archived" : "active";
+    },
+    fire: async (schedule, context) => {
+      const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
+      const liveManaged = managedSessions.get(schedule.sessionId);
+      const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
+      if (
+        liveManaged
+        && liveRuntime?.query
+        && !liveRuntime.busy
+        && liveManaged.session.status !== "active"
+      ) {
+        const pending = pendingNativeScheduledWakeBySession.get(schedule.sessionId) ?? [];
+        pending.push({
+          scheduleId: schedule.id,
+          kind: schedule.kind,
+          prompt: schedule.prompt,
+          ...(schedule.reason ? { reason: schedule.reason } : {}),
+          firedAt,
+          late: context.late,
+        });
+        pendingNativeScheduledWakeBySession.set(schedule.sessionId, pending);
+        startClaudeIdleReader(liveManaged, liveRuntime, "durable_schedule_fire");
+        return;
+      }
+      await messageSession({
+        sessionId: schedule.sessionId,
+        text: schedule.prompt,
+        kind: "wake",
+        metadata: {
+          scheduledWake: {
+            scheduleId: schedule.id,
+            kind: schedule.kind,
+            firedAt,
+            reason: schedule.reason ?? schedule.prompt,
+            ...(context.late ? { late: true } : {}),
+          },
+        },
+      });
+    },
+    onTransition: async (schedule, status) => {
+      if (schedule.id.startsWith("cron-tool:")) {
+        emitTransientChatEnvelope(schedule.sessionId, { type: "session_meta_updated" });
+        return;
+      }
+      if (durableScheduleUiStatusById.get(schedule.id) === status) {
+        // Tool/hook events are emitted immediately for responsive Chat Info.
+        // Nudge summary consumers again after the durable write completes so
+        // nextWakeAt cannot race the asynchronous upsert.
+        emitTransientChatEnvelope(schedule.sessionId, { type: "session_meta_updated" });
+        return;
+      }
+      durableScheduleUiStatusById.set(schedule.id, status);
+
+      const row = sessionService.get(schedule.sessionId);
+      if (!row || row.archivedAt) return;
+      const managed = managedSessions.get(schedule.sessionId)
+        ?? (status === "fired" ? ensureManagedSession(schedule.sessionId) : null);
+      if (!managed || managed.session.provider !== "claude") return;
+
+      const eventStatus: ScheduledWorkEvent["status"] = status === "done" ? "completed" : status;
+      const origin: ScheduledWorkEvent["origin"] = schedule.kind === "cron"
+        ? "cron"
+        : schedule.kind === "loop"
+          ? "loop"
+          : "schedule_wakeup";
+      emitChatEvent(managed, {
+        type: "scheduled_work_update",
+        id: schedule.id,
+        kind: schedule.kind,
+        status: eventStatus,
+        origin,
+        title: schedule.reason?.trim() || schedule.prompt.trim() || (schedule.kind === "cron" ? "Scheduled task" : "Scheduled wakeup"),
+        ...(schedule.outcomeSummary ? { summary: schedule.outcomeSummary } : {}),
+        prompt: schedule.prompt,
+        ...(schedule.reason ? { reason: schedule.reason } : {}),
+        ...(schedule.cron ? { cron: schedule.cron } : {}),
+        ...((status === "scheduled" || status === "paused") && schedule.fireAt != null
+          ? { nextRunAt: new Date(schedule.fireAt).toISOString() }
+          : {}),
+        ...(schedule.lastFiredAt != null
+          ? {
+              lastRunAt: new Date(schedule.lastFiredAt).toISOString(),
+              firedAt: new Date(schedule.lastFiredAt).toISOString(),
+            }
+          : {}),
+        ...(schedule.lateFlag ? { late: true } : {}),
+        recurring: schedule.kind === "cron",
+        durable: true,
+      });
+    },
+  });
+  scheduledWorkReady = scheduledWorkScheduler.start().catch((error) => {
+    logger.warn("agent_chat.scheduled_work_start_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   return {
     createSession,
     importExternalChatSession,
@@ -31891,6 +32297,8 @@ export function createAgentChatService(args: {
     handoffSession,
     sendMessage,
     messageSession,
+    setScheduledWorkPaused,
+    refreshScheduledWork,
     readTranscript,
     setOrchestrationFields,
     getCodexGoal,

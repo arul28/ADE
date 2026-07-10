@@ -168,13 +168,24 @@ export type BackgroundFinishChipRenderEvent = {
   endedAt: string;
 };
 
+export type ScheduledWakeDividerRenderEvent = {
+  type: "scheduled_wake_divider";
+  scheduleId: string;
+  kind: "wakeup" | "cron" | "loop";
+  reason: string | null;
+  firedAt: string;
+  late: boolean;
+  turnId?: string;
+};
+
 export type ChatTranscriptRenderEvent =
   | ChatTranscriptVisibleEvent
   | RenderReasoningEvent
   | WorkLogRenderEvent
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
-  | BackgroundFinishChipRenderEvent;
+  | BackgroundFinishChipRenderEvent
+  | ScheduledWakeDividerRenderEvent;
 
 export type ChatTranscriptRenderEnvelope = {
   key: string;
@@ -1027,6 +1038,30 @@ export function appendCollapsedChatTranscriptEvent(
   context?: CollapseTranscriptContext,
 ): void {
   const { event } = envelope;
+
+  if (event.type === "user_message") {
+    const wake = event.metadata?.scheduledWake;
+    if (
+      wake
+      && typeof wake.scheduleId === "string"
+      && (wake.kind === "wakeup" || wake.kind === "cron" || wake.kind === "loop")
+      && typeof wake.firedAt === "string"
+    ) {
+      rows.push({
+        key: `scheduled-wake:${wake.scheduleId}:${event.turnId ?? sequence}`,
+        timestamp: envelope.timestamp,
+        event: {
+          type: "scheduled_wake_divider",
+          scheduleId: wake.scheduleId,
+          kind: wake.kind,
+          reason: typeof wake.reason === "string" && wake.reason.trim().length ? wake.reason.trim() : null,
+          firedAt: wake.firedAt,
+          late: wake.late === true,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+        },
+      });
+    }
+  }
 
   if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
     return;

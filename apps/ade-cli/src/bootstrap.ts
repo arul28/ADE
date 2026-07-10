@@ -1006,6 +1006,7 @@ export async function createAdeRuntime(args: {
       sessionService,
       processRegistry,
       projectConfigService,
+      db,
       aiIntegrationService,
       ctoStateService,
       ctoMemoryService,

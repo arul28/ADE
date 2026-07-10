@@ -51,6 +51,22 @@ describe("shouldRefreshSessionListForChatEvent", () => {
     }))).toBe(true);
   });
 
+  it("refreshes next-wake summaries for schedule changes but not background task noise", () => {
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({
+      type: "scheduled_work_update",
+      id: "wake-1",
+      kind: "wakeup",
+      status: "scheduled",
+      nextRunAt: "2026-07-09T09:12:00.000Z",
+    }))).toBe(true);
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({
+      type: "scheduled_work_update",
+      id: "background-1",
+      kind: "background_task",
+      status: "running",
+    }))).toBe(false);
+  });
+
   it("ignores noisy intermediate events", () => {
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "status", turnStatus: "completed" }))).toBe(false);
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "text", text: "hello" }))).toBe(false);

@@ -68,6 +68,8 @@ export function getChatSessionLocalTouchTimestampForEvent(
     case "error":
     case "user_message":
       return envelope.timestamp;
+    case "scheduled_work_update":
+      return envelope.event.kind === "background_task" ? null : envelope.timestamp;
     case "status":
       return (
         envelope.event.turnStatus === "started"

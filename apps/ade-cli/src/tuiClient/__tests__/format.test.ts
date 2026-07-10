@@ -237,6 +237,7 @@ describe("renderChatLines", () => {
         lastActivityAt: "2026-01-01T12:00:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
       notices: [],
       events: [
@@ -781,6 +782,7 @@ describe("renderChatLines", () => {
       lastActivityAt: "2026-01-01T12:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     } as const;
     const lines = renderChatLines({
       activeSession: session,
@@ -819,7 +821,7 @@ describe("renderChatLines", () => {
     const session = {
       sessionId: "s1", laneId: "lane-1", provider: "codex", model: "gpt-5.5", status: "idle",
       startedAt: "2026-01-01T12:00:00.000Z", endedAt: null, lastActivityAt: "2026-01-01T12:00:00.000Z",
-      lastOutputPreview: null, summary: null,
+      lastOutputPreview: null, summary: null, nextWakeAt: null,
     } as const;
     // Parent message "A" and a concurrent message "B" stream interleaved by
     // timestamp, plus a codex-subagent message that must not reach the parent
@@ -867,6 +869,7 @@ describe("renderChatLines", () => {
       lastActivityAt: "2026-01-01T12:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     } as const;
     const lines = renderChatLines({
       activeSession: session,

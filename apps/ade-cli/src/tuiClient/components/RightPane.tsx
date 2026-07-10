@@ -1044,14 +1044,34 @@ function scheduleLineDetail(item: ChatScheduledWorkSnapshot): string {
   return item.cron ?? item.reason ?? item.summary ?? item.prompt ?? "";
 }
 
+function nextWakeCountdown(value: string | null | undefined, nowMs: number): string | null {
+  if (!value) return null;
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
+  const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) return minutes ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours ? `${days}d ${hours}h` : `${days}d`;
+}
+
 function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  if (!info.scheduledWork.length) return null;
+  const nextWake = nextWakeCountdown(info.nextWakeAt, Date.now());
+  if (!info.scheduledWork.length && !nextWake) return null;
   const inner = Math.max(10, width - 4);
   const visible = info.scheduledWork.slice(0, SCHEDULE_VISIBLE_CAP);
   const hiddenAfter = info.scheduledWork.length - visible.length;
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="SCHEDULE" hint={`${info.scheduledWork.length}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead title="SCHEDULE" hint={info.scheduledWork.length ? `${info.scheduledWork.length}` : ""} color={brandColor} width={width} />
+      {nextWake ? (
+        <Text color={theme.color.t2} wrap="truncate-end">
+          {` ⏰ next wake ${nextWake}`}
+        </Text>
+      ) : null}
       {visible.map((item) => {
         const detail = scheduleLineDetail(item);
         const label = `${scheduleKindLabel(item.kind)} · ${item.status}`;

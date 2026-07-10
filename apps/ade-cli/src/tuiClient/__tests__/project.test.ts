@@ -38,6 +38,7 @@ function chat(sessionId: string, laneId: string, lastActivityAt: string): AgentC
     lastActivityAt,
     lastOutputPreview: null,
     summary: null,
+    nextWakeAt: null,
   };
 }
 

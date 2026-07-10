@@ -9518,6 +9518,56 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("projects the next durable wake onto the chat session summary", async () => {
+      const before = Date.now();
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-next-wake", slash_commands: [] };
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              content: [{
+                type: "tool_use",
+                id: "tool-next-wake",
+                name: "ScheduleWakeup",
+                input: {
+                  delaySeconds: 120,
+                  reason: "Check PR CI",
+                  prompt: "Check PR CI and report the result.",
+                },
+              }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-next-wake",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Check CI again later." });
+
+      const summary = await service.getSessionSummary(session.id);
+      const nextWakeAt = Date.parse(summary?.nextWakeAt ?? "");
+      expect(summary?.scheduledWorkPaused).toBe(false);
+      expect(nextWakeAt).toBeGreaterThanOrEqual(before + 119_000);
+      expect(nextWakeAt).toBeLessThanOrEqual(Date.now() + 121_000);
+      service.forceDisposeAll();
+    });
+
     it("keeps the Claude SDK stream alive for scheduled wakeups after a foreground result", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -21295,6 +21345,98 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("steer", () => {
+    it("defers wake messages to the active Claude turn boundary", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-wake-boundary", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Scheduled check complete" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wake-boundary",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      const activeText = await waitForEvent(events, (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "text" }>;
+      } => event.event.type === "text" && event.event.text.includes("Still working"));
+      const activeTurnId = activeText.event.turnId;
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Check PR CI",
+        kind: "wake",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "wake-boundary-1",
+            kind: "wakeup",
+            firedAt: "2026-07-09T09:00:00.000Z",
+            reason: "Check PR CI",
+          },
+        },
+      });
+
+      expect(result).toMatchObject({ routedAction: "steer", delivery: "queued", queued: true });
+      const queued = events.find((event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } =>
+        event.event.type === "user_message"
+        && event.event.deliveryState === "queued"
+        && event.event.text === "Check PR CI");
+      expect(queued?.event.metadata?.scheduledWake).toBeUndefined();
+
+      finishActiveTurn();
+      await activeTurn;
+      const delivered = await waitForEvent(events, (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } =>
+        event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.scheduleId === "wake-boundary-1");
+      expect(delivered.event.turnId).toBeTruthy();
+      expect(delivered.event.turnId).not.toBe(activeTurnId);
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Check PR CI"));
+    });
+
     it("throws when steering an unknown session", async () => {
       const { service } = createService();
       await expect(

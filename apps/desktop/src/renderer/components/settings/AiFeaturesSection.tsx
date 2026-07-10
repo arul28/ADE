@@ -15,7 +15,7 @@ import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
+import { Alarm, ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
 import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 
 type FeatureInfo = {
@@ -131,6 +131,7 @@ export function AiFeaturesSection() {
   const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = useState(false);
   const [chatAutoTitleRefresh, setChatAutoTitleRefresh] = useState(true);
   const [chatAutoTitleReasoning, setChatAutoTitleReasoning] = useState<string | null>(null);
+  const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -156,6 +157,7 @@ export function AiFeaturesSection() {
         ?? effectiveAi?.chat?.autoTitleReasoningEffort
         ?? null
       );
+      setScheduledWorkPaused(effectiveAi?.chat?.scheduledWorkPaused === true);
 
       const persistedReasoning = effectiveAi?.featureReasoningOverrides ?? {};
       const nextReasoning: Record<string, string | null> = {};
@@ -250,6 +252,20 @@ export function AiFeaturesSection() {
     }
   }, [loadStatus, saving, status]);
 
+  const handleScheduledWorkPaused = useCallback(async (paused: boolean) => {
+    if (saving) return;
+    setSaving(true);
+    setScheduledWorkPaused(paused);
+    try {
+      await window.ade.ai.updateConfig({ chat: { scheduledWorkPaused: paused } });
+    } catch (error) {
+      setScheduledWorkPaused(!paused);
+      console.error("[AiFeaturesSection] scheduled-work pause update failed:", error);
+    } finally {
+      setSaving(false);
+    }
+  }, [saving]);
+
   const handleModelChange = useCallback(async (key: AiFeatureKey, modelId: string) => {
     if (saving) return;
     setSaving(true);
@@ -339,6 +355,21 @@ export function AiFeaturesSection() {
           }}
         >
           ADE can handle routine tasks in the background while you focus on what matters. Enable the helpers you want and pick a model for each.
+        </div>
+
+        <div style={{ ...cardStyle({ padding: 0 }), marginBottom: 12 }}>
+          <div className="ai-feature-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+            <Toggle checked={scheduledWorkPaused} onChange={(paused) => void handleScheduledWorkPaused(paused)} />
+            <Alarm size={18} weight="duotone" style={{ color: scheduledWorkPaused ? COLORS.warning : COLORS.accent, flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
+                Pause all scheduled work
+              </div>
+              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, marginTop: 2, lineHeight: 1.4 }}>
+                Wakeups, cron tasks, and loops stay armed. Overdue work fires once when you resume.
+              </div>
+            </div>
+          </div>
         </div>
 
         <div style={cardStyle({ padding: 0 })}>

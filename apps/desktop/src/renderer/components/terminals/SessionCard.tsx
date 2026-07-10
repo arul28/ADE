@@ -163,6 +163,54 @@ function getPreviewLine(session: TerminalSessionSummary, primaryText: string): s
   return null;
 }
 
+function compactFutureDuration(timestampMs: number, nowMs: number): string | null {
+  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
+  const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) return minutes ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours ? `${days}d ${hours}h` : `${days}d`;
+}
+
+function NextWakeChip({
+  nextWakeAt,
+  compact,
+}: {
+  nextWakeAt?: string | null;
+  compact: boolean;
+}) {
+  const [, tick] = React.useReducer((value: number) => value + 1, 0);
+  const timestampMs = nextWakeAt ? Date.parse(nextWakeAt) : Number.NaN;
+  const label = compactFutureDuration(timestampMs, Date.now());
+
+  React.useEffect(() => {
+    if (!Number.isFinite(timestampMs) || timestampMs <= Date.now()) return undefined;
+    const intervalId = window.setInterval(() => {
+      if (timestampMs <= Date.now()) window.clearInterval(intervalId);
+      tick();
+    }, 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [timestampMs]);
+
+  if (!label) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded border border-white/[0.08] bg-white/[0.04] font-medium leading-none tabular-nums text-muted-fg/70",
+        compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+      )}
+      aria-label={`Next scheduled wake in ${label}`}
+      title={`Next scheduled wake in ${label}`}
+      data-next-wake-at={nextWakeAt}
+    >
+      ⏰ {label}
+    </span>
+  );
+}
+
 export const SessionCard = React.memo(function SessionCard({
   session,
   lane,
@@ -390,6 +438,7 @@ export const SessionCard = React.memo(function SessionCard({
                     {inlineStatusLabel}
                   </span>
                 ) : null}
+                <NextWakeChip nextWakeAt={session.nextWakeAt} compact={compact} />
                 <span
                   title={dot.label}
                   className={cn(

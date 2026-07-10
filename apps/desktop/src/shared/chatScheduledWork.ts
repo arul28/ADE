@@ -17,6 +17,8 @@ export type ChatScheduledWorkSnapshot = {
   cron?: string;
   nextRunAt?: string;
   lastRunAt?: string;
+  firedAt?: string;
+  late?: boolean;
   recurring?: boolean;
   durable?: boolean;
   sourceToolUseId?: string;
@@ -73,6 +75,8 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
       cron: event.cron ?? existing?.cron,
       nextRunAt: event.nextRunAt ?? existing?.nextRunAt,
       lastRunAt: event.lastRunAt ?? existing?.lastRunAt,
+      firedAt: event.firedAt ?? existing?.firedAt,
+      late: event.late ?? existing?.late,
       recurring: event.recurring ?? existing?.recurring,
       durable: event.durable ?? existing?.durable,
       sourceToolUseId: event.sourceToolUseId ?? existing?.sourceToolUseId,
@@ -113,6 +117,22 @@ const SCHEDULE_KINDS = new Set<AgentChatScheduledWorkKind>([
 
 export function deriveScheduleItems(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
   return deriveScheduledWorkSnapshots(events).filter((snapshot) => SCHEDULE_KINDS.has(snapshot.kind));
+}
+
+const ONE_SHOT_HISTORY_STATUSES = new Set<AgentChatScheduledWorkStatus>([
+  "fired",
+  "completed",
+]);
+
+export function deriveScheduleHistory(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
+  return deriveScheduleItems(events).filter((snapshot) =>
+    (snapshot.kind === "wakeup" || snapshot.kind === "loop")
+    && ONE_SHOT_HISTORY_STATUSES.has(snapshot.status));
+}
+
+export function deriveActiveScheduleItems(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
+  const historyIds = new Set(deriveScheduleHistory(events).map((snapshot) => snapshot.id));
+  return deriveScheduleItems(events).filter((snapshot) => !historyIds.has(snapshot.id));
 }
 
 export function deriveBackgroundItems(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
@@ -237,7 +257,7 @@ function cronMatches(cron: ParsedCron, date: Date): boolean {
   return dayOfMonthMatches || dayOfWeekMatches;
 }
 
-function nextCronFireAt(cron: string, nowMs: number): number | null {
+export function nextCronFireAt(cron: string, nowMs: number): number | null {
   const parsed = parseCron(cron);
   if (!parsed || !Number.isFinite(nowMs)) return null;
   const candidate = new Date(nowMs);
@@ -268,7 +288,10 @@ export function scheduledNextFireLabel(
   snapshot: ChatScheduledWorkSnapshot,
   nowMs: number,
 ): string | null {
-  if ((snapshot.kind !== "cron" && snapshot.kind !== "wakeup") || !Number.isFinite(nowMs)) return null;
+  if (
+    (snapshot.kind !== "cron" && snapshot.kind !== "wakeup" && snapshot.kind !== "loop")
+    || !Number.isFinite(nowMs)
+  ) return null;
 
   const explicitNextRunAt = snapshot.nextRunAt ? Date.parse(snapshot.nextRunAt) : Number.NaN;
   const nextFireAt = Number.isFinite(explicitNextRunAt)

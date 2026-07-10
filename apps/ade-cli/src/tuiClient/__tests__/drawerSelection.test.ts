@@ -14,6 +14,7 @@ function session(sessionId: string, laneId = "lane-1"): AgentChatSessionSummary 
     lastActivityAt: "2026-01-01T00:00:00.000Z",
     lastOutputPreview: null,
     summary: null,
+    nextWakeAt: null,
   };
 }
 

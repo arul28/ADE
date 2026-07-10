@@ -466,6 +466,112 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByText("Subagents")).toBeNull();
   });
 
+  it("pauses and resumes the chat schedule from the Schedule header", () => {
+    const onToggleSchedulesPaused = vi.fn();
+    const scheduleItems = [
+      scheduledSnapshot({ id: "cron-1", kind: "cron", title: "Nightly" }),
+    ];
+    const { rerender } = render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={scheduleItems}
+        onToggleSchedulesPaused={onToggleSchedulesPaused}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause scheduled work for this chat" }));
+    expect(onToggleSchedulesPaused).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={scheduleItems}
+        schedulesPaused
+        onToggleSchedulesPaused={onToggleSchedulesPaused}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Resume scheduled work for this chat" })).toBeTruthy();
+  });
+
+  it("dims active schedule rows and labels them paused when the chat schedule is paused", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        schedulesPaused
+        scheduleItems={[
+          scheduledSnapshot({ id: "wake-1", kind: "wakeup", title: "Check PR CI" }),
+        ]}
+      />,
+    );
+
+    const row = screen.getByTitle("Check PR CI");
+    expect(row.getAttribute("data-paused")).toBe("true");
+    expect(row.className).toContain("opacity-45");
+    expect(screen.getByText("paused")).toBeTruthy();
+  });
+
+  it("moves fired one-shot wakeups into collapsed history and marks late fires", () => {
+    const firedAt = new Date(2026, 4, 12, 8, 41).toISOString();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[
+          scheduledSnapshot({
+            id: "wake-history-1",
+            kind: "wakeup",
+            status: "completed",
+            title: "Check PR CI",
+            firedAt,
+            late: true,
+          }),
+        ]}
+      />,
+    );
+
+    const historyToggle = screen.getByRole("button", { name: "History (1)" });
+    expect(historyToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("✓ Check PR CI · fired 8:41 AM · late")).toBeNull();
+
+    fireEvent.click(historyToggle);
+
+    expect(historyToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("✓ Check PR CI · fired 8:41 AM · late")).toBeTruthy();
+    expect(screen.queryByText("done")).toBeNull();
+  });
+
+  it("shows a cron's last run and next fire on one timing line", () => {
+    const now = new Date(2026, 4, 12, 12, 0);
+    vi.spyOn(Date, "now").mockReturnValue(now.getTime());
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[
+          scheduledSnapshot({
+            id: "cron-timing",
+            kind: "cron",
+            title: "Daily sweep",
+            cron: "0 9 * * *",
+            lastRunAt: new Date(2026, 4, 12, 9, 0).toISOString(),
+            nextRunAt: new Date(2026, 4, 13, 9, 0).toISOString(),
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("last ran 9:00 AM · next in 21h · 9:00 AM")).toBeTruthy();
+  });
+
   it("does not show a running status for a terminal background command", () => {
     render(
       <ChatSubagentsPanel

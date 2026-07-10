@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
@@ -6,6 +6,8 @@ import {
   Check,
   Circle,
   CircleHalf,
+  Pause,
+  Play,
   TreeStructure,
   X,
 } from "@phosphor-icons/react";
@@ -70,11 +72,13 @@ const SECTION_DOT_CLASS: Record<SectionTone, string> = {
 function SectionHeader({
   label,
   hint,
+  action,
   tone = "neutral",
   emphasized = false,
 }: {
   label: string;
   hint?: string;
+  action?: ReactNode;
   tone?: SectionTone;
   emphasized?: boolean;
 }) {
@@ -92,11 +96,14 @@ function SectionHeader({
         />
         {label}
       </span>
-      {hint ? (
-        <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
-          {hint}
-        </span>
-      ) : null}
+      <span className="flex items-center gap-1.5">
+        {hint ? (
+          <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
+            {hint}
+          </span>
+        ) : null}
+        {action}
+      </span>
     </div>
   );
 }
@@ -165,6 +172,7 @@ function kindBadge(snapshot: ChatSubagentSnapshot): string | null {
 
 const SCHEDULE_STATUS_LABEL: Record<ChatScheduledWorkSnapshot["status"], string> = {
   scheduled: "scheduled",
+  paused: "paused",
   running: "running",
   fired: "fired",
   missed: "missed",
@@ -198,7 +206,24 @@ function scheduledDetail(snapshot: ChatScheduledWorkSnapshot): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
-function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot }) {
+function formatScheduleClock(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function ScheduledWorkRow({
+  snapshot,
+  schedulesPaused = false,
+}: {
+  snapshot: ChatScheduledWorkSnapshot;
+  schedulesPaused?: boolean;
+}) {
+  const isPaused = schedulesPaused || snapshot.status === "paused";
   const isActive = snapshot.status === "running" || snapshot.status === "fired";
   const isProblem = snapshot.status === "failed" || snapshot.status === "missed";
   const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
@@ -214,12 +239,18 @@ function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot })
     return () => window.clearInterval(intervalId);
   }, [snapshot.kind, isMuted]);
   const nextFire = isMuted ? null : scheduledNextFireLabel(snapshot, nowMs);
+  const lastRun = snapshot.kind === "cron" ? formatScheduleClock(snapshot.lastRunAt) : null;
+  const timing = [lastRun ? `last ran ${lastRun}` : null, nextFire]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
 
   return (
     <div
+      data-paused={isPaused || undefined}
       className={cn(
         "group grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5",
         "transition-colors duration-150 hover:bg-white/[0.035]",
+        isPaused && "opacity-45",
       )}
       title={prompt || detail || snapshot.title}
     >
@@ -241,6 +272,7 @@ function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot })
               isActive && "text-sky-100/90",
               isProblem && "text-rose-200/85",
               isMuted && "text-fg/45",
+              isPaused && "text-fg/45",
               !isActive && !isProblem && !isMuted && "text-fg/70",
             )}
           >
@@ -255,9 +287,9 @@ function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot })
             {detail ?? prompt}
           </div>
         ) : null}
-        {nextFire ? (
+        {timing ? (
           <div className="min-w-0 truncate pl-3.5 font-sans text-[10px] leading-4 text-sky-300/45">
-            {nextFire}
+            {timing}
           </div>
         ) : null}
       </div>
@@ -270,8 +302,28 @@ function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot })
           !isActive && !isProblem && !isMuted && "text-fg/45",
         )}
       >
-        {SCHEDULE_STATUS_LABEL[snapshot.status]}
+        {isPaused ? "paused" : SCHEDULE_STATUS_LABEL[snapshot.status]}
       </span>
+    </div>
+  );
+}
+
+function ScheduleHistoryRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot }) {
+  const firedAt = formatScheduleClock(
+    snapshot.firedAt ?? snapshot.lastRunAt ?? snapshot.updatedAt,
+  );
+  const parts = [
+    `✓ ${snapshot.title}`,
+    firedAt ? `fired ${firedAt}` : "fired",
+    snapshot.late ? "late" : null,
+  ].filter((part): part is string => Boolean(part));
+
+  return (
+    <div
+      className="min-w-0 truncate rounded-md px-2 py-1.5 font-sans text-[11px] leading-5 text-fg/45"
+      title={snapshot.prompt?.trim() || snapshot.reason?.trim() || snapshot.title}
+    >
+      {parts.join(" · ")}
     </div>
   );
 }
@@ -548,6 +600,8 @@ export function ChatSubagentsPanel({
   todoItems = [],
   scheduleItems = [],
   backgroundItems = [],
+  schedulesPaused = false,
+  onToggleSchedulesPaused,
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -575,8 +629,13 @@ export function ChatSubagentsPanel({
   scheduleItems?: ChatScheduledWorkSnapshot[];
   /** Background command tasks (kind background_task). */
   backgroundItems?: ChatScheduledWorkSnapshot[];
+  /** Whether all durable schedules for this chat are currently paused. */
+  schedulesPaused?: boolean;
+  /** Pause or resume all durable schedules for this chat. */
+  onToggleSchedulesPaused?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [scheduleHistoryExpanded, setScheduleHistoryExpanded] = useState(false);
   // Which agent's inline details drawer is open (agents with no transcript).
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   // Which agent we're currently probing for a transcript (shows a row spinner).
@@ -586,6 +645,18 @@ export function ChatSubagentsPanel({
   const [probeResults, setProbeResults] = useState<Record<string, boolean>>({});
 
   const plan = useMemo(() => derivePlan(events), [events]);
+
+  const { activeScheduleItems, scheduleHistoryItems } = useMemo(() => {
+    const active: ChatScheduledWorkSnapshot[] = [];
+    const history: ChatScheduledWorkSnapshot[] = [];
+    for (const item of scheduleItems) {
+      const isFiredOneShotWakeup = (item.kind === "wakeup" || item.kind === "loop")
+        && item.recurring !== true
+        && (item.status === "fired" || item.status === "completed");
+      (isFiredOneShotWakeup ? history : active).push(item);
+    }
+    return { activeScheduleItems: active, scheduleHistoryItems: history };
+  }, [scheduleItems]);
 
   const { subagents, runningCount, completedCount, bgRunningCount } = useMemo(() => {
     // ONE merged subagent list — foreground + background-run agents together.
@@ -627,12 +698,13 @@ export function ChatSubagentsPanel({
     if (runningCount) parts.push(`${runningCount} running`);
     if (bgRunningCount) parts.push(`${bgRunningCount} bg`);
     if (backgroundItems.length) parts.push(`${backgroundItems.length} background`);
-    if (scheduleItems.length) parts.push(`${scheduleItems.length} scheduled`);
+    if (activeScheduleItems.length) parts.push(`${activeScheduleItems.length} scheduled`);
+    if (scheduleHistoryItems.length) parts.push(`${scheduleHistoryItems.length} history`);
     if (completedCount) parts.push(`${completedCount} done`);
     if (!parts.length && subagents.length) parts.push(`${subagents.length} tracked`);
     if (!parts.length) parts.push("idle");
     return parts.join(" · ");
-  }, [runningCount, bgRunningCount, backgroundItems.length, scheduleItems.length, completedCount, subagents.length]);
+  }, [runningCount, bgRunningCount, backgroundItems.length, activeScheduleItems.length, scheduleHistoryItems.length, completedCount, subagents.length]);
 
   const takeover = (snap: ChatSubagentSnapshot) => {
     setExpandedTaskId(null);
@@ -854,15 +926,62 @@ export function ChatSubagentsPanel({
         >
           <SectionHeader
             label="Schedule"
-            hint={`${scheduleItems.length}`}
+            hint={`${activeScheduleItems.length}`}
             tone="scheduled"
             emphasized
+            action={onToggleSchedulesPaused ? (
+              <button
+                type="button"
+                onClick={onToggleSchedulesPaused}
+                aria-label={schedulesPaused
+                  ? "Resume scheduled work for this chat"
+                  : "Pause scheduled work for this chat"}
+                title={schedulesPaused
+                  ? "Resume scheduled work for this chat"
+                  : "Pause scheduled work for this chat"}
+                className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/65"
+              >
+                {schedulesPaused
+                  ? <Play aria-hidden size={11} weight="fill" />
+                  : <Pause aria-hidden size={11} weight="fill" />}
+              </button>
+            ) : null}
           />
-          <div className="space-y-px px-2 pb-1">
-            {scheduleItems.map((item) => (
-              <ScheduledWorkRow key={item.id} snapshot={item} />
-            ))}
-          </div>
+          {activeScheduleItems.length ? (
+            <div className="space-y-px px-2 pb-1">
+              {activeScheduleItems.map((item) => (
+                <ScheduledWorkRow
+                  key={item.id}
+                  snapshot={item}
+                  schedulesPaused={schedulesPaused}
+                />
+              ))}
+            </div>
+          ) : null}
+          {scheduleHistoryItems.length ? (
+            <div className="px-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setScheduleHistoryExpanded((value) => !value)}
+                aria-expanded={scheduleHistoryExpanded}
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+              >
+                <span aria-hidden>
+                  {scheduleHistoryExpanded
+                    ? <CaretDown size={10} weight="bold" />
+                    : <CaretRight size={10} weight="bold" />}
+                </span>
+                History ({scheduleHistoryItems.length})
+              </button>
+              {scheduleHistoryExpanded ? (
+                <div className="space-y-px pb-1">
+                  {scheduleHistoryItems.map((item) => (
+                    <ScheduleHistoryRow key={item.id} snapshot={item} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </section>
       ) : null}
 

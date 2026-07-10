@@ -308,7 +308,10 @@ Renderer surfaces:
   retry toast.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
-  delta chips). Surfaces a small amber warning pip next to the title
+  delta chips). Chat summaries with a future `nextWakeAt` render a compact
+  `⏰ <duration>` chip that refreshes while the row is mounted; paused or
+  overdue schedules omit the chip because their session summary reports no
+  future wake. Surfaces a small amber warning pip next to the title
   when `getStaleRunningCliSessionAgeHours` returns a value, so users
   can spot long-running CLI/shell sessions without opening them. The
   card also reports its multi-select state via `isMultiSelected`. While

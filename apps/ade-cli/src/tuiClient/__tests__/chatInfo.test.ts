@@ -177,6 +177,22 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.inspectedSubagentId).toBe("x1");
   });
 
+  it("carries the active session's earliest next wake into chat info", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ nextWakeAt: "2026-07-09T12:12:00.000Z" }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-8",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.nextWakeAt).toBe("2026-07-09T12:12:00.000Z");
+  });
+
   it("derives todos, plan explanation, and the lane PR rollup", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [

@@ -128,4 +128,26 @@ describe("AiFeaturesSection", () => {
       expect(screen.getByTestId("location").textContent).toBe("/settings?tab=ai#ai-providers");
     });
   });
+
+  it("persists the global scheduled-work pause toggle", async () => {
+    installAdeMocks();
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    const label = await screen.findByText("Pause all scheduled work");
+    const row = label.closest(".ai-feature-row");
+    const toggle = row?.querySelector("button");
+    expect(toggle).toBeTruthy();
+    fireEvent.click(toggle!);
+
+    await waitFor(() => {
+      expect((window as any).ade.ai.updateConfig).toHaveBeenCalledWith({
+        chat: { scheduledWorkPaused: true },
+      });
+    });
+  });
 });

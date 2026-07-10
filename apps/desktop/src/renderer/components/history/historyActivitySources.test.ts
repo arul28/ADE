@@ -22,6 +22,7 @@ const chat: AgentChatSessionSummary = {
   lastActivityAt: "2026-05-22T00:10:00.000Z",
   lastOutputPreview: "Working on the fix",
   summary: "Investigating the checkout failure",
+  nextWakeAt: null,
 };
 
 const ctoSnapshot: CtoSnapshot = {

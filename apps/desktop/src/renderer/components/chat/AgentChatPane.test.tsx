@@ -124,6 +124,7 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     executionMode: "focused",
     interactionMode: null,
     ...overrides,
+    nextWakeAt: overrides.nextWakeAt ?? null,
   };
 }
 
@@ -6634,6 +6635,7 @@ describe("resolveNextSelectedSessionId", () => {
       completion: null,
       reasoningEffort: null,
       executionMode: "focused",
+      nextWakeAt: null,
     };
   }
 

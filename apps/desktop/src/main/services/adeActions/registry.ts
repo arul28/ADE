@@ -464,6 +464,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "readTranscript",
     "setClaudeOutputStyle",
     "setParallelLaunchState",
+    "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
     "unarchiveSession",
@@ -1819,6 +1820,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         shared: { ...snapshot.shared, ai: merged },
         local: snapshot.local ?? {},
       });
+      void runtime.agentChatService?.refreshScheduledWork();
     },
     listCursorCloudRepositories: () => aiIntegrationService.listCursorCloudRepositories(),
     listCursorCloudAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>

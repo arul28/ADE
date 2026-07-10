@@ -301,6 +301,8 @@ import type {
   AgentChatClaudeOutputStyle,
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
+  AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkPausedResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
   AgentChatReloadClaudePluginsArgs,
@@ -5253,6 +5255,19 @@ contextBridge.exposeInMainWorld("ade", {
         : await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
+    },
+    setScheduledWorkPaused: async (
+      args: AgentChatSetScheduledWorkPausedArgs,
+    ): Promise<AgentChatSetScheduledWorkPausedResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr(
+        "chat",
+        "setScheduledWorkPaused",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatSetScheduledWorkPaused, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
     },
     warmupModel: async (args: {
       sessionId: string;

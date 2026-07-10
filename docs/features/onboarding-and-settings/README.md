@@ -66,6 +66,8 @@ Shared types and IPC:
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
   - `ade.ai.*` and settings-specific channels per integration
+  - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
+    the global pause is written through `ade.ai.updateConfig`
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
   registrations.
 
@@ -205,7 +207,10 @@ Renderer — settings:
   CLI sessions, and lanes; summarizing completed chats and terminals;
   PR description drafting; and commit message drafting. Reasoning-effort
   pickers use `useFamilyDefaults={false}` so each row keeps an
-  independent effort override.
+  independent effort override. The section also owns **Pause all scheduled
+  work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
+  wakeups, cron tasks, and `/loop` schedules across the project runtime
+  without disarming them; overdue work catches up once after resume.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — AI Connections settings for provider CLIs, authentication, API keys,
   and model availability.
@@ -420,7 +425,7 @@ changing rather than which service backs it:
 | General | `GeneralSection.tsx` (GitHub/Linear connections, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, and the user-message minimap toggle. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
-| Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
+| Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus the project-wide **Pause all scheduled work** control for Claude wakeups, cron tasks, and loops. Pausing keeps schedules armed and suppresses `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Stats | `AdeUsageSection.tsx` | Local runtime token / cost summaries and GitHub-backed PR, commit, and code movement totals. Deep links from `?tab=usage` and `?tab=stats` land here. |
 

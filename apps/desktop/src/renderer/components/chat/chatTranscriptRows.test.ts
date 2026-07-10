@@ -2149,4 +2149,37 @@ describe("subagent two-row rendering", () => {
     if (rows[0]!.event.type !== "scheduled_work_update") throw new Error("Expected scheduled_work_update");
     expect(rows[0]!.event.kind).toBe("cron");
   });
+
+  it("derives a wake divider before every unattended scheduled turn", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T09:00:00.000Z", {
+        type: "user_message",
+        text: "Check PR CI and report the result.",
+        turnId: "wake-turn-1",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "cron-ci",
+            kind: "cron",
+            firedAt: "2026-06-01T09:00:00.000Z",
+            reason: "Check PR CI",
+            late: true,
+          },
+        },
+      }),
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      key: "scheduled-wake:cron-ci:wake-turn-1",
+      event: {
+        type: "scheduled_wake_divider",
+        scheduleId: "cron-ci",
+        kind: "cron",
+        reason: "Check PR CI",
+        late: true,
+        turnId: "wake-turn-1",
+      },
+    });
+    expect(rows[1]?.event.type).toBe("user_message");
+  });
 });

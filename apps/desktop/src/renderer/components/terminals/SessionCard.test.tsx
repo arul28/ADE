@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
@@ -14,6 +14,7 @@ vi.mock("./useSessionDelta", () => ({
 afterEach(() => {
   cleanup();
   setLaneNaming("lane-1", false);
+  vi.useRealTimers();
 });
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -225,4 +226,45 @@ describe("SessionCard attention capsule", () => {
     expect(screen.getByLabelText("Awaiting your input")).toBeTruthy();
     expect(screen.queryByText("Needs you")).toBeNull();
   });
+});
+
+describe("SessionCard next wake chip", () => {
+  it("shows a compact countdown for a valid future wake and refreshes every 30 seconds", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    render(
+      <SessionCard
+        session={makeSession({ nextWakeAt: "2026-07-09T12:01:01.000Z" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("⏰ 2m")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(screen.getByText("⏰ 1m")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(31_000));
+    expect(screen.queryByLabelText(/Next scheduled wake/)).toBeNull();
+  });
+
+  it.each([null, "not-a-date", "2026-07-09T11:59:59.000Z"])(
+    "hides a null, invalid, or past wake timestamp (%s)",
+    (nextWakeAt) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+      render(
+        <SessionCard
+          session={makeSession({ nextWakeAt })}
+          lane={lane}
+          isSelected={false}
+          onSelect={vi.fn()}
+          onContextMenu={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByLabelText(/Next scheduled wake/)).toBeNull();
+    },
+  );
 });

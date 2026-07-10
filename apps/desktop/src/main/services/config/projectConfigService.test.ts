@@ -540,6 +540,7 @@ describe("projectConfigService - AI mode migration", () => {
             autoTitleReasoningEffort: "minimal",
             autoTitleRefreshOnComplete: false,
             autoAllowAskUser: false,
+            scheduledWorkPaused: true,
             codexSandbox: "workspace-write",
           },
         },
@@ -566,6 +567,7 @@ describe("projectConfigService - AI mode migration", () => {
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.reasoningEffort).toBe("minimal");
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
     expect(snapshot.effective.ai?.chat?.autoAllowAskUser).toBe(false);
+    expect(snapshot.effective.ai?.chat?.scheduledWorkPaused).toBe(true);
     expect(snapshot.effective.ai?.chat?.codexSandbox).toBe("workspace-write");
 
     service.save({
@@ -588,6 +590,7 @@ describe("projectConfigService - AI mode migration", () => {
     expect(persisted.ai?.sessionIntelligence?.titles?.reasoningEffort).toBe("minimal");
     expect(persisted.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
     expect(persisted.ai?.chat?.autoAllowAskUser).toBe(false);
+    expect(persisted.ai?.chat?.scheduledWorkPaused).toBe(true);
     expect(persisted.ai?.chat?.codexSandbox).toBe("workspace-write");
   });
 

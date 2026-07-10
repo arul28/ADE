@@ -251,6 +251,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       lastActivityAt: session.lastActivityAt,
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
       threadId: session.threadId,
     };
   }, [session]);

@@ -146,6 +146,7 @@ describe("Drawer closed CLI sessions", () => {
       lastActivityAt: "2026-01-01T00:01:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
 
     expect(closed).toBeTruthy();
@@ -194,6 +195,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -250,6 +252,7 @@ describe("Drawer lane and chat navigation layout", () => {
       lastActivityAt: "2026-05-12T11:31:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
     const closedSession: ClosedCliSessionSummary = {
       sessionId: "term-1",
@@ -263,6 +266,7 @@ describe("Drawer lane and chat navigation layout", () => {
       lastActivityAt: "2026-05-12T11:45:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
       terminalStatus: "failed",
       terminalExitCode: 1,
       terminalRuntimeState: "killed",
@@ -306,6 +310,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -348,6 +353,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -475,6 +481,7 @@ describe("Drawer active chat indicator", () => {
       lastActivityAt: "2026-05-12T12:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
 
     const frame = stripAnsi(render(
