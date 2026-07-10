@@ -445,6 +445,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   // Hero only for a brand-new chat: a selected session docks immediately even
   // while its event history is still loading, so the greeting never flashes.
   const heroMode = selectedId == null && selectedEvents.length === 0;
+  // The eventsBySession key appears when the history fetch completes, so a
+  // selected session with no key is still loading; a present-but-empty list is
+  // a real (possibly failed-first-send) empty chat, not a pending fetch.
+  const historySettled = selectedId != null && (eventsBySession[selectedId] !== undefined || Boolean(error));
   const showReconnecting = Boolean(error) && isRemote;
 
   const applyPrompt = useCallback((prefill: string) => {
@@ -553,6 +557,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 </div>
               ) : heroMode ? (
                 <ProjectlessHero composer={composer} onSelectPrompt={applyPrompt} providerUnavailable={providerUnavailable} />
+              ) : historySettled ? (
+                <div className="flex h-full items-center justify-center px-6">
+                  <p className="text-center font-sans text-[12px] leading-5 text-muted-fg/40">No messages in this chat yet.</p>
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center">
                   <SpinnerGap size={18} className="animate-spin text-muted-fg/25" />

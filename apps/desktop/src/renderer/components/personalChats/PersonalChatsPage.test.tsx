@@ -246,6 +246,8 @@ describe("PersonalChatsPage", () => {
     expect(screen.queryByText("What can I help with?")).toBeNull();
     // Exactly one composer instance — the hero variant must not linger alongside the docked one.
     expect(screen.getAllByLabelText("Message an ADE agent")).toHaveLength(1);
+    // Once history settles empty, a stable empty state replaces the spinner.
+    expect(await screen.findByText("No messages in this chat yet.")).toBeTruthy();
   });
 
   it("does not submit when Enter confirms an IME composition", async () => {

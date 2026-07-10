@@ -23,6 +23,7 @@ import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 
 function createPreloadableRoute<TProps extends object>(
@@ -262,7 +263,6 @@ function isLanesRoutePath(pathname: string): boolean {
   return pathname === "/lanes" || pathname.startsWith("/lanes/");
 }
 
-const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
@@ -284,10 +284,6 @@ function bindingForProject(
     return activeProjectBinding;
   }
   return localProjectBindingForProject(project);
-}
-
-function projectRouteStorageKey(projectRoot: string): string {
-  return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
 }
 
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
@@ -321,23 +317,6 @@ function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): 
   params.delete("externalOpen");
   const search = params.toString();
   return `${location.pathname}${search ? `?${search}` : ""}${location.hash ?? ""}`;
-}
-
-function readStoredProjectRoute(projectRoot: string): string | null {
-  try {
-    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
-    return value?.startsWith("/") ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredProjectRoute(projectRoot: string, route: string): void {
-  try {
-    window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
-  } catch {
-    // localStorage can be unavailable in private/test environments.
-  }
 }
 
 type ProjectSurfaceEntry = {

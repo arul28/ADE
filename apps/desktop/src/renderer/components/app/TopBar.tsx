@@ -41,6 +41,7 @@ import {
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
+import { readStoredProjectRoute } from "./projectRouteStorage";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
@@ -1348,13 +1349,26 @@ export function TopBar({
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
+  // Clicking a project tab while the Chats machine tab is foreground must
+  // leave /chats, or ProjectTabHost's route replay (which skips personal chats
+  // routes) never surfaces the project. Navigate to the CURRENT binding's
+  // stored route so the route-cache effect writes that same value back instead
+  // of stamping /work over the project's remembered position.
+  const leavePersonalChatsRoute = useCallback(() => {
+    if (!personalChatsRouteActive) return;
+    const currentBindingKey = remoteBinding
+      ? remoteBinding.key
+      : project?.rootPath
+        ? `local:${project.rootPath}`
+        : null;
+    const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
+    onNavigate?.(route, { replace: true });
+  }, [onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
-      // Clicking a project tab while the Chats machine tab is foreground must
-      // leave /chats, or ProjectTabHost's route replay (which skips personal
-      // chats routes) never surfaces the project.
-      if (personalChatsRouteActive) onNavigate?.("/work", { replace: true });
+      leavePersonalChatsRoute();
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
@@ -1364,8 +1378,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      onNavigate,
-      personalChatsRouteActive,
+      leavePersonalChatsRoute,
       project?.rootPath,
       remoteBinding,
       switchProjectToPath,
@@ -1375,7 +1388,7 @@ export function TopBar({
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
-      if (personalChatsRouteActive) onNavigate?.("/work", { replace: true });
+      leavePersonalChatsRoute();
       if (remoteBinding?.key === binding.key) {
         cancelNewTab();
         return;
@@ -1385,8 +1398,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      onNavigate,
-      personalChatsRouteActive,
+      leavePersonalChatsRoute,
       remoteBinding?.key,
       switchRemoteProject,
     ],
