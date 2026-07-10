@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
@@ -336,6 +336,108 @@ function PaneTextAction({ children, onClick }: { children: ReactNode; onClick: (
     >
       {children}
     </button>
+  );
+}
+
+type ScalablePaneSectionKey = keyof PaneClearedStorageState;
+
+function PaneScalableSection<T>({
+  sectionKey, label, hint, tone, cap, groups, capped, paneUi, sticky, extraHeaderAction,
+  idOf, renderActiveRow, renderEarlierRow, onToggleCollapsed, onToggleEarlier,
+  onClear, onRestore, onShowAll, showAll, hasPrecedingSection, showAllLabel,
+  animateActiveRows = true, animateEarlierRows = false, keepEmptyActiveList = true,
+  subagentTaskIdOf,
+}: {
+  sectionKey: ScalablePaneSectionKey;
+  label: string;
+  hint: string;
+  tone: SectionTone;
+  cap: number;
+  groups: { active: T[]; earlier: T[]; clearedCount: number };
+  capped: { visible: T[]; hiddenCount: number };
+  paneUi: PaneUiStorageState;
+  sticky: boolean;
+  extraHeaderAction?: ReactNode;
+  idOf: (item: T) => string;
+  renderActiveRow: (item: T) => ReactNode;
+  renderEarlierRow: (item: T) => ReactNode;
+  onToggleCollapsed: () => void;
+  onToggleEarlier: () => void;
+  onClear: (ids: string[]) => void;
+  onRestore: () => void;
+  onShowAll: () => void;
+  showAll: boolean;
+  hasPrecedingSection: boolean;
+  showAllLabel?: string;
+  animateActiveRows?: boolean;
+  animateEarlierRows?: boolean;
+  keepEmptyActiveList?: boolean;
+  subagentTaskIdOf?: (item: T) => string;
+}) {
+  const allClear = groups.active.length === 0 && groups.earlier.length === 0 && groups.clearedCount > 0;
+  const collapsible = groups.earlier.length > 0 || groups.active.length > cap;
+  const collapsed = collapsible && paneUi.collapsed[sectionKey] === true;
+  const earlierExpanded = paneUi.earlier[sectionKey] === true;
+  const sectionAction = allClear ? (
+    <PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction>
+  ) : groups.earlier.length > 0 ? (
+    <PaneTextAction onClick={() => onClear(groups.earlier.map(idOf))}>Clear</PaneTextAction>
+  ) : null;
+  const renderRows = (items: T[], renderRow: (item: T) => ReactNode, animated: boolean) => {
+    const rows = items.map((item) => animated ? (
+      <motion.div
+        key={idOf(item)}
+        data-subagent-task-id={subagentTaskIdOf?.(item)}
+        initial={{ height: 0, opacity: 0 }}
+        animate={{ height: "auto", opacity: 1 }}
+        exit={{ height: 0, opacity: 0 }}
+        transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+        className="overflow-hidden"
+      >
+        {renderRow(item)}
+      </motion.div>
+    ) : <Fragment key={idOf(item)}>{renderRow(item)}</Fragment>);
+    return animated ? <AnimatePresence initial={false}>{rows}</AnimatePresence> : rows;
+  };
+
+  return (
+    <section className={cn("pb-3", hasPrecedingSection && "border-t border-white/[0.04]")}>
+      <SectionHeader
+        label={label}
+        hint={allClear ? "all clear" : hint}
+        tone={tone}
+        emphasized
+        sticky={sticky}
+        collapsible={collapsible}
+        collapsed={collapsed}
+        onToggle={onToggleCollapsed}
+        action={extraHeaderAction === undefined ? sectionAction : <>{sectionAction}{extraHeaderAction}</>}
+      />
+      <SectionDisclosure open={!collapsed}>
+        {allClear ? <div className="px-4 pb-2 text-[11px] text-fg/35">{label} · all clear</div> : null}
+        {keepEmptyActiveList || capped.visible.length > 0 ? (
+          <div className="space-y-px px-2 pb-1">
+            {renderRows(capped.visible, renderActiveRow, animateActiveRows)}
+          </div>
+        ) : null}
+        {!showAll && capped.hiddenCount > 0 ? (
+          <ShowAllButton hiddenLabel={showAllLabel ?? `${capped.hiddenCount}`} onClick={onShowAll} />
+        ) : null}
+        {groups.earlier.length > 0 || groups.clearedCount > 0 ? (
+          <div className="px-2 pt-0.5">
+            <EarlierToggle count={groups.earlier.length} clearedCount={groups.clearedCount} expanded={earlierExpanded} onToggle={onToggleEarlier} />
+            <SectionDisclosure open={earlierExpanded}>
+              <div className="space-y-px pb-1">
+                {renderRows(groups.earlier, renderEarlierRow, animateEarlierRows)}
+              </div>
+              {groups.clearedCount > 0 ? (
+                <div className="px-2 pb-1"><PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction></div>
+              ) : null}
+            </SectionDisclosure>
+          </div>
+        ) : null}
+      </SectionDisclosure>
+    </section>
   );
 }
 
@@ -1161,15 +1263,6 @@ export function ChatSubagentsPanel({
   const scheduleRunningCount = scheduleGroups.active.filter((item) => item.status === "running").length;
   const scheduleFailedCount = scheduleGroups.active.filter((item) => item.status === "failed").length;
 
-  const subagentsCollapsible = subagentGroups.earlier.length > 0 || subagentGroups.active.length > SUBAGENTS_ACTIVE_CAP;
-  const backgroundCollapsible = backgroundGroups.earlier.length > 0 || backgroundGroups.active.length > BACKGROUND_ACTIVE_CAP;
-  const scheduleCollapsible = scheduleGroups.earlier.length > 0 || scheduleGroups.active.length > SCHEDULE_ACTIVE_CAP;
-  const subagentsCollapsed = subagentsCollapsible && paneUi.collapsed.subagents === true;
-  const backgroundCollapsed = backgroundCollapsible && paneUi.collapsed.background === true;
-  const scheduleCollapsed = scheduleCollapsible && paneUi.collapsed.schedule === true;
-  const subagentsAllClear = subagentGroups.active.length === 0 && subagentGroups.earlier.length === 0 && subagentGroups.clearedCount > 0;
-  const backgroundAllClear = backgroundGroups.active.length === 0 && backgroundGroups.earlier.length === 0 && backgroundGroups.clearedCount > 0;
-  const scheduleAllClear = scheduleGroups.active.length === 0 && scheduleGroups.earlier.length === 0 && scheduleGroups.clearedCount > 0;
   const stickyHeaders = variant === "pane";
 
   const hasGoal = Boolean(goal?.objective?.trim());
@@ -1178,6 +1271,17 @@ export function ChatSubagentsPanel({
   const hasBackground = backgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
   const hasAnything = hasGoal || Boolean(plan) || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
+    <SubagentRow
+      snapshot={snap}
+      selected={selectedTaskId === snap.taskId}
+      expanded={expandedTaskId === snap.taskId}
+      probing={probingTaskId === snap.taskId}
+      canViewFullTranscript={canTakeover}
+      category={snap.background ? "background" : "subagent"}
+      onClick={() => handleRowClick(snap)}
+    />
+  );
 
   const body = (
     <div className="flex min-h-full flex-col font-sans">
@@ -1266,241 +1370,64 @@ export function ChatSubagentsPanel({
 
       {/* ── Subagents (merged foreground + background-run agents) ──── */}
       {hasSubagents ? (
-        <section
-          className={cn(
-            "pb-3",
-            (hasGoal || plan || hasTasks) && "border-t border-white/[0.04]",
-          )}
-        >
-          <SectionHeader
-            label="Subagents"
-            hint={subagentsAllClear ? "all clear" : paneSectionHint({
-              activeCount: subagentGroups.active.length,
-              earlierCount: subagentGroups.earlier.length,
-              clearedCount: subagentGroups.clearedCount,
-              runningCount: subagentRunningCount,
-              failedCount: subagentFailedCount,
-            })}
-            tone="subagent"
-            emphasized
-            sticky={stickyHeaders}
-            collapsible={subagentsCollapsible}
-            collapsed={subagentsCollapsed}
-            onToggle={() => toggleSection("subagents")}
-            action={subagentsAllClear ? (
-              <PaneTextAction onClick={() => restoreCleared("subagents")}>Restore ({subagentGroups.clearedCount})</PaneTextAction>
-            ) : subagentGroups.earlier.length > 0 ? (
-              <PaneTextAction onClick={() => clearEarlier("subagents", subagentGroups.earlier.map((item) => item.taskId))}>Clear</PaneTextAction>
-            ) : null}
-          />
-          <SectionDisclosure open={!subagentsCollapsed}>
-            {subagentsAllClear ? (
-              <div className="px-4 pb-2 text-[11px] text-fg/35">Subagents · all clear</div>
-            ) : null}
-            <div className="space-y-px px-2 pb-1">
-              <AnimatePresence initial={false}>
-                {cappedSubagents.visible.map((snap) => (
-                  <motion.div
-                    key={snap.taskId}
-                    data-subagent-task-id={snap.taskId}
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                    className="overflow-hidden"
-                  >
-                    <SubagentRow
-                      snapshot={snap}
-                      selected={selectedTaskId === snap.taskId}
-                      expanded={expandedTaskId === snap.taskId}
-                      probing={probingTaskId === snap.taskId}
-                      canViewFullTranscript={canTakeover}
-                      category={snap.background ? "background" : "subagent"}
-                      onClick={() => handleRowClick(snap)}
-                    />
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </div>
-            {cappedSubagents.hiddenCount > 0 ? (
-              <ShowAllButton
-                hiddenLabel={`${cappedSubagents.hiddenCount} running`}
-                onClick={() => setShowAll((current) => ({ ...current, subagents: true }))}
-              />
-            ) : null}
-            {subagentGroups.earlier.length > 0 || subagentGroups.clearedCount > 0 ? (
-              <div className="px-2 pt-0.5">
-                <EarlierToggle
-                  count={subagentGroups.earlier.length}
-                  clearedCount={subagentGroups.clearedCount}
-                  expanded={paneUi.earlier.subagents === true}
-                  onToggle={() => toggleEarlier("subagents")}
-                />
-                <SectionDisclosure open={paneUi.earlier.subagents === true}>
-                  <div className="space-y-px pb-1">
-                    <AnimatePresence initial={false}>
-                      {subagentGroups.earlier.map((snap) => (
-                        <motion.div
-                          key={snap.taskId}
-                          data-subagent-task-id={snap.taskId}
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                          className="overflow-hidden"
-                        >
-                          <SubagentRow
-                            snapshot={snap}
-                            selected={selectedTaskId === snap.taskId}
-                            expanded={expandedTaskId === snap.taskId}
-                            probing={probingTaskId === snap.taskId}
-                            canViewFullTranscript={canTakeover}
-                            category={snap.background ? "background" : "subagent"}
-                            onClick={() => handleRowClick(snap)}
-                          />
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                  {subagentGroups.clearedCount > 0 ? (
-                    <div className="px-2 pb-1"><PaneTextAction onClick={() => restoreCleared("subagents")}>Restore ({subagentGroups.clearedCount})</PaneTextAction></div>
-                  ) : null}
-                </SectionDisclosure>
-              </div>
-            ) : null}
-          </SectionDisclosure>
-        </section>
+        <PaneScalableSection
+          sectionKey="subagents" label="Subagents" tone="subagent" cap={SUBAGENTS_ACTIVE_CAP}
+          hint={paneSectionHint({ activeCount: subagentGroups.active.length, earlierCount: subagentGroups.earlier.length, clearedCount: subagentGroups.clearedCount, runningCount: subagentRunningCount, failedCount: subagentFailedCount })}
+          groups={subagentGroups} capped={cappedSubagents} paneUi={paneUi} sticky={stickyHeaders}
+          idOf={(snap) => snap.taskId}
+          renderActiveRow={renderSubagentPaneRow} renderEarlierRow={renderSubagentPaneRow}
+          onToggleCollapsed={() => toggleSection("subagents")} onToggleEarlier={() => toggleEarlier("subagents")}
+          onClear={(ids) => clearEarlier("subagents", ids)} onRestore={() => restoreCleared("subagents")}
+          onShowAll={() => setShowAll((current) => ({ ...current, subagents: true }))} showAll={showAll.subagents === true}
+          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks)} showAllLabel={`${cappedSubagents.hiddenCount} running`}
+          animateEarlierRows subagentTaskIdOf={(snap) => snap.taskId}
+        />
       ) : null}
 
       {/* ── Background (background command tasks) ─────────────────── */}
       {hasBackground ? (
-        <section
-          className={cn(
-            "pb-3",
-            (hasGoal || plan || hasTasks || hasSubagents) && "border-t border-white/[0.04]",
-          )}
-        >
-          <SectionHeader
-            label="Background"
-            hint={backgroundAllClear ? "all clear" : paneSectionHint({
-              activeCount: backgroundGroups.active.length,
-              earlierCount: backgroundGroups.earlier.length,
-              clearedCount: backgroundGroups.clearedCount,
-              runningCount: backgroundRunningCount,
-              failedCount: backgroundFailedCount,
-            })}
-            tone="background"
-            emphasized
-            sticky={stickyHeaders}
-            collapsible={backgroundCollapsible}
-            collapsed={backgroundCollapsed}
-            onToggle={() => toggleSection("background")}
-            action={backgroundAllClear ? (
-              <PaneTextAction onClick={() => restoreCleared("background")}>Restore ({backgroundGroups.clearedCount})</PaneTextAction>
-            ) : backgroundGroups.earlier.length > 0 ? (
-              <PaneTextAction onClick={() => clearEarlier("background", backgroundGroups.earlier.map((item) => item.id))}>Clear</PaneTextAction>
-            ) : null}
-          />
-          <SectionDisclosure open={!backgroundCollapsed}>
-            {backgroundAllClear ? <div className="px-4 pb-2 text-[11px] text-fg/35">Background · all clear</div> : null}
-            <div className="space-y-px px-2 pb-1">
-              <AnimatePresence initial={false}>
-                {cappedBackground.visible.map((item) => (
-                  <motion.div key={item.id} initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }} className="overflow-hidden">
-                    <BackgroundCommandRow snapshot={item} />
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </div>
-            {cappedBackground.hiddenCount > 0 ? <ShowAllButton hiddenLabel={`${cappedBackground.hiddenCount}`} onClick={() => setShowAll((current) => ({ ...current, background: true }))} /> : null}
-            {backgroundGroups.earlier.length > 0 || backgroundGroups.clearedCount > 0 ? (
-              <div className="px-2 pt-0.5">
-                <EarlierToggle count={backgroundGroups.earlier.length} clearedCount={backgroundGroups.clearedCount} expanded={paneUi.earlier.background === true} onToggle={() => toggleEarlier("background")} />
-                <SectionDisclosure open={paneUi.earlier.background === true}>
-                  <div className="space-y-px pb-1">
-                    {backgroundGroups.earlier.map((item) => <BackgroundCommandRow key={item.id} snapshot={item} />)}
-                  </div>
-                  {backgroundGroups.clearedCount > 0 ? <div className="px-2 pb-1"><PaneTextAction onClick={() => restoreCleared("background")}>Restore ({backgroundGroups.clearedCount})</PaneTextAction></div> : null}
-                </SectionDisclosure>
-              </div>
-            ) : null}
-          </SectionDisclosure>
-        </section>
+        <PaneScalableSection
+          sectionKey="background" label="Background" tone="background" cap={BACKGROUND_ACTIVE_CAP}
+          hint={paneSectionHint({ activeCount: backgroundGroups.active.length, earlierCount: backgroundGroups.earlier.length, clearedCount: backgroundGroups.clearedCount, runningCount: backgroundRunningCount, failedCount: backgroundFailedCount })}
+          groups={backgroundGroups} capped={cappedBackground} paneUi={paneUi} sticky={stickyHeaders}
+          idOf={(item) => item.id}
+          renderActiveRow={(item) => <BackgroundCommandRow snapshot={item} />}
+          renderEarlierRow={(item) => <BackgroundCommandRow snapshot={item} />}
+          onToggleCollapsed={() => toggleSection("background")} onToggleEarlier={() => toggleEarlier("background")}
+          onClear={(ids) => clearEarlier("background", ids)} onRestore={() => restoreCleared("background")}
+          onShowAll={() => setShowAll((current) => ({ ...current, background: true }))} showAll={showAll.background === true}
+          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks || hasSubagents)}
+        />
       ) : null}
 
       {/* ── Schedule (schedule kinds only) ───────────────────────── */}
       {hasScheduled ? (
-        <section
-          className={cn(
-            "pb-3",
-            (hasGoal || plan || hasTasks || hasSubagents || hasBackground) && "border-t border-white/[0.04]",
-          )}
-        >
-          <SectionHeader
-            label="Schedule"
-            hint={scheduleAllClear ? "all clear" : paneSectionHint({
-              activeCount: scheduleGroups.active.length,
-              earlierCount: scheduleGroups.earlier.length,
-              clearedCount: scheduleGroups.clearedCount,
-              runningCount: scheduleRunningCount,
-              failedCount: scheduleFailedCount,
-            })}
-            tone="scheduled"
-            emphasized
-            sticky={stickyHeaders}
-            collapsible={scheduleCollapsible}
-            collapsed={scheduleCollapsed}
-            onToggle={() => toggleSection("schedule")}
-            action={(
-              <>
-                {scheduleAllClear ? (
-                  <PaneTextAction onClick={() => restoreCleared("schedule")}>Restore ({scheduleGroups.clearedCount})</PaneTextAction>
-                ) : scheduleGroups.earlier.length > 0 ? (
-                  <PaneTextAction onClick={() => clearEarlier("schedule", scheduleGroups.earlier.map((item) => item.id))}>Clear</PaneTextAction>
-                ) : null}
-                {onToggleSchedulesPaused ? (
-                  <button
-                    type="button"
-                    onClick={onToggleSchedulesPaused}
-                    aria-label={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
-                    title={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
-                    className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/65"
-                  >
-                    {schedulesPaused ? <Play aria-hidden size={11} weight="fill" /> : <Pause aria-hidden size={11} weight="fill" />}
-                  </button>
-                ) : null}
-              </>
-            )}
-          />
-          <SectionDisclosure open={!scheduleCollapsed}>
-          {scheduleAllClear ? <div className="px-4 pb-2 text-[11px] text-fg/35">Schedule · all clear</div> : null}
-          {cappedSchedule.visible.length ? (
-            <div className="space-y-px px-2 pb-1">
-              {cappedSchedule.visible.map((item) => (
-                <ScheduledWorkRow
-                  key={item.id}
-                  snapshot={item}
-                  schedulesPaused={schedulesPaused}
-                />
-              ))}
-            </div>
-          ) : null}
-          {cappedSchedule.hiddenCount > 0 ? <ShowAllButton hiddenLabel={`${cappedSchedule.hiddenCount}`} onClick={() => setShowAll((current) => ({ ...current, schedule: true }))} /> : null}
-          {scheduleGroups.earlier.length > 0 || scheduleGroups.clearedCount > 0 ? (
-            <div className="px-2 pt-0.5">
-              <EarlierToggle count={scheduleGroups.earlier.length} clearedCount={scheduleGroups.clearedCount} expanded={paneUi.earlier.schedule === true} onToggle={() => toggleEarlier("schedule")} />
-              <SectionDisclosure open={paneUi.earlier.schedule === true}>
-                <div className="space-y-px pb-1">
-                  {scheduleGroups.earlier.map((item) => isFiredOneShotWakeup(item)
-                    ? <ScheduleHistoryRow key={item.id} snapshot={item} />
-                    : <ScheduledWorkRow key={item.id} snapshot={item} schedulesPaused={schedulesPaused} />)}
-                </div>
-                {scheduleGroups.clearedCount > 0 ? <div className="px-2 pb-1"><PaneTextAction onClick={() => restoreCleared("schedule")}>Restore ({scheduleGroups.clearedCount})</PaneTextAction></div> : null}
-              </SectionDisclosure>
-            </div>
-          ) : null}
-          </SectionDisclosure>
-        </section>
+        <PaneScalableSection
+          sectionKey="schedule" label="Schedule" tone="scheduled" cap={SCHEDULE_ACTIVE_CAP}
+          hint={paneSectionHint({ activeCount: scheduleGroups.active.length, earlierCount: scheduleGroups.earlier.length, clearedCount: scheduleGroups.clearedCount, runningCount: scheduleRunningCount, failedCount: scheduleFailedCount })}
+          groups={scheduleGroups} capped={cappedSchedule} paneUi={paneUi} sticky={stickyHeaders}
+          extraHeaderAction={<>{onToggleSchedulesPaused ? (
+            <button
+              type="button"
+              onClick={onToggleSchedulesPaused}
+              aria-label={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
+              title={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
+              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/65"
+            >
+              {schedulesPaused ? <Play aria-hidden size={11} weight="fill" /> : <Pause aria-hidden size={11} weight="fill" />}
+            </button>
+          ) : null}</>}
+          idOf={(item) => item.id}
+          renderActiveRow={(item) => <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} />}
+          renderEarlierRow={(item) => isFiredOneShotWakeup(item)
+            ? <ScheduleHistoryRow snapshot={item} />
+            : <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} />}
+          onToggleCollapsed={() => toggleSection("schedule")} onToggleEarlier={() => toggleEarlier("schedule")}
+          onClear={(ids) => clearEarlier("schedule", ids)} onRestore={() => restoreCleared("schedule")}
+          onShowAll={() => setShowAll((current) => ({ ...current, schedule: true }))} showAll={showAll.schedule === true}
+          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks || hasSubagents || hasBackground)}
+          animateActiveRows={false} keepEmptyActiveList={false}
+        />
       ) : null}
 
       {/* ── Single-agent empty state ─────────────────────────────── */}

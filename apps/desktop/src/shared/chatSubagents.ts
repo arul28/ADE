@@ -56,6 +56,9 @@ export type ChatInfoPlan = {
   live: boolean;
 } | null;
 
+// iOS mirrors these caps, the pane storage-key/empty-state shapes, and the
+// section-hint format in WorkChatRichCardViews.swift (WorkChatInfoDetailsSheet)
+// — keep the twins in sync when changing any of them.
 export const SUBAGENTS_ACTIVE_CAP = 12;
 export const BACKGROUND_ACTIVE_CAP = 8;
 export const SCHEDULE_ACTIVE_CAP = 10;

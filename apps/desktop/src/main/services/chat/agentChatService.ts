@@ -22068,6 +22068,10 @@ export function createAgentChatService(args: {
         dir: managed.laneWorktreePath,
       });
     } catch (error) {
+      // A transient fetch failure (store locked, file not flushed yet) should
+      // not burn the once-per-process attempt — release the guard so a later
+      // resume can retry the repair.
+      envelopeSpliceRepairAttemptedSessionIds.delete(sessionId);
       logger.debug("agent_chat.envelope_splice_repair_skipped", {
         sessionId,
         sdkSessionId,
@@ -29002,6 +29006,9 @@ export function createAgentChatService(args: {
         scheduledWorkScheduler.list()
           .filter((schedule) => {
             const row = sessionService.get(schedule.sessionId);
+            // `!row` deliberately widens the sweep to globally-orphaned
+            // schedules (no session row left) — they would self-cancel at
+            // fire time anyway; lane teardown just reaps them earlier.
             return !row || row.laneId === laneId;
           })
           .map((schedule) => scheduledWorkScheduler!.cancel(schedule.id)),

@@ -2583,6 +2583,10 @@ struct WorkChatInfoDetailsSheet: View {
   @State private var showAllSections: Set<String> = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  // Mirrors SUBAGENTS_ACTIVE_CAP / BACKGROUND_ACTIVE_CAP / SCHEDULE_ACTIVE_CAP,
+  // the pane storage-key/empty-state shapes, and the section-hint format in
+  // apps/desktop/src/shared/chatSubagents.ts + ChatSubagentsPanel.tsx — keep
+  // the twins in sync when changing any of them.
   private let subagentsCap = 12
   private let backgroundCap = 8
   private let scheduleCap = 10
@@ -2793,20 +2797,7 @@ struct WorkChatInfoDetailsSheet: View {
                 clearedCount: subagentPartition.clearedCount,
                 allClear: subagentPartition.active.isEmpty && subagentPartition.earlier.isEmpty && subagentPartition.clearedCount > 0
               ) {
-                VStack(spacing: 6) {
-                  if subagentPartition.active.isEmpty && subagentPartition.earlier.isEmpty && subagentPartition.clearedCount > 0 {
-                    allClearRow("Subagents")
-                  }
-                  ForEach(visibleSubagents.visible) { snapshot in
-                    subagentRow(snapshot)
-                  }
-                  showAllButton(section: "subagents", hiddenCount: visibleSubagents.hiddenCount)
-                  earlierButton(section: "subagents", count: subagentPartition.earlier.count, clearedCount: subagentPartition.clearedCount)
-                  if paneFlag("earlier", section: "subagents") {
-                    ForEach(subagentPartition.earlier) { snapshot in subagentRow(snapshot) }
-                    restoreButton(section: "subagents", count: subagentPartition.clearedCount)
-                  }
-                }
+                scalableSectionBody(title: "Subagents", sectionKey: "subagents", spacing: 6, partition: subagentPartition, visible: visibleSubagents) { snapshot, _ in subagentRow(snapshot) }
               }
             }
             if !backgroundItems.isEmpty {
@@ -2825,18 +2816,7 @@ struct WorkChatInfoDetailsSheet: View {
                 clearedCount: backgroundPartition.clearedCount,
                 allClear: backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0
               ) {
-                VStack(spacing: 8) {
-                  if backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0 { allClearRow("Background") }
-                  ForEach(visibleBackground.visible) { item in
-                    WorkBackgroundWorkRow(item: item)
-                  }
-                  showAllButton(section: "background", hiddenCount: visibleBackground.hiddenCount)
-                  earlierButton(section: "background", count: backgroundPartition.earlier.count, clearedCount: backgroundPartition.clearedCount)
-                  if paneFlag("earlier", section: "background") {
-                    ForEach(backgroundPartition.earlier) { item in WorkBackgroundWorkRow(item: item) }
-                    restoreButton(section: "background", count: backgroundPartition.clearedCount)
-                  }
-                }
+                scalableSectionBody(title: "Background", sectionKey: "background", spacing: 8, partition: backgroundPartition, visible: visibleBackground) { item, _ in WorkBackgroundWorkRow(item: item) }
               }
             }
             if !scheduleItems.isEmpty {
@@ -2855,22 +2835,11 @@ struct WorkChatInfoDetailsSheet: View {
                 clearedCount: schedulePartition.clearedCount,
                 allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0
               ) {
-                VStack(spacing: 8) {
-                  if schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0 { allClearRow("Schedule") }
-                  ForEach(visibleSchedule.visible) { item in
+                scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 8, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
+                  if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
+                    WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
+                  } else {
                     WorkScheduledWorkRow(item: item)
-                  }
-                  showAllButton(section: "schedule", hiddenCount: visibleSchedule.hiddenCount)
-                  earlierButton(section: "schedule", count: schedulePartition.earlier.count, clearedCount: schedulePartition.clearedCount)
-                  if paneFlag("earlier", section: "schedule") {
-                    ForEach(schedulePartition.earlier) { item in
-                      if workScheduleItemIsFiredOneShotWakeup(item) {
-                        WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
-                      } else {
-                        WorkScheduledWorkRow(item: item)
-                      }
-                    }
-                    restoreButton(section: "schedule", count: schedulePartition.clearedCount)
                   }
                 }
               }
@@ -2895,6 +2864,25 @@ struct WorkChatInfoDetailsSheet: View {
       expanded: expandedTaskIds.contains(snapshot.taskId),
       onSelect: { Task { await onSelect(snapshot) } }
     )
+  }
+
+  @ViewBuilder
+  private func scalableSectionBody<Item: Identifiable, Row: View>(
+    title: String, sectionKey: String, spacing: CGFloat,
+    partition: (active: [Item], earlier: [Item], clearedCount: Int),
+    visible: (visible: [Item], hiddenCount: Int),
+    @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
+  ) -> some View {
+    VStack(spacing: spacing) {
+      if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
+      ForEach(visible.visible) { item in row(item, false) }
+      showAllButton(section: sectionKey, hiddenCount: visible.hiddenCount)
+      earlierButton(section: sectionKey, count: partition.earlier.count, clearedCount: partition.clearedCount)
+      if paneFlag("earlier", section: sectionKey) {
+        ForEach(partition.earlier) { item in row(item, true) }
+        restoreButton(section: sectionKey, count: partition.clearedCount)
+      }
+    }
   }
 
   @ViewBuilder
