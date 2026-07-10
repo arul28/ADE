@@ -48,6 +48,7 @@ import type {
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
   AgentChatUpdateSessionArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
@@ -102,6 +103,7 @@ import type {
   LandPrArgs,
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
+  PersonalChatScopeContract,
   PrGithubCoords,
   PublishProjectInput,
   PublishProjectResult,
@@ -173,7 +175,9 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
+import { isAdeUsageRangePreset } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
+import { PERSONAL_CHAT_ACTIONS, isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -206,9 +210,11 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
+import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
@@ -236,6 +242,7 @@ import type { createPrService } from "../../../../desktop/src/main/services/prs/
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -267,6 +274,7 @@ type SyncRemoteCommandServiceArgs = {
    * production callers (bootstrap, syncHostService) always pass it.
    */
   db?: AdeDb;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
@@ -283,6 +291,7 @@ type SyncRemoteCommandServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
@@ -530,19 +539,6 @@ function parsePublishCurrentProjectArgs(value: Record<string, unknown>): Publish
     isPrivate: asOptionalBoolean(value.isPrivate) ?? true,
   };
 }
-
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-  ".bmp": "image/bmp",
-  ".gif": "image/gif",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".webp": "image/webp",
-};
 
 function requireProjectRoot(args: SyncRemoteCommandServiceArgs, action: string): string {
   return requireString(args.projectRoot, `${action} requires a project root.`);
@@ -1309,124 +1305,12 @@ function resolveAllowedProjectPath(args: SyncRemoteCommandServiceArgs, rawPath: 
   return resolvePathWithinRoot(projectRoot, normalized);
 }
 
-function sniffImageMimeType(buffer: Buffer): string | null {
-  if (buffer.length >= 8
-    && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
-    && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
-    return "image/png";
-  }
-  if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-    return "image/jpeg";
-  }
-  if (buffer.length >= 6
-    && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
-    && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
-    return "image/gif";
-  }
-  if (buffer.length >= 12
-    && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
-    && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-    return "image/webp";
-  }
-  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
-    return "image/bmp";
-  }
-  if (buffer.length >= 4
-    && buffer[0] === 0x00 && buffer[1] === 0x00
-    && buffer[2] === 0x01 && buffer[3] === 0x00) {
-    return "image/x-icon";
-  }
-  const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
-  const stripped = head.replace(/^﻿/, "").trimStart();
-  if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
-    return "image/svg+xml";
-  }
-  if (/^<svg\b/i.test(stripped)) {
-    return "image/svg+xml";
-  }
-  return null;
-}
-
-async function readImageFileAndSniffMime(filePath: string): Promise<{ data: Buffer; mimeType: string }> {
-  const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile()) throw new Error("Path is not a file.");
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error("Image must be 10 MB or smaller.");
-  const data = await fs.promises.readFile(filePath);
-  const mimeType = sniffImageMimeType(data);
-  if (!mimeType) throw new Error("Path is not an image.");
-  return { data, mimeType };
-}
-
-function normalizeImageMime(mime: unknown, filename: string): string {
-  const raw = typeof mime === "string" ? mime.trim().toLowerCase() : "";
-  const fromExtension = IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()];
-  const normalized = raw || fromExtension || "";
-  if (!Object.values(IMAGE_MIME_BY_EXTENSION).includes(normalized)) {
-    throw new Error("Temporary attachment mime must be a supported image type.");
-  }
-  return normalized;
-}
-
-function decodeBase64ImagePayload(value: string): Buffer {
-  const compact = value.replace(/\s+/g, "");
-  if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
-    throw new Error("Temporary attachment base64 is invalid.");
-  }
-  const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
-  if (compact.length > maxEncodedLength) {
-    throw new Error("Temporary attachments must be 10 MB or smaller.");
-  }
-  const content = Buffer.from(compact, "base64");
-  if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-    throw new Error("Temporary attachments must be 10 MB or smaller.");
-  }
-  return content;
-}
-
-function parseTempAttachmentPayload(payload: Record<string, unknown>): { content: Buffer; filename: string; mimeType: string } {
-  const dataUrl = typeof payload.dataUrl === "string" ? payload.dataUrl.trim() : "";
-  const filename = asTrimmedString(payload.filename) ?? "attachment.png";
-  if (dataUrl) {
-    const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl);
-    if (!match) throw new Error("Temporary attachment dataUrl is invalid.");
-    const mimeType = normalizeImageMime(match[1], filename);
-    const isBase64 = match[2] === ";base64";
-    const content = isBase64
-      ? decodeBase64ImagePayload(match[3] ?? "")
-      : Buffer.from(decodeURIComponent(match[3] ?? ""), "utf8");
-    if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error("Temporary attachments must be 10 MB or smaller.");
-    }
-    const sniffed = sniffImageMimeType(content);
-    if (sniffed !== mimeType) throw new Error("Temporary attachment MIME type does not match payload.");
-    return { content, filename, mimeType };
-  }
-
-  const base64 = typeof payload.base64 === "string"
-    ? payload.base64
-    : typeof payload.data === "string"
-      ? payload.data
-      : "";
-  const mimeType = normalizeImageMime(payload.mime ?? payload.mimeType, filename);
-  const content = decodeBase64ImagePayload(base64);
-  const sniffed = sniffImageMimeType(content);
-  if (sniffed !== mimeType) throw new Error("Temporary attachment MIME type does not match payload.");
-  return { content, filename, mimeType };
-}
-
 async function saveAgentChatTempAttachment(
   args: SyncRemoteCommandServiceArgs,
   payload: Record<string, unknown>,
 ): Promise<{ path: string; mimeType: string; previewDataUrl: string | null }> {
-  const { content, filename, mimeType } = parseTempAttachmentPayload(payload);
   const projectRoot = requireProjectRoot(args, "chat.saveTempAttachment");
-  const baseDir = path.join(projectRoot, ".ade", "attachments");
-  await fs.promises.mkdir(baseDir, { recursive: true });
-  const ext = path.extname(filename) || Object.entries(IMAGE_MIME_BY_EXTENSION)
-    .find(([, entryMime]) => entryMime === mimeType)?.[0] || ".png";
-  const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-  await fs.promises.writeFile(destPath, content);
-  return { path: destPath, mimeType, previewDataUrl: null };
+  return await saveImageTempAttachment(path.join(projectRoot, ".ade", "attachments"), payload);
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -2046,6 +1930,23 @@ function parseAgentChatCancelDispatchedSteerArgs(value: Record<string, unknown>)
 function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatInterruptArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.interrupt requires sessionId."),
+  };
+}
+
+function parseAgentChatRecoverCodexTurnArgs(value: Record<string, unknown>): AgentChatRecoverCodexTurnArgs {
+  const action = requireString(value.action, "chat.recoverCodexTurn requires action.");
+  if (
+    action !== "wait"
+    && action !== "steer"
+    && action !== "interrupt_retry_same_thread"
+    && action !== "restart_resume_thread"
+  ) {
+    throw new Error(`chat.recoverCodexTurn received unsupported action '${action}'.`);
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.recoverCodexTurn requires sessionId."),
+    turnId: requireString(value.turnId, "chat.recoverCodexTurn requires turnId."),
+    action,
   };
 }
 
@@ -3490,6 +3391,9 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     });
     const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
+    const codexComputerUse = provider === "codex"
+      ? await resolveCodexComputerUseMcpConfig()
+      : null;
 
     function resolveLaunch(): Partial<TrackedCliLaunchCommand> {
       if (provider === "shell") {
@@ -3508,6 +3412,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         fastMode: parsed.fastMode ?? undefined,
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
+        ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     }
 
@@ -3573,19 +3478,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.importExternalSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseImportExternalSessionArgs(payload);
     const result = await resolveExternalSessionsService(args).importExternalSession(parsed);
-    if (result.kind === "cli") {
-      return {
-        kind: "cli",
-        sessionId: result.sessionId,
-        ptyId: result.ptyId,
-        laneId: result.laneId,
-      } satisfies SyncImportExternalSessionResult;
-    }
-    return {
-      kind: "chat",
-      chatSessionId: result.chatSessionId,
-      laneId: result.laneId,
-    } satisfies SyncImportExternalSessionResult;
+    return result satisfies SyncImportExternalSessionResult;
   });
   register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseSendToSessionArgs(payload);
@@ -3767,6 +3660,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
     return { ok: true };
   });
+  register("chat.recoverCodexTurn", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.")
+      .recoverCodexTurn(parseAgentChatRecoverCodexTurnArgs(payload)));
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
@@ -3829,6 +3725,25 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const scope = args.personalChatScope;
+  if (!scope) return;
+  for (const action of PERSONAL_CHAT_ACTIONS) {
+    register(
+      `personalChats.${action}`,
+      { viewerAllowed: true, queueable: isPersonalChatActionQueueable(action) },
+      async (payload) => (await scope.call(action, payload)).result,
+      "runtime",
+    );
+  }
+  register(
+    "personalChats.streamEvents",
+    { viewerAllowed: true, queueable: false },
+    async (payload) => await scope.streamEvents(payload),
+    "runtime",
+  );
 }
 
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -4553,10 +4468,22 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   };
 
+  register("usage.getAdeStats", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getAdeStats preset must be today, 7d, 30d, year, or all.");
+    }
+    return await args.usageTrackingService.getAdeUsageStats({
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+    });
+  });
+
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerProcessRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
+  registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });

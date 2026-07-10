@@ -48,7 +48,7 @@ These services are loaded by the ADE runtime's project scope (and by the desktop
   - `RuleHistoryPanel.tsx` — per-rule run history (replaces the old cross-rule `HistoryTab`).
   - `TemplatesTab.tsx` / `AutomationsTemplatesPage.tsx` — template picker that seeds a new draft on `/automations` via router state.
   - `EmptyStateHint.tsx` — empty-state copy shared across tabs.
-- `apps/desktop/src/renderer/components/usage/` — header Usage popup (`HeaderUsageControl`, `UsageQuotaPanel`) that hosts live provider quotas + the collapsible automation guardrails. `BudgetCapEditor`, `UsageMeter`, `UsagePacingBadge`, and `CostSummaryCard` continue to live under `components/settings/` but are rendered from the popup. Settings > Stats is a separate retrospective local AI + GitHub activity tab and does not host automation guardrails.
+- `apps/desktop/src/renderer/components/usage/` — header Usage popup (`HeaderUsageControl`, `UsageQuotaPanel`) that hosts live provider quotas + the collapsible automation guardrails. `BudgetCapEditor`, `UsageMeter`, `UsagePacingBadge`, and `CostSummaryCard` continue to live under `components/settings/` but are rendered from the popup. Settings > Stats is a separate retrospective cross-client ADE activity dashboard and does not host automation guardrails.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` — agent-session execution surfaces as a chat thread filtered by automation owner.
 
 ### IPC and runtime RPC

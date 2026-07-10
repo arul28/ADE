@@ -4,6 +4,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatImportProvider,
 } from "../../../shared/types";
+import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
 
 const DEFAULT_MAX_IMPORTED_EVENTS = 2000;
 export const MAX_IMPORT_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
@@ -250,7 +251,7 @@ function claudeToolResultEvent(block: JsonRecord, fallbackItemId: string): Extra
     tool: stringOrNull(block.name) ?? "tool",
     result: stringifyResult(block.content ?? block.result ?? block.output ?? ""),
     itemId,
-    status: "completed",
+    status: block.is_error === true || block.isError === true ? "failed" : "completed",
   };
 }
 
@@ -278,6 +279,7 @@ function claudeRecordToEvents(
   const out: AgentChatEventEnvelope[] = [];
 
   if (role === "user") {
+    if (record.isMeta === true) return out;
     const textParts: string[] = [];
     blocks.forEach((block, blockIndex) => {
       if (isRecord(block) && stringOrNull(block.type) === "tool_result") {
@@ -288,7 +290,7 @@ function claudeRecordToEvents(
       const text = contentBlockText(block);
       if (text.trim().length) textParts.push(text);
     });
-    const text = textParts.join("\n").trim();
+    const text = cleanExternalSessionUserText(textParts.join("\n")) ?? "";
     if (text.length) {
       out.unshift(makeEnvelope({ type: "user_message", text, messageId: sourceId }, options, timestamp, sourceId));
     }
@@ -398,12 +400,13 @@ function codexThreadItemToEvents(
     }
     case "userMessage":
     case "user_message": {
-      const text = codexMessageText(item);
+      const text = cleanExternalSessionUserText(codexMessageText(item)) ?? "";
       return text.trim().length ? [base({ type: "user_message", text, messageId: itemId, turnId })] : [];
     }
     case "message": {
       const role = codexMessageRole(item);
-      const text = codexMessageText(item);
+      const rawText = codexMessageText(item);
+      const text = role === "user" ? cleanExternalSessionUserText(rawText) ?? "" : rawText;
       if (!text.trim().length) return [];
       if (role === "user") return [base({ type: "user_message", text, messageId: itemId, turnId })];
       if (role === "assistant") return [base({ type: "text", text, itemId, turnId })];

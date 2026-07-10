@@ -22,6 +22,7 @@ import {
 } from "../../../desktop/src/shared/composerTriggers";
 import type {
   AgentChatClaudePlugin,
+  AgentChatCodexRecoveryAction,
   AgentChatReloadClaudePluginsResult,
 	  AgentChatEventEnvelope,
 	  AgentChatFileRef,
@@ -83,6 +84,7 @@ import {
   normalizeChatTerminalSession,
   previewTerminal,
   renameChat,
+  recoverCodexTurn,
   resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
@@ -183,6 +185,7 @@ import {
   modelStatePatchForModel,
   permissionSummary,
   providerModelsCacheKey,
+  reasoningEffortDisplayLabel,
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
   resolveCodexPreset,
@@ -247,8 +250,9 @@ import { flushAdeCodeStateWrites, loadAdeCodeState, saveAdeCodeProjectState, sco
 import {
   clampExternalSessionBrowserContent,
   externalSessionActionKey,
+  externalSessionBrowserActions,
   externalSessionProviderLabel,
-  importAffordancesFor,
+  isImportAffordance,
   nextExternalSessionProviderFilter,
   normalizeExternalSessionListResult,
   visibleExternalSessions,
@@ -1671,6 +1675,60 @@ function splitFirstArg(input: string): { first: string; rest: string } {
   };
 }
 
+const CODEX_RECOVERY_ACTION_ALIASES: Readonly<Record<string, AgentChatCodexRecoveryAction>> = {
+  wait: "wait",
+  nudge: "steer",
+  steer: "steer",
+  retry: "interrupt_retry_same_thread",
+  interrupt_retry_same_thread: "interrupt_retry_same_thread",
+  resume: "restart_resume_thread",
+  restart_resume_thread: "restart_resume_thread",
+};
+
+export function resolveTuiCodexRecoveryRequest(args: {
+  input: string;
+  sessionId: string;
+  events: readonly AgentChatEventEnvelope[];
+}): { action: AgentChatCodexRecoveryAction; turnId: string; sessionId: string } | null {
+  const parsed = splitFirstArg(args.input);
+  const action = CODEX_RECOVERY_ACTION_ALIASES[parsed.first.trim().toLowerCase().replace(/-/g, "_")];
+  if (!action) return null;
+  const explicitTurnId = splitFirstArg(parsed.rest).first;
+  if (explicitTurnId) {
+    const matchingEnvelope = [...args.events].reverse().find((envelope) =>
+      envelope.event.type === "codex_turn_stalled" && envelope.event.turnId === explicitTurnId
+    );
+    const targetSessionId = matchingEnvelope?.event.type === "codex_turn_stalled"
+      ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
+      : args.sessionId;
+    return { action, turnId: explicitTurnId, sessionId: targetSessionId };
+  }
+  for (let index = args.events.length - 1; index >= 0; index -= 1) {
+    const envelope = args.events[index];
+    if (envelope?.event.type !== "codex_turn_stalled") continue;
+    return {
+      action,
+      turnId: envelope.event.turnId,
+      sessionId: envelope.event.sourceSessionId?.trim() || envelope.sessionId,
+    };
+  }
+  return null;
+}
+
+export function resolveTuiCodexRecoveryTargetProvider(args: {
+  targetSessionId: string;
+  visibleSessionId: string;
+  visibleProvider: AgentChatSessionSummary["provider"] | null | undefined;
+  sessions: ReadonlyArray<Pick<AgentChatSessionSummary, "sessionId" | "provider">>;
+}): AgentChatSessionSummary["provider"] | null {
+  const targetSession = args.sessions.find((session) => session.sessionId === args.targetSessionId);
+  if (targetSession) return targetSession.provider;
+  // An orchestration child may not have reached the TUI's session inventory yet.
+  // In that case the forwarded stalled event remains authoritative and the
+  // service performs the final Codex-provider validation.
+  return args.targetSessionId === args.visibleSessionId ? args.visibleProvider ?? null : null;
+}
+
 type ParsedAdeActionPayload =
   | { args: Record<string, unknown> }
   | { argsList: unknown[] }
@@ -2683,6 +2741,7 @@ function modelInfoFromDescriptor(modelRef: string): AgentChatModelInfo | null {
     displayName: descriptor.displayName,
     isDefault: false,
     reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
+    defaultReasoningEffort: descriptor.defaultReasoningEffort ?? null,
     ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
     ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
     ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
@@ -2982,6 +3041,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // the CURRENT pane without stale-closure state (see showChatInfoAfterDraftCommit).
   const rightPaneRef = useRef<RightPaneContent>({ kind: "empty" });
   const externalSessionListGenerationRef = useRef(0);
+  // Claim imports synchronously, before React has mirrored importingKey into
+  // rightPaneRef. This prevents a rapid double-Enter from creating two copies.
+  const externalSessionImportInFlightRef = useRef(false);
   const lastLocalSendAtRef = useRef<number>(0);
   const eventsRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventCountRef = useRef<number>(0);
@@ -3707,6 +3769,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => modelReasoningEfforts(modelState, models).length > 0,
     [modelState, models],
   );
+  const footerReasoningLabel = reasoningEffortDisplayLabel(modelState.reasoningEffort, modelState);
   const footerFastSupportedRef = useRef(false);
   const footerReasoningSupportedRef = useRef(false);
   useEffect(() => {
@@ -6817,6 +6880,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ?? nextModels.find((model) => model.isDefault)
       ?? null;
     setLanes(nextLanes);
+    sessionsRef.current = nextSessions;
     setSessions(nextSessions);
     terminalSessionsRef.current = nextTerminalSessions;
     setTerminalSessions(nextTerminalSessions);
@@ -8161,11 +8225,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     void loadExternalSessionsForLane(laneId);
   }, [addNotice, lanesById, loadExternalSessionsForLane, setPaneFocus, unavailableLaneIds]);
 
-  const adoptImportedExternalSession = useCallback(async (
-    summary: ExternalSessionSummary,
-    result: ExternalSessionImportResult,
-  ) => {
-    const laneId = result.laneId;
+  const showWorkSession = useCallback((laneId: string, sessionId: string) => {
     pendingNewChatTitleRef.current = null;
     setDraftChatMode(false);
     setGridView(false);
@@ -8176,44 +8236,83 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setDrawerLaneId(laneId);
     setSelectedDrawerChatAction(null);
     selectActiveLaneId(laneId);
+    setSelectedDrawerChatId(sessionId);
+    selectActiveSessionId(sessionId);
     lastUserOpenedPaneRef.current = null;
     userDismissedRightPaneRef.current = false;
     setRightOpen(true);
     setRightPane({ kind: "empty" });
     focusChat();
+  }, [focusChat, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView]);
+
+  const adoptImportedExternalSession = useCallback(async (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+  ) => {
+    const laneId = result.laneId;
 
     if (result.kind === "cli") {
       registerOptimisticTerminalSession({
         sessionId: result.sessionId,
         laneId,
         title: summary.title?.trim() || summary.preview?.trim() || null,
+        session: normalizeChatTerminalSession(result.session ?? null),
         provider: summary.provider as CliTerminalProvider,
       });
-      setSelectedDrawerChatId(result.sessionId);
-      selectActiveSessionId(result.sessionId);
+      showWorkSession(laneId, result.sessionId);
       addNotice(`Imported ${externalSessionProviderLabel(summary.provider)} CLI session.`, "success");
     } else {
-      setSelectedDrawerChatId(result.chatSessionId);
-      selectActiveSessionId(result.chatSessionId);
+      optimisticChatSessionsRef.current.set(result.chatSessionId, result.chatSummary);
+      setSessions((current) => mergeOptimisticChatSessions(current, optimisticChatSessionsRef.current));
+      showWorkSession(laneId, result.chatSessionId);
       addNotice(`Imported ${externalSessionProviderLabel(summary.provider)} as ADE chat.`, "success");
     }
 
     await refreshState();
   }, [
     addNotice,
-    focusChat,
     refreshState,
     registerOptimisticTerminalSession,
-    selectActiveLaneId,
-    selectActiveSessionId,
-    setDraftChatMode,
-    setGridView,
+    showWorkSession,
   ]);
+
+  const openExistingExternalSession = useCallback(async (
+    summary: ExternalSessionSummary,
+    laneId: string,
+  ) => {
+    const ref = summary.importedSessionRef;
+    if (!summary.alreadyImported || !ref?.sessionId) {
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: "This session does not have a valid ADE import reference." }
+        : prev);
+      return;
+    }
+    try {
+      await refreshState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: `Unable to refresh ADE sessions: ${message}` }
+        : prev);
+      return;
+    }
+    const existing = ref.kind === "chat"
+      ? sessionsRef.current.find((session) => session.sessionId === ref.sessionId)
+      : terminalSessionsRef.current.find((session) => session.terminalId === ref.sessionId);
+    if (!existing) {
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: "The linked ADE session no longer exists. Refresh the list to clear this stale reference." }
+        : prev);
+      return;
+    }
+    showWorkSession(existing.laneId || laneId, ref.sessionId);
+  }, [refreshState, showWorkSession]);
 
   const importExternalSessionFromBrowser = useCallback(async (
     summary: ExternalSessionSummary,
     affordance: ImportAffordance,
   ) => {
+    if (externalSessionImportInFlightRef.current) return;
     const pane = rightPaneRef.current;
     if (pane.kind !== "external-session-browser") return;
     if (!affordance.enabled) {
@@ -8231,6 +8330,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     const importingKey = externalSessionActionKey(summary, affordance);
+    externalSessionImportInFlightRef.current = true;
     setRightPane((prev) => prev.kind === "external-session-browser"
       ? { ...prev, importError: null, importingKey }
       : prev);
@@ -8253,6 +8353,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             importingKey: prev.importingKey === importingKey ? null : prev.importingKey,
           }
         : prev);
+    } finally {
+      externalSessionImportInFlightRef.current = false;
     }
   }, [adoptImportedExternalSession]);
 
@@ -9595,6 +9697,69 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Switched to chat ${chat.title ?? chat.sessionId}.`, "success");
       } else {
         setRightPane({ kind: "details", title: "Switch", body: `No lane or chat matched "${args}".` });
+      }
+      return;
+    }
+    if (name === "/recover") {
+      if (!sessionId || activeTerminalSessionRef.current) {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: "Recovery is available for an active Codex Work chat, not a CLI terminal.",
+        });
+        return;
+      }
+      const request = resolveTuiCodexRecoveryRequest({
+        input: args,
+        sessionId,
+        events: eventsRef.current,
+      });
+      if (!request) {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: [
+            "Usage: /recover <wait|nudge|retry|resume> [turn-id]",
+            "",
+            "The turn id is optional when this chat has a recent stalled-turn notice.",
+          ].join("\n"),
+        });
+        return;
+      }
+      const targetProvider = resolveTuiCodexRecoveryTargetProvider({
+        targetSessionId: request.sessionId,
+        visibleSessionId: sessionId,
+        visibleProvider: activeSession?.provider,
+        sessions,
+      });
+      if (targetProvider && targetProvider !== "codex") {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: "/recover target is not a Codex chat.",
+        });
+        return;
+      }
+      try {
+        const result = await recoverCodexTurn(conn, request);
+        const label = request.action === "wait"
+          ? "Waiting"
+          : request.action === "steer"
+            ? "Status nudge sent"
+            : request.action === "interrupt_retry_same_thread"
+              ? "Retrying the same thread"
+              : "App server restarted; thread resumed";
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: `${label} · ${result.status}\nTurn ${result.turnId}`,
+        });
+        addNotice(label, "success");
+        await refreshState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setRightPane({ kind: "details", title: "Codex recovery", body: message });
+        addNotice(message, "error");
       }
       return;
     }
@@ -12584,7 +12749,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? Math.min(Math.max(0, browser.selectedIndex), visible.length - 1)
         : 0;
       const selectedSession = visible[selectedIndex] ?? null;
-      const actions = selectedSession ? importAffordancesFor(selectedSession) : [];
+      const actions = selectedSession ? externalSessionBrowserActions(selectedSession) : [];
       const actionIndex = actions.length
         ? Math.min(Math.max(0, browser.actionIndex), actions.length - 1)
         : 0;
@@ -12639,14 +12804,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             : prev);
           return;
         }
-        void importExternalSessionFromBrowser(selectedSession, action);
+        if (!isImportAffordance(action)) {
+          void openExistingExternalSession(selectedSession, browser.laneId);
+        } else {
+          void importExternalSessionFromBrowser(selectedSession, action);
+        }
         return;
       }
-      if ((input === "r" || input === "R") && !key.ctrl && !key.meta && !browser.query) {
+      if (input === "O" && !key.ctrl && !key.meta && !browser.query) {
+        if (selectedSession?.alreadyImported && selectedSession.importedSessionRef) {
+          void openExistingExternalSession(selectedSession, browser.laneId);
+        } else {
+          setRightPane((prev) => prev.kind === "external-session-browser"
+            ? { ...prev, importError: "That provider session has not been imported into ADE yet." }
+            : prev);
+        }
+        return;
+      }
+      if (input === "R" && !key.ctrl && !key.meta && !browser.query) {
         void loadExternalSessionsForLane(browser.laneId);
         return;
       }
-      if ((input === "p" || input === "P") && !key.ctrl && !key.meta && !browser.query) {
+      if (input === "P" && !key.ctrl && !key.meta && !browser.query) {
         setRightPane((prev) => prev.kind === "external-session-browser"
           ? clampExternalSessionBrowserContent({
               ...prev,
@@ -14188,9 +14367,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       footerX += width;
     }
-    if (footerReasoningSupported && modelState.reasoningEffort) {
+    if (footerReasoningSupported && footerReasoningLabel) {
       footerX += 2;
-      const width = footerCellWidth(modelState.reasoningEffort, "reasoning");
+      const width = footerCellWidth(footerReasoningLabel, "reasoning");
       addFooterInlineTarget("footer:inline:reasoning", footerX, width, () => {
         selectFooterControl(null);
         setPaneFocus("chat");
@@ -15167,7 +15346,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     favorites: modelPickerFavorites,
     recents: modelPickerRecents,
     activeModelId: modelState.modelId,
-    activeReasoningEffort: modelState.reasoningEffort,
+    activeReasoningEffort: footerReasoningLabel,
     aiStatus,
     interfaceMode: modelState.interfaceMode,
   }), [
@@ -15177,7 +15356,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     modelPickerRecents,
     modelState.interfaceMode,
     modelState.modelId,
-    modelState.reasoningEffort,
+    footerReasoningLabel,
     models,
   ]);
   const activeTerminalScroll = readTerminalScroll(terminalScrollBySessionId, activeTerminalSession?.terminalId);
@@ -15451,7 +15630,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         <FooterControls
           provider={modelState.provider}
           modelDisplay={modelState.displayName}
-          reasoningEffort={modelState.reasoningEffort}
+          reasoningEffort={footerReasoningLabel}
           permissionLabel={permissionSummary(modelState)}
           permissionDetail={modelState.provider === "codex" ? codexApprovalSandboxLabel(modelState) : null}
           contextPercent={contextPercent}

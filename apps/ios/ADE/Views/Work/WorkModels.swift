@@ -722,6 +722,11 @@ struct WorkEventCardModel: Identifiable, Equatable {
   /// and plan cards fold the resolved state inline and drop the separate
   /// floating "Input resolved · Accepted" ribbon.
   let resolution: String?
+  /// Action context for a live `codex_turn_stalled` recovery card. The source
+  /// session can differ from the visible parent chat when a child agent stalls.
+  let recoveryOptions: [String]
+  let recoveryTurnId: String?
+  let recoverySessionId: String?
 
   init(
     id: String,
@@ -737,7 +742,10 @@ struct WorkEventCardModel: Identifiable, Equatable {
     isInProgress: Bool = false,
     questionModel: WorkPendingQuestionModel? = nil,
     planApprovalModel: WorkPendingPlanApprovalModel? = nil,
-    resolution: String? = nil
+    resolution: String? = nil,
+    recoveryOptions: [String] = [],
+    recoveryTurnId: String? = nil,
+    recoverySessionId: String? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -753,6 +761,9 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.questionModel = questionModel
     self.planApprovalModel = planApprovalModel
     self.resolution = resolution
+    self.recoveryOptions = recoveryOptions
+    self.recoveryTurnId = recoveryTurnId
+    self.recoverySessionId = recoverySessionId
   }
 }
 
@@ -884,7 +895,7 @@ enum WorkChatEvent: Equatable {
   case autoApprovalReview(summary: String, turnId: String?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case codexState(title: String, message: String, icon: String, turnId: String?)
-  case codexTurnStalled(message: String, recoveryOptions: [String], turnId: String?)
+  case codexTurnStalled(message: String, recoveryOptions: [String], turnId: String?, sourceSessionId: String?)
   case planText(text: String, turnId: String?)
   case toolUseSummary(text: String, turnId: String?)
   case status(turnStatus: String, message: String?, turnId: String?)

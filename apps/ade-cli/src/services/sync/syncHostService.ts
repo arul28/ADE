@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  recordUsageInteraction,
+  usageClientSurfaceFromPeer,
+} from "../../../../desktop/src/main/services/usage/usageStatsStore";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
@@ -32,6 +36,7 @@ import type {
   LaneSummary,
   PtyDataEvent,
   PtyExitEvent,
+  PersonalChatScopeContract,
   SyncBrainStatusPayload,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
@@ -362,6 +367,8 @@ type LanePresenceEntry = {
   source: "local" | "remote";
 };
 
+type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
+
 type PeerState = {
   ws: WebSocket;
   metadata: SyncPeerMetadata | null;
@@ -382,14 +389,13 @@ type PeerState = {
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
+  chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
-  // Cross-project "quick look" subscriptions: sessionId -> resolved foreign
-  // transcript path. Present only for sessions in a project OTHER than this
-  // socket's active one; the chat pump tails these paths directly (the local
-  // sessionService has no row for them). Empty in the common single-project
-  // case, so it adds no cost when the feature is unused.
-  foreignChatTranscriptPaths: Map<string, string>;
+  // Subscriptions resolved outside the active project's session service:
+  // machine-scoped personal chats and cross-project quick looks. Scope stays
+  // separate because only personal chats may survive a project-host handoff.
+  resolvedChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
   // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
@@ -599,6 +605,10 @@ type SyncHostServiceArgs = {
   ptyService: ReturnType<typeof createPtyService>;
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  personalChatScope?: Pick<
+    PersonalChatScopeContract,
+    "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
+  >;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
@@ -1132,12 +1142,164 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 
 export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
 export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
+const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
 // buffered event's key cannot be evicted while the event itself is still in
 // the ring buffer (which could double-assign a seq to the same event).
 const CHAT_EVENT_REPLAY_MAX_KEYS = 1_500;
 // Bound the number of sessions with live replay buffers (LRU-evicted).
 const CHAT_EVENT_REPLAY_MAX_SESSIONS = 64;
+
+function inlineImageDataUrlBytes(value: string | null | undefined): number | null {
+  if (!value || !/^data:image\//i.test(value.trim())) return null;
+  return Buffer.byteLength(value, "utf8");
+}
+
+function redactInlineImageDataUrlsForSync(
+  value: unknown,
+): { value: unknown; omittedBytes: number; changed: boolean } {
+  const seen = new WeakSet<object>();
+  const visit = (
+    candidate: unknown,
+    depth: number,
+  ): { value: unknown; omittedBytes: number; changed: boolean } => {
+    if (typeof candidate === "string") {
+      const bytes = inlineImageDataUrlBytes(candidate);
+      if (bytes == null || bytes <= SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+        return { value: candidate, omittedBytes: 0, changed: false };
+      }
+      return {
+        value: `[ADE] Inline image data omitted from mobile chat sync (${bytes} bytes).`,
+        omittedBytes: bytes,
+        changed: true,
+      };
+    }
+    if (!candidate || typeof candidate !== "object") {
+      return { value: candidate, omittedBytes: 0, changed: false };
+    }
+    if (depth >= 32) {
+      return {
+        value: "[ADE] Deep structured payload omitted from mobile chat sync.",
+        omittedBytes: 0,
+        changed: true,
+      };
+    }
+    if (seen.has(candidate)) {
+      return { value: "[Circular]", omittedBytes: 0, changed: true };
+    }
+
+    seen.add(candidate);
+    if (Array.isArray(candidate)) {
+      let omittedBytes = 0;
+      let changed = false;
+      const next = candidate.map((entry) => {
+        const result = visit(entry, depth + 1);
+        omittedBytes += result.omittedBytes;
+        changed ||= result.changed;
+        return result.value;
+      });
+      seen.delete(candidate);
+      return { value: changed ? next : candidate, omittedBytes, changed };
+    }
+
+    let omittedBytes = 0;
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(candidate)) {
+      const result = visit(entry, depth + 1);
+      next[key] = result.value;
+      omittedBytes += result.omittedBytes;
+      changed ||= result.changed;
+    }
+    seen.delete(candidate);
+    return { value: changed ? next : candidate, omittedBytes, changed };
+  };
+
+  return visit(value, 0);
+}
+
+function serializedSyncPayloadBytes(value: unknown): number {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+  try {
+    const serialized = JSON.stringify(value);
+    return Buffer.byteLength(serialized ?? String(value), "utf8");
+  } catch {
+    return Buffer.byteLength(String(value), "utf8");
+  }
+}
+
+/**
+ * Bound inline image payloads at the mobile-sync boundary. The agent chat
+ * service intentionally keeps the original envelope for desktop live
+ * previews; only WebSocket snapshots/events and their replay ring use this
+ * compact copy.
+ */
+export function compactChatEventEnvelopeForSync(
+  envelope: AgentChatEventEnvelope,
+): AgentChatEventEnvelope {
+  const event = envelope.event;
+  if (event.type === "tool_result") {
+    const redacted = redactInlineImageDataUrlsForSync(event.result);
+    if (!redacted.changed) return envelope;
+    const originalBytes = Math.max(
+      event.resultOriginalBytes ?? 0,
+      serializedSyncPayloadBytes(event.result),
+      redacted.omittedBytes,
+    );
+    return {
+      ...envelope,
+      event: {
+        ...event,
+        result: redacted.value,
+        resultOriginalBytes: originalBytes,
+        resultOmittedBytes: (event.resultOmittedBytes ?? 0) + redacted.omittedBytes,
+      },
+    };
+  }
+
+  if (event.type === "codex_image_generation") {
+    const resultBytes = inlineImageDataUrlBytes(event.result);
+    const savedPathIsInline = inlineImageDataUrlBytes(event.savedPath) != null;
+    if (resultBytes != null && resultBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+      return {
+        ...envelope,
+        event: {
+          ...event,
+          result: null,
+          ...(savedPathIsInline ? { savedPath: null } : {}),
+          resultOriginalBytes: resultBytes,
+          resultOmittedBytes: resultBytes,
+        },
+      };
+    }
+    if (savedPathIsInline) {
+      return { ...envelope, event: { ...event, savedPath: null } };
+    }
+    return envelope;
+  }
+
+  if (event.type === "codex_image_view") {
+    const urlBytes = inlineImageDataUrlBytes(event.url);
+    const pathIsInline = inlineImageDataUrlBytes(event.path) != null;
+    if (urlBytes != null && urlBytes > SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
+      return {
+        ...envelope,
+        event: {
+          ...event,
+          url: null,
+          ...(pathIsInline ? { path: null } : {}),
+          urlOriginalBytes: urlBytes,
+          urlOmittedBytes: urlBytes,
+        },
+      };
+    }
+    if (pathIsInline) {
+      return { ...envelope, event: { ...event, path: null } };
+    }
+  }
+
+  return envelope;
+}
 
 export type ChatEventReplayBufferEntry = {
   seq: number;
@@ -1183,13 +1345,14 @@ export function recordChatEventInReplayBuffer(
     if (oldestKey == null) break;
     buffer.seqByKey.delete(oldestKey);
   }
+  const syncEvent = compactChatEventEnvelopeForSync(event);
   let bytes = 512;
   try {
-    bytes = JSON.stringify(event).length;
+    bytes = JSON.stringify(syncEvent).length;
   } catch {
     // keep the conservative default
   }
-  buffer.entries.push({ seq, bytes, event });
+  buffer.entries.push({ seq, bytes, event: syncEvent });
   buffer.totalBytes += bytes;
   while (
     buffer.entries.length > 0
@@ -1264,6 +1427,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     agentChatService: args.agentChatService,
+    personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
@@ -1932,9 +2096,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remotePort,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
+      chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
       chatEventIdsSent: new Map(),
-      foreignChatTranscriptPaths: new Map(),
+      resolvedChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
       rosterSubscribed: false,
       rosterSeq: 0,
@@ -2111,19 +2276,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (!Number.isFinite(offset)) continue;
           peer.chatTranscriptOffsets.set(sessionId, Math.max(0, Math.floor(offset)));
         }
-        for (const sessionId of snapshot.subscribedChatSessionIds ?? []) {
+        const handedOffChatSubscriptions = snapshot.chatSubscriptions
+          ?? (snapshot.subscribedChatSessionIds ?? []).map((sessionId) => ({
+            sessionId,
+            scope: "project" as const,
+          }));
+        for (const subscription of handedOffChatSubscriptions) {
+          const { sessionId, scope } = subscription;
+          if (scope === "personal") {
+            const transcriptPath = await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null;
+            if (!transcriptPath) continue;
+            peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
+          }
           // This host's replay buffers start a fresh seq epoch. Tell the
           // client to drop its stored per-session seq watermark (the
           // documented meaning of a non-resumed chat_subscribe ack) BEFORE
           // re-enabling the subscription — otherwise the first re-streamed
           // events (seq restarting at 1) would be discarded as already-seen.
+          const turnActive = scope === "personal"
+            ? await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false)
+            : undefined;
           sendRequired(peer, "chat_subscribe", {
             sessionId,
             capturedAt: nowIso(),
             truncated: false,
             events: [],
+            ...(typeof turnActive === "boolean" ? { turnActive } : {}),
           } satisfies SyncChatSubscribeSnapshotPayload);
           peer.subscribedChatSessionIds.add(sessionId);
+          peer.chatSubscriptionScopes.set(sessionId, scope);
         }
         peer.rosterSubscribed = snapshot.rosterSubscribed === true;
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
@@ -3437,7 +3618,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
-    const sent = send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
+    const syncEvent = compactChatEventEnvelopeForSync(event);
+    const sent = send(peer.ws, "chat_event", { ...syncEvent, seq } satisfies SyncChatEventPayload);
     if (sent) markChatEventSent(peer, event);
     return sent ? "sent" : "failed";
   }
@@ -3451,8 +3633,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const sessionId of peer.subscribedChatSessionIds) {
         // A foreign quick-look session has no local row; tail its resolved
         // transcript path directly. Local sessions resolve via sessionService.
-        const foreignTranscriptPath = peer.foreignChatTranscriptPaths.get(sessionId);
-        const transcriptPath = foreignTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+        const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
+        const transcriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
         if (!transcriptPath) continue;
 
         const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
@@ -3480,10 +3662,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
-      // A peer whose subscription for this id is a FOREIGN quick-look gets its
-      // events from the transcript pump — never the active project's live
-      // broadcast, even when a local session shares the session id.
-      if (peer.foreignChatTranscriptPaths.has(event.sessionId)) continue;
+      // Personal and foreign-project subscriptions get events from their
+      // resolved transcript paths — never the active project's live broadcast,
+      // even when a local session shares the session id.
+      if (peer.chatSubscriptionScopes.get(event.sessionId) !== "project") continue;
       sendChatEvent(peer, event, seq);
     }
     // A chat lifecycle event for the host project updates its roster status
@@ -4011,6 +4193,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ? { ...payload, projectId: hostProjectId }
         : payload;
       const created = await executor.execute(routedPayload);
+      if (matchesHostProject) {
+        const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+          ? payload.args as Record<string, unknown>
+          : {};
+        recordUsageInteraction(args.db, {
+          projectId: hostProjectId,
+          client: usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform),
+          action: payload.action,
+          feature: payload.action.split(".", 1)[0] ?? "other",
+          sessionId: toOptionalString(commandArgs.sessionId),
+        });
+      }
       // Create-in-place (possibly into another project) adds a lane/chat row the
       // hub must see; nudge the roster (coalesced, no-op without subscribers).
       if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
@@ -4386,12 +4580,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
-    const projectScope = resolveSyncHostInboundProjectScope(
-      envelope.type,
-      envelope.projectId,
-      args.projectId,
-      hostProjectIdAliases,
-    );
+    const envelopePayload = safeObjectValue(envelope.payload);
+    const personalChatEnvelope =
+      (envelope.type === "chat_subscribe" || envelope.type === "chat_unsubscribe")
+      && envelopePayload?.chatScope === "personal";
+    const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
+      ? { ok: true, projectId: null, usedSingleProjectFallback: false }
+      : resolveSyncHostInboundProjectScope(
+          envelope.type,
+          envelope.projectId,
+          args.projectId,
+          hostProjectIdAliases,
+        );
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       return;
@@ -4711,6 +4911,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
+        const personalChatRequested = payload?.chatScope === "personal";
 
         // Cross-project "quick look": a payload targeting a registered FOREIGN
         // project is served read-only from that project's `.ade` transcript
@@ -4722,17 +4923,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // including in the pump: a rejected scope must not register a live
         // subscription at all, or the periodic pump would stream the ACTIVE
         // project's transcript for the same session id after the empty ack.
-        const foreignScope = resolveForeignChatScope(payload, sessionId);
+        const personalTranscriptPath = personalChatRequested
+          ? await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null
+          : null;
+        const foreignScope = personalChatRequested
+          ? personalTranscriptPath
+            ? { kind: "foreign" as const, transcriptPath: personalTranscriptPath }
+            : { kind: "rejected" as const }
+          : resolveForeignChatScope(payload, sessionId);
         const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
         if (foreignScope.kind === "rejected") {
           peer.subscribedChatSessionIds.delete(sessionId);
+          peer.chatSubscriptionScopes.delete(sessionId);
         } else {
           peer.subscribedChatSessionIds.add(sessionId);
+          peer.chatSubscriptionScopes.set(
+            sessionId,
+            personalChatRequested
+              ? "personal"
+              : foreignScope.kind === "foreign"
+                ? "foreign-project"
+                : "project",
+          );
         }
         if (foreignTranscriptPath) {
-          peer.foreignChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
+          peer.resolvedChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
         } else {
-          peer.foreignChatTranscriptPaths.delete(sessionId);
+          peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
 
         const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
@@ -4748,6 +4965,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Foreign quick-looks have no live agent chat service here, so they
         // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
+          if (personalChatRequested) {
+            const turnActive = await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false);
+            return typeof turnActive === "boolean" ? { turnActive } : {};
+          }
           if (foreignScope.kind !== "local") return {};
           const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
@@ -4818,6 +5039,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             : 0;
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
         }
+        events = events.map(compactChatEventEnvelopeForSync);
         peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,
@@ -4837,9 +5059,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedChatSessionIds.delete(sessionId);
+          peer.chatSubscriptionScopes.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
-          peer.foreignChatTranscriptPaths.delete(sessionId);
+          peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
         break;
       }
@@ -5151,6 +5374,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
             continue;
           }
+          const chatSubscriptions = [...peer.subscribedChatSessionIds].flatMap((sessionId) => {
+            const scope = peer.chatSubscriptionScopes.get(sessionId) ?? "project";
+            return scope === "foreign-project" ? [] : [{ sessionId, scope }];
+          });
+          const handedOffChatSessionIds = new Set(chatSubscriptions.map(({ sessionId }) => sessionId));
           snapshots.push({
             ws: peer.ws,
             remoteAddress: peer.remoteAddress,
@@ -5162,14 +5390,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],
-            // Foreign quick-look subscriptions do NOT survive the handoff: the
-            // resolved transcript path isn't carried, and restoring the bare
-            // session id would make the pump fall back to a same-id LOCAL
-            // session (the exact fallback the subscribe path fails closed
-            // against). The client re-subscribes with its scope after handoff.
-            subscribedChatSessionIds: [...peer.subscribedChatSessionIds]
-              .filter((sessionId) => !peer.foreignChatTranscriptPaths.has(sessionId)),
-            chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
+            // Project and machine-scoped personal chats survive. A foreign
+            // quick-look does not: restoring its bare session id would make
+            // the new host fall back to a same-id local session. The client
+            // re-subscribes to that project scope after handoff.
+            chatSubscriptions,
+            subscribedChatSessionIds: chatSubscriptions
+              .filter(({ scope }) => scope === "project")
+              .map(({ sessionId }) => sessionId),
+            chatTranscriptOffsets: Object.fromEntries(
+              [...peer.chatTranscriptOffsets]
+                .filter(([sessionId]) => handedOffChatSessionIds.has(sessionId)),
+            ),
             rosterSubscribed: peer.rosterSubscribed,
           });
         }

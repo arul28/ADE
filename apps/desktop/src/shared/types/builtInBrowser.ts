@@ -13,6 +13,8 @@ export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
 
 export type BuiltInBrowserProjectScopeArgs = {
   projectRoot?: string | null;
+  /** Use the machine-level browser profile even when the sender window has an active project. */
+  profileScope?: "global";
 };
 
 export type BuiltInBrowserAttachWebviewArgs = BuiltInBrowserProjectScopeArgs & {

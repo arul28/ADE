@@ -72,7 +72,7 @@
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.142.5",
+    "@openai/codex": "0.144.0",
     "@opencode-ai/sdk": "^1.15.5",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.1.21",

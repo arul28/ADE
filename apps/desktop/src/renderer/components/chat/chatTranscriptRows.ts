@@ -53,6 +53,7 @@ export type ChatWorkLogEntry = {
   status: ChatWorkLogStatus;
   entryKind: ChatWorkLogEntryKind;
   toolName?: string;
+  mcp?: NonNullable<Extract<AgentChatEvent, { type: "tool_call" }>["mcp"]>;
   args?: unknown;
   result?: unknown;
   output?: string;
@@ -532,6 +533,8 @@ function buildToolWorkLogEvent(
   const status = event.type === "tool_call" ? "running" : (event.status ?? "completed");
   const titleFallback = readToolTitle(event.type === "tool_call" ? event.args : event.result);
   const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
+  const connectorLabel = event.mcp?.appContext?.appName ?? event.mcp?.pluginId ?? event.mcp?.server;
+  const connectorAction = event.mcp?.appContext?.actionName ?? event.mcp?.tool;
   const collapseKey = buildCollapseKey("tool", event);
   return {
     type: "work_log_entry",
@@ -539,12 +542,15 @@ function buildToolWorkLogEvent(
     entry: withLocalhostUrls({
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
-      label: resolvedToolName,
+      label: connectorLabel ?? resolvedToolName,
       tone: deriveTone(status, "tool"),
       status,
       entryKind: "tool",
       toolName: resolvedToolName,
-      ...(titleFallback && titleFallback !== resolvedToolName ? { detail: titleFallback } : {}),
+      ...(event.mcp ? { mcp: event.mcp } : {}),
+      ...(connectorAction
+        ? { detail: connectorAction }
+        : titleFallback && titleFallback !== resolvedToolName ? { detail: titleFallback } : {}),
       ...(event.type === "tool_call" ? { args: event.args } : {}),
       ...(event.type === "tool_result" ? { result: event.result } : {}),
       ...(event.itemId ? { itemId: event.itemId } : {}),
@@ -1279,6 +1285,48 @@ export function appendCollapsedChatTranscriptEvent(
   // background shell commands). Normalize canonical dotted events first, then
   // fold every lifecycle event into the anchor state (handled BEFORE the generic
   // passthrough so no raw subagent_* row ever reaches the activity bundler).
+  if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
+    const matchIndex = [...rows]
+      .reverse()
+      .findIndex((candidate) =>
+        candidate.event.type === event.type
+        && candidate.event.itemId === event.itemId
+        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
+      );
+    if (matchIndex >= 0) {
+      const actualIndex = rows.length - 1 - matchIndex;
+      const previous = rows[actualIndex]!;
+      if (event.type === "codex_image_generation" && previous.event.type === "codex_image_generation") {
+        rows[actualIndex] = {
+          ...previous,
+          timestamp: envelope.timestamp,
+          event: {
+            ...previous.event,
+            ...event,
+            prompt: event.prompt ?? previous.event.prompt,
+            revisedPrompt: event.revisedPrompt ?? previous.event.revisedPrompt,
+            result: event.result ?? previous.event.result,
+            savedPath: event.savedPath ?? previous.event.savedPath,
+          },
+        };
+        return;
+      }
+      if (event.type === "codex_image_view" && previous.event.type === "codex_image_view") {
+        rows[actualIndex] = {
+          ...previous,
+          timestamp: envelope.timestamp,
+          event: {
+            ...previous.event,
+            ...event,
+            path: event.path ?? previous.event.path,
+            url: event.url ?? previous.event.url,
+            title: event.title ?? previous.event.title,
+          },
+        };
+        return;
+      }
+    }
+  }
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
   if (normalizedSubagentEvent) {
     const activeContext = context ?? createCollapseTranscriptContext();

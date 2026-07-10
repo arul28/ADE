@@ -4008,13 +4008,17 @@ button:active, [role="button"]:active {
   animation: ade-fade-slide-up 0.3s ease-out both;
 }
 
-.ade-update-installed-card[data-state="open"] {
+/* The card is centered by a flex layer (not fixed + translate), so its entrance
+   must stay translate-free. The [data-radix-dialog-content] prefix raises
+   specificity above the global ade-dialog-in rule (translateX(-50%)), which
+   would otherwise shift a flex-centered card left by half its width. */
+[data-radix-dialog-content].ade-update-installed-card[data-state="open"] {
   animation: ade-update-installed-card-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 @keyframes ade-update-installed-card-in {
-  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /*
@@ -4119,6 +4123,63 @@ button:active, [role="button"]:active {
   animation: ade-toast-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* Model reasoning slider: progressive fill, active-tier pulse, and drag state. */
+@keyframes ade-reasoning-effort-word-pop {
+  0% { opacity: 0; transform: translateY(3px); filter: blur(3px); }
+  100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+@keyframes ade-reasoning-fill-sheen {
+  0% { transform: translateX(-80%); opacity: 0; }
+  35% { opacity: 0.55; }
+  100% { transform: translateX(80%); opacity: 0; }
+}
+
+@keyframes ade-reasoning-grid-drift {
+  0% { background-position: 0 0, 0 0; }
+  100% { background-position: -18px 0, 0 0; }
+}
+
+.ade-reasoning-effort-word {
+  animation: ade-reasoning-effort-word-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-reasoning-slider-fill {
+  background: var(--reasoning-progressive-gradient);
+  clip-path: inset(0 calc(100% - var(--reasoning-slider-fill-position)) 0 0);
+  box-shadow: 0 0 18px rgba(var(--reasoning-fill-rgb), 0.24);
+  transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background 220ms ease, box-shadow 220ms ease;
+}
+
+.ade-reasoning-slider-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.22) 50%, transparent 78%);
+  animation: ade-reasoning-fill-sheen 1.8s ease-in-out infinite;
+}
+
+.ade-reasoning-slider-fill-max {
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.20) 0 0.8px, transparent 1px),
+    var(--reasoning-progressive-gradient);
+  background-size: 4px 4px, 100% 100%;
+  animation: ade-reasoning-grid-drift 1.15s linear infinite;
+  box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
+}
+
+.ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
+.ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
+  transition: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ade-toast-enter { animation: none; }
+  .ade-reasoning-effort-word,
+  .ade-reasoning-slider-fill::after,
+  .ade-reasoning-slider-fill-max {
+    animation: none;
+  }
+  .ade-reasoning-slider-fill { transition: none; }
 }

@@ -8,6 +8,7 @@ import type {
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
   SyncPairingConnectInfo,
+  PersonalChatScopeContract,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
@@ -72,9 +73,11 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
+import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 
 type SyncServiceArgs = {
   db: AdeDb;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   logger: Logger;
   projectId?: string | null;
   runtimeProjectId?: string | null;
@@ -110,6 +113,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -583,6 +587,7 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
+    usageTrackingService: args.usageTrackingService,
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
@@ -599,6 +604,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    personalChatScope: args.personalChatScope,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
@@ -712,6 +718,7 @@ export function createSyncService(args: SyncServiceArgs) {
       projectCatalogProvider: args.projectCatalogProvider,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
+      personalChatScope: args.personalChatScope,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
       requireDpop: () => securityStore.getRequireDpop(),

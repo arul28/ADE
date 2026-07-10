@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { ArrowBendUpRight, Cube, Play, Rocket, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowBendUpRight, Cube, LinkSimple, Play, Rocket, TreeStructure, X } from "@phosphor-icons/react";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 
-export type ChatActionsTab = "agents" | "proof" | "handoff" | "run" | "missions";
+export type ChatActionsTab = "sources" | "agents" | "proof" | "handoff" | "run" | "missions";
 
 // The drawer tabs use GlowMenu's `neutral` mode, which renders every tab with
 // the same muted-grey-→-bright-fg treatment plus one shared violet indicator.
@@ -19,6 +19,13 @@ const CHAT_ACTIONS_TABS: Array<GlowMenuItem<ChatActionsTab>> = [
   { id: "proof", label: "Proof", icon: Cube, ...NEUTRAL_INDICATOR },
   { id: "handoff", label: "Handoff", icon: ArrowBendUpRight, ...NEUTRAL_INDICATOR },
 ];
+
+const SOURCES_TAB: GlowMenuItem<ChatActionsTab> = {
+  id: "sources",
+  label: "Sources",
+  icon: LinkSimple,
+  ...NEUTRAL_INDICATOR,
+};
 
 // Run tab (moved off the header) — surfaced only when the chat has a lane that
 // can run process groups.
@@ -46,6 +53,7 @@ export function ChatActionsDrawerPanel({
   agentsContent,
   proofContent,
   handoffContent,
+  sourcesContent,
   runContent,
   missionsContent,
 }: {
@@ -55,10 +63,12 @@ export function ChatActionsDrawerPanel({
   agentsContent: ReactNode;
   proofContent: ReactNode;
   handoffContent: ReactNode;
+  sourcesContent?: ReactNode;
   runContent?: ReactNode;
   missionsContent?: ReactNode;
 }) {
   const tabs = [
+    ...(sourcesContent ? [SOURCES_TAB] : []),
     ...(missionsContent ? [MISSIONS_TAB] : []),
     ...CHAT_ACTIONS_TABS,
     ...(runContent ? [RUN_TAB] : []),
@@ -67,11 +77,13 @@ export function ChatActionsDrawerPanel({
   const activeTab: ChatActionsTab =
     (tab === "run" && !runContent)
     || (tab === "missions" && !missionsContent)
+    || (tab === "sources" && !sourcesContent)
       ? "agents"
       : tab;
   const bodyByTab: Record<ChatActionsTab, ReactNode> = {
     run: runContent,
     missions: missionsContent,
+    sources: sourcesContent,
     agents: agentsContent,
     proof: proofContent,
     handoff: handoffContent,

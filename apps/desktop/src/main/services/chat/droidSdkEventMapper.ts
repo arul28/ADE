@@ -10,6 +10,7 @@ type SdkRecord = Record<string, unknown>;
 export type DroidSdkEventMapperState = {
   assistantDeltaItemIds: Set<string>;
   thinkingDeltaItemIds: Set<string>;
+  imageItemIds: Set<string>;
   toolNamesByUseId: Map<string, string>;
   latestUsage: {
     inputTokens?: number;
@@ -24,6 +25,7 @@ export function createDroidSdkEventMapperState(): DroidSdkEventMapperState {
   return {
     assistantDeltaItemIds: new Set(),
     thinkingDeltaItemIds: new Set(),
+    imageItemIds: new Set(),
     toolNamesByUseId: new Map(),
     latestUsage: null,
   };
@@ -87,6 +89,26 @@ function extractTextBlocks(content: unknown): Array<{ text: string; kind: "text"
     out.push({
       text,
       kind: type === "thinking" ? "thinking" : "text",
+      ...(readString(record.id) ? { id: readString(record.id)! } : {}),
+    });
+  }
+  return out;
+}
+
+function extractImageBlocks(content: unknown): Array<{ data: string; mediaType: string; id?: string; index: number }> {
+  if (!Array.isArray(content)) return [];
+  const out: Array<{ data: string; mediaType: string; id?: string; index: number }> = [];
+  for (const [index, block] of content.entries()) {
+    const record = asRecord(block);
+    if (record?.type !== "image") continue;
+    const source = asRecord(record.source);
+    const data = readString(source?.data);
+    const mediaType = readString(source?.mediaType);
+    if (!data || !mediaType?.toLowerCase().startsWith("image/")) continue;
+    out.push({
+      data,
+      mediaType,
+      index,
       ...(readString(record.id) ? { id: readString(record.id)! } : {}),
     });
   }
@@ -195,7 +217,8 @@ export function mapDroidSdkMessageToChatEvents(
     case "create_message": {
       const role = readString(record.role);
       if (role !== "assistant") return [];
-      return extractTextBlocks(record.content).flatMap((block, index): AgentChatEvent[] => {
+      const messageId = readString(record.messageId) ?? "droid-message";
+      const textEvents = extractTextBlocks(record.content).flatMap((block, index): AgentChatEvent[] => {
         const messageId = readString(record.messageId) ?? `droid-${block.kind === "thinking" ? "thinking" : "text"}`;
         const itemId = block.id ?? `${messageId}:${block.kind}:${index}`;
         if (block.kind === "thinking") {
@@ -205,6 +228,20 @@ export function mapDroidSdkMessageToChatEvents(
         if (meta.state.assistantDeltaItemIds.has(itemId)) return [];
         return [{ type: "text", text: block.text, itemId, turnId }];
       });
+      const imageEvents = extractImageBlocks(record.content).flatMap((block): AgentChatEvent[] => {
+        const itemId = block.id ?? `${messageId}:image:${block.index}`;
+        if (meta.state.imageItemIds.has(itemId)) return [];
+        meta.state.imageItemIds.add(itemId);
+        return [{
+          type: "codex_image_generation",
+          itemId,
+          turnId,
+          prompt: "Droid image output",
+          result: `data:${block.mediaType};base64,${block.data}`,
+          status: "completed",
+        }];
+      });
+      return [...textEvents, ...imageEvents];
     }
     case "tool_use": {
       const toolUseId = readString(record.toolUseId) ?? `droid-tool-${Date.now()}`;

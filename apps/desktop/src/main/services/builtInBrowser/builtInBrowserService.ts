@@ -281,6 +281,9 @@ export function createBuiltInBrowserService(args: {
     return typeof projectRoot === "string" ? normalizedProjectRoot(projectRoot) : null;
   };
 
+  const requestsGlobalProfile = (input: unknown): boolean =>
+    isRecord(input) && input.profileScope === "global";
+
   const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
@@ -388,10 +391,36 @@ export function createBuiltInBrowserService(args: {
     return service;
   };
 
+  const serviceForGlobalProfile = (sourceWindow?: BrowserWindow | null): WindowBrowserService => {
+    const activeWindow = activeWindowId == null
+      ? null
+      : windowClosedListeners.get(activeWindowId)?.win ?? null;
+    const win = isLiveWindow(sourceWindow)
+      ? sourceWindow
+      : isLiveWindow(activeWindow)
+        ? activeWindow
+        : null;
+    if (!win) {
+      if (!fallbackService) {
+        fallbackService = createBuiltInBrowserWindowService({
+          getLogger: args.getLogger,
+          onEvent: (payload) => args.onEvent?.(payload, null),
+          profile: profileForProjectRoot(null),
+        });
+      }
+      return fallbackService;
+    }
+    activeWindowId = win.id;
+    const service = serviceForWindowProfile(win, profileForProjectRoot(null), { markActive: true });
+    service.attachToWindow(win);
+    return service;
+  };
+
   const serviceForInput = (
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
   ): WindowBrowserService => {
+    if (requestsGlobalProfile(input)) return serviceForGlobalProfile(sourceWindow);
     const projectRoot = projectRootFromInput(input);
     if (projectRoot) return serviceForProjectRoot(projectRoot);
     if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);

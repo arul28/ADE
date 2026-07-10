@@ -34,6 +34,10 @@
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import {
+  isAdeUsageRangePreset,
+  type AdeUsageRangePreset,
+} from "../shared/types";
+import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
@@ -53,7 +57,7 @@ const resolvedArg2 =
   async (_a: any, _b: any) =>
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
@@ -2912,25 +2916,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ? ADE_DB_SNAPSHOT.usageSnapshot
       : BROWSER_MOCK_USAGE_SNAPSHOT;
 
-  const browserStatsRangeForPreset = (preset: "today" | "7d" | "30d" | "all") => {
+  const browserStatsRangeForPreset = (preset: AdeUsageRangePreset) => {
     const until = new Date();
     const start = new Date(until);
     start.setHours(0, 0, 0, 0);
     if (preset === "7d") start.setDate(start.getDate() - 6);
     if (preset === "30d") start.setDate(start.getDate() - 29);
+    if (preset === "year") start.setDate(start.getDate() - 364);
     return {
       preset,
       since: preset === "all" ? null : start.toISOString(),
       until: until.toISOString(),
     };
   };
-  const makeBrowserStatsDailySkeleton = (range: { preset: "today" | "7d" | "30d" | "all"; since: string | null; until: string }) => {
-    const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "all" ? 90 : 30;
+  const makeBrowserStatsDailySkeleton = (range: { preset: AdeUsageRangePreset; since: string | null; until: string }) => {
+    const maxDays = range.preset === "today" ? 1 : range.preset === "7d" ? 7 : range.preset === "30d" ? 30 : 365;
     const untilMs = Date.parse(range.until);
     const start = new Date(range.since ?? untilMs - (maxDays - 1) * 86_400_000);
     start.setHours(0, 0, 0, 0);
     return Array.from({ length: maxDays }, (_, index) => {
-      const date = new Date(start.getTime() + index * 86_400_000);
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
       return {
         date: date.toISOString().slice(0, 10),
         inputTokens: 0,
@@ -2945,7 +2951,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       };
     });
   };
-  const makeBrowserEmptyAdeUsageStats = (preset: "today" | "7d" | "30d" | "all"): any => {
+  const makeBrowserEmptyAdeUsageStats = (preset: AdeUsageRangePreset): any => {
     const range = browserStatsRangeForPreset(preset);
     return {
     generatedAt: now,
@@ -3024,10 +3030,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       ? ADE_DB_SNAPSHOT.adeUsageStatsByPreset
       : {};
   const getBrowserAdeUsageStats = async (args?: { preset?: string }) => {
-    const preset =
-      args?.preset === "today" || args?.preset === "7d" || args?.preset === "30d" || args?.preset === "all"
-        ? args.preset
-        : "7d";
+    const preset = isAdeUsageRangePreset(args?.preset) ? args.preset : "7d";
     return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserEmptyAdeUsageStats(preset);
   };
 
@@ -3128,6 +3131,25 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
     ],
     platform: "darwin",
+  };
+
+  const browserMockPersonalChats: any[] = [];
+  const browserMockPersonalChatEvents = new Map<string, any[]>();
+  let browserMockPersonalChatSequence = 0;
+
+  const appendBrowserMockPersonalChatEvent = (
+    sessionId: string,
+    event: Record<string, unknown>,
+  ) => {
+    const envelope = {
+      sessionId,
+      timestamp: new Date().toISOString(),
+      event,
+    };
+    const events = browserMockPersonalChatEvents.get(sessionId) ?? [];
+    events.push(envelope);
+    browserMockPersonalChatEvents.set(sessionId, events);
+    return envelope;
   };
 
   (window as any).ade = {
@@ -4452,6 +4474,201 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getDelta: resolvedArg(null),
       onChanged: noop,
     },
+    personalChats: {
+      call: async ({ action, args = {} }: any) => {
+        let result: any = null;
+        if (action === "list") {
+          result = browserMockPersonalChats.filter(
+            (chat) => args.includeArchived === true || !chat.archivedAt,
+          );
+        }
+        if (action === "modelCatalog") result = { groups: [], fetchedAt: new Date().toISOString() };
+        if (action === "models") result = [];
+        if (action === "create") {
+          const now = new Date().toISOString();
+          result = {
+            sessionId: `personal-browser-${Date.now()}-${++browserMockPersonalChatSequence}`,
+            title: args.title ?? null,
+            goal: null,
+            summary: null,
+            lastOutputPreview: null,
+            provider: args.provider ?? "codex",
+            model: args.model ?? DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+            modelId: args.modelId ?? DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+            status: "idle",
+            surface: "personal",
+            permissionMode: args.permissionMode ?? "default",
+            reasoningEffort: args.reasoningEffort ?? null,
+            fastMode: args.fastMode === true,
+            startedAt: now,
+            endedAt: null,
+            archivedAt: null,
+            createdAt: now,
+            updatedAt: now,
+            lastActivityAt: now,
+          };
+          browserMockPersonalChats.unshift(result);
+          browserMockPersonalChatEvents.set(result.sessionId, []);
+        }
+        if (action === "getSummary") result = browserMockPersonalChats.find((chat) => chat.sessionId === args.sessionId) ?? null;
+        if (action === "read") {
+          const events = browserMockPersonalChatEvents.get(args.sessionId) ?? [];
+          const entries: any[] = events.flatMap((envelope): any[] => {
+            if (envelope.event?.type === "user_message") {
+              return [{
+                role: "user",
+                text: envelope.event.text ?? "",
+                displayText: envelope.event.displayText,
+                timestamp: envelope.timestamp,
+                turnId: envelope.event.turnId,
+                messageId: envelope.event.messageId,
+              }];
+            }
+            if (envelope.event?.type === "text") {
+              return [{
+                role: "assistant",
+                text: envelope.event.text ?? "",
+                timestamp: envelope.timestamp,
+                turnId: envelope.event.turnId,
+                itemId: envelope.event.itemId,
+              }];
+            }
+            return [];
+          });
+          const limit = Number.isFinite(args.limit) ? Math.max(1, Math.floor(args.limit)) : entries.length;
+          result = entries.slice(-limit);
+        }
+        if (action === "send") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          const turnId = `personal-turn-${Date.now()}-${++browserMockPersonalChatSequence}`;
+          const timestamp = new Date().toISOString();
+          const text = String(args.text ?? "").trim();
+          const responseText = text
+            ? `Browser preview received: ${text}`
+            : "Browser preview received your message.";
+          if (chat) {
+            Object.assign(chat, {
+              status: "idle",
+              lastOutputPreview: responseText,
+              updatedAt: timestamp,
+              lastActivityAt: timestamp,
+            });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, {
+              type: "user_message",
+              text,
+              displayText: args.displayText ?? text,
+              attachments: args.attachments ?? [],
+              turnId,
+              messageId: `personal-message-${++browserMockPersonalChatSequence}`,
+            });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, { type: "status", turnStatus: "started", turnId });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, {
+              type: "text",
+              text: responseText,
+              turnId,
+              itemId: `personal-text-${++browserMockPersonalChatSequence}`,
+            });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, { type: "status", turnStatus: "completed", turnId });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, {
+              type: "done",
+              turnId,
+              status: "completed",
+              model: chat.model,
+              modelId: chat.modelId,
+            });
+          }
+          result = { accepted: Boolean(chat), sessionId: args.sessionId, turnId };
+        }
+        if (action === "steer") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          const steerId = `personal-steer-${Date.now()}-${++browserMockPersonalChatSequence}`;
+          if (chat) {
+            appendBrowserMockPersonalChatEvent(chat.sessionId, {
+              type: "user_message",
+              text: String(args.text ?? ""),
+              displayText: args.displayText ?? args.text ?? "",
+              attachments: args.attachments ?? [],
+              steerId,
+              deliveryState: "queued",
+            });
+            chat.lastActivityAt = new Date().toISOString();
+          }
+          result = { queued: Boolean(chat), sessionId: args.sessionId, steerId };
+        }
+        if (action === "interrupt") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          const turnId = `personal-interrupt-${Date.now()}-${++browserMockPersonalChatSequence}`;
+          if (chat) {
+            chat.status = "idle";
+            chat.lastActivityAt = new Date().toISOString();
+            appendBrowserMockPersonalChatEvent(chat.sessionId, { type: "status", turnStatus: "interrupted", turnId });
+            appendBrowserMockPersonalChatEvent(chat.sessionId, { type: "done", turnId, status: "interrupted" });
+          }
+          result = { interrupted: Boolean(chat), sessionId: args.sessionId };
+        }
+        if (action === "approve" || action === "respondToInput") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          const normalizedDecision = String(args.decision ?? "").toLowerCase();
+          const resolution = normalizedDecision === "approve" || normalizedDecision === "accept" || normalizedDecision === "accepted"
+            ? "accepted"
+            : normalizedDecision === "deny" || normalizedDecision === "decline" || normalizedDecision === "declined"
+              ? "declined"
+              : "cancelled";
+          if (chat && args.itemId) {
+            appendBrowserMockPersonalChatEvent(chat.sessionId, {
+              type: "pending_input_resolved",
+              itemId: args.itemId,
+              resolution,
+            });
+            chat.awaitingInput = false;
+            chat.pendingInputItemId = null;
+            chat.status = "idle";
+          }
+          result = { ok: Boolean(chat), sessionId: args.sessionId, itemId: args.itemId ?? null, resolution };
+        }
+        if (action === "getEventHistory") {
+          result = {
+            sessionId: args.sessionId ?? "",
+            events: [...(browserMockPersonalChatEvents.get(args.sessionId) ?? [])],
+            truncated: false,
+            sessionFound: browserMockPersonalChats.some((chat) => chat.sessionId === args.sessionId),
+          };
+        }
+        if (action === "getEventHistoryPage") result = { sessionId: args.sessionId ?? "", events: [], nextBeforeOffset: null, hasMore: false };
+        if (action === "updateSession") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) Object.assign(chat, args, { updatedAt: new Date().toISOString() });
+          result = chat ?? null;
+        }
+        if (action === "terminalCreate") {
+          const id = `personal-terminal-${Date.now()}`;
+          result = { ptyId: id, sessionId: id, pid: null };
+        }
+        if (action === "terminalWrite") result = { ok: true };
+        if (action === "terminalResize") result = { ok: true, cols: args.cols, rows: args.rows };
+        if (action === "terminalDispose") result = { disposed: true, reason: "disposed" };
+        if (action === "archive") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) Object.assign(chat, { archivedAt: new Date().toISOString(), status: "ended" });
+          result = { ok: Boolean(chat) };
+        }
+        if (action === "unarchive") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) Object.assign(chat, { archivedAt: null, status: "idle", updatedAt: new Date().toISOString() });
+          result = { ok: Boolean(chat) };
+        }
+        if (action === "delete") {
+          const index = browserMockPersonalChats.findIndex((chat) => chat.sessionId === args.sessionId);
+          if (index >= 0) {
+            browserMockPersonalChats.splice(index, 1);
+            browserMockPersonalChatEvents.delete(args.sessionId);
+          }
+          result = { ok: index >= 0 };
+        }
+        return { action, result };
+      },
+      streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
+    },
     agentChat: {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),
       getSummary: async (args: any = {}) => {
@@ -4476,6 +4693,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       cancelDispatchedSteer: resolvedArg({ cancelled: false }),
       interrupt: resolvedArg(undefined),
+      recoverCodexTurn: async (args: any) => ({
+        action: args.action,
+        turnId: args.turnId,
+        status: args.action === "wait"
+          ? "waiting"
+          : args.action === "steer"
+            ? "nudged"
+            : args.action === "restart_resume_thread"
+              ? "resumed"
+              : "retrying",
+      }),
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       models: resolvedArg([]),

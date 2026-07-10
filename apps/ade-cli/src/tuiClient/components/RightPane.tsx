@@ -13,8 +13,8 @@ import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/typ
 import { theme } from "../theme";
 import {
   externalSessionActionKey,
+  externalSessionBrowserActions,
   externalSessionProviderLabel,
-  importAffordancesFor,
   shortenCwd,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
@@ -1452,7 +1452,7 @@ function ExternalSessionBrowserPane({
     ? Math.min(Math.max(0, content.selectedIndex), visible.length - 1)
     : 0;
   const selectedSession = visible[selectedIndex] ?? null;
-  const actionRows = selectedSession ? importAffordancesFor(selectedSession) : [];
+  const actionRows = selectedSession ? externalSessionBrowserActions(selectedSession) : [];
   const selectedActionIndex = actionRows.length
     ? Math.min(Math.max(0, content.actionIndex), actionRows.length - 1)
     : 0;
@@ -1466,6 +1466,9 @@ function ExternalSessionBrowserPane({
 
   return (
     <Box flexDirection="column" marginTop={1}>
+      <Text color={theme.color.t2} bold wrap="truncate-end">
+        {endTruncate(`Import into ${content.laneLabel}`, inner)}
+      </Text>
       <Text color={theme.color.t4}>
         <Text color={theme.color.t5}>filter </Text>
         <Text color={theme.color.violet}>{providerFilter}</Text>
@@ -1509,8 +1512,8 @@ function ExternalSessionBrowserPane({
             const title = session.title?.trim() || session.preview?.trim() || session.id;
             const cwd = shortenCwd(session.cwd, 4);
             const messageCount = typeof session.messageCount === "number" && Number.isFinite(session.messageCount)
-              ? `${compactNumber(session.messageCount)} msg${session.messageCount === 1 ? "" : "s"}`
-              : "messages ?";
+              ? `${compactNumber(session.messageCount)} prompt${session.messageCount === 1 ? "" : "s"}`
+              : "prompts ?";
             const badges = [
               session.alreadyImported ? "imported" : null,
               session.possiblyActive ? "may be open elsewhere" : null,
@@ -1531,6 +1534,14 @@ function ExternalSessionBrowserPane({
                   <Text color={session.possiblyActive ? theme.color.warning : theme.color.t5} dimColor={!session.possiblyActive} wrap="truncate-end">
                     {`  ${endTruncate(badges.join(" · "), Math.max(8, inner - 2))}`}
                   </Text>
+                ) : null}
+                {selected && session.preview?.trim() ? (
+                  <Text color={theme.color.t3} wrap="truncate-end">
+                    {`  ${endTruncate(session.preview.trim(), Math.max(8, inner - 2))}`}
+                  </Text>
+                ) : null}
+                {selected && session.alreadyImported && session.importedSessionRef ? (
+                  <Text color={theme.color.violet}>  O Open existing ADE session</Text>
                 ) : null}
               </Box>
             );
@@ -1554,7 +1565,10 @@ function ExternalSessionBrowserPane({
                 : action.hero
                   ? theme.color.t1
                   : theme.color.t3;
-            const hint = action.disabledReason ?? action.hint ?? (action.foreignCwd ? `runs in ${shortenCwd(action.foreignCwd, 4)}` : null);
+            const supplemental = ("hint" in action ? action.hint : null)
+              ?? ("foreignCwd" in action && action.foreignCwd ? `Runs in ${shortenCwd(action.foreignCwd, 4)}.` : null);
+            const hint = ("disabledReason" in action ? action.disabledReason : null)
+              ?? [action.description, supplemental].filter(Boolean).join(" ");
             return (
               <Box key={action.kind} flexDirection="column">
                 <Text color={color} dimColor={!action.enabled}>
@@ -1577,7 +1591,7 @@ function ExternalSessionBrowserPane({
 
       <Box marginTop={1}>
         <Text color={theme.color.t5} dimColor wrap="truncate-end">
-          {endTruncate("up/down rows · left/right actions · enter import · r refresh · p provider · type search", inner)}
+          {endTruncate("up/down rows · left/right actions · enter run action · O open existing · R refresh · P provider · type search", inner)}
         </Text>
       </Box>
     </Box>

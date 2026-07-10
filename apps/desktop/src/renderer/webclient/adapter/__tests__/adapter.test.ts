@@ -106,6 +106,74 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("runs personal chats at machine scope and streams their subscribed events", async () => {
+    fake.descriptors = [{
+      action: "personalChats.list",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    }];
+    fake.commandResults.set("personalChats.list", [{
+      sessionId: "personal-1",
+      provider: "codex",
+      model: "gpt-5",
+      status: "idle",
+    }]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+
+    await expect(adapter.ade.personalChats.call({
+      action: "list",
+      args: { includeArchived: false },
+    })).resolves.toMatchObject({ action: "list", result: [{ sessionId: "personal-1" }] });
+    expect(fake.commandCalls).toEqual([{
+      action: "personalChats.list",
+      args: { includeArchived: false },
+      opts: { projectId: null, timeoutMs: undefined },
+    }]);
+    expect(fake.chatSubscribeCalls).toEqual([{
+      sessionId: "personal-1",
+      opts: { chatScope: "personal", maxBytes: 4 * 1024 * 1024 },
+    }]);
+
+    fake.emitChat({
+      sessionId: "personal-1",
+      seq: 1,
+      timestamp: "2026-07-07T00:00:00.000Z",
+      event: { type: "status", status: "started" } as never,
+    });
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 0 })).resolves.toMatchObject({
+      nextCursor: 1,
+      hasMore: false,
+      events: [{ id: 1, payload: { sessionId: "personal-1", seq: 1 } }],
+    });
+
+    fake.descriptors.push({
+      action: "personalChats.streamEvents",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+    fake.commandResults.set("personalChats.streamEvents", {
+      events: [{
+        id: 2,
+        timestamp: "2026-07-07T00:00:01.000Z",
+        category: "pty",
+        payload: { type: "pty_data", event: { ptyId: "pty-1", data: "ready" } },
+      }],
+      nextCursor: 2,
+      hasMore: false,
+    });
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 1 })).resolves.toMatchObject({
+      nextCursor: 2,
+      events: [{ category: "pty", payload: { type: "pty_data" } }],
+    });
+    expect(fake.commandCalls.at(-1)).toEqual({
+      action: "personalChats.streamEvents",
+      args: { cursor: 1 },
+      opts: { projectId: null, timeoutMs: undefined },
+    });
+
+    adapter.dispose();
+  });
+
   it("unwraps refreshed lane and PR envelopes to preserve renderer array contracts", async () => {
     fake.descriptors = descriptors(["lanes.refreshSnapshots", "prs.refresh"]);
     const laneSnapshot = { lane: { id: "lane-1" }, runtime: {}, rebaseSuggestion: null };
@@ -369,6 +437,7 @@ class FakeAdeSyncClient {
   terminalInputs: Array<{ sessionId: string; data: string }> = [];
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
   terminalSubscribeCalls: Array<{ sessionId: string; opts: { maxBytes?: number } }> = [];
+  chatSubscribeCalls: Array<{ sessionId: string; opts: Record<string, unknown> }> = [];
   terminalUnsubscribeCalls: string[] = [];
   terminalHistoryCalls: TerminalHistoryCall[] = [];
   terminalHistoryResults = new Map<string, SyncTerminalHistoryResponsePayload>();
@@ -433,7 +502,11 @@ class FakeAdeSyncClient {
     return this.fileResults.has(action) ? this.fileResults.get(action) : null;
   }
 
-  subscribeChat(sessionId: string, _opts: unknown, handlers: ChatHandlers): () => void {
+  subscribeChat(sessionId: string, opts: unknown, handlers: ChatHandlers): () => void {
+    this.chatSubscribeCalls.push({
+      sessionId,
+      opts: opts && typeof opts === "object" ? { ...(opts as Record<string, unknown>) } : {},
+    });
     this.chatHandlers.set(sessionId, handlers);
     return () => this.chatHandlers.delete(sessionId);
   }

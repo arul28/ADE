@@ -43,5 +43,7 @@ export interface ExternalSessionImportArgs {
 }
 
 export type ExternalSessionImportResult =
-  | { kind: "cli"; sessionId: string; ptyId: string; laneId: string }
-  | { kind: "chat"; chatSessionId: string; laneId: string };
+  | { kind: "cli"; sessionId: string; ptyId: string; laneId: string; session?: TerminalSessionSummary }
+  | { kind: "chat"; chatSessionId: string; laneId: string; chatSummary: AgentChatSessionSummary };
+import type { AgentChatSessionSummary } from "./chat";
+import type { TerminalSessionSummary } from "./sessions";

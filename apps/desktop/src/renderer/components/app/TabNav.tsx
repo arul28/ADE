@@ -11,6 +11,7 @@ import {
   ClockCounterClockwise,
   Robot,
   Brain,
+  ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -89,6 +90,7 @@ const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = 
 };
 
 function primaryTabPath(pathname: string): string {
+  if (pathname === "/chats" || pathname.startsWith("/chats/")) return "/chats";
   const match = mainItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
   if (match) return match.to;
   return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
@@ -308,6 +310,38 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />
+
+        <SmartTooltip
+          side="bottom"
+          content={{
+            label: "Chats",
+            description: "Chat with ADE agents without opening or linking a project.",
+            effect: primaryTabPath(location.pathname) === "/chats" ? "Already viewing chats." : "Opens projectless chats.",
+          }}
+          wrapperClassName="w-full"
+          wrapperStyle={{ display: "flex" }}
+        >
+          <NavLink
+            to="/chats"
+            data-active={primaryTabPath(location.pathname) === "/chats" ? "true" : undefined}
+            onClick={() => {
+              logRendererDebugEvent("renderer.tab_nav.click", {
+                projectRoot: activeProjectRoot,
+                from: location.pathname,
+                to: "/chats",
+                showWelcome,
+                hasActiveProject,
+              });
+            }}
+            className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
+          >
+            {primaryTabPath(location.pathname) === "/chats" ? <div className="absolute inset-0 bg-white/[0.08]" /> : null}
+            <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
+              <ChatCircleDots size={SIDEBAR_ICON_SIZE} weight="regular" className="ade-shell-sidebar-icon shrink-0" />
+            </span>
+            <span className="ade-tab-label whitespace-nowrap">Chats</span>
+          </NavLink>
+        </SmartTooltip>
 
         {/* GitHub profile avatar — only shows when token is stored, a login is known, and the image loads */}
         {githubLogin && !avatarBroken ? (

@@ -132,7 +132,8 @@ apps/ios/
 │   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
 │   │                                # Linear read/launch RPC wrappers, worktree
-│   │                                # discovery
+│   │                                # discovery, personal-chat cache/actions/
+│   │                                # subscription routing
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -157,6 +158,9 @@ apps/ios/
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
 │   │   │                            #   cross-project quick look)
+│   │   ├── PersonalChats/           # Hub-only projectless chat list,
+│   │   │                            # new-chat model composer, and reused
+│   │   │                            # Work transcript destination adapter
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
 │   │   │                            # LaneDetailSectionChrome (collapsible
 │   │   │                            #   sections + wrapping chip-flow layout),
@@ -180,6 +184,12 @@ apps/ios/
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub),
+│   │   │                            # WorkUsageActivityCarousel (fixed
+│   │   │                            #   cross-client new-chat charts),
+│   │   │                            # WorkImportSessionScreen +
+│   │   │                            #   WorkExternalSessionAffordances
+│   │   │                            #   (provider session browse/details,
+│   │   │                            #   lane picker, Continue/Copy policy),
 │   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
@@ -252,6 +262,20 @@ side-effecting work, and several helper modules (timeline, markdown
 parsing, model catalog, session grouping) to keep individual files
 under a few hundred lines. This split is the primary reason the Work
 tab grew from one ~3,000-line file to ~30 focused files.
+
+The Work model/activity parity path is concentrated in these files:
+
+- `ADE/Models/RemoteModels.swift` — tolerant chat-event decoding, MCP app/tool
+  source metadata, image events/omission metadata, Codex recovery DTOs, and
+  host model rows including `defaultReasoningEffort`.
+- `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
+  host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
+  and the Ultra usage warning.
+- `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`, and
+  `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
+  both live Codable events and persisted JSONL fallback.
+- `ADE/Services/SyncService.swift` and `ADE/Views/Work/WorkSessionDestinationView+Actions.swift`
+  — host-advertised `chat.recoverCodexTurn` dispatch for stalled-turn buttons.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -555,6 +579,7 @@ Implemented envelope types on iOS:
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
 | `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
+| `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
 | `heartbeat` | Bidirectional | Connection health (30s) |
@@ -882,7 +907,21 @@ Before the tabs render, the **Hub** (`HubScreen`, in `Views/Hub/`) can take
 over the root screen when no active project is selected or the user taps the
 Projects toolbar button. The Hub is the app's home surface: it lists every
 project on the connected machine, each expandable to its chats grouped by lane
-(from the `roster_subscribe` feed — see the sub-protocol table). The active
+(from the `roster_subscribe` feed — see the sub-protocol table).
+
+The Hub also owns the only mobile entry to projectless Chats.
+`HubPersonalChatsCard` shows the active-session count and attention count when
+the host advertises personal-chat support, then pushes `PersonalChatsScreen`
+without selecting a project. That screen searches active/archived summaries,
+refreshes on a five-second live cadence, and uses a per-host App Group cache for
+offline list display. `PersonalChatNewScreen` reuses the Work
+model/access/reasoning controls but sends `personalChats.create`; creation
+requires a live host because it is not queueable. Existing chats reuse
+`WorkSessionDestinationView` with `personalChat: true`, no lane list/actions,
+runtime-scoped attachment reads, and personal action names for sends, steers,
+approvals, metadata, archive, and delete.
+
+The active
 project's chats come straight from the phone's already-synced local DB
 (authoritative + instant) rather than the cross-project roster, so the active
 card is never stuck on "Loading chats…". Tapping a project card opens its
@@ -991,6 +1030,15 @@ tray. Images are normalized to JPEG before upload, saved through
 example an iCloud-only photo that is not currently available on the phone), the
 tile remains local and shows a recoverable load error instead of sending a
 broken attachment.
+
+Work can also import provider-native Claude, Codex, Cursor, Droid, and OpenCode
+CLI sessions. `WorkImportSessionScreen` first shows a compact searchable list,
+then opens details with `WorkLanePickerDropdown` and the safe Continue/Copy
+actions derived by `WorkExternalSessionAffordances.swift`. Listing and import
+run on the paired host through `work.listExternalSessions` and
+`work.importExternalSession`; the phone never reads provider storage. Import
+results include the persisted chat or terminal summary, which Work caches before
+navigating so replication latency cannot produce a blank destination screen.
 
 ### Shipped
 
@@ -1241,6 +1289,12 @@ against them instead of relying on hardcoded mobile assumptions. A
 runtime that disables a command via policy change is immediately
 reflected in the phone's UI on the next descriptor read.
 
+`usage.getAdeStats` is a viewer-allowed project command shared by iOS and the
+web client. It returns the same stale-while-revalidate snapshot used by desktop
+Stats, including daily points and `desktop` / `mobile` / `tui` / `web` client
+attribution. The phone uses it only for the fixed Work new-chat carousel; it
+does not duplicate the full desktop Stats page.
+
 ## Implementation status (phone specifics)
 
 | Component | Status |
@@ -1253,9 +1307,10 @@ reflected in the phone's UI on the next descriptor read.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
 | Cloud relay (automatic `relay` transport, promoted when the phone has no Tailscale tunnel, no user setup) | Implemented |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
+| Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |
@@ -1279,6 +1334,11 @@ reflected in the phone's UI on the next descriptor read.
   is a CRR, make sure writes land in a table the phone reads), not
   on the phone. Avoid adding runtime-only caches that the phone has no
   way to observe.
+- **Personal chats are the exception to project-DB reads.** Their durable state
+  belongs to the machine scope, so iOS reads summaries through
+  `personalChats.list`, caches them per host, and streams transcripts with
+  `chatScope: "personal"`. Never merge those summaries into the selected
+  project's CRR tables.
 - **Project selection gates hydration.** A phone paired to a machine can
   know about multiple machine projects, but lane/file/Work/PR reads must
   stay scoped to the active project id. If a switch fails, roll back the
@@ -1373,10 +1433,17 @@ reflected in the phone's UI on the next descriptor read.
   `codex_safety_buffering`, `codex_moderation_metadata`, `codex_sleep`,
   `codex_thread_deleted`, and `codex_turn_stalled` in
   `RemoteModels.swift`, mapping them through `WorkEventMapping.swift`,
-  and rendering compact timeline cards. Web-search events also carry
+  and rendering compact timeline cards. Stalled rows preserve the
+  `sourceSessionId` from child chats and expose Wait / Nudge / Retry / Resume
+  only when the host advertises `chat.recoverCodexTurn`. Web-search events also carry
   provider action metadata (`query` / `queries`, `title`, `url`,
   `snippet`); Work keeps those in the enriched web-search tool card so
   URLs are visible without duplicating the same event as a second row.
+  MCP tool events decode provider-neutral app/server/action metadata so cards
+  name the connected app instead of `mcp`. Generated/viewed-image events from
+  Codex and other adapters reuse compact tool cards; data URIs are never printed
+  into the timeline, and stored/mobile compaction byte counts become a short
+  "preview omitted" detail.
 - **Subagent lifecycle is rendered as chat structure, not event spam.**
   `RemoteModels.swift` accepts both legacy `subagent_started` /
   `subagent_progress` / `subagent_result` events and the canonical dotted
@@ -1432,7 +1499,12 @@ reflected in the phone's UI on the next descriptor read.
   together; the Claude picker order mirrors desktop (Fable 5, Opus
   4.8 1M, Sonnet 5, Haiku 4.5, Opus 4.7 1M) and legacy Sonnet 4.6 /
   basic Opus 4.7 selections normalize forward instead of appearing as
-  rows. `shell` remains valid runtime-side but the phone no longer
+  rows. The OpenAI picker always promotes GPT-5.6 Sol, Terra, Luna in that
+  order even when a host returns another order; Sol is the fallback default
+  and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
+  tiers/defaults, filters raw `max` for GPT-5.6, and falls back to Light /
+  Medium / High / Extra High / Ultra on Sol/Terra and through Extra High on
+  Luna (`low` for Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to
   `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /

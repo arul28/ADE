@@ -1,4 +1,5 @@
 import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
+import type { PersonalChatRemoteCommandAction } from "./personalChats";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -789,6 +790,8 @@ export type SyncTerminalResizePayload = {
 
 export type SyncChatSubscribePayload = {
   sessionId: string;
+  /** Machine-owned chat stream. Personal chat subscribes never require project fields. */
+  chatScope?: "project" | "personal";
   maxBytes?: number;
   /**
    * Resume marker: the highest `seq` (see SyncChatEventPayload) the client
@@ -838,6 +841,8 @@ export type SyncChatSubscribeSnapshotPayload = {
 
 export type SyncChatUnsubscribePayload = {
   sessionId: string;
+  /** Mirrors SyncChatSubscribePayload.chatScope. */
+  chatScope?: "project" | "personal";
   /** Cross-project override, mirrors SyncChatSubscribePayload.projectId. */
   projectId?: string;
   projectRootPath?: string;
@@ -928,6 +933,8 @@ export type SyncSendToSessionArgs = {
 export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
+  | "usage.getAdeStats"
+  | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"
   | "lanes.presence.announce"
@@ -1002,6 +1009,7 @@ export type SyncRemoteCommandAction =
   | "chat.create"
   | "chat.send"
   | "chat.interrupt"
+  | "chat.recoverCodexTurn"
   | "chat.steer"
   | "chat.cancelSteer"
   | "chat.editSteer"

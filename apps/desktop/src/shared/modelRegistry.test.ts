@@ -19,11 +19,21 @@ import {
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   resolveModelSlug,
+  selectSupportedReasoningEffort,
 } from "./modelRegistry";
 import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
 
 describe("modelRegistry", () => {
+  it("selects only supported reasoning preferences and defaults", () => {
+    const tiers = ["low", "medium", "high"];
+    expect(selectSupportedReasoningEffort({ tiers, preferred: "high", advertisedDefault: "low" })).toBe("high");
+    expect(selectSupportedReasoningEffort({ tiers, preferred: "ultra", advertisedDefault: "low" })).toBe("low");
+    expect(selectSupportedReasoningEffort({ tiers, advertisedDefault: "ultra", fallback: "high" })).toBe("high");
+    expect(selectSupportedReasoningEffort({ tiers: ["low", "high"] })).toBe("low");
+    expect(selectSupportedReasoningEffort({ tiers: [] })).toBeNull();
+  });
+
   it("round-trips OpenCode registry ids with slashes inside model ids", () => {
     const id = encodeOpenCodeRegistryId("lmstudio", "openai/gpt-oss-20b");
     expect(id).toMatch(/^opencode\/lmstudio\//);
@@ -81,6 +91,7 @@ describe("modelRegistry", () => {
     expect(byId).toBe("anthropic/claude-opus-4-8");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-5.6-sol");
     expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();
@@ -109,6 +120,9 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
+      "openai/gpt-5.6-sol",
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-luna",
       "openai/gpt-5.5",
       "openai/gpt-5.4",
       "openai/gpt-5.4-mini",
@@ -120,7 +134,37 @@ describe("modelRegistry", () => {
     // API-key OpenAI models are now discovered dynamically through OpenCode,
     // so the static registry yields no hits for api-key auth alone.
     expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.5");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.6-sol");
+  });
+
+  it("exposes the exact GPT-5.6 Codex effort ladders and defaults", () => {
+    expect(getModelById("openai/gpt-5.6-sol")).toMatchObject({
+      displayName: "GPT-5.6 Sol",
+      providerModelId: "gpt-5.6-sol",
+      contextWindow: 372_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+      defaultReasoningEffort: "low",
+      serviceTiers: ["fast"],
+    });
+    expect(getModelById("openai/gpt-5.6-terra")).toMatchObject({
+      displayName: "GPT-5.6 Terra",
+      providerModelId: "gpt-5.6-terra",
+      contextWindow: 372_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: ["fast"],
+    });
+    expect(getModelById("openai/gpt-5.6-luna")).toMatchObject({
+      displayName: "GPT-5.6 Luna",
+      providerModelId: "gpt-5.6-luna",
+      contextWindow: 372_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: ["fast"],
+    });
+    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-5.6-sol");
+    expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-5.6-terra");
+    expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-5.6-luna");
   });
 
   it("exposes GPT-5.5 with the real OpenAI model id and expected reasoning tiers", () => {
@@ -223,6 +267,14 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("openai/gpt-5.5");
     expect(descriptor).toBeTruthy();
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
+  });
+
+  it("returns the exact Codex app-server runtime names for GPT-5.6", () => {
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      const descriptor = getModelById(`openai/${slug}`);
+      expect(descriptor).toBeTruthy();
+      expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe(slug);
+    }
   });
 
   it("resolves Cursor CLI abstract picker controls to concrete model ids", () => {

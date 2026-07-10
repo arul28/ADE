@@ -3441,6 +3441,16 @@ app.whenReady().then(async () => {
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
     });
+    const usageTrackingService = createUsageTrackingService({
+      logger,
+      db,
+      pollIntervalMs: 120_000,
+      onUpdate: (snapshot) => {
+        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
+      },
+      projectRoot,
+    });
+
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
     // diagnostics only; ADE_ENABLE_DESKTOP_SYNC_HOST=1 re-enables the old
@@ -3480,6 +3490,7 @@ app.whenReady().then(async () => {
       getLinearIssueTracker: () => linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
       processService,
+      usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
@@ -3561,14 +3572,6 @@ app.whenReady().then(async () => {
         })
       : null;
 
-    const usageTrackingService = createUsageTrackingService({
-      logger,
-      pollIntervalMs: 120_000,
-      onUpdate: (snapshot) => {
-        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
-      },
-      projectRoot,
-    });
     scheduleBackgroundProjectTask(
       "usage.start",
       () => usageTrackingService.start(),

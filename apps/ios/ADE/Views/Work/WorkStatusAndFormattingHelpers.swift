@@ -1177,8 +1177,20 @@ func noticeTint(for kind: String) -> ColorToken {
 func toolDisplayName(_ tool: String) -> String {
   let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Tool" }
+  switch trimmed.lowercased() {
+  case "image_generation": return "Image generation"
+  case "image_view": return "Image viewed"
+  default: break
+  }
   if trimmed.hasPrefix("functions.") {
     return String(trimmed.split(separator: ".").last ?? Substring(trimmed))
+  }
+  if let separator = trimmed.firstIndex(of: ":") {
+    let source = trimmed[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+    let action = trimmed[trimmed.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+    if !source.isEmpty, !action.isEmpty {
+      return "\(source) · \(action.replacingOccurrences(of: "_", with: " "))"
+    }
   }
   return trimmed
 }

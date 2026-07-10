@@ -158,6 +158,7 @@ export type AdeRuntimeSyncOptions = {
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
+  personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
   /**
    * Brain-level websocket listener shared by every project scope's sync host
@@ -420,8 +421,11 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
 export async function createAdeRuntime(args: {
   projectRoot: string;
   workspaceRoot?: string;
+  primaryWorktreePath?: string;
   chatRuntime?: "headless-stub" | "agent";
   runtimeProfile?: "full" | "chat";
+  /** Disable project-oriented push/deep-link events for machine-scoped runtimes. */
+  publishPushEvents?: boolean;
   syncRuntime?: AdeRuntimeSyncOptions;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
@@ -429,12 +433,17 @@ export async function createAdeRuntime(args: {
     : args;
   const projectRoot = path.resolve(resolvedArgs.projectRoot);
   const workspaceRoot = path.resolve(resolvedArgs.workspaceRoot ?? resolvedArgs.projectRoot);
+  const primaryWorktreePath = path.resolve(resolvedArgs.primaryWorktreePath ?? resolvedArgs.projectRoot);
   const chatOnlyRuntime = resolvedArgs.runtimeProfile === "chat";
+  const publishPushEvents = resolvedArgs.publishPushEvents !== false;
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
   if (!fs.existsSync(workspaceRoot) || !fs.statSync(workspaceRoot).isDirectory()) {
     throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
+  }
+  if (!fs.existsSync(primaryWorktreePath) || !fs.statSync(primaryWorktreePath).isDirectory()) {
+    throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
@@ -492,6 +501,7 @@ export async function createAdeRuntime(args: {
   const laneService = createLaneService({
     db,
     projectRoot,
+    primaryWorktreePath,
     projectId,
     defaultBaseRef: baseRef,
     worktreesDir: paths.worktreesDir,
@@ -1239,45 +1249,50 @@ export async function createAdeRuntime(args: {
       machineName: os.hostname(),
     };
   });
-  const detachPushSources = pushPublisherService.attachSources(projectId, {
-    agentChatService: agentChatService ?? null,
-    ptyService,
-    subscribePrNotifications: (cb) => {
-      pushPrNotificationSubscribers.add(cb);
-      return () => pushPrNotificationSubscribers.delete(cb);
-    },
-    resolveLaneName: (laneId) => {
-      try {
-        const row = db.get<{ name: string }>(
-          "select name from lanes where id = ? and project_id = ? limit 1",
-          [laneId, projectId],
-        );
-        return row?.name ?? null;
-      } catch {
-        return null;
-      }
-    },
-    resolveCliSession: (sessionId) => {
-      try {
-        const session = sessionService.get(sessionId);
-        if (!session) return null;
-        return {
-          title: session.title ?? null,
-          toolType: session.toolType ?? null,
-          chatSessionId: session.chatSessionId ?? null,
-        };
-      } catch {
-        return null;
-      }
-    },
-  });
-  pushPublisherForPtySignals = pushPublisherService;
-  void pushPublisherService.start().catch((error) => {
-    logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
+  const detachPushSources = publishPushEvents
+    ? pushPublisherService.attachSources(projectId, {
+        agentChatService: agentChatService ?? null,
+        ptyService,
+        subscribePrNotifications: (cb) => {
+          pushPrNotificationSubscribers.add(cb);
+          return () => pushPrNotificationSubscribers.delete(cb);
+        },
+        resolveLaneName: (laneId) => {
+          try {
+            const row = db.get<{ name: string }>(
+              "select name from lanes where id = ? and project_id = ? limit 1",
+              [laneId, projectId],
+            );
+            return row?.name ?? null;
+          } catch {
+            return null;
+          }
+        },
+        resolveCliSession: (sessionId) => {
+          try {
+            const session = sessionService.get(sessionId);
+            if (!session) return null;
+            return {
+              title: session.title ?? null,
+              toolType: session.toolType ?? null,
+              chatSessionId: session.chatSessionId ?? null,
+            };
+          } catch {
+            return null;
+          }
+        },
+      })
+    : () => {};
+  if (publishPushEvents) {
+    pushPublisherForPtySignals = pushPublisherService;
+    void pushPublisherService.start().catch((error) => {
+      logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 
   const usageTrackingService = createUsageTrackingService({
     logger,
+    db,
     pollIntervalMs: 120_000,
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
     projectRoot,
@@ -1328,6 +1343,7 @@ export async function createAdeRuntime(args: {
     const { createSyncService } = await import("./services/sync/syncService");
     syncService = createSyncService({
       db,
+      usageTrackingService,
       logger,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,
@@ -1373,6 +1389,7 @@ export async function createAdeRuntime(args: {
       projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
       rosterProvider: resolvedArgs.syncRuntime.rosterProvider,
       foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
+      personalChatScope: resolvedArgs.syncRuntime.personalChatScope,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,

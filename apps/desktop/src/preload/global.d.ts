@@ -110,6 +110,8 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -583,6 +585,10 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
+  PersonalChatCallArgs,
+  PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
@@ -793,6 +799,14 @@ declare global {
           id: string,
           options?: { manual?: boolean },
         ) => Promise<{ disconnected: boolean }>;
+      };
+      personalChats: {
+        call: (
+          request: PersonalChatCallArgs,
+        ) => Promise<PersonalChatCallResponse>;
+        streamEvents: (
+          request?: PersonalChatStreamEventsArgs,
+        ) => Promise<PersonalChatStreamEventsResult>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
@@ -1293,6 +1307,9 @@ declare global {
           args: AgentChatCancelDispatchedSteerArgs,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
+        recoverCodexTurn: (
+          args: AgentChatRecoverCodexTurnArgs,
+        ) => Promise<AgentChatRecoverCodexTurnResult>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;

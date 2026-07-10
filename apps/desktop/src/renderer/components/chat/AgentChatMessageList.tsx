@@ -38,6 +38,8 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   ChatSurfaceChipTone,
   FilesWorkspace,
   ChatSurfaceProfile,
@@ -128,6 +130,88 @@ type WorkspacePathLocation = {
   startLine?: number;
   startColumn?: number;
 };
+
+type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
+
+function CodexTurnRecoveryCard({
+  event,
+  sessionId,
+  onRecover,
+}: {
+  event: CodexTurnStalledEvent;
+  sessionId: string | null | undefined;
+  onRecover?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+}) {
+  const [pendingAction, setPendingAction] = useState<AgentChatRecoverCodexTurnArgs["action"] | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
+    wait: "Wait",
+    steer: "Nudge",
+    interrupt_retry_same_thread: "Retry",
+    restart_resume_thread: "Resume",
+  };
+  const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
+    waiting: "Waiting for Codex output…",
+    nudged: "Status nudge sent.",
+    retrying: "Retry started in this thread.",
+    resumed: "Codex app-server restarted and the thread resumed.",
+  };
+
+  const recover = useCallback(async (action: AgentChatRecoverCodexTurnArgs["action"]) => {
+    if (!targetSessionId || !onRecover || pendingAction) return;
+    setPendingAction(action);
+    setErrorMessage(null);
+    setResultMessage(null);
+    try {
+      const result = await onRecover({ sessionId: targetSessionId, turnId: event.turnId, action });
+      setResultMessage(resultLabels[result.status]);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingAction(null);
+    }
+  }, [event.turnId, onRecover, pendingAction, resultLabels, targetSessionId]);
+
+  return (
+    <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
+      <div className="flex items-center gap-2">
+        <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
+        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
+        <span className="min-w-0 truncate">Codex paused unexpectedly</span>
+      </div>
+      <div className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/64">
+        {event.message}
+      </div>
+      {event.recoveryOptions?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {event.recoveryOptions.slice(0, 4).map((option) => (
+            <button
+              key={option}
+              type="button"
+              disabled={!targetSessionId || !onRecover || pendingAction != null}
+              className="rounded-md border border-amber-200/12 bg-amber-300/[0.055] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-100/65 transition-colors hover:border-amber-200/25 hover:bg-amber-300/[0.11] hover:text-amber-50 disabled:pointer-events-none disabled:opacity-45"
+              onClick={() => void recover(option)}
+            >
+              {pendingAction === option ? `${optionLabels[option]}…` : optionLabels[option]}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {resultMessage ? (
+        <div className="mt-2 text-[length:calc(var(--chat-font-size)*10/14)] text-emerald-200/70" role="status">
+          {resultMessage}
+        </div>
+      ) : null}
+      {errorMessage ? (
+        <div className="mt-2 text-[length:calc(var(--chat-font-size)*10/14)] text-red-200/75" role="alert">
+          {errorMessage}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function formatDiffCounts(fileCount: number, additions: number, deletions: number): string {
   const fileLabel = fileCount === 1 ? "file" : "files";
@@ -2522,6 +2606,7 @@ function renderEvent(
   envelope: RenderEnvelope,
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -3020,35 +3105,12 @@ function renderEvent(
   }
 
   if (event.type === "codex_turn_stalled") {
-    const optionLabels: Record<string, string> = {
-      wait: "Wait",
-      steer: "Nudge",
-      interrupt_retry_same_thread: "Retry",
-      restart_resume_thread: "Resume",
-    };
     return (
-      <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
-        <div className="flex items-center gap-2">
-          <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
-          <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
-          <span className="min-w-0 truncate">Codex paused unexpectedly</span>
-        </div>
-        <div className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/64">
-          {event.message}
-        </div>
-        {event.recoveryOptions?.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {event.recoveryOptions.slice(0, 4).map((option) => (
-              <span
-                key={option}
-                className="rounded-md border border-amber-200/12 bg-amber-300/[0.055] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-100/58"
-              >
-                {optionLabels[option] ?? option}
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      <CodexTurnRecoveryCard
+        event={event}
+        sessionId={options?.sessionId}
+        onRecover={options?.onCodexRecovery}
+      />
     );
   }
 
@@ -4044,6 +4106,7 @@ type EventRowProps = {
   turnModel: { label: string; modelId?: string; model?: string } | null;
   turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -4075,6 +4138,7 @@ const EventRow = React.memo(function EventRow({
   turnModel,
   turnEndDurationMs,
   onApproval,
+  onCodexRecovery,
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -4140,6 +4204,7 @@ const EventRow = React.memo(function EventRow({
           ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
+            onCodexRecovery,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -4465,7 +4530,8 @@ function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
     className,
-    onApproval,
+  onApproval,
+  onCodexRecovery,
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -4489,6 +4555,7 @@ function AgentChatMessageListMain({
   showStreamingIndicator?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -5279,6 +5346,7 @@ function AgentChatMessageListMain({
           turnModel={turnModel}
           turnEndDurationMs={turnEndDurationMs}
           onApproval={handleApproval}
+          onCodexRecovery={onCodexRecovery}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
@@ -5313,6 +5381,7 @@ function AgentChatMessageListMain({
         turnDividerLabel={turnDividerLabel}
         turnModel={turnModel}
         onApproval={handleApproval}
+        onCodexRecovery={onCodexRecovery}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
@@ -5337,7 +5406,7 @@ function AgentChatMessageListMain({
         onScrollToRowKey={scrollToRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

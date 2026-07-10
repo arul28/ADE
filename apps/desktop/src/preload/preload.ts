@@ -286,6 +286,8 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -596,6 +598,10 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
+  PersonalChatCallArgs,
+  PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
@@ -1181,6 +1187,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "respondToInput",
   "approveToolUse",
   "interrupt",
+  "recoverCodexTurn",
   "steer",
   "cancelSteer",
   "editSteer",
@@ -3596,6 +3603,16 @@ contextBridge.exposeInMainWorld("ade", {
       return result;
     },
   },
+  personalChats: {
+    call: async (
+      request: PersonalChatCallArgs,
+    ): Promise<PersonalChatCallResponse> =>
+      ipcRenderer.invoke(IPC.personalChatsCall, request),
+    streamEvents: async (
+      request: PersonalChatStreamEventsArgs = {},
+    ): Promise<PersonalChatStreamEventsResult> =>
+      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request),
+  },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>
       callProjectRuntimeActionOr("keybindings", "get", {}, () =>
@@ -5160,6 +5177,19 @@ contextBridge.exposeInMainWorld("ade", {
       if (!runtime.handled)
         await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
       agentChatSummaryCache.clear();
+    },
+    recoverCodexTurn: async (
+      args: AgentChatRecoverCodexTurnArgs,
+    ): Promise<AgentChatRecoverCodexTurnResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatRecoverCodexTurnResult>(
+        "chat",
+        "recoverCodexTurn",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRecoverCodexTurn, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
     },
     approve: async (args: AgentChatApproveArgs): Promise<void> => {
       agentChatSummaryCache.clear();

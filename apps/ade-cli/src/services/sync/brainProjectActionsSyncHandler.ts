@@ -3,10 +3,17 @@ import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { RawData, WebSocket } from "ws";
 import type {
+  AgentChatEventEnvelope,
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
   ProjectBrowseInput,
+  PersonalChatScopeContract,
+  SyncChatSubscribePayload,
+  SyncChatSubscribeSnapshotPayload,
+  SyncChatUnsubscribePayload,
+  SyncCommandPayload,
+  SyncRemoteCommandDescriptor,
   SyncEnvelope,
   SyncHelloPayload,
   SyncMobileProjectSummary,
@@ -18,6 +25,8 @@ import type {
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
 } from "../../../../desktop/src/shared/types";
+import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
+import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
@@ -56,6 +65,7 @@ type BrainProjectActionsSyncHandlerArgs = {
   authTimeoutMs?: number;
   /** Mirrors SyncHostServiceArgs.getCloudRelayWssUrl for the fallback hello_ok. */
   getCloudRelayWssUrl?: () => string | null;
+  personalChatScope?: PersonalChatScopeContract;
 };
 
 type BrainPeerState = {
@@ -63,6 +73,7 @@ type BrainPeerState = {
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
+  personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
 };
 
 const WS_OPEN = 1;
@@ -332,6 +343,52 @@ async function projectCatalog(provider: SyncProjectCatalogProvider, logger: Logg
   }
 }
 
+function personalChatCommandDescriptors(
+  scope: BrainProjectActionsSyncHandlerArgs["personalChatScope"],
+): SyncRemoteCommandDescriptor[] {
+  if (!scope) return [];
+  const descriptors = scope.capabilities().actions.map((action) => ({
+    action: `personalChats.${action}`,
+    scope: "runtime" as const,
+    policy: {
+      viewerAllowed: true,
+      queueable: isPersonalChatActionQueueable(action),
+    },
+  }));
+  descriptors.push({
+    action: "personalChats.streamEvents",
+    scope: "runtime",
+    policy: { viewerAllowed: true, queueable: false },
+  });
+  return descriptors;
+}
+
+async function readPersonalChatEventsSince(
+  transcriptPath: string,
+  offset: number,
+): Promise<{ events: AgentChatEventEnvelope[]; nextOffset: number }> {
+  let file: fs.promises.FileHandle | null = null;
+  try {
+    file = await fs.promises.open(transcriptPath, "r");
+    const size = (await file.stat()).size;
+    const start = Math.max(0, Math.min(offset, size));
+    if (start >= size) return { events: [], nextOffset: size };
+    const bytes = Buffer.alloc(size - start);
+    await file.read(bytes, 0, bytes.length, start);
+    const lastNewline = bytes.lastIndexOf(0x0a);
+    if (lastNewline < 0) return { events: [], nextOffset: start };
+    const complete = bytes.subarray(0, lastNewline + 1);
+    return {
+      events: parseAgentChatTranscript(complete.toString("utf8")),
+      nextOffset: start + complete.length,
+    };
+  } catch {
+    return { events: [], nextOffset: Math.max(0, offset) };
+  } finally {
+    await file?.close().catch(() => {});
+  }
+}
+
 export function createBrainProjectActionsSyncHandler(
   args: BrainProjectActionsSyncHandlerArgs,
 ): SharedSyncListenerConnectionHandler {
@@ -540,6 +597,52 @@ export function createBrainProjectActionsSyncHandler(
         }
         break;
       }
+      case "chat_subscribe": {
+        const payload = envelope.payload as SyncChatSubscribePayload | null;
+        const sessionId = optionalString(payload?.sessionId);
+        if (!sessionId || payload?.chatScope !== "personal" || !args.personalChatScope) break;
+        const transcriptPath = await args.personalChatScope.transcriptPath(sessionId);
+        if (!transcriptPath) {
+          send(peer.ws, "chat_subscribe", {
+            sessionId,
+            capturedAt: nowIso(),
+            truncated: false,
+            events: [],
+            turnActive: false,
+          } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
+          break;
+        }
+        const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes)
+          ? Math.max(1_024, Math.min(2_000_000, Math.floor(payload.maxBytes)))
+          : 2_000_000;
+        // Capture the tail point before reading history. Events committed
+        // during the snapshot can then be replayed (and client-deduped), but
+        // can never fall into the gap between history collection and offset.
+        const offset = await fs.promises.stat(transcriptPath)
+          .then((stat) => stat.size)
+          .catch(() => 0);
+        const history = (await args.personalChatScope.call("getEventHistory", {
+          sessionId,
+          maxBytes,
+        })).result as { events?: AgentChatEventEnvelope[]; truncated?: boolean };
+        peer.personalChatSubscriptions.set(sessionId, { transcriptPath, offset });
+        send(peer.ws, "chat_subscribe", {
+          sessionId,
+          capturedAt: nowIso(),
+          truncated: history.truncated === true,
+          events: history.events ?? [],
+          turnActive: await args.personalChatScope.isTurnActive(sessionId),
+        } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
+        break;
+      }
+      case "chat_unsubscribe": {
+        const payload = envelope.payload as SyncChatUnsubscribePayload | null;
+        if (payload?.chatScope === "personal") {
+          const sessionId = optionalString(payload.sessionId);
+          if (sessionId) peer.personalChatSubscriptions.delete(sessionId);
+        }
+        break;
+      }
       case "heartbeat": {
         const payload = envelope.payload as { kind?: string; sentAt?: string } | null;
         if (payload?.kind === "ping") {
@@ -558,10 +661,42 @@ export function createBrainProjectActionsSyncHandler(
         // staring at a 30s timeout and a vague "took too long" banner for
         // EVERY surface; answer immediately with a self-describing failure so
         // the app can show what actually happened and retry.
-        const payload = envelope.payload as { commandId?: string; action?: string } | null;
+        const payload = envelope.payload as SyncCommandPayload | null;
         const commandId = typeof payload?.commandId === "string" && payload.commandId
           ? payload.commandId
           : envelope.requestId ?? "";
+        const action = typeof payload?.action === "string" ? payload.action : "";
+        const commandArgs = payload?.args ?? {};
+        const descriptor = action.startsWith("personalChats.")
+          ? personalChatCommandDescriptors(args.personalChatScope).find((entry) => entry.action === action)
+          : undefined;
+        if (action.startsWith("personalChats.") && args.personalChatScope && descriptor) {
+          send(peer.ws, "command_ack", {
+            commandId,
+            accepted: true,
+            status: "accepted",
+            message: `Executing ${action}.`,
+          }, envelope.requestId);
+          try {
+            const result = action === "personalChats.streamEvents"
+              ? await args.personalChatScope.streamEvents(commandArgs)
+              : (await args.personalChatScope.call(
+                  action.slice("personalChats.".length),
+                  commandArgs,
+                )).result;
+            send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
+          } catch (error) {
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: false,
+              error: {
+                code: "command_failed",
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }, envelope.requestId);
+          }
+          break;
+        }
         args.logger.warn("sync_brain.command_without_project_host", {
           action: typeof payload?.action === "string" ? payload.action : null,
           peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -591,7 +726,24 @@ export function createBrainProjectActionsSyncHandler(
       authenticated: false,
       authTimeout: null,
       metadata: null,
+      personalChatSubscriptions: new Map(),
     };
+    let personalChatPumpRunning = false;
+    const personalChatPump = setInterval(() => {
+      if (!peer.authenticated || peer.ws.readyState !== WS_OPEN || personalChatPumpRunning) return;
+      personalChatPumpRunning = true;
+      void (async () => {
+        for (const [sessionId, subscription] of peer.personalChatSubscriptions) {
+          const next = await readPersonalChatEventsSince(subscription.transcriptPath, subscription.offset);
+          for (const event of next.events) send(peer.ws, "chat_event", event);
+          subscription.offset = next.nextOffset;
+          peer.personalChatSubscriptions.set(sessionId, subscription);
+        }
+      })().finally(() => {
+        personalChatPumpRunning = false;
+      });
+    }, pollIntervalMs);
+    personalChatPump.unref?.();
     const clearAuthTimeout = (): void => {
       if (!peer.authTimeout) return;
       clearTimeout(peer.authTimeout);
@@ -772,6 +924,7 @@ export function createBrainProjectActionsSyncHandler(
           peer.metadata = hello.peer;
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
+          const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
           send(ws, "hello_ok", buildSyncHostHelloOkPayload({
             peer: hello.peer,
             brain,
@@ -782,8 +935,8 @@ export function createBrainProjectActionsSyncHandler(
             projectCatalogEnabled: true,
             crossProjectChatEnabled: false,
             projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
-            remoteCommandSupportedActions: [],
-            remoteCommandDescriptors: [],
+            remoteCommandSupportedActions: personalDescriptors.map((entry) => entry.action),
+            remoteCommandDescriptors: personalDescriptors,
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
@@ -807,6 +960,8 @@ export function createBrainProjectActionsSyncHandler(
     });
     ws.on("close", () => {
       clearAuthTimeout();
+      clearInterval(personalChatPump);
+      peer.personalChatSubscriptions.clear();
     });
   };
 }

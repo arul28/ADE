@@ -49,6 +49,15 @@ func workChatSendWillQueueMessage(
   isLive && !hostReachable && chatSendQueueable
 }
 
+/// Child recovery cards carry their own source session id, so viewing a
+/// subagent transcript must not hide actions that the paired host supports.
+func workChatCodexRecoveryAvailable(
+  hostSupportsRecovery: Bool,
+  viewingSubagent _: Bool
+) -> Bool {
+  hostSupportsRecovery
+}
+
 func workChatLiveObservationKey(sessionId: String, chatEventRevision: Int) -> String {
   "\(sessionId)-\(chatEventRevision)"
 }
@@ -322,9 +331,14 @@ struct WorkSessionDestinationView: View {
   /// affordances (local DB row observation, lane presence, PR badges, proof
   /// artifacts) are gated off — the existing full-detail path is untouched.
   var crossProjectContext: WorkChatCrossProjectContext?
+  /// Machine-scoped, projectless conversation. Uses the same transcript and
+  /// composer as Work while routing every chat operation through
+  /// `personalChats.*` and hiding project-only chrome.
+  var personalChat = false
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
   var isCrossProject: Bool { crossProjectContext != nil }
+  var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
@@ -568,10 +582,16 @@ struct WorkSessionDestinationView: View {
   }
 
   var canSendChatMessages: Bool {
-    workChatCanSendMessages(
+    let sendSupported = personalChat
+      ? syncService.supportsRemoteAction("personalChats.send")
+      : syncService.supportsChatRemoteAction("chat.send", sessionId: sessionId)
+    guard sendSupported else { return false }
+    return workChatCanSendMessages(
       isLive: isLive,
       hostReachable: hostReachable,
-      chatSendQueueable: syncService.isRemoteActionQueueable("chat.send")
+      chatSendQueueable: personalChat
+        ? syncService.isRemoteActionQueueable("personalChats.send")
+        : syncService.isChatRemoteActionQueueable("chat.send", sessionId: sessionId)
     )
   }
 
@@ -579,7 +599,9 @@ struct WorkSessionDestinationView: View {
     workChatSendWillQueueMessage(
       isLive: isLive,
       hostReachable: hostReachable,
-      chatSendQueueable: syncService.isRemoteActionQueueable("chat.send")
+      chatSendQueueable: personalChat
+        ? syncService.isRemoteActionQueueable("personalChats.send")
+        : syncService.isChatRemoteActionQueueable("chat.send", sessionId: sessionId)
     )
   }
 
@@ -675,7 +697,7 @@ struct WorkSessionDestinationView: View {
         scheduledWork: scheduledWorkSnapshots
       ),
       artifactCount: artifacts.count,
-      showsLaneActions: showsLaneActions,
+      showsLaneActions: showsLaneActions && !personalChat,
       prTag: lanePrTag,
       prGitHubUrlAvailable: !lanePrGitHubUrlString.isEmpty,
       prLinkCopied: prLinkCopied,
@@ -685,7 +707,10 @@ struct WorkSessionDestinationView: View {
       sessionIdCopied: sessionIdCopied,
       sessionDeepLinkCopied: sessionDeepLinkCopied,
       sessionId: session.id,
-      sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id)
+      sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
+      showsProof: !personalChat,
+      showsPinAction: !personalChat,
+      showsSessionLink: !personalChat
     )
   }
 
@@ -834,17 +859,17 @@ struct WorkSessionDestinationView: View {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+      .onAppear {
+        // Install remote routing synchronously with presentation so the first
+        // user interaction cannot race the async load task and accidentally
+        // fall back to the active project.
+        registerChatCommandScope()
+      }
       .task {
         // Cross-project "quick look": register the foreign scope BEFORE load()
         // so every transcript/summary/send routes to that project without
         // switching the phone's active project.
-        if let crossProjectContext {
-          syncService.setCrossProjectChatScope(
-            sessionId: sessionId,
-            projectId: crossProjectContext.projectId,
-            projectRootPath: crossProjectContext.projectRootPath
-          )
-        }
+        registerChatCommandScope()
         mainChatRenderEpoch = 0
         liveTranscriptCache.reset(sessionId: sessionId)
         resetTranscriptHistoryState()
@@ -858,7 +883,7 @@ struct WorkSessionDestinationView: View {
         refreshChatInfoSnapshots()
         // Remote subagent probing hits the host; skip the eager pass for a
         // cross-project quick look (the drawer still loads it on demand).
-        if !isCrossProject {
+        if !isRemoteOnlyChat {
           await refreshRemoteSubagentSnapshots()
         }
       }
@@ -874,7 +899,7 @@ struct WorkSessionDestinationView: View {
         // A cross-project quick look has no local DB row for this session (only
         // the active project is mirrored) — status comes from the streamed
         // chat summary / turn hint instead.
-        guard !isCrossProject else { return }
+        guard !isRemoteOnlyChat else { return }
         // Session rows arrive through CRDT-backed local DB updates, not chat
         // event streams. Observe work projection changes without also poking
         // proof refresh state on every normal chat revision.
@@ -893,7 +918,7 @@ struct WorkSessionDestinationView: View {
         // Proof artifacts are served from the active project's projection; a
         // cross-project quick look has no access to the foreign project's proof
         // drawer, so leave it empty rather than querying the wrong project.
-        guard !isCrossProject else { return }
+        guard !isRemoteOnlyChat else { return }
         // Proof rows arrive through their own projection. Keep this separate
         // from work row refreshes so live chat deltas don't churn artifact
         // loading state.
@@ -907,7 +932,7 @@ struct WorkSessionDestinationView: View {
       .task(id: headerMenuPrLookupKey) {
         // PR + lane presence lookups read the active project's caches; skip
         // them for a cross-project quick look (the header hides lane/PR actions).
-        guard !isCrossProject else { return }
+        guard !isRemoteOnlyChat else { return }
         await resolveLaneOpenPr(for: headerMenuLaneId)
         await loadPrCreateCapabilitiesIfNeeded()
       }
@@ -938,16 +963,31 @@ struct WorkSessionDestinationView: View {
         }
         cleanupLoadedArtifactContent()
         let wasCrossProject = isCrossProject
-        Task {
+        let wasPersonalChat = personalChat
+        Task { @MainActor in
           try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
-        }
-        // Drop the foreign routing so a later same-session open (e.g. after
-        // activating the project) uses the normal active-project path. The
-        // unsubscribe above doesn't need the scope (the host keys off sessionId).
-        if wasCrossProject {
-          syncService.clearCrossProjectChatScope(sessionId: sessionId)
+          // Preserve routing through the unsubscribe payload, then drop it so
+          // a later ordinary project chat with the same id cannot inherit the
+          // foreign/runtime scope.
+          if wasCrossProject {
+            syncService.clearCrossProjectChatScope(sessionId: sessionId)
+          } else if wasPersonalChat {
+            syncService.clearPersonalChatScope(sessionId: sessionId)
+          }
         }
       }
+  }
+
+  func registerChatCommandScope() {
+    if personalChat {
+      syncService.setPersonalChatScope(sessionId: sessionId)
+    } else if let crossProjectContext {
+      syncService.setCrossProjectChatScope(
+        sessionId: sessionId,
+        projectId: crossProjectContext.projectId,
+        projectRootPath: crossProjectContext.projectRootPath
+      )
+    }
   }
 
   @ViewBuilder
@@ -1099,7 +1139,18 @@ struct WorkSessionDestinationView: View {
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
-      liveTurnActiveHint: liveTurnActiveHint
+      liveTurnActiveHint: liveTurnActiveHint,
+      isPersonalChat: personalChat,
+      personalAttachmentsAvailable: !personalChat
+        || syncService.canInvokeRemoteAction("personalChats.saveTempAttachment"),
+      personalModelCatalogAvailable: !personalChat
+        || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
+      personalSessionUpdatesAvailable: !personalChat
+        || syncService.canInvokeRemoteAction("personalChats.updateSession"),
+      onRecoverCodexTurn: workChatCodexRecoveryAvailable(
+        hostSupportsRecovery: syncService.supportsRemoteAction("chat.recoverCodexTurn"),
+        viewingSubagent: viewingSubagent
+      ) ? recoverCodexTurn : nil
     )
   }
 
@@ -1153,7 +1204,7 @@ struct WorkSessionDestinationView: View {
   func syncLanePresence() async {
     // Lane presence is an active-project concern; a cross-project quick look
     // must not announce itself into a foreign project's lane presence.
-    guard !isCrossProject else { return }
+    guard !isRemoteOnlyChat else { return }
     guard showsLaneActions else { return }
     guard let laneId = session?.laneId ?? initialSession?.laneId else { return }
     guard announcedLaneId != laneId else { return }
@@ -1171,9 +1222,9 @@ struct WorkSessionDestinationView: View {
     defer { openingLoadInFlight = false }
 
     do {
-      if let fetchedSession = try await syncService.fetchSession(id: sessionId) {
+      if !isRemoteOnlyChat, let fetchedSession = try await syncService.fetchSession(id: sessionId) {
         session = fetchedSession
-      } else if session == nil, initialSession == nil, isLive, hostReachable {
+      } else if !isRemoteOnlyChat, session == nil, initialSession == nil, isLive, hostReachable {
         // A chat opened straight from the hub — e.g. just created into a
         // project activated in place — may not have its local session row yet
         // (created on the host, still in flight over the changeset stream).
@@ -1186,7 +1237,7 @@ struct WorkSessionDestinationView: View {
       await refreshChatSummaryFromHost()
       // Proof artifacts are active-project-scoped; skip for a cross-project
       // quick look (the drawer stays empty rather than querying the wrong project).
-      if !isCrossProject && !syncService.prefersReducedSyncLoad {
+      if !isRemoteOnlyChat && !syncService.prefersReducedSyncLoad {
         await refreshArtifacts(force: true)
       }
       await loadTranscript(forceRemote: shouldHydrateTranscriptFromHost, preferLightweight: syncService.prefersReducedSyncLoad)
@@ -1249,7 +1300,7 @@ struct WorkSessionDestinationView: View {
     // registry and would spin up that project's runtime just to look.
     guard !isCrossProject else { return }
 
-    if syncService.supportsRemoteAction("chat.getSummary"),
+    if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
       if chatSummary != fetchedSummary {
         chatSummary = fetchedSummary
@@ -1258,7 +1309,8 @@ struct WorkSessionDestinationView: View {
       return
     }
 
-    guard let laneId = (session ?? initialSession)?.laneId,
+    guard !personalChat,
+          let laneId = (session ?? initialSession)?.laneId,
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
@@ -1347,22 +1399,22 @@ struct WorkSessionDestinationView: View {
       )
       if shouldHydrateCanonicalEventTail {
         do {
-          if syncService.supportsRemoteAction("chat.getChatEventHistory") {
+          if syncService.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: sessionId) {
             let snapshot = try await syncService.hydrateChatEventHistorySnapshot(sessionId: sessionId)
             seedOlderChatEventHistoryCursor(from: snapshot)
             if (snapshot.tailStartOffset ?? 0) <= 0,
                (snapshot.windowTruncated == true || snapshot.truncated),
-               syncService.supportsRemoteAction("chat.getChatEventHistoryPage") {
+               syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
               if let page = try? await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId) {
                 seedOlderChatEventHistoryCursor(from: page)
               }
             }
-          } else if syncService.supportsRemoteAction("chat.getChatEventHistoryPage") {
+          } else if syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
             let page = try await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId)
             seedOlderChatEventHistoryCursor(from: page)
           }
         } catch {
-          if syncService.supportsRemoteAction("chat.getChatEventHistoryPage") {
+          if syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
             if let page = try? await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId) {
               seedOlderChatEventHistoryCursor(from: page)
             }
@@ -1419,7 +1471,7 @@ struct WorkSessionDestinationView: View {
     // replace-snapshot into that stream.
     // Terminal buffers are active-project scoped; a quick-look must not
     // subscribe them (wrong project, and another read-path boot vector).
-    if forceRemote && !preferLightweight && !isCrossProject, let currentSession = session ?? initialSession, isChatSession(currentSession) {
+    if forceRemote && !preferLightweight && !isRemoteOnlyChat, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
@@ -1606,7 +1658,7 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func loadOlderChatEventHistoryPageIfPossible() async -> Bool {
-    guard syncService.supportsRemoteAction("chat.getChatEventHistoryPage"),
+    guard syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId),
           var cursor = olderChatEventHistoryCursor,
           cursor > 0
     else { return false }
@@ -1689,7 +1741,7 @@ struct WorkSessionDestinationView: View {
       await refreshArtifacts(force: true)
     }
     await refreshChatSummaryFromHost()
-    if let refreshedSession = try? await syncService.fetchSession(id: sessionId) {
+    if !isRemoteOnlyChat, let refreshedSession = try? await syncService.fetchSession(id: sessionId) {
       session = refreshedSession
     }
   }
@@ -1717,7 +1769,7 @@ struct WorkSessionDestinationView: View {
   func refreshArtifacts(force: Bool) async {
     // Proof artifacts live in the active project's projection; a cross-project
     // quick look has no access to the foreign project's proof drawer.
-    guard !isCrossProject else { return }
+    guard !isRemoteOnlyChat else { return }
     guard let currentSession = session ?? initialSession,
           isChatSession(currentSession)
     else { return }
@@ -2297,6 +2349,7 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.navigationTitleOverride == rhs.navigationTitleOverride
       && workLaneListRenderSignature(lhs.lanes) == workLaneListRenderSignature(rhs.lanes)
       && lhs.crossProjectContext == rhs.crossProjectContext
+      && lhs.personalChat == rhs.personalChat
   }
 }
 

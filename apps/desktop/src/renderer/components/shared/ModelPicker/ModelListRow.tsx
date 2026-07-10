@@ -50,11 +50,13 @@ const REASONING_LABELS: Record<string, string> = {
   high: "High",
   xhigh: "Extra High",
   max: "Max",
+  ultra: "Ultra",
   ultracode: "Ultracode",
 };
 
-function reasoningChipLabel(effort: string | null): string {
+function reasoningChipLabel(effort: string | null, model?: ModelDescriptor): string {
   if (!effort) return "Off";
+  if (effort === "low" && /^gpt-5\.6-(?:sol|terra|luna)$/i.test(model?.providerModelId ?? "")) return "Light";
   return REASONING_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
@@ -233,7 +235,7 @@ export const ModelListRow = memo(function ModelListRow({
               <button
                 type="button"
                 tabIndex={-1}
-                aria-label={`Reasoning effort: ${reasoningChipLabel(inlineReasoningChip.effort)}. Click to cycle.`}
+                aria-label={`Reasoning effort: ${reasoningChipLabel(inlineReasoningChip.effort, model)}. Click to cycle.`}
                 onClick={handleReasoningChipClick}
                 onKeyDown={handleReasoningChipKeyDown}
                 className={cn(
@@ -243,7 +245,7 @@ export const ModelListRow = memo(function ModelListRow({
                 title="Click to cycle reasoning effort"
               >
                 <span className="h-1 w-1 rounded-full bg-violet-300/80" aria-hidden />
-                <span>{reasoningChipLabel(inlineReasoningChip.effort)}</span>
+                <span>{reasoningChipLabel(inlineReasoningChip.effort, model)}</span>
               </button>
             ) : null}
           </span>

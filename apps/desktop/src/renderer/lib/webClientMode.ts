@@ -19,5 +19,5 @@ export function isWebClientMode(): boolean {
   return typeof window !== "undefined" && window.__adeWebClient === true;
 }
 
-/** The only tab routes the web client surfaces (mission: Work, Lanes, Files, PRs). */
-export const WEB_CLIENT_TAB_PATHS = new Set(["/work", "/lanes", "/files", "/prs"]);
+/** The only tab routes the web client surfaces (Work, Lanes, Files, PRs, Chats). */
+export const WEB_CLIENT_TAB_PATHS = new Set(["/work", "/lanes", "/files", "/prs", "/chats"]);

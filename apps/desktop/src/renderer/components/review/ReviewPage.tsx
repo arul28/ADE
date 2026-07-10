@@ -15,7 +15,11 @@ import {
   CopySimple,
 } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
-import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import {
+  getDefaultModelDescriptor,
+  resolveModelDescriptor,
+  selectSupportedReasoningEffort,
+} from "../../../shared/modelRegistry";
 import type { LaneSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -102,8 +106,9 @@ type LaunchDraft = {
   fastMode: boolean;
 };
 
-const DEFAULT_REVIEW_LAUNCH_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4";
-const DEFAULT_REVIEW_REASONING_EFFORT = "medium";
+const DEFAULT_REVIEW_LAUNCH_MODEL = getDefaultModelDescriptor("codex");
+const DEFAULT_REVIEW_LAUNCH_MODEL_ID = DEFAULT_REVIEW_LAUNCH_MODEL?.id ?? "openai/gpt-5.6-sol";
+const DEFAULT_REVIEW_REASONING_EFFORT = DEFAULT_REVIEW_LAUNCH_MODEL?.defaultReasoningEffort ?? "low";
 
 type NormalizedRun = Omit<ReviewRun, "createdAt" | "startedAt" | "updatedAt"> & {
   createdAt: string | null;
@@ -1085,13 +1090,24 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     const recommendedModelId = launchContext?.recommendedModelId?.trim();
     if (!recommendedModelId || recommendedModelHydratedRef.current) return;
     recommendedModelHydratedRef.current = true;
+    const recommendedModel = resolveModelDescriptor(recommendedModelId);
+    const recommendedReasoningEffort = recommendedModel
+      ? selectSupportedReasoningEffort({
+        tiers: recommendedModel.reasoningTiers ?? [],
+        advertisedDefault: recommendedModel.defaultReasoningEffort,
+      })
+      : null;
     setLaunchDraft((prev) => {
       const currentModelId = prev.modelId.trim();
       if (currentModelId && currentModelId !== DEFAULT_REVIEW_LAUNCH_MODEL_ID) {
         return prev;
       }
       if (currentModelId === recommendedModelId) return prev;
-      return { ...prev, modelId: recommendedModelId };
+      return {
+        ...prev,
+        modelId: recommendedModelId,
+        reasoningEffort: recommendedReasoningEffort ?? prev.reasoningEffort,
+      };
     });
   }, [launchContext?.recommendedModelId]);
 

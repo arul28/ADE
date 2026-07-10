@@ -103,7 +103,7 @@ const PREVIEW_USAGE_MODEL: Record<
   PreviewProviderKey,
   { Logo: React.ComponentType<{ size?: number; className?: string }>; label: string }
 > = {
-  codex: { Logo: CodexLogo, label: "gpt-5.5" },
+  codex: { Logo: CodexLogo, label: "gpt-5.6-sol" },
   claude: { Logo: ClaudeLogo, label: "Claude Sonnet 5" },
   opencode: { Logo: OpenCodeLogo, label: "local · runtime" },
   cursor: { Logo: CursorAgentLogo, label: "cursor · auto" },

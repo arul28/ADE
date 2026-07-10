@@ -214,20 +214,25 @@ function appendToolCallEvent(
   // title carried in the payload (readToolTitle in chatTranscriptRows).
   const payload = event.type === "tool_call" ? event.args : event.result;
   const titleFallback = readToolTitle(payload);
-  const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
+  const connectorName = event.mcp?.appContext?.appName ?? event.mcp?.pluginId ?? event.mcp?.server;
+  const connectorAction = event.mcp?.appContext?.actionName ?? event.mcp?.tool;
+  const resolvedToolName = connectorName
+    ?? (isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool);
+  const argPreview = toolArgPreview(event.tool, payload)
+    || (connectorAction ? summarizeInlineText(connectorAction, 140) : "");
   if (event.type === "tool_call") {
     const existing = registry.get(event.itemId);
     if (existing) {
       if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
         existing.tool = toolSlug(resolvedToolName);
       }
-      if (!existing.arg) existing.arg = toolArgPreview(resolvedToolName, event.args);
+      if (!existing.arg) existing.arg = argPreview;
       return;
     }
     registry.add({
       itemId: event.itemId,
       tool: toolSlug(resolvedToolName),
-      arg: toolArgPreview(resolvedToolName, event.args),
+      arg: argPreview,
       status: "running",
     });
     return;
@@ -245,7 +250,7 @@ function appendToolCallEvent(
   registry.add({
     itemId: event.itemId,
     tool: toolSlug(resolvedToolName),
-    arg: toolArgPreview(resolvedToolName, payload),
+    arg: argPreview,
     status,
     ...(durationMs !== undefined ? { durationMs } : {}),
   });
@@ -808,6 +813,7 @@ export function aggregateChatBlocks(args: {
   // turnId:itemId → live entry reference, so a tool's later lifecycle events
   // resolve the SAME entry even when assistant text split the visual groups.
   const toolEntryByItemKey = new Map<string, ToolCallEntry>();
+  const imageBlockByItemKey = new Map<string, Extract<AggregatedBlock, { kind: "notice" }>>();
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
 
@@ -1041,6 +1047,20 @@ export function aggregateChatBlocks(args: {
         durationMs: event.durationMs,
         sessionCompactionCount: event.sessionCompactionCount,
       });
+      continue;
+    }
+    if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
+      const line = linesById.get(id);
+      if (!line) continue;
+      const key = `${event.type}:${workItemKey(turnId, event.itemId)}`;
+      const existing = imageBlockByItemKey.get(key);
+      if (existing) {
+        existing.line = line;
+        continue;
+      }
+      const block: Extract<AggregatedBlock, { kind: "notice" }> = { kind: "notice", id, line };
+      blocks.push(block);
+      imageBlockByItemKey.set(key, block);
       continue;
     }
     if (event.type === "codex_context_compaction") {

@@ -8,14 +8,14 @@ from the Work surface and continue one inside ADE.
 
 The user-facing mental model is a 2x2:
 
-| Target | Open | Fork |
+| Target | Continue | Copy |
 |---|---|---|
 | ADE chat | Continue the provider session as a native ADE chat with imported history. Claude and Codex only. | Create a provider copy and open that copy as a native ADE chat. Claude and Codex only. |
 | CLI session | Continue the provider session in a tracked ADE terminal. | Start a copied provider session in a tracked ADE terminal when the provider supports it. |
 
-"Open" means ADE continues the original provider-native session. The user should
-not also keep that same session active in another terminal. "Fork" means ADE
-starts from a copy; the original provider session remains untouched.
+"Continue" means ADE uses the original provider-native session. The user should
+not also keep that same session active in another terminal. "Copy" means ADE
+starts from a provider fork; the original provider session remains untouched.
 
 The reverse direction also matters: sessions created or imported in ADE remain
 resumable from the provider CLI because ADE records and, for fresh launches,
@@ -31,12 +31,12 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point. Runs provider discovery, applies the capabilities matrix, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. |
-| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, preview clipping, placeholder-title cleanup, Claude/Cursor cwd slug helpers, shell quoting, and path-inside checks. |
-| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers Claude JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads cwd/timestamps/title/preview from the newest candidates. |
-| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers Codex rollout JSONL files under `~/.codex/sessions/YYYY/MM/DD/` and enriches them from `~/.codex/session_index.jsonl`. |
-| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Discovers Cursor `cursor-agent` transcripts under `~/.cursor/projects/<slug>/agent-transcripts/<agentId>/`, excludes SDK-origin `agent-<uuid>` transcripts, and best-effort resolves cwd from transcript rows or project slugs. |
+| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, semantic user-prompt extraction/counting, provider-wrapper cleanup, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
+| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles and excludes SDK entrypoints. |
+| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex rollout JSONL files under `CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`) and enriches them from `session_index.jsonl`. |
+| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Discovers current Cursor sessions from `~/.cursor/chats/<workspace-md5>/<agentId>/store.db`, merges legacy transcript previews from `~/.cursor/projects/.../agent-transcripts`, uses `.workspace-trusted` for exact cwd recovery, and excludes SDK `agent-<uuid>` sessions. |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `~/.factory/sessions/<escaped-cwd>/`, using the `session_start` row for id/cwd/title. |
-| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --format json --max-count <N>` in the requested/project cwd. |
+| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Canonical CLI launch/resume/fork command builders. External import uses `buildTrackedCliResumeCommand`, `withCodexNoAltScreen`, provider permission/model mappings, and shell quoting from here. |
 | `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, ADE actions, sync remote commands, `ade code`, and iOS. |
@@ -50,8 +50,9 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions` and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/import payloads and results. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop import browser: provider filters, project/all scope toggle, progressive per-provider scans, imported/active badges, preview disclosure, Open-in-ADE, and action dispatch. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Pure capability-to-action mapper for the 2x2 Open/Fork x ADE-chat/CLI-session UI. Shared with the TUI. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop two-stage browser/details flow: provider filters, search, project/all scope, progressive scans, full details, target lane selection, imported/active badges, Open-in-ADE, and safe action dispatch. |
+| `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Canonical capability-to-action mapper for the 2x2 Continue/Copy x ADE-chat/CLI-session policy, plus the renderer compatibility export. Shared directly with the TUI. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time helpers. Provider titles win; untitled rows use cwd + relative time and never reuse the prompt preview as a heading. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge/types/display helpers for external sessions. |
 | `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` | Adopts import results into the Work surface and focuses existing imported sessions without re-importing. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`, `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx`, `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` | Wires the import browser into the Work draft/new-session surface and routes imported or already-imported sessions to the selected Work tab. |
@@ -59,7 +60,7 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/ios/ADE/Models/RemoteModels.swift` | iOS Codable mirrors for `ExternalSessionSummary`, capabilities, imported refs, and import results. |
 | `apps/ios/ADE/Services/SyncService.swift` | iOS client methods for `work.listExternalSessions` and `work.importExternalSession`. |
 | `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` | Adds the Import session affordance when a concrete lane is selected. |
-| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` | iOS import browser. Mirrors the 2x2 action model, project/all scope, provider chips, real provider logos, Open-in-ADE, imported/active badges, and optimistic navigation after import. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift`, `apps/ios/ADE/Views/Work/WorkExternalSessionAffordances.swift` | iOS two-stage browser/details flow plus pure action policy. Mirrors the capability model, target lane selection, project/all scope, provider chips/logos, Open-in-ADE, imported/active badges, and persisted-summary navigation after import. |
 | `apps/ios/ADE/Views/Work/WorkRootComponents.swift`, `apps/ios/ADE/Views/Work/WorkStatusAndFormattingHelpers.swift`, `apps/ios/ADE/Views/Components/ADEDesignSystem.swift` | Shared iOS provider logos, fallback symbols, and provider accent colors consumed by the import screen. |
 
 ## Architecture
@@ -72,19 +73,28 @@ current project scope unless `scope: "all"` is requested, and returns
 `ExternalSessionSummary[]` sorted by `updatedAt` descending.
 
 File-backed providers are stat-first. Discovery gathers candidate files, sorts
-by mtime, and only reads the newest top-N candidates. The cheap JSONL read is
-bounded by `JSONL_SCAN_BYTE_LIMIT` and `JSONL_SCAN_LINE_LIMIT`; line counts are
-only computed for files under `MESSAGE_COUNT_MAX_BYTES`. OpenCode is the
+by mtime, and reads a bounded recent candidate window. Claude keeps scanning
+past filtered SDK transcripts until it has filled the requested CLI-session
+limit; Codex uses a larger bounded window so non-interactive rollouts cannot
+starve valid CLI results. The cheap JSONL read is bounded by
+`JSONL_SCAN_BYTE_LIMIT` and `JSONL_SCAN_LINE_LIMIT`; meaningful user prompt
+counts are only computed for files under `MESSAGE_COUNT_MAX_BYTES`.
+Provider metadata, assistant/tool rows, local-command wrappers, and duplicate
+Codex storage representations do not inflate `messageCount`. OpenCode is the
 exception because its supported interface is the CLI list command, so discovery
-runs `opencode session list --format json --max-count <limit>` in the requested
-cwd, project root, or home directory.
+runs `opencode session list --pure --format json --max-count <limit>` in the
+requested cwd, project root, or home directory. The list schema does not expose
+a preview or prompt count, and discovery deliberately avoids an expensive
+per-session `opencode export` fan-out.
 
 Titles and previews are deliberately separate:
 
 - `title` is a real provider-persisted title, or `null`. Discovery must not use
   the first user message as a title.
 - `preview` is a distinct snippet, usually the first user message after ADE
-  guidance stripping, or another safe message snippet when needed.
+  guidance and provider transport-wrapper stripping. Synthetic Claude
+  `<local-command-caveat>`, `<command-name>`, `<local-command-stdout>`, and
+  Codex environment/AGENTS payloads must never become previews.
 
 The desktop and iOS rows use the real title when present. When title is null,
 they fall back to a path/time heading so the heading never duplicates the
@@ -117,11 +127,18 @@ Current provider flags:
 
 | Provider | Flags | Why |
 |---|---|---|
-| Claude | `resumeInPlace`, `fork`, `forkIntoDifferentCwd`, `importToChat` | Claude CLI resume is cwd-scoped. Same-cwd CLI fork uses `--fork-session`; cross-cwd fork copies/rekeys the JSONL into the target lane's Claude project folder. Claude chat import can seed SDK resume state from JSONL. |
+| Claude | `resumeInPlace`, `fork`, `forkIntoDifferentCwd`, `importToChat` | Claude CLI resume is cwd-scoped. Same-cwd CLI fork uses `--fork-session`; cross-cwd copy rewrites cwd/session ids in a copied JSONL under the target lane. A cross-folder ADE chat therefore offers Copy, not a misleading Continue action. |
 | Codex | all five | Codex app-server threads are portable across cwd for ADE's purposes. CLI resume/fork runs in the lane cwd, and chat import uses app-server `thread/read` plus `thread/fork` for forks. |
 | Cursor | `resumeInPlace` only | `cursor-agent` resumes are cwd-scoped and there is no supported fork path. SDK-origin `agent-<uuid>` transcripts are excluded because `cursor-agent --resume` would start empty. |
 | Droid | `resumeInPlace`, plus `fork` and `forkIntoDifferentCwd` only when the installed CLI exposes `--fork` | Droid resume is cwd-locked. Factory documents `droid --fork`, but older installed CLIs do not support it, so ADE probes `droid --help` and disables fork until support is confirmed. |
-| OpenCode | `resumeInPlace`, `fork` | OpenCode sessions are project/cwd-scoped. ADE can use `--session`, `--continue`, and `--fork`, but fork runs in the session's own project cwd rather than transplanting into another lane cwd. |
+| OpenCode | `resumeInPlace`, `fork` | OpenCode sessions are project/cwd-scoped. ADE can use `--session`, `--continue`, and `--fork` in the original cwd; it rejects cross-lane copies rather than attaching a source-folder process to the wrong lane. |
+
+These are provider maxima, not unconditional per-row permissions. Discovery
+also checks whether the session has a usable source cwd. Missing/unavailable
+folders disable actions that would launch there; a Claude row with a known but
+currently missing source folder can still be copied/transplanted, while a row
+with no trustworthy cwd exposes no import action. Import revalidates the same
+constraints server-side.
 
 The first Droid list call can be conservative. Service construction starts the
 `droid --help` probe immediately, but `list()` reports fork as unavailable until
@@ -131,13 +148,19 @@ awaits the probe before launching or refusing.
 ### CLI target
 
 `externalSessionsService.importExternalSession` validates the provider and
-session id, resolves the target lane cwd, optionally enforces caller lane scope,
-finds the external summary, chooses the run cwd, builds
+session id (strict UUIDs for Claude/Codex; bounded provider-safe ids for the
+other CLIs), resolves the target lane cwd, optionally enforces caller lane scope,
+finds a currently resumable external summary, chooses the run cwd, builds
 `TerminalResumeMetadata`, then builds a provider command.
 
 Resume commands come from `buildTrackedCliResumeCommand` in
 `apps/desktop/src/shared/cliLaunch.ts`. Fork commands mostly reuse the same
 builder and provider-specific flags:
+
+When an import does not explicitly override model or permission mode, the
+resume command preserves provider state. ADE does not inject Claude plan mode,
+Cursor `--model auto`, Droid spec/off settings, or an OpenCode ask-policy
+config merely because the import UI omitted an override.
 
 - Claude same-cwd fork appends `--fork-session` to the Claude resume command.
 - Claude cross-cwd fork calls `transplantClaudeSession` first, then resumes the
@@ -162,6 +185,11 @@ ADE session opened or forked it. That metadata is what lets later Work
 continuation, `ade.pty.resumeSession`, and duplicate-import detection find the
 provider target again.
 
+Successful imports return the persisted `TerminalSessionSummary` or
+`AgentChatSessionSummary` with the provider/ADE ids. Desktop and iOS install
+that summary before navigating, so the first render cannot race database sync
+and fall into a blank “session unavailable” state.
+
 ### Chat target
 
 Only Claude and Codex support `target: "chat"`.
@@ -175,8 +203,11 @@ last 32 MB of file-backed transcript bytes and keeps the newest 2,000 imported
 content events. The importer prepends system notices for provenance and
 truncation, then maps user/assistant text plus supported tool calls/results,
 commands, file changes, web searches, image generation, and image view events.
-If the caller did not provide a title, the chat title falls back to the first
-imported user or assistant text.
+Metadata-only user rows and provider transport wrappers are excluded from the
+visible transcript, while user-authored JSX/XML and ordinary text beginning
+with `User request:` remain intact. Failed Claude tool results preserve their
+failed status. If the caller did not provide a title, the chat title falls back
+to the first imported user or assistant text.
 
 Claude chat import reads JSONL from `CLAUDE_CONFIG_DIR` or
 `~/.claude/projects`. If the user asks to fork, or if the source cwd differs
@@ -237,9 +268,11 @@ files or launches provider CLIs locally.
 
 iOS mirrors the desktop model in `WorkImportSessionScreen`: provider chips,
 project/all scope, provider logos, imported/possibly-active badges, the 2x2
-Open/Fork x ADE-chat/CLI-session actions, and "Open in ADE" for
+Continue/Copy x ADE-chat/CLI-session actions, and "Open in ADE" for
 `importedSessionRef`. `SyncService` sends the command envelopes and
-`RemoteModels.swift` decodes the shared DTOs.
+`RemoteModels.swift` decodes the shared DTOs. Browsing and acting are separate
+steps: selecting a compact row opens full details, the target lane picker, and
+only the actions safe for that provider/cwd combination.
 
 ## Provider gotchas
 
@@ -253,16 +286,23 @@ path in discovery, CLI fork, and chat transplant must respect
 
 Claude resume is strictly cwd-scoped. Same-cwd CLI fork can use
 `--fork-session`; cross-cwd fork has to copy/rekey the JSONL into the target
-cwd's Claude project folder. Claude does not persist a reliable title in these
-JSONLs, so ADE leaves `title` null and lets UI headings fall back to path/time.
+cwd's Claude project folder. Claude `ai-title`, `customTitle`, and session-title
+records are preferred when present; otherwise ADE leaves `title` null and lets
+UI headings fall back to path/time. Transcripts with explicit `sdk-*`
+entrypoints are excluded because the Claude CLI cannot reliably resume them.
 
 ### Codex
 
-Codex stores rollout JSONL under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
-and title/update metadata in `~/.codex/session_index.jsonl`. ADE treats the
+Codex stores rollout JSONL under `CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
+and title/update metadata in `CODEX_HOME/session_index.jsonl`. ADE treats the
 thread id as the rollout UUID. Chat import and continuation use the Codex
 app-server `thread/read`, `thread/fork`, `thread/archive`, resume, and fork
 surfaces.
+
+Only interactive CLI rollouts are importable. ADE excludes exec, VS Code,
+desktop/ADE-originated, and subagent rollouts. For preview/count it prefers the
+canonical `event_msg.payload.type = user_message` row so duplicated
+`response_item` rows and synthetic environment instructions are not shown.
 
 Codex file-change history items use tagged enum shapes such as
 `{ type: "add" }`, `{ type: "delete" }`, and `{ type: "update" }`; they are
@@ -276,11 +316,13 @@ that assert the actual request payloads and command argv.
 
 ### Cursor
 
-Cursor stores `cursor-agent` transcripts under
-`~/.cursor/projects/<slug>/agent-transcripts/<agentId>/`. De-slugging a project
-folder back to a cwd is lossy. ADE can reliably recover `/Users/...` paths and
-some existing local paths, but the transcript row's own cwd is preferred when
-present.
+Current Cursor versions index resumable sessions in
+`~/.cursor/chats/<md5(exact-workspace-path)>/<agentId>/store.db`. ADE reads the
+hex-encoded meta record for provider id, name, and creation time, includes
+store-only sessions, and treats the SQLite WAL mtime as activity. Legacy
+`~/.cursor/projects/<slug>/agent-transcripts/<agentId>/` JSONL remains useful
+for prompt previews/counts. `.workspace-trusted` maps the lossy project slug to
+the exact workspace path; transcript cwd wins when present.
 
 SDK-origin `agent-<uuid>` transcripts are excluded because `cursor-agent` cannot
 resume them as meaningful CLI sessions; it would start empty. Cursor has no fork
@@ -291,8 +333,9 @@ support and its resume is cwd-scoped. Cursor edit mode must not map to
 ### Droid
 
 Droid stores sessions under `~/.factory/sessions/<escaped-cwd>/*.jsonl`. The
-first row must be `session_start`; ADE reads id, cwd, title, and timestamp from
-that row. `"New Session"` is a placeholder title and becomes null.
+first row must be `session_start`; ADE reads id, cwd, and title there. Current
+Droid rows can omit a start timestamp, so creation time falls back to the first
+timestamped message. `"New Session"` is a placeholder title and becomes null.
 
 `droid --fork` is gated on an installed-CLI probe. Discovery can temporarily
 show fork disabled while the probe is pending; import awaits the probe and
@@ -301,7 +344,7 @@ cwd-locked.
 
 ### OpenCode
 
-OpenCode discovery uses `opencode session list --format json`; ADE does not
+OpenCode discovery uses `opencode session list --pure --format json`; ADE does not
 walk OpenCode's private storage. Resume and fork commands use OpenCode's
 `--session`, `--continue`, and `--fork` flags. Sessions are per-project by cwd,
 so ADE resumes or forks in the source project cwd rather than transplanting
@@ -340,7 +383,7 @@ iOS client cannot import sessions if the paired brain does not expose
   --help` resolves, Droid summaries report `fork: false` and
   `forkIntoDifferentCwd: false`. Refreshing after the probe resolves shows the
   actual capability. Fork import itself awaits the probe.
-- Keep the shared DTOs, desktop affordance mapper, iOS models, and sync command
+- Keep the shared DTOs, shared affordance mapper, iOS models/action policy, and sync command
   payloads in lockstep. A server-only change will break mobile decoding or
   hide buttons; a UI-only change will show actions the runtime rejects.
 - Keep `agentChatService.ts`'s Claude transplant dependency static. Dynamic

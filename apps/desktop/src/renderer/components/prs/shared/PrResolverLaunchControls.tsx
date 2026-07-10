@@ -2,6 +2,7 @@ import React from "react";
 import {
   getModelById,
   resolveProviderGroupForModel,
+  selectSupportedReasoningEffort,
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../../shared/modelRegistry";
@@ -37,9 +38,11 @@ type PrResolverLaunchControlsProps = PrResolverLaunchControlsBaseProps & (
 
 function selectReasoningEffortForModel(descriptor: ModelDescriptor | undefined, current: string): string {
   const tiers = descriptor?.reasoningTiers ?? [];
-  if (!tiers.length) return "";
-  if (current && tiers.includes(current)) return current;
-  return tiers.includes("medium") ? "medium" : tiers[0]!;
+  return selectSupportedReasoningEffort({
+    tiers,
+    preferred: current,
+    advertisedDefault: descriptor?.defaultReasoningEffort,
+  }) ?? "";
 }
 
 function permissionOptionsForModel(descriptor: ModelDescriptor | undefined, valueMode: "chat" | "legacy" = "chat") {

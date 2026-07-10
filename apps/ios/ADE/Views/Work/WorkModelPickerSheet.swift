@@ -1,5 +1,10 @@
 import SwiftUI
 
+enum WorkModelPickerScope: Equatable {
+  case project
+  case personal
+}
+
 /// Mobile model picker — desktop-shaped Favorites / Recents / Providers layout.
 /// Mirrors `apps/desktop/src/renderer/components/shared/ModelPicker/`: a
 /// vertical rail on the leading edge picks the section (Favorites, Recents,
@@ -22,6 +27,7 @@ struct WorkModelPickerSheet: View {
   let cursorAvailabilityMode: WorkCursorAvailabilityMode
   let lanes: [LaneSummary]
   let isBusy: Bool
+  let commandScope: WorkModelPickerScope
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -32,6 +38,7 @@ struct WorkModelPickerSheet: View {
     availableModelIds: [String]? = nil,
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     lanes: [LaneSummary] = [],
+    commandScope: WorkModelPickerScope = .project,
     isBusy: Bool,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
@@ -42,6 +49,7 @@ struct WorkModelPickerSheet: View {
     self.availableModelIds = availableModelIds
     self.cursorAvailabilityMode = cursorAvailabilityMode
     self.lanes = lanes
+    self.commandScope = commandScope
     self.isBusy = isBusy
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
@@ -169,8 +177,11 @@ struct WorkModelPickerSheet: View {
               onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
               onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
               onSelectProviderTab: { selectedProviderTabKey = $0 },
-              onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) },
-              onClaudeLogin: { Task { await openClaudeLoginTerminal() } },
+              onToggleFavorite: { modelId in
+                guard commandScope == .project else { return }
+                picker.toggleFavorite(modelId, syncService: syncService)
+              },
+              onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
               isClaudeLoginBusy: claudeLoginBusy,
               claudeLoginError: claudeLoginError
             )
@@ -185,7 +196,9 @@ struct WorkModelPickerSheet: View {
     .presentationDetents([.large])
     .presentationDragIndicator(.visible)
     .onAppear {
-      picker.load(syncService: syncService)
+      if commandScope == .project {
+        picker.load(syncService: syncService)
+      }
     }
     .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
       await loadLiveCatalog()
@@ -459,7 +472,7 @@ struct WorkModelPickerSheet: View {
     isLoadingCatalog = true
     defer { isLoadingCatalog = false }
 
-    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
+    if commandScope == .project, liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
       liveCatalog = workModelCatalogGroups(
         hostCatalog: cached,
         currentModelId: currentModelId,
@@ -468,10 +481,7 @@ struct WorkModelPickerSheet: View {
     }
 
     do {
-      let hostCatalog = try await syncService.getChatModelCatalog(
-        mode: "cached",
-        cursorSource: cursorCatalogSource()
-      )
+      let hostCatalog = try await modelCatalog(mode: "cached")
       guard !Task.isCancelled else { return }
       apply(hostCatalog: hostCatalog)
     } catch {
@@ -490,19 +500,11 @@ struct WorkModelPickerSheet: View {
     }
     guard let refreshProvider else { return }
     do {
-      let hostCatalog = try await syncService.getChatModelCatalog(
-        mode: "refresh-stale",
-        refreshProvider: refreshProvider,
-        cursorSource: cursorCatalogSource(for: refreshProvider)
-      )
+      let hostCatalog = try await modelCatalog(mode: "refresh-stale", refreshProvider: refreshProvider)
       guard !Task.isCancelled else { return }
       apply(hostCatalog: hostCatalog)
       if hostCatalog.stale == true {
-        let freshCatalog = try await syncService.getChatModelCatalog(
-          mode: "force",
-          refreshProvider: refreshProvider,
-          cursorSource: cursorCatalogSource(for: refreshProvider)
-        )
+        let freshCatalog = try await modelCatalog(mode: "force", refreshProvider: refreshProvider)
         guard !Task.isCancelled else { return }
         apply(hostCatalog: freshCatalog)
       }
@@ -517,6 +519,25 @@ struct WorkModelPickerSheet: View {
       hostCatalog: hostCatalog,
       currentModelId: currentModelId,
       currentProvider: currentProvider
+    )
+  }
+
+  private func modelCatalog(
+    mode: String,
+    refreshProvider: String? = nil
+  ) async throws -> AgentChatModelCatalog {
+    let cursorSource = cursorCatalogSource(for: refreshProvider)
+    if commandScope == .personal {
+      return try await syncService.getPersonalChatModelCatalog(
+        mode: mode,
+        refreshProvider: refreshProvider,
+        cursorSource: cursorSource
+      )
+    }
+    return try await syncService.getChatModelCatalog(
+      mode: mode,
+      refreshProvider: refreshProvider,
+      cursorSource: cursorSource
     )
   }
 
@@ -560,7 +581,7 @@ struct WorkModelPickerSheet: View {
       selectedCodexFastMode = false
     }
 
-    picker.pushRecent(model.id, syncService: syncService)
+    if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
     emitSelection(model)
   }
 
@@ -572,7 +593,7 @@ struct WorkModelPickerSheet: View {
       selectedCodexFastMode = false
     }
     selectedReasoningEffort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    picker.pushRecent(model.id, syncService: syncService)
+    if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
     emitSelection(model)
   }
 
@@ -584,7 +605,7 @@ struct WorkModelPickerSheet: View {
       selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
     }
     selectedCodexFastMode = model.supportsCodexFastMode ? enabled : false
-    picker.pushRecent(model.id, syncService: syncService)
+    if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
     emitSelection(model)
   }
 
@@ -604,6 +625,12 @@ struct WorkModelPickerSheet: View {
   private func defaultReasoningEffort(for model: WorkModelOption) -> String? {
     let tiers = supportedReasoningTiers(for: model)
     guard !tiers.isEmpty else { return nil }
+    let advertisedDefault = model.defaultReasoningEffort?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if let advertisedDefault, tiers.contains(advertisedDefault) {
+      return advertisedDefault
+    }
     if tiers.contains("medium") { return "medium" }
     return tiers[tiers.count / 2]
   }
@@ -1170,6 +1197,9 @@ struct ModelPickerListRow: View {
         VStack(alignment: .leading, spacing: 8) {
           if !supportedTiers.isEmpty {
             reasoningPills(tiers: supportedTiers)
+            if selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ultra" {
+              ultraReasoningWarning
+            }
           }
           if model.supportsCodexFastMode {
             fastModeToggle
@@ -1350,13 +1380,21 @@ struct ModelPickerListRow: View {
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
 
-  private func reasoningLabel(for tier: String) -> String {
-    switch tier.lowercased() {
-    case "xhigh": return "XHigh"
-    case "max": return "Max"
-    case "ultracode": return "Ultracode"
-    default: return tier.capitalized
+  private var ultraReasoningWarning: some View {
+    Label {
+      Text("Ultra delegates to multiple agents and can use limits faster.")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    } icon: {
+      Image(systemName: "person.3.fill")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.warning)
     }
+    .accessibilityLabel("Ultra delegates to multiple agents and can use limits faster")
+  }
+
+  private func reasoningLabel(for tier: String) -> String {
+    workReasoningEffortDisplayName(tier)
   }
 }
 

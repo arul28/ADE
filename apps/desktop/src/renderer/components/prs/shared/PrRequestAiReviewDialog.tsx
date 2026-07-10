@@ -11,8 +11,9 @@ import { cn } from "../../ui/cn";
 import { startReviewRun } from "../../review/reviewApi";
 import { branchNameFromRef } from "./laneBranchTargets";
 
-const DEFAULT_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4";
-const DEFAULT_REASONING = "medium";
+const DEFAULT_MODEL = getDefaultModelDescriptor("codex");
+const DEFAULT_MODEL_ID = DEFAULT_MODEL?.id ?? "openai/gpt-5.6-sol";
+const DEFAULT_REASONING = DEFAULT_MODEL?.defaultReasoningEffort ?? "low";
 
 const SCOPE_INSET = "rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/45";
 

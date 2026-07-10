@@ -101,6 +101,7 @@ iOS compatibility tests in the same branch.
 | Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
+| Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
 
 Two devices in the same cluster do **not** have identical `.ade/`
 folders. Git gives them the same tracked scaffold; sync gives them the
@@ -184,11 +185,16 @@ Runtime support files outside `services/sync/`:
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
   reset stale cursors when a daemon restarts or history was evicted.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
-  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, and project-scoped
-  `ade/actions/call`. Runtime-event subscribe replies include the gap
+  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, project-scoped
+  `ade/actions/call`, and project-independent `personalChats.call` /
+  `personalChats.streamEvents`. Runtime-event subscribe replies include the gap
   fields above; `projects.list` resolves host-side icons under a connect-path
   budget (64 icons / 12 MB per call) so large project registries cannot stall
   remote desktop or mobile catalog setup just to inline artwork.
+- `apps/ade-cli/src/services/personalChats/personalChatScope.ts` — lazy
+  machine-owned personal runtime injected into both sync ingress paths. It
+  validates personal session ownership and exposes the durable transcript path
+  and active-turn state used by `chatScope: "personal"` subscriptions.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
@@ -210,7 +216,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `crdt-model.md`), chat-first scheduling (chat events are pumped before
   background changesets, and peers with active chat subscriptions get
   smaller background batches / backpressure deferral when the WebSocket
-  send buffer is already backed up), the mobile changeset diet
+  send buffer is already backed up), mobile-chat inline-image compaction
+  (`compactChatEventEnvelopeForSync`: data URIs above 64 KB are removed from
+  live sends, snapshots, and replay entries while the desktop event remains
+  unchanged and original/omitted byte counts are retained), the mobile changeset diet
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: high-churn tables the phone
   never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
   `budget_usage_records`, `automation_runs`,
@@ -238,7 +247,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   derived from the shared required-action contract), and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
-  `desktop`, `daemon`, or `remote`. It also owns the all-projects session
+  `desktop`, `daemon`, or `remote`. After a successful project command it
+  records meaningful user mutations in the local usage ledger, deriving
+  `mobile` / `web` / `desktop` attribution from the peer metadata; reads and
+  failed commands do not create events. It also owns the all-projects session
   roster push for the mobile Hub: per subscribed peer it tracks
   `rosterSubscribed` / `rosterSeq` / a `rosterBaseline` map, debounces
   rebuilds (trailing-edge with a hard cadence ceiling), and forces a
@@ -252,7 +264,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   streamed read-only (byte-capped tail snapshot plus a disk-tailing live
   pump, tracked per peer in `foreignChatTranscriptPaths`) with no runtime
   boot; the presence of the provider is what flips the advertised
-  `crossProjectChat` hello feature flag.
+  `crossProjectChat` hello feature flag. An injected `personalChatScope` adds
+  the separate `personalChats` hello feature and resolves chat subscriptions
+  that explicitly carry `chatScope: "personal"`; it never infers personal
+  scope from a missing project id.
 - `rosterBuilder.ts` — builds the machine-wide all-projects session roster
   (`SyncRosterProject[]`) consumed by the Hub: agent chats, their attached
   shell rows, and **standalone CLI (tracked terminal) sessions — live and
@@ -303,7 +318,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   fallback over a stale address still won't destroy a pairing it can't
   attribute), and serves
   project catalog plus runtime-scoped project actions so a phone can
-  add/open/create/clone/remove a project even from the project-home state.
+  add/open/create/clone/remove a project even from the project-home state. It
+  receives the same `PersonalChatScope`, advertises the same capability/action
+  descriptors, and can execute personal commands before any project host is
+  active.
   It also answers `command` envelopes: when no project host owns the peer
   (host restarting, or blocked by a conflicting sync listener) it replies
   immediately with a `command_result` carrying
@@ -341,11 +359,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `chunkedEnvelopes` hello capability
   (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
   full frame. Protocol version is `1`. Default host port is `8787`.
-- `syncRemoteCommandService.ts` (~3,280 lines) — command registry
+- `syncRemoteCommandService.ts` (~4,600 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
-  `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
+  `usage.getAdeStats`, `prs.getMobileSnapshot`, `lanes.presence.*`,
+  `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
-  `work.importExternalSession`, `modelPicker.*`, …). Each registration
+  `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
+  Stalled-turn recovery is viewer-allowed but not queueable because it must
+  target the currently active Codex turn. Mobile/remote Codex CLI launches
+  also resolve the explicitly opted-in, verified standalone Computer Use MCP
+  client and add it through the shared launch builder. Each registration
   carries a `SyncRemoteCommandDescriptor` with a **scope** label of
   `"runtime"` or `"project"`. The runtime rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a
@@ -354,11 +377,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   building provider argv/env so Agent Skill roots and
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware. External-session imports share
   the desktop external-session service and DTOs: list returns provider
-  summaries and import returns either a tracked CLI PTY id or a native ADE
-  chat id. See
+  summaries, while import returns the created ids plus the persisted
+  `TerminalSessionSummary` or `AgentChatSessionSummary`. Controllers install
+  that summary before navigating, avoiding a race with replicated/session-list
+  state. See
   [External Session Import](../terminals-and-sessions/external-session-import.md)
   for the provider storage formats, host/runtime requirements, and mobile
   testing constraints.
+  `usage.getAdeStats` is a viewer-allowed project read backed by the runtime's
+  usage tracker; it serves cached provider/GitHub data plus live DB aggregates
+  to iOS and web without replicating the local-only raw interaction ledger.
   Lane snapshot commands accept decoration flags so mobile can refresh
   runtime/session buckets without recomputing conflict status, rebase
   suggestions, or auto-rebase status on every light refresh; lane detail
@@ -371,6 +399,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   override and forward it to the runtime lane service so controllers can
   pick a specific branch to stack onto instead of always using the
   selected parent lane's branch.
+  The `personalChats.*` family is registered from the shared
+  `PERSONAL_CHAT_ACTIONS` allowlist with `scope: "runtime"`; the executor calls
+  `PersonalChatScope` directly instead of looking up the current project.
+  Only `personalChats.send` is queueable. A queued create is prohibited because
+  it cannot return a stable optimistic session id and replay could duplicate a
+  conversation.
   `lanes.create` calls that omit `baseBranch` / `startPoint` /
   `parentLaneId` (hub-composer auto-create, the mobile create sheet's
   default) resolve a **remote-first default base** on the host before
@@ -486,8 +520,8 @@ The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
 `SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
 `SyncStartCliSessionResult` — the external session aliases
-`SyncListExternalSessionsArgs` / `SyncImportExternalSessionArgs`, and so on)
-live in
+`SyncListExternalSessionsArgs` / `SyncImportExternalSessionArgs`, and the
+runtime-scoped `PersonalChatRemoteCommandAction`s) live in
 `apps/desktop/src/shared/types/sync.ts`. The CLI launcher's
 provider-to-argv translation is shared with the desktop Work tab
 through `apps/desktop/src/shared/cliLaunch.ts`.
@@ -877,7 +911,7 @@ feature detail lives in
 | Command | Policy | Purpose |
 |---|---|---|
 | `work.listExternalSessions` | `viewerAllowed: true` | Returns `ExternalSessionSummary[]` from the runtime's external-session service. Payload mirrors `ExternalSessionListArgs` (`providers`, `laneId`, `cwd`, `scope`, `limit`). |
-| `work.importExternalSession` | `viewerAllowed: true`, `queueable: true` | Imports one external session into a lane as either `target: "cli"` (`ExternalSessionImportResult.kind = "cli"`, with `sessionId`/`ptyId`) or `target: "chat"` (`kind = "chat"`, with `chatSessionId`). Payload mirrors `ExternalSessionImportArgs` (`provider`, `sessionId`, `laneId`, `target`, `mode`, optional `model`/`permissionMode`). |
+| `work.importExternalSession` | `viewerAllowed: true`, `queueable: true` | Imports one external session into a lane as either `target: "cli"` (`ExternalSessionImportResult.kind = "cli"`, with `sessionId`/`ptyId` and, when available, persisted `session`) or `target: "chat"` (`kind = "chat"`, with `chatSessionId` and required persisted `chatSummary`). Payload mirrors `ExternalSessionImportArgs` (`provider`, `sessionId`, `laneId`, `target`, `mode`, optional `model`/`permissionMode`). |
 
 These commands are viewer-allowed for the same reason as
 `work.startCliSession`: a paired phone or desktop controller is already a

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "./TabNav";
 import { useAppStore } from "../../state/appStore";
@@ -47,6 +47,7 @@ describe("TabNav", () => {
   });
 
   afterEach(() => {
+    cleanup();
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,
       writable: true,
@@ -77,5 +78,19 @@ describe("TabNav", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open GitHub profile for arul28" }));
 
     expect(globalThis.window.ade.app.openExternal).toHaveBeenCalledWith("https://github.com/arul28");
+  });
+
+  it("keeps Chats available and active without a project", () => {
+    useAppStore.setState({ project: null, showWelcome: true } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Chats" }).getAttribute("data-active")).toBe("true");
+    expect(screen.getByRole("link", { name: "Work" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 });

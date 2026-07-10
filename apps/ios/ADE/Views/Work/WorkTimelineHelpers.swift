@@ -297,10 +297,11 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineLongTextSignature(message, into: &hasher)
     hasher.combine(icon)
     combineOptional(turnId, into: &hasher)
-  case .codexTurnStalled(let message, let recoveryOptions, let turnId):
+  case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId):
     combineLongTextSignature(message, into: &hasher)
     recoveryOptions.forEach { hasher.combine($0) }
     hasher.combine(turnId)
+    hasher.combine(sourceSessionId)
   case .planText(let text, let turnId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -2608,7 +2609,7 @@ private func eventCard(
         bullets: [],
         metadata: []
       )
-    case .codexTurnStalled(let message, let recoveryOptions, _):
+    case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId):
       return WorkEventCardModel(
         id: envelope.id,
         kind: "codexRecovery",
@@ -2617,8 +2618,11 @@ private func eventCard(
         tint: .warning,
         timestamp: envelope.timestamp,
         body: message,
-        bullets: recoveryOptions.map { $0.replacingOccurrences(of: "_", with: " ") },
-        metadata: []
+        bullets: [],
+        metadata: [],
+        recoveryOptions: recoveryOptions,
+        recoveryTurnId: turnId,
+        recoverySessionId: sourceSessionId
       )
     case .planText(let text, let turnId):
       return WorkEventCardModel(
@@ -2882,7 +2886,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .autoApprovalReview(_, let turnId),
        .webSearch(_, _, _, _, _, let turnId),
        .codexState(_, _, _, let turnId),
-       .codexTurnStalled(_, _, let turnId),
+       .codexTurnStalled(_, _, let turnId, _),
        .planText(_, let turnId),
        .toolUseSummary(_, let turnId),
        .status(_, _, let turnId),

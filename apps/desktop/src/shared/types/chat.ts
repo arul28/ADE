@@ -281,6 +281,24 @@ export type CodexWebSearchAction = {
   snippet?: string;
 };
 
+export type AgentChatMcpAppContext = {
+  connectorId?: string;
+  linkId?: string;
+  resourceUri?: string;
+  appName?: string;
+  templateId?: string;
+  actionName?: string;
+};
+
+/** Provider-neutral source identity retained from structured MCP tool events. */
+export type AgentChatMcpToolSource = {
+  server: string;
+  tool: string;
+  pluginId?: string;
+  resourceUri?: string;
+  appContext?: AgentChatMcpAppContext;
+};
+
 export type CodexSafetyBufferingState = {
   threadId?: string | null;
   turnId?: string | null;
@@ -437,6 +455,7 @@ export type AgentChatEvent =
       type: "tool_call";
       tool: string;
       args: unknown;
+      mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;
       parentItemId?: string;
@@ -447,6 +466,7 @@ export type AgentChatEvent =
       type: "tool_result";
       tool: string;
       result: unknown;
+      mcp?: AgentChatMcpToolSource;
       resultOriginalBytes?: number;
       resultOmittedBytes?: number;
       itemId: string;
@@ -887,6 +907,9 @@ export type AgentChatEvent =
       result?: string | null;
       /** Local filesystem path if Codex saved the image to disk; null when the result is purely a URL/data URI. */
       savedPath?: string | null;
+      /** Metadata when a large inline data URI was omitted from durable history or mobile sync. */
+      resultOriginalBytes?: number;
+      resultOmittedBytes?: number;
       status: "running" | "completed" | "failed";
     }
   | {
@@ -896,6 +919,9 @@ export type AgentChatEvent =
       path?: string | null;
       url?: string | null;
       title?: string | null;
+      /** Metadata when a large inline data URI was omitted from durable history or mobile sync. */
+      urlOriginalBytes?: number;
+      urlOmittedBytes?: number;
       status: "running" | "completed" | "failed";
     }
   | {
@@ -1044,7 +1070,7 @@ export type OrchestrationSessionFields = {
   orchestrationBundlePath?: string;
 };
 export type AgentChatIdentityKey = "cto";
-export type AgentChatSurface = "work" | "automation";
+export type AgentChatSurface = "work" | "automation" | "personal";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
@@ -1448,6 +1474,7 @@ export type AgentChatModelInfo = {
   description?: string | null;
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
+  defaultReasoningEffort?: string | null;
   serviceTiers?: string[];
   aliases?: string[];
   maxThinkingTokens?: number | null;
@@ -1585,6 +1612,7 @@ export type AgentChatImportExternalSessionArgs = {
 
 export type AgentChatImportExternalSessionResult = {
   chatSessionId: string;
+  chatSummary: AgentChatSessionSummary;
 };
 
 /**
@@ -1835,6 +1863,24 @@ export type AgentChatInterruptArgs = {
   sessionId: string;
 };
 
+export type AgentChatCodexRecoveryAction =
+  | "wait"
+  | "steer"
+  | "interrupt_retry_same_thread"
+  | "restart_resume_thread";
+
+export type AgentChatRecoverCodexTurnArgs = {
+  sessionId: string;
+  turnId: string;
+  action: AgentChatCodexRecoveryAction;
+};
+
+export type AgentChatRecoverCodexTurnResult = {
+  action: AgentChatCodexRecoveryAction;
+  turnId: string;
+  status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+
 export type AgentChatCodexGetGoalArgs = {
   sessionId: string;
 };
@@ -1869,7 +1915,7 @@ export type AgentChatRespondToInputArgs = {
 };
 
 export type AgentChatModelsArgs = {
-  provider: AgentChatProvider;
+  provider?: AgentChatProvider;
   activateRuntime?: boolean;
   cursorSource?: AgentChatCursorModelSource;
 };

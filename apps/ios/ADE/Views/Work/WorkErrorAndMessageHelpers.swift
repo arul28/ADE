@@ -1572,7 +1572,8 @@ func isQuestionInputToolName(_ tool: String) -> Bool {
 }
 
 private func normalizedWorkToolIdentity(_ tool: String) -> String {
-  tool
+  let unqualified = tool.split(separator: ":", omittingEmptySubsequences: true).last.map(String.init) ?? tool
+  return unqualified
     .trimmingCharacters(in: .whitespacesAndNewlines)
     .lowercased()
     .replacingOccurrences(of: "-", with: "_")
@@ -1803,8 +1804,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["web_search", turnId ?? "", itemId, query, actionKey, status.rawValue].joined(separator: "|")
   case .codexState(let title, let message, _, let turnId):
     return ["codex_state", turnId ?? "", title, message].joined(separator: "|")
-  case .codexTurnStalled(let message, _, let turnId):
-    return ["codex_turn_stalled", turnId ?? "", message].joined(separator: "|")
+  case .codexTurnStalled(let message, _, let turnId, let sourceSessionId):
+    return ["codex_turn_stalled", sourceSessionId ?? "", turnId ?? "", message].joined(separator: "|")
   case .planText(let text, let turnId):
     return ["plan_text", turnId ?? "", text].joined(separator: "|")
   case .toolUseSummary(let text, let turnId):

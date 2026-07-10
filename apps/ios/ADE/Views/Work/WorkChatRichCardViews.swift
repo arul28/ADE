@@ -1234,6 +1234,137 @@ struct WorkEventCardView: View {
   }
 }
 
+struct WorkCodexRecoveryCardView: View {
+  let card: WorkEventCardModel
+  let sessionId: String
+  let enabled: Bool
+  let onRecover: (@MainActor (String, String, String) async throws -> String)?
+
+  @State private var pendingAction: String?
+  @State private var feedbackMessage: String?
+  @State private var errorMessage: String?
+
+  private let labels: [String: String] = [
+    "wait": "Wait",
+    "steer": "Nudge",
+    "interrupt_retry_same_thread": "Retry",
+    "restart_resume_thread": "Resume",
+  ]
+
+  private var visibleOptions: [String] {
+    var seen = Set<String>()
+    return card.recoveryOptions.filter { labels[$0] != nil && seen.insert($0).inserted }.prefix(4).map { $0 }
+  }
+
+  private var canRecover: Bool {
+    enabled
+      && onRecover != nil
+      && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !(card.recoveryTurnId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      HStack(spacing: 8) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+        Text("RECOVERY")
+          .font(.caption2.monospaced().weight(.bold))
+          .tracking(1.2)
+          .foregroundStyle(ADEColor.warning.opacity(0.8))
+        Text("Codex paused unexpectedly")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+      }
+
+      if let body = card.body, !body.isEmpty {
+        Text(body)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if !visibleOptions.isEmpty {
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 7) { recoveryButtons }
+          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) { recoveryButtons }
+        }
+      }
+
+      if !canRecover, !visibleOptions.isEmpty {
+        Text(enabled ? "Update or reconnect the paired machine to use recovery." : "Reconnect to the paired machine to use recovery.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if let feedbackMessage {
+        Label(feedbackMessage, systemImage: "checkmark.circle.fill")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.success)
+          .accessibilityAddTraits(.isStaticText)
+      }
+      if let errorMessage {
+        Label(errorMessage, systemImage: "xmark.circle.fill")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.danger)
+          .accessibilityAddTraits(.isStaticText)
+      }
+    }
+    .padding(12)
+    .background(ADEColor.warning.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
+    )
+    .accessibilityElement(children: .contain)
+  }
+
+  @ViewBuilder
+  private var recoveryButtons: some View {
+    ForEach(visibleOptions, id: \.self) { option in
+      let label = labels[option] ?? option
+      Button {
+        Task { await recover(option) }
+      } label: {
+        Text(pendingAction == option ? "\(label)…" : label)
+          .font(.caption.monospaced().weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .padding(.horizontal, 10)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .background(ADEColor.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
+      )
+      .disabled(!canRecover || pendingAction != nil)
+      .accessibilityLabel("\(label) Codex recovery")
+      .accessibilityHint("Runs this recovery action for the stalled Codex turn.")
+    }
+  }
+
+  @MainActor
+  private func recover(_ action: String) async {
+    guard canRecover,
+          pendingAction == nil,
+          let turnId = card.recoveryTurnId,
+          let onRecover else { return }
+    pendingAction = action
+    feedbackMessage = nil
+    errorMessage = nil
+    defer { pendingAction = nil }
+    do {
+      feedbackMessage = try await onRecover(sessionId, turnId, action)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+}
+
 /// Resolved / historical structured-question card shown in the transcript once
 /// a question is no longer pending. Replaces the flat "Question asked · Input
 /// requested" event card: renders the asking provider's logo + "{Provider}

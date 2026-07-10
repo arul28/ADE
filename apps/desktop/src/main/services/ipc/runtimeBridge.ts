@@ -9,6 +9,10 @@ import type {
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
   OpenProjectBinding,
+  PersonalChatCallArgs,
+  PersonalChatCallResponse,
+  PersonalChatStreamEventsArgs,
+  PersonalChatStreamEventsResult,
   ProjectInfo,
   ProjectBrowseInput,
   ProjectBrowseResult,
@@ -462,6 +466,67 @@ export function registerRuntimeBridge({
       throw error;
     }
   };
+
+  const personalChatBindingForSender = (sender: WebContents): OpenProjectBinding | null => {
+    const windowId = BrowserWindow.fromWebContents(sender)?.id ?? null;
+    return getWindowSession?.(windowId)?.binding ?? null;
+  };
+
+  ipcMain.handle(
+    IPC.personalChatsCall,
+    async (event, request: PersonalChatCallArgs): Promise<PersonalChatCallResponse> => {
+      if (!request || typeof request !== "object" || typeof request.action !== "string") {
+        throw new Error("A personal chat action is required.");
+      }
+      const binding = personalChatBindingForSender(event.sender);
+      if (binding?.kind === "remote") {
+        return await remoteConnectionService.callMachineMethod<PersonalChatCallResponse>(
+          binding.targetId,
+          "personalChats.call",
+          request as unknown as Record<string, unknown>,
+        );
+      }
+      if (!localRuntimeConnectionPool) {
+        throw new Error("The local ADE brain is unavailable for personal chats.");
+      }
+      return await localRuntimeConnectionPool.callSync<PersonalChatCallResponse>(
+        "personalChats.call",
+        request as unknown as Record<string, unknown>,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.personalChatsStreamEvents,
+    async (
+      event,
+      request: PersonalChatStreamEventsArgs = {},
+    ): Promise<PersonalChatStreamEventsResult> => {
+      const normalized: PersonalChatStreamEventsArgs = {
+        ...(typeof request?.cursor === "number" && Number.isFinite(request.cursor)
+          ? { cursor: Math.max(0, Math.floor(request.cursor)) }
+          : {}),
+        ...(typeof request?.limit === "number" && Number.isFinite(request.limit)
+          ? { limit: Math.max(1, Math.min(500, Math.floor(request.limit))) }
+          : {}),
+      };
+      const binding = personalChatBindingForSender(event.sender);
+      if (binding?.kind === "remote") {
+        return await remoteConnectionService.callMachineMethod<PersonalChatStreamEventsResult>(
+          binding.targetId,
+          "personalChats.streamEvents",
+          normalized as Record<string, unknown>,
+        );
+      }
+      if (!localRuntimeConnectionPool) {
+        throw new Error("The local ADE brain is unavailable for personal chats.");
+      }
+      return await localRuntimeConnectionPool.callSync<PersonalChatStreamEventsResult>(
+        "personalChats.streamEvents",
+        normalized as Record<string, unknown>,
+      );
+    },
+  );
 
   ipcMain.handle(
     IPC.remoteRuntimeListTargets,

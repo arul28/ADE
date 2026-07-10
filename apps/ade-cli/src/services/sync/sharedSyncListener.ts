@@ -75,6 +75,16 @@ export type SyncPeerHandoffSnapshot = {
   /** Live terminal/chat subscriptions to restore on adoption so streaming
    * does not silently stop for peers that never observe a disconnect. */
   subscribedSessionIds?: string[];
+  /**
+   * Chat subscriptions that are safe to restore on a different hosted
+   * project. Personal chats are machine-scoped, so they survive a project
+   * host handoff; foreign-project quick-look subscriptions do not.
+   */
+  chatSubscriptions?: Array<{
+    sessionId: string;
+    scope: "project" | "personal";
+  }>;
+  /** Legacy project-chat handoff shape. */
   subscribedChatSessionIds?: string[];
   chatTranscriptOffsets?: Record<string, number>;
   /** All-projects roster (mobile hub) subscription, restored on adoption so a

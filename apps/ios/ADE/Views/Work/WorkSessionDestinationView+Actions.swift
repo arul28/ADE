@@ -116,6 +116,24 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func recoverCodexTurn(sessionId targetSessionId: String, turnId: String, action: String) async throws -> String {
+    let result = try await syncService.recoverCodexTurn(
+      sessionId: targetSessionId,
+      turnId: turnId,
+      action: action
+    )
+    await refreshChatStateAfterAction(forceRemote: true)
+    errorMessage = nil
+    switch result.status {
+    case "waiting": return "Waiting for Codex output…"
+    case "nudged": return "Status nudge sent."
+    case "retrying": return "Retry started in this thread."
+    case "resumed": return "Codex app server restarted and the thread resumed."
+    default: return "Recovery action sent."
+    }
+  }
+
+  @MainActor
   func approveRequest(itemId: String, decision: AgentChatApprovalDecision, responseText: String? = nil) async {
     do {
       let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -477,6 +495,10 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func openFileReference(_ path: String) async {
+    guard !personalChat else {
+      errorMessage = "Files are not attached to projectless chats."
+      return
+    }
     guard let session else { return }
 
     do {
@@ -508,6 +530,10 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func openPullRequestReference(_ number: Int) async {
+    guard !personalChat else {
+      errorMessage = "Pull requests are not attached to projectless chats."
+      return
+    }
     do {
       let pullRequests = try await syncService.fetchPullRequestListItems()
       let laneScoped = pullRequests.first { $0.githubPrNumber == number && $0.laneId == session?.laneId }
@@ -546,16 +572,24 @@ extension WorkSessionDestinationView {
       return
     }
     do {
-      try await syncService.updateSessionMeta(
-        sessionId: sessionId,
-        title: trimmedTitle,
-        manuallyNamed: true
-      )
-      _ = try? await syncService.updateChatSession(
-        sessionId: sessionId,
-        title: trimmedTitle,
-        manuallyNamed: true
-      )
+      if personalChat {
+        _ = try await syncService.updateChatSession(
+          sessionId: sessionId,
+          title: trimmedTitle,
+          manuallyNamed: true
+        )
+      } else {
+        try await syncService.updateSessionMeta(
+          sessionId: sessionId,
+          title: trimmedTitle,
+          manuallyNamed: true
+        )
+        _ = try? await syncService.updateChatSession(
+          sessionId: sessionId,
+          title: trimmedTitle,
+          manuallyNamed: true
+        )
+      }
       if var currentSession = session {
         currentSession.title = trimmedTitle
         currentSession.manuallyNamed = true
@@ -567,6 +601,9 @@ extension WorkSessionDestinationView {
         syncService.cacheChatSummary(summary)
       }
       sessionActionRenameText = ""
+      if personalChat {
+        _ = try? await syncService.refreshPersonalChats(includeArchived: true)
+      }
       await refreshChatStateAfterAction(forceRemote: false)
       errorMessage = nil
     } catch {
@@ -579,6 +616,9 @@ extension WorkSessionDestinationView {
   func deleteCurrentChatSession() async {
     do {
       try await syncService.deleteChatSession(sessionId: sessionId)
+      if personalChat {
+        syncService.removePersonalChatFromCache(sessionId: sessionId)
+      }
       errorMessage = nil
       dismiss()
     } catch {

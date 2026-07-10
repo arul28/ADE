@@ -92,8 +92,22 @@ func workReasoningChipLabel(_ effort: String?) -> String? {
   case "high": return "HI"
   case "xhigh", "extra-high", "extra_high", "extra high": return "XH"
   case "max": return "MAX"
-  case "ultracode": return "ULTRA"
+  case "ultra", "ultracode": return "ULTRA"
   default: return String(lower.prefix(3)).uppercased()
+  }
+}
+
+func workReasoningEffortDisplayName(_ effort: String) -> String {
+  switch effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "minimal": return "Minimal"
+  case "low": return "Light"
+  case "medium": return "Medium"
+  case "high": return "High"
+  case "xhigh", "extra-high", "extra_high", "extra high": return "Extra High"
+  case "max": return "Max"
+  case "ultra": return "Ultra"
+  case "ultracode": return "Ultracode"
+  default: return effort.capitalized
   }
 }
 
@@ -191,6 +205,9 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     .filter { !$0.isEmpty }
   let fastRefs: Set<String> = [
+    "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol",
+    "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra",
+    "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna",
     "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex",
     "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex",
     "opencode/openai/gpt-5.4",

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
+import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -129,6 +130,11 @@ const mocks = vi.hoisted(() => {
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
     resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
+    resolveCodexComputerUseMcpConfig: vi.fn(async (): Promise<{
+      command: string;
+      args: ["mcp"];
+      enabled: true;
+    } | null> => null),
     execFileSync: vi.fn((_file?: unknown, _args?: unknown) => ""),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
@@ -208,6 +214,10 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({
   resolveOpenCodeBinaryPath: mocks.resolveOpenCodeBinaryPath,
+}));
+
+vi.mock("../../utils/codexComputerUse", () => ({
+  resolveCodexComputerUseMcpConfig: mocks.resolveCodexComputerUseMcpConfig,
 }));
 
 import {
@@ -412,6 +422,7 @@ describe("ptyService", () => {
     mocks.extractResumeCommandFromOutput.mockReturnValue(null);
     mocks.derivePreviewFromChunk.mockReturnValue({ nextLine: "", preview: "preview" });
     mocks.resolveOpenCodeBinaryPath.mockReturnValue(null);
+    mocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
@@ -2482,7 +2493,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended 'fix failing tests'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2528,7 +2539,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
         expect.any(Object),
       );
     });
@@ -2562,7 +2573,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy 'continue legacy thread'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2614,6 +2625,53 @@ describe("ptyService", () => {
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 
+    it("includes the asynchronously resolved Computer Use MCP config in Codex resume args", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      const command = "/Applications/Codex Computer Use.app/Contents/MacOS/SkyComputerUseClient";
+      mocks.resolveCodexComputerUseMcpConfig.mockResolvedValueOnce({
+        command,
+        args: ["mcp"],
+        enabled: true,
+      });
+      sessionService.create({
+        sessionId: "session-codex-computer-use",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-codex-computer-use.log",
+        toolType: "codex",
+        resumeCommand: "codex resume thread-computer-use",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-computer-use",
+          launch: { permissionMode: "default" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-codex-computer-use",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.resumeSession({
+        sessionId: "session-codex-computer-use",
+        cols: 120,
+        rows: 40,
+      });
+
+      expect(mocks.resolveCodexComputerUseMcpConfig).toHaveBeenCalledTimes(1);
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      const startupCommand = spawn.mock.calls[0]?.[1]?.[3] as string;
+      expect(startupCommand).toContain("mcp_servers.computer_use.command");
+      expect(startupCommand).toContain("mcp_servers.computer_use.args");
+      expect(startupCommand).toContain("mcp_servers.computer_use.enabled=true");
+      expect(startupCommand).toContain("SkyComputerUseClient");
+    });
+
     it("sendToSession launches resumed Codex with the prompt argument when the composer is visible", async () => {
       vi.useFakeTimers();
       try {
@@ -2654,7 +2712,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer 'continue from the visible prompt'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -2703,7 +2761,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve 'this should not kill the resumed terminal'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -3012,11 +3070,14 @@ describe("ptyService", () => {
         }));
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         const spawnArgs = spawn.mock.calls.map((call: any[]) => call[1]).flat();
-        expect(spawnArgs.some((line: string) =>
-          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --variant fast --session ses_abc --replay --replay-limit 40 --")
-          && line.includes("continue from the freeze frame")
-          && line.includes("\"question\":\"allow\"")
-        )).toBe(true);
+        expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
+          permissionMode: "plan",
+          model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
+          fastMode: true,
+          resumeTarget: "ses_abc",
+          prompt: "continue from the freeze frame",
+          replayLimit: 40,
+        }));
         expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
       } finally {
         if (previous === undefined) {

@@ -19,6 +19,35 @@ func optionalWorkInt(_ value: Any?) -> Int? {
   return nil
 }
 
+private func parseCodexWebSearchActions(from value: Any?) -> [CodexWebSearchAction]? {
+  guard let rawActions = value as? [[String: Any]] else { return nil }
+  let actions = rawActions.compactMap { action -> CodexWebSearchAction? in
+    guard let type = optionalString(action["type"]) else { return nil }
+    let queries = (action["queries"] as? [Any])?.compactMap(optionalString)
+    return CodexWebSearchAction(
+      type: type,
+      status: optionalString(action["status"]),
+      query: optionalString(action["query"]),
+      queries: queries?.isEmpty == true ? nil : queries,
+      url: optionalString(action["url"]),
+      title: optionalString(action["title"]),
+      snippet: optionalString(action["snippet"])
+    )
+  }
+  return actions.isEmpty ? nil : actions
+}
+
+private func workTranscriptToolName(from eventDict: [String: Any]) -> String {
+  let fallback = stringValue(eventDict["tool"])
+  guard let mcp = eventDict["mcp"] as? [String: Any] else { return fallback }
+  let appContext = mcp["appContext"] as? [String: Any]
+  let source = optionalString(appContext?["appName"])
+    ?? optionalString(mcp["server"])
+  let action = optionalString(mcp["tool"])
+  guard let source, let action else { return fallback }
+  return "\(source):\(action)"
+}
+
 private func formatWorkCompactTokenCount(_ value: Int) -> String {
   if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
   if value >= 10_000 { return "\(Int((Double(value) / 1_000.0).rounded()))k" }
@@ -115,7 +144,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         )
       case "tool_call":
         event = .toolCall(
-          tool: stringValue(eventDict["tool"]),
+          tool: workTranscriptToolName(from: eventDict),
           argsText: prettyPrintedJSONString(eventDict["args"]),
           itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
@@ -135,7 +164,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         )
       case "tool_result":
         event = .toolResult(
-          tool: stringValue(eventDict["tool"]),
+          tool: workTranscriptToolName(from: eventDict),
           resultText: prettyPrintedJSONString(eventDict["result"]),
           itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
@@ -407,6 +436,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId ?? optionalString(usageDict["turnId"]) ?? "",
           itemId: nil
         )
+      case "codex_turn_stalled":
+        event = .codexTurnStalled(
+          message: stringValue(eventDict["message"]),
+          recoveryOptions: eventDict["recoveryOptions"] as? [String] ?? [],
+          turnId: turnId,
+          sourceSessionId: optionalString(eventDict["sourceSessionId"])
+        )
       case "completion_report":
         let report = eventDict["report"] as? [String: Any] ?? [:]
         let artifacts = (report["artifacts"] as? [[String: Any]] ?? []).map { artifact in
@@ -450,7 +486,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .webSearch(
           query: stringValue(eventDict["query"]),
           action: optionalString(eventDict["action"]),
-          actions: nil,
+          actions: parseCodexWebSearchActions(from: eventDict["actions"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
           itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
@@ -466,6 +502,41 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             ].joined(separator: "|")
           ),
           turnId: turnId
+        )
+      case "codex_image_generation", "image_generation":
+        event = workCodexImageGenerationEvent(
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: ["image_generation", turnId ?? "", optionalString(eventDict["prompt"]) ?? ""].joined(separator: "|")
+          ),
+          turnId: turnId,
+          prompt: optionalString(eventDict["prompt"]),
+          revisedPrompt: optionalString(eventDict["revisedPrompt"] ?? eventDict["revised_prompt"]),
+          result: optionalString(eventDict["result"]),
+          savedPath: optionalString(eventDict["savedPath"] ?? eventDict["saved_path"]),
+          resultOriginalBytes: optionalWorkInt(eventDict["resultOriginalBytes"] ?? eventDict["result_original_bytes"]),
+          resultOmittedBytes: optionalWorkInt(eventDict["resultOmittedBytes"] ?? eventDict["result_omitted_bytes"]),
+          status: stringValue(eventDict["status"])
+        )
+      case "codex_image_view", "image_view":
+        event = workCodexImageViewEvent(
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: ["image_view", turnId ?? "", optionalString(eventDict["path"]) ?? "", optionalString(eventDict["url"]) ?? ""].joined(separator: "|")
+          ),
+          turnId: turnId,
+          path: optionalString(eventDict["path"]),
+          url: optionalString(eventDict["url"]),
+          title: optionalString(eventDict["title"]),
+          urlOriginalBytes: optionalWorkInt(eventDict["urlOriginalBytes"] ?? eventDict["url_original_bytes"]),
+          urlOmittedBytes: optionalWorkInt(eventDict["urlOmittedBytes"] ?? eventDict["url_omitted_bytes"]),
+          status: stringValue(eventDict["status"])
         )
       case "plan_text":
         event = .planText(text: stringValue(eventDict["text"]), turnId: turnId)

@@ -88,6 +88,55 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  it("exposes machine personal chats without a project id", async () => {
+    const { registry } = createRegistry();
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({ version: 1 as const, actions: ["list" as const, "send" as const] })),
+      call: vi.fn(async (action: unknown, args: unknown) => ({ action: action as "list", result: args })),
+      streamEvents: vi.fn(async () => ({
+        events: [],
+        nextCursor: 0,
+        hasMore: false,
+        eventEpoch: "epoch",
+        gap: false,
+        oldestCursor: null,
+      })),
+      transcriptPath: vi.fn(async () => null),
+      isTurnActive: vi.fn(async () => false),
+      dispose: vi.fn(async () => undefined),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      personalChatScope,
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    expect(initialized).toMatchObject({
+      capabilities: { personalChats: { version: 1, actions: ["list", "send"] } },
+    });
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "personalChats.call",
+      params: { action: "send", args: { sessionId: "personal-1", text: "hello" } },
+    })).resolves.toEqual({
+      action: "send",
+      result: { sessionId: "personal-1", text: "hello" },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("send", {
+      sessionId: "personal-1",
+      text: "hello",
+    });
+    handler.dispose();
+    expect(personalChatScope.dispose).not.toHaveBeenCalled();
+  });
+
   it("exposes runtime-scoped project registry methods", async () => {
     const { projectRoot, expectedProjectRoot, registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({

@@ -244,6 +244,13 @@ extension WorkChatSessionView {
       WorkResolvedPlanCard(card: card, fallbackProvider: chatSummaryContext.provider)
     } else if card.kind == "approval" {
       WorkResolvedApprovalChip(card: card, fallbackProvider: chatSummaryContext.provider)
+    } else if card.kind == "codexRecovery" {
+      WorkCodexRecoveryCardView(
+        card: card,
+        sessionId: card.recoverySessionId ?? session.id,
+        enabled: isLive,
+        onRecover: onRecoverCodexTurn
+      )
     } else {
       WorkEventCardView(
         card: card,
