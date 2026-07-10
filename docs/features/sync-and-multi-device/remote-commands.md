@@ -219,6 +219,9 @@ so the win is transport and decode, not host compute.
 - `listSessions`, `getSummary`, `getTranscript`
 - `launch`, `getSlashCommands`, `getContextUsage`, `warmupModel`,
   `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
+  `prepareCrossMachineHandoff`, `validateCrossMachineSource`,
+  `preflightCrossMachineDestination`, `acceptCrossMachineHandoff`,
+  `markCrossMachineHandoff`,
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
 
 `chat.getTranscript` supports cursor pagination: responses carry an
@@ -383,6 +386,11 @@ Helpers (`asTrimmedString`, `asStringArray`, `requireString`, etc.) live
 at the top of the file. A non-conforming args object causes the parser
 to throw an explicit error like `"lanes.create requires name."`; that
 error reaches the controller as `command_result.error.message`.
+
+Cross-machine handoff has dedicated parsers for all five actions. The service
+then performs the deeper version, bounds, secret-redaction, Git identity, and
+SHA-256 fingerprint validation on the capsule before any destination resource
+is created; the parser is not the capsule trust boundary.
 
 ## Handler bodies
 
@@ -690,6 +698,12 @@ first fetch instead of returning an empty passive cache.
 - **Do not make `personalChats.create` queueable.** Clients can cache personal
   summaries per host for offline reading, but creation must wait for a live
   brain. Only an existing session's `personalChats.send` may queue.
+- **Do not queue final cross-machine acceptance.** Source preparation,
+  source validation, destination preflight, acceptance, and source marking all
+  require current runtime/Git state. `chat.acceptCrossMachineHandoff` is
+  deliberately non-queueable and route-pinned; safe retries come from the
+  destination's durable handoff-id + capsule-fingerprint record, not an offline
+  command queue. See [the handoff contract](./cross-machine-session-handoff.md).
 - **`prs.createFromLane` requires GitHub auth on the brain.** Headless
   brains resolve auth the same way the desktop does: a stored PAT,
   then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),

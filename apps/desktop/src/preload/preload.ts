@@ -287,6 +287,10 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
@@ -621,6 +625,9 @@ import type {
   RemoteRuntimeParsedPairingInput,
   RemoteRuntimePortForward,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeHandoffStoragePreflightArgs,
+  RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
@@ -1207,6 +1214,9 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "deleteSession",
   "updateSession",
   "handoffSession",
+  "prepareCrossMachineHandoff",
+  "validateCrossMachineSource",
+  "markCrossMachineHandoff",
   "launchCli",
   "launchHeadless",
   "setClaudeOutputStyle",
@@ -3528,6 +3538,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.remoteRuntimeGetProjectDetail, { id, rootPath }),
     getDefaultParentDir: async (id: string): Promise<string> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
+    getHandoffStoragePreflight: async (
+      id: string,
+      input: RemoteRuntimeHandoffStoragePreflightArgs,
+    ): Promise<RemoteRuntimeHandoffStoragePreflightResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetHandoffStoragePreflight, { id, input }),
     createProject: async (
       id: string,
       input: CreateProjectInput,
@@ -3536,8 +3551,9 @@ contextBridge.exposeInMainWorld("ade", {
     cloneProject: async (
       id: string,
       input: CloneProjectInput,
+      options?: RemoteRuntimeCloneProjectOptions,
     ): Promise<RemoteRuntimeProjectRecord> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCloneProject, { id, input }),
+      ipcRenderer.invoke(IPC.remoteRuntimeCloneProject, { id, input, options }),
     listMyGitHubRepos: async (
       id: string,
       input: ListMyGitHubReposInput = {},
@@ -5179,6 +5195,24 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AgentChatHandoffResult> =>
       callProjectRuntimeActionOr("chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
+      ),
+    prepareCrossMachineHandoff: async (
+      args: AgentChatPrepareCrossMachineHandoffArgs,
+    ): Promise<AgentChatPrepareCrossMachineHandoffResult> =>
+      callProjectRuntimeActionOr("chat", "prepareCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPrepareCrossMachineHandoff, args),
+      ),
+    validateCrossMachineSource: async (
+      args: AgentChatValidateCrossMachineSourceArgs,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("chat", "validateCrossMachineSource", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatValidateCrossMachineSource, args),
+      ),
+    markCrossMachineHandoff: async (
+      args: AgentChatMarkCrossMachineHandoffArgs,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("chat", "markCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatMarkCrossMachineHandoff, args),
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();

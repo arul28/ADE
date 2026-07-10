@@ -15,6 +15,10 @@ export const RETRYABLE_REMOTE_ACTIONS = new Set([
   "chat.codexFuzzyFileSearch",
   "chat.fileSearch",
   "chat.modelCatalog",
+  "chat.prepareCrossMachineHandoff",
+  "chat.validateCrossMachineSource",
+  "chat.preflightCrossMachineDestination",
+  "chat.markCrossMachineHandoff",
   "file.listTreeChildren",
   "file.quickOpen",
   "file.readFileRange",
@@ -31,4 +35,3 @@ export function isRetryableRemoteAction(domain: string, action: string): boolean
     action.startsWith(prefix),
   );
 }
-

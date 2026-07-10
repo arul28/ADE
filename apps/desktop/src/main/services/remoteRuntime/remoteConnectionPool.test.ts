@@ -1016,7 +1016,7 @@ describe("RemoteConnectionPool", () => {
     ).rejects.toThrow(
       /Remote ADE service 0\.9\.0 does not support browsing remote directories/i,
     );
-    expect(client.call).not.toHaveBeenCalled();
+    expect(client.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
   });
 
   it("reconnects after interrupted mutating actions and asks the caller to retry", async () => {
@@ -1057,6 +1057,64 @@ describe("RemoteConnectionPool", () => {
       },
     });
     expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it("blocks a handoff when the active transport differs from the route the user reviewed", async () => {
+    const client = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: {
+        ...connectResult("1.0.0"),
+        route: { kind: "lan", endpoint: "studio.local:48888" },
+      },
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.callActionForTarget(target, "project-1", {
+      domain: "chat",
+      action: "acceptCrossMachineHandoff",
+      args: { capsule: {}, capsuleFingerprint: "a".repeat(64) },
+      requiredRouteKind: "tailnet",
+    })).rejects.toThrow(/route changed from 'tailnet' to 'lan'/i);
+
+    expect(client.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
+  });
+
+  it("does not automatically replay destination acceptance after an interrupted connection", async () => {
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection failed: channel closed"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: {
+        ...connectResult("1.0.0"),
+        route: { kind: "tailnet", endpoint: "100.64.0.2", latencyMs: 1 },
+      },
+    });
+    const secondClient = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: {
+        ...connectResult("1.0.1"),
+        route: { kind: "relay", endpoint: "relay.example.test", latencyMs: 1 },
+      },
+    });
+    const pool = new RemoteConnectionPool(
+      { get: () => null } as unknown as RemoteTargetRegistry,
+      "1.0.0",
+    );
+
+    await expect(pool.callActionForTarget(target, "project-1", {
+      domain: "chat",
+      action: "acceptCrossMachineHandoff",
+      args: { capsule: {}, capsuleFingerprint: "a".repeat(64) },
+      requiredRouteKind: "tailnet",
+    })).rejects.toThrow(/retry the action/i);
+
+    expect(firstClient.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(true);
+    expect(secondClient.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
   });
 
   it("extends remote lane naming actions without adding a timeout to unrelated mutations", async () => {

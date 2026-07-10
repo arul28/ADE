@@ -1136,6 +1136,49 @@ describe("registerRuntimeBridge", () => {
     expect(hasKnownSshHostKeyForTargetMock).toHaveBeenCalledWith(target);
   });
 
+  it("never forwards source credentials for destination-owned handoff clones", async () => {
+    const getGitHubTokenForRemoteClone = vi.fn(() => "ghp_local_secret");
+    remoteRegistryGetMock.mockReturnValue(target);
+    hasKnownSshHostKeyForTargetMock.mockReturnValue(true);
+    remoteCallMachineForTargetMock.mockResolvedValue({
+      projectId: "project-cloned",
+      rootPath: "/srv/ADE",
+      displayName: "ADE",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: "https://github.com/example/ADE.git",
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      getGitHubTokenForRemoteClone,
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCloneProject)?.(eventForSender(), {
+        id: "target-1",
+        input: {
+          url: "https://github.com/example/ADE.git",
+          parentDir: "/srv",
+          githubAuthHeader: "basic renderer-supplied-secret",
+        },
+        options: { credentialMode: "destination_only" },
+      }),
+    ).resolves.toMatchObject({ rootPath: "/srv/ADE" });
+
+    expect(getGitHubTokenForRemoteClone).not.toHaveBeenCalled();
+    expect(hasKnownSshHostKeyForTargetMock).not.toHaveBeenCalled();
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "projects.clone",
+      {
+        url: "https://github.com/example/ADE.git",
+        parentDir: "/srv",
+      },
+      { retryOnConnectionError: false },
+    );
+  });
+
   it("does not forward clone auth headers to unknown remote hosts", async () => {
     const getGitHubTokenForRemoteClone = vi.fn(() => "ghp_local_secret");
     remoteRegistryGetMock.mockReturnValue(target);

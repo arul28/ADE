@@ -9,6 +9,7 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
+import { runGit } from "../../desktop/src/main/services/git/git";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type {
   CloneProjectInput,
@@ -74,6 +75,7 @@ const RUNTIME_METHODS = new Set([
   "projects.getDetail",
   "projects.getWorkSummary",
   "projects.getDefaultParentDir",
+  "projects.getHandoffStoragePreflight",
   "projects.create",
   "projects.clone",
   "projects.listMyGitHubRepos",
@@ -256,6 +258,128 @@ function defaultParentDir(projectRegistry: ProjectRegistry): string {
   const first = projectRegistry.list()[0]?.rootPath;
   if (first) return path.dirname(first);
   return path.join(os.homedir(), "Projects");
+}
+
+async function inspectHandoffStorage(params: Record<string, unknown>) {
+  const parentDir = readOptionalString(params.parentDir);
+  const repoName = readOptionalString(params.repoName);
+  if (!parentDir) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.getHandoffStoragePreflight requires parentDir.");
+  }
+  if (
+    !repoName
+    || repoName === "."
+    || repoName === ".."
+    || repoName.includes("\0")
+    || repoName.includes("/")
+    || repoName.includes("\\")
+  ) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.getHandoffStoragePreflight requires a valid repoName.");
+  }
+  const normalizedParent = path.resolve(parentDir);
+  const targetPath = path.join(normalizedParent, repoName);
+  const blockingErrors: string[] = [];
+  const warnings: string[] = [];
+  if (!fs.existsSync(normalizedParent)) {
+    blockingErrors.push(`Destination folder does not exist: ${normalizedParent}`);
+  } else if (!fs.statSync(normalizedParent).isDirectory()) {
+    blockingErrors.push(`Destination path is not a folder: ${normalizedParent}`);
+  } else {
+    try {
+      fs.accessSync(normalizedParent, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+    } catch {
+      blockingErrors.push(`ADE cannot write to destination folder: ${normalizedParent}`);
+    }
+  }
+  const targetExists = fs.existsSync(targetPath);
+  if (targetExists) {
+    blockingErrors.push(`A file or folder already exists at ${targetPath}. Add that repository to ADE or choose another destination.`);
+  }
+  const requiredBytes = 1_073_741_824;
+  let freeBytes = 0;
+  if (fs.existsSync(normalizedParent)) {
+    try {
+      const stats = fs.statfsSync(normalizedParent, { bigint: true });
+      freeBytes = Number(stats.bavail * stats.bsize);
+    } catch (error) {
+      warnings.push(`ADE could not read free disk space: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const hasEnoughSpace = freeBytes >= requiredBytes;
+  if (freeBytes > 0 && !hasEnoughSpace) {
+    blockingErrors.push("The destination does not have enough free space for a safe clone and lane worktree.");
+  } else if (freeBytes > 0 && freeBytes < requiredBytes * 2) {
+    warnings.push("Disk space is above the minimum, but there is limited room for dependencies and build artifacts.");
+  }
+  const originUrl = readOptionalString(params.originUrl);
+  const branchRef = readOptionalString(params.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+  const sourceHeadSha = readOptionalString(params.sourceHeadSha);
+  if (originUrl || branchRef || sourceHeadSha) {
+    if (!originUrl || !branchRef || !sourceHeadSha) {
+      blockingErrors.push("Destination Git authentication preflight is missing repository, branch, or commit details.");
+    } else if (
+      originUrl.includes("\0")
+      || branchRef.includes("\0")
+      || branchRef.startsWith("-")
+      || branchRef.length > 255
+      || !/^[0-9a-f]{40,64}$/i.test(sourceHeadSha)
+    ) {
+      blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
+    } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
+      const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
+      let destinationAuthHeader = "";
+      if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
+        try {
+          const token = githubService.getTokenOrThrow();
+          const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+          destinationAuthHeader = `AUTHORIZATION: basic ${basic}`;
+        } catch {
+          // The destination may still have a system credential helper. Let
+          // Git try it with terminal prompting disabled below.
+        }
+      }
+      const remoteArgs = [
+        ...(destinationAuthHeader
+          ? ["-c", `http.https://github.com/.extraheader=${destinationAuthHeader}`]
+          : []),
+        "ls-remote",
+        "--heads",
+        originUrl,
+        `refs/heads/${branchRef}`,
+      ];
+      const remote = await runGit(
+        remoteArgs,
+        {
+          cwd: normalizedParent,
+          timeoutMs: 30_000,
+          env: {
+            GIT_TERMINAL_PROMPT: "0",
+            GCM_INTERACTIVE: "Never",
+          },
+          maxOutputBytes: 64_000,
+        },
+      );
+      if (remote.exitCode !== 0) {
+        const detail = (remote.stderr.trim() || remote.stdout.trim() || "check the destination Git credential manager").slice(0, 1_000);
+        blockingErrors.push(`The destination cannot read the published repository with its own Git credentials: ${detail}`);
+      } else {
+        const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0] ?? "";
+        if (remoteHeadSha !== sourceHeadSha) {
+          blockingErrors.push("The destination sees a different published branch commit than the source machine.");
+        }
+      }
+    }
+  }
+  return {
+    parentDir: normalizedParent,
+    targetPath,
+    freeBytes,
+    requiredBytes,
+    hasEnoughSpace,
+    targetExists,
+    blockingErrors,
+    warnings,
+  };
 }
 
 function readProjectId(params: Record<string, unknown>): ProjectId | null {
@@ -535,6 +659,7 @@ export function createMultiProjectRpcRequestHandler(
             getDetail: true,
             getWorkSummary: true,
             getDefaultParentDir: true,
+            handoffStoragePreflight: true,
             create: true,
             clone: true,
             listMyGitHubRepos: true,
@@ -656,6 +781,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.getDefaultParentDir") {
       return defaultParentDir(projectRegistry);
+    }
+
+    if (method === "projects.getHandoffStoragePreflight") {
+      return await inspectHandoffStorage(params);
     }
 
     if (method === "projects.create") {

@@ -27,7 +27,8 @@ end-to-end encrypted tunnel; see the trust boundary in
   runtime upload/bootstrap. The folder also owns the target registry, runtime
   RPC client, remote connection pool (paired-first with eligible SSH fallback,
   eviction listeners, retryable reads, preview forwards, optional-action
-  fallbacks, event-stream gap/epoch propagation), connection service, and
+  fallbacks, event-stream gap/epoch propagation, route-pinned sensitive action
+  dispatch, and capability-gated handoff storage preflight), connection service, and
   Bonjour + Tailscale discovery.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
@@ -73,7 +74,9 @@ end-to-end encrypted tunnel; see the trust boundary in
   the renderer opens them.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods, machine-scoped personal-chat methods, plus project-scoped
-  action dispatch. `runtimeEvents.*`
+  action dispatch. `projects.getHandoffStoragePreflight` validates a proposed
+  clone parent/path, free-space floor, and destination-local Git access before
+  cross-machine handoff setup mutates the machine. `runtimeEvents.*`
   replies include `eventEpoch`, `gap`, and `oldestCursor` from the runtime's
   bounded event buffer. `projects.list` inlines host-resolved icons, with
   `dataUrl`, `sourcePath`, and `mimeType` fields, under a connect-path budget
@@ -103,8 +106,11 @@ credentials separately from the saved target; the target may also retain SSH
 user, port, key, and route information for fallback. A **remote project** is a
 path on that machine that has been registered with its ADE runtime (via
 `projects.add`). Opening a remote project does not copy local files or move a
-local lane; ADE controls the remote runtime and expects normal git workflow to
-move code between local and remote clones.
+local lane by default. Normal project opening still expects Git to move code
+between clones; the explicit **Send to machine** flow adds a guarded clean-lane
+handoff that publishes the exact source commit, prepares or clones the
+destination project, creates or reuses the destination lane, and starts a new
+chat from a bounded portable capsule.
 
 When opening a remote project, ADE checks local projects with the same git origin. If a matching local copy has uncommitted changes, ADE shows a confirmation dialog (`RemoteProjectOpenDialog`) before switching so the user can push, stash, or keep the divergent local work intentionally.
 
@@ -219,7 +225,7 @@ The update command stages the next release under `$ADE_HOME/runtime/updates/`, v
 
 ## What works remotely
 
-Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, and event streaming through the remote runtime. The global Chats route deliberately retains the window binding: when opened from a remote-bound project tab, `personalChats.call` / `streamEvents` go to that remote machine's hidden personal-chat scope; from a local or no-project window they go to the local brain. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.icon` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route deliberately retains the window binding: when opened from a remote-bound project tab, `personalChats.call` / `streamEvents` go to that remote machine's hidden personal-chat scope; from a local or no-project window they go to the local brain. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.icon` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
@@ -251,3 +257,4 @@ On desktop, the top-bar Mobile control is a runtime control, not a project contr
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
 - [ADE Code](../ade-code/README.md) — terminal client that uses the same runtime.
 - [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).
+- [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) — route, repository, Git, capsule, and retry contract for continuing a Work chat on another connected machine.

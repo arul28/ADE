@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type {
   AgentChatCreateArgs,
+  AgentChatAcceptCrossMachineHandoffArgs,
   AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
@@ -17,6 +18,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
+  AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatDroidPermissionMode,
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
@@ -33,11 +35,14 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommandsArgs,
@@ -646,6 +651,103 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
+  };
+}
+
+function parseCrossMachineDestinationPreflightArgs(
+  value: Record<string, unknown>,
+): AgentChatCrossMachineDestinationPreflightArgs {
+  return {
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.preflightCrossMachineDestination requires targetModelId.",
+    ) as AgentChatCrossMachineDestinationPreflightArgs["targetModelId"],
+    sourceBranchRef: requireString(
+      value.sourceBranchRef,
+      "chat.preflightCrossMachineDestination requires sourceBranchRef.",
+    ),
+    sourceHeadSha: requireString(
+      value.sourceHeadSha,
+      "chat.preflightCrossMachineDestination requires sourceHeadSha.",
+    ),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...(value as AgentChatPrepareCrossMachineHandoffArgs),
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+    ),
+    handoffId: requireString(
+      value.handoffId,
+      "chat.prepareCrossMachineHandoff requires handoffId.",
+    ),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.prepareCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
+  };
+}
+
+function parseMarkCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatMarkCrossMachineHandoffArgs {
+  return {
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.markCrossMachineHandoff requires sourceSessionId.",
+    ),
+    handoffId: requireString(value.handoffId, "chat.markCrossMachineHandoff requires handoffId."),
+    targetMachineName: requireString(
+      value.targetMachineName,
+      "chat.markCrossMachineHandoff requires targetMachineName.",
+    ),
+    targetLaneId: requireString(
+      value.targetLaneId,
+      "chat.markCrossMachineHandoff requires targetLaneId.",
+    ),
+    targetSessionId: requireString(
+      value.targetSessionId,
+      "chat.markCrossMachineHandoff requires targetSessionId.",
+    ),
+  };
+}
+
+function parseValidateCrossMachineSourceArgs(
+  value: Record<string, unknown>,
+): AgentChatValidateCrossMachineSourceArgs {
+  if (!isRecord(value.capsule)) {
+    throw new Error("chat.validateCrossMachineSource requires a capsule.");
+  }
+  return {
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.validateCrossMachineSource requires sourceSessionId.",
+    ),
+    capsule: value.capsule as AgentChatValidateCrossMachineSourceArgs["capsule"],
+    capsuleFingerprint: requireString(
+      value.capsuleFingerprint,
+      "chat.validateCrossMachineSource requires capsuleFingerprint.",
+    ),
+  };
+}
+
+function parseAcceptCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatAcceptCrossMachineHandoffArgs {
+  if (!isRecord(value.capsule)) {
+    throw new Error("chat.acceptCrossMachineHandoff requires a capsule.");
+  }
+  return {
+    capsule: value.capsule as AgentChatAcceptCrossMachineHandoffArgs["capsule"],
+    capsuleFingerprint: requireString(
+      value.capsuleFingerprint,
+      "chat.acceptCrossMachineHandoff requires capsuleFingerprint.",
+    ),
   };
 }
 
@@ -3555,6 +3657,26 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),
+    ));
+  register("chat.prepareCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").prepareCrossMachineHandoff(
+      parsePrepareCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.validateCrossMachineSource", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").validateCrossMachineSource(
+      parseValidateCrossMachineSourceArgs(payload),
+    ));
+  register("chat.preflightCrossMachineDestination", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").preflightCrossMachineDestination(
+      parseCrossMachineDestinationPreflightArgs(payload),
+    ));
+  register("chat.acceptCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acceptCrossMachineHandoff(
+      parseAcceptCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.markCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
+      parseMarkCrossMachineHandoffArgs(payload),
     ));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(

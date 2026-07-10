@@ -198,6 +198,12 @@ export type AgentChatNoticeDetail = {
     laneId?: string | null;
     title?: string;
   };
+  crossMachineHandoff?: {
+    handoffId: string;
+    targetMachineName: string;
+    targetLaneId: string;
+    targetSessionId: string;
+  };
 };
 
 export type AgentChatLocalFileRef = {
@@ -1717,6 +1723,106 @@ export type AgentChatHandoffArgs = {
 export type AgentChatHandoffResult = {
   session: AgentChatSession;
   usedFallbackSummary: boolean;
+};
+
+export type AgentChatCrossMachineTargetConfig = {
+  targetModelId: ModelId;
+  reasoningEffort?: string | null;
+  fastMode?: boolean;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
+  permissionMode?: AgentChatPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+};
+
+export type AgentChatCrossMachineHandoffCapsule = {
+  version: 1;
+  handoffId: string;
+  createdAt: string;
+  source: {
+    machineName: string;
+    sessionId: string;
+    provider: AgentChatProvider;
+    model: string;
+    title: string | null;
+    laneName: string;
+    branchRef: string;
+    headSha: string;
+    originUrl: string;
+  };
+  target: AgentChatCrossMachineTargetConfig;
+  brief: string;
+  artifacts: {
+    fileChanges: string[];
+    commands: string[];
+    errors: string[];
+  };
+  linearIssues: Array<{
+    identifier: string;
+    title: string;
+    url: string | null;
+  }>;
+  continuationPrompt: string;
+};
+
+export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
+  sourceSessionId: string;
+  handoffId: string;
+  continuationPrompt?: string | null;
+};
+
+export type AgentChatPrepareCrossMachineHandoffResult = {
+  capsule: AgentChatCrossMachineHandoffCapsule;
+  capsuleFingerprint: string;
+  usedFallbackSummary: boolean;
+  sanitizedSensitiveContext: boolean;
+};
+
+export type AgentChatValidateCrossMachineSourceArgs = {
+  sourceSessionId: string;
+  capsule: AgentChatCrossMachineHandoffCapsule;
+  capsuleFingerprint: string;
+};
+
+export type AgentChatCrossMachineDestinationPreflightArgs = {
+  targetModelId: ModelId;
+  sourceBranchRef: string;
+  sourceHeadSha: string;
+};
+
+export type AgentChatCrossMachineDestinationPreflightResult = {
+  providerAuthorized: boolean;
+  modelAvailable: boolean;
+  remoteBranchHeadSha: string | null;
+  existingLaneId: string | null;
+  blockingErrors: string[];
+  warnings: string[];
+};
+
+export type AgentChatAcceptCrossMachineHandoffArgs = {
+  capsule: AgentChatCrossMachineHandoffCapsule;
+  capsuleFingerprint: string;
+};
+
+export type AgentChatAcceptCrossMachineHandoffResult = {
+  handoffId: string;
+  laneId: string;
+  session: AgentChatSession;
+  reusedLane: boolean;
+  reusedSession: boolean;
+};
+
+export type AgentChatMarkCrossMachineHandoffArgs = {
+  sourceSessionId: string;
+  handoffId: string;
+  targetMachineName: string;
+  targetLaneId: string;
+  targetSessionId: string;
 };
 
 export type AgentChatListArgs = {

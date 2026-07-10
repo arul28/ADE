@@ -977,6 +977,11 @@ describe("createSyncRemoteCommandService", () => {
       "chat.getParallelLaunchState",
       "chat.setParallelLaunchState",
       "chat.handoff",
+      "chat.prepareCrossMachineHandoff",
+      "chat.validateCrossMachineSource",
+      "chat.preflightCrossMachineDestination",
+      "chat.acceptCrossMachineHandoff",
+      "chat.markCrossMachineHandoff",
       "chat.getContextUsage",
       "chat.rewindFiles",
       "chat.getTurnFileDiff",
@@ -1047,6 +1052,114 @@ describe("createSyncRemoteCommandService", () => {
       targetModelId: "openai/gpt-5.5",
       handoffNote: "Focus the first pass on the drawer regression.",
     }));
+  });
+
+  it("routes every cross-machine chat handoff phase through the remote command bridge", async () => {
+    const capsule = {
+      version: 1 as const,
+      handoffId: "handoff-1",
+      createdAt: "2026-07-10T12:00:00.000Z",
+      source: {
+        machineName: "Source Mac",
+        sessionId: "session-1",
+        provider: "codex" as const,
+        model: "gpt-5.5",
+        title: "Cross-machine work",
+        laneName: "handoff lane",
+        branchRef: "feature/handoff",
+        headSha: "a".repeat(40),
+        originUrl: "https://github.com/acme/ade.git",
+      },
+      target: { targetModelId: "openai/gpt-5.5" as const },
+      brief: "Continue the verified implementation.",
+      artifacts: { fileChanges: [], commands: [], errors: [] },
+      linearIssues: [],
+      continuationPrompt: "Continue working from this handoff.",
+    };
+    const prepareCrossMachineHandoff = vi.fn().mockResolvedValue({
+      capsule,
+      capsuleFingerprint: "fingerprint-1",
+      usedFallbackSummary: false,
+      sanitizedSensitiveContext: false,
+    });
+    const validateCrossMachineSource = vi.fn().mockResolvedValue({ valid: true });
+    const preflightCrossMachineDestination = vi.fn().mockResolvedValue({
+      providerAuthorized: true,
+      modelAvailable: true,
+      remoteBranchHeadSha: capsule.source.headSha,
+      existingLaneId: null,
+      blockingErrors: [],
+      warnings: [],
+    });
+    const acceptCrossMachineHandoff = vi.fn().mockResolvedValue({
+      handoffId: capsule.handoffId,
+      laneId: "lane-2",
+      session: { id: "session-2" },
+      reusedLane: false,
+      reusedSession: false,
+    });
+    const markCrossMachineHandoff = vi.fn().mockResolvedValue({ marked: true });
+    const { service } = createService({
+      agentChatService: {
+        prepareCrossMachineHandoff,
+        validateCrossMachineSource,
+        preflightCrossMachineDestination,
+        acceptCrossMachineHandoff,
+        markCrossMachineHandoff,
+      },
+    });
+
+    await expect(service.execute(makePayload("chat.prepareCrossMachineHandoff", {
+      sourceSessionId: " session-1 ",
+      handoffId: " handoff-1 ",
+      targetModelId: " openai/gpt-5.5 ",
+      continuationPrompt: capsule.continuationPrompt,
+    }))).resolves.toMatchObject({ capsuleFingerprint: "fingerprint-1" });
+    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSessionId: "session-1",
+      handoffId: "handoff-1",
+      targetModelId: "openai/gpt-5.5",
+    }));
+
+    await expect(service.execute(makePayload("chat.validateCrossMachineSource", {
+      sourceSessionId: capsule.source.sessionId,
+      capsule,
+      capsuleFingerprint: "fingerprint-1",
+    }))).resolves.toEqual({ valid: true });
+    await expect(service.execute(makePayload("chat.preflightCrossMachineDestination", {
+      targetModelId: capsule.target.targetModelId,
+      sourceBranchRef: capsule.source.branchRef,
+      sourceHeadSha: capsule.source.headSha,
+    }))).resolves.toMatchObject({ providerAuthorized: true, modelAvailable: true });
+    await expect(service.execute(makePayload("chat.acceptCrossMachineHandoff", {
+      capsule,
+      capsuleFingerprint: "fingerprint-1",
+    }))).resolves.toMatchObject({ laneId: "lane-2", session: { id: "session-2" } });
+    await expect(service.execute(makePayload("chat.markCrossMachineHandoff", {
+      sourceSessionId: capsule.source.sessionId,
+      handoffId: capsule.handoffId,
+      targetMachineName: "Destination Mac",
+      targetLaneId: "lane-2",
+      targetSessionId: "session-2",
+    }))).resolves.toEqual({ marked: true });
+
+    expect(validateCrossMachineSource).toHaveBeenCalledWith(expect.objectContaining({ capsule }));
+    expect(preflightCrossMachineDestination).toHaveBeenCalledWith({
+      targetModelId: capsule.target.targetModelId,
+      sourceBranchRef: capsule.source.branchRef,
+      sourceHeadSha: capsule.source.headSha,
+    });
+    expect(acceptCrossMachineHandoff).toHaveBeenCalledWith({
+      capsule,
+      capsuleFingerprint: "fingerprint-1",
+    });
+    expect(markCrossMachineHandoff).toHaveBeenCalledWith({
+      sourceSessionId: capsule.source.sessionId,
+      handoffId: capsule.handoffId,
+      targetMachineName: "Destination Mac",
+      targetLaneId: "lane-2",
+      targetSessionId: "session-2",
+    });
   });
 
   it("routes github.publishCurrentProject through the GitHub service with validated args", async () => {

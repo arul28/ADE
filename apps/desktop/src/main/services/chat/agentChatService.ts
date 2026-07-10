@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
 // dynamic import() with a variable path is left unresolved in cli.cjs and fails
 // at runtime ("Cannot find module .../externalSessions/claudeSessionTransplant").
@@ -122,6 +122,7 @@ import {
   nowIso,
   readAgentAccessibleFileBytes,
   readFileWithinRootSecure,
+  redactSecrets,
   resolvePathWithinRoot,
   stableStringify,
 } from "../shared/utils";
@@ -135,6 +136,8 @@ import {
 } from "../../utils/codexComputerUse";
 import type {
   AgentChatApprovalDecision,
+  AgentChatAcceptCrossMachineHandoffArgs,
+  AgentChatAcceptCrossMachineHandoffResult,
   AgentChatArchiveArgs,
   AgentChatCancelSteerArgs,
   AgentChatClaudeOutputStyle,
@@ -147,6 +150,9 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
+  AgentChatCrossMachineDestinationPreflightArgs,
+  AgentChatCrossMachineDestinationPreflightResult,
+  AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -187,12 +193,16 @@ import type {
   AgentChatMessageSessionArgs,
   AgentChatMessageSessionKind,
   AgentChatMessageSessionResult,
+  AgentChatMarkCrossMachineHandoffArgs,
   AgentChatCursorModelSource,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
   AgentChatProvider,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatRespondToInputArgs,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
@@ -339,6 +349,10 @@ import {
   genericSuffixFromLaneFallbackName,
 } from "../../../shared/laneNameFallback";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
+import {
+  normalizeGitRemoteIdentity,
+  sanitizePortableGitRemote,
+} from "../../../shared/crossMachineHandoff";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
@@ -1004,6 +1018,7 @@ type CursorRuntime = {
   activeCloudRunId: string | null;
   /** Last observed Cursor task status by run_id for subagent lifecycle mapping. */
   cursorTaskStatusByRunId: Map<string, string>;
+  pendingDispatchAck?: { turnId: string; resolve: () => void };
 };
 
 type DroidRuntime = {
@@ -1023,6 +1038,7 @@ type DroidRuntime = {
   pendingSteers: QueuedSteer[];
   permissionWaiters: Map<string, DroidPermissionWaiter>;
   eventMapperState: DroidSdkEventMapperState;
+  pendingDispatchAck?: { turnId: string; resolve: () => void };
 };
 
 type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
@@ -1900,6 +1916,44 @@ type HandoffArtifacts = {
   errors: string[];
 };
 
+type CrossMachineHandoffRecord = {
+  version: 1;
+  handoffId: string;
+  capsuleFingerprint: string;
+  state: "preparing" | "lane_ready" | "chat_ready" | "dispatched" | "complete" | "failed";
+  laneId: string | null;
+  sessionId: string | null;
+  updatedAt: string;
+  lastError: string | null;
+};
+
+const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
+  "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
+
+function sanitizePortableReferenceUrl(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function deterministicChatSessionId(idempotencyKey: string): string {
+  const bytes = createHash("sha256").update(`ade-agent-chat:${idempotencyKey}`, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 type SessionTurnCollector = {
   resolve: (value: {
     sessionId: string;
@@ -1957,6 +2011,7 @@ type PreparedSendMessage = {
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
+  onBackendDispatched?: () => void;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
   optimisticDroidTurnStart?: boolean;
@@ -23039,7 +23094,11 @@ export function createAgentChatService(args: {
     });
   };
 
-  const createSession = async ({
+  type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
+    idempotencyKey?: string;
+  };
+
+  const createSessionInternal = async ({
     laneId,
     provider,
     model,
@@ -23073,7 +23132,8 @@ export function createAgentChatService(args: {
     orchestrationTag: requestedOrchestrationTag,
     orchestrationStepId: requestedOrchestrationStepId,
     orchestrationBundlePath: requestedOrchestrationBundlePath,
-  }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+    idempotencyKey,
+  }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const launchContext = resolveLaneLaunchContext({
       laneService,
@@ -23082,7 +23142,13 @@ export function createAgentChatService(args: {
       purpose: "start this chat",
       requestedCwd,
     });
-    const sessionId = randomUUID();
+    const normalizedIdempotencyKey = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
+    if (normalizedIdempotencyKey.length > 256 || normalizedIdempotencyKey.includes("\0")) {
+      throw new Error("Invalid chat idempotency key.");
+    }
+    const sessionId = normalizedIdempotencyKey
+      ? deterministicChatSessionId(normalizedIdempotencyKey)
+      : randomUUID();
     const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
     const metadataPath = metadataPathFor(sessionId);
@@ -23146,6 +23212,20 @@ export function createAgentChatService(args: {
       }
       effectiveProvider = resolved;
       normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.providerModelId : resolvedDescriptor.id;
+    }
+
+    if (normalizedIdempotencyKey && sessionService.get(sessionId)) {
+      const existing = ensureManagedSession(sessionId);
+      const existingModelId = existing.session.modelId?.trim() || existing.session.model.trim();
+      const requestedModelId = resolvedModelId?.trim() || normalizedModel.trim();
+      if (
+        existing.session.laneId !== laneId
+        || existing.session.provider !== effectiveProvider
+        || existingModelId !== requestedModelId
+      ) {
+        throw new Error("This replay key is already associated with a different chat.");
+      }
+      return existing.session;
     }
 
     const rawEffort = effectiveProvider === "codex"
@@ -23431,6 +23511,9 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
+  const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
+    createSessionInternal(args);
+
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const sourceId = args.sourceSessionId.trim();
     const targetId = args.targetModelId.trim();
@@ -23615,6 +23698,798 @@ export function createAgentChatService(args: {
       session: createdManaged.session,
       usedFallbackSummary: handoffMode === "brief" ? usedFallbackSummary : false,
     };
+  };
+
+  const crossMachineHandoffRecordKey = (handoffId: string): string =>
+    `agent-chat-cross-machine-handoff:v1:${handoffId}`;
+
+  const requireCrossMachineHandoffId = (value: unknown): string => {
+    const handoffId = typeof value === "string" ? value.trim() : "";
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(handoffId)) {
+      throw new Error("The handoff request has an invalid replay identifier.");
+    }
+    return handoffId;
+  };
+
+  const requireGitBranchForHandoff = async (value: unknown, cwd: string): Promise<string> => {
+    const branchRef = typeof value === "string" ? value.trim().replace(/^refs\/heads\//, "") : "";
+    if (!branchRef || branchRef.length > 255 || branchRef.includes("\0") || branchRef.startsWith("-")) {
+      throw new Error("The handoff branch name is invalid.");
+    }
+    const checked = await runGit(["check-ref-format", "--branch", branchRef], { cwd, timeoutMs: 8_000 });
+    if (checked.exitCode !== 0) {
+      throw new Error(`The handoff branch '${branchRef}' is not a valid Git branch.`);
+    }
+    return branchRef;
+  };
+
+  const requireGitOutputForHandoff = async (
+    gitArgs: string[],
+    cwd: string,
+    failureMessage: string,
+    timeoutMs = 15_000,
+  ): Promise<string> => {
+    const result = await runGit(gitArgs, { cwd, timeoutMs });
+    const output = result.stdout.trim();
+    if (result.exitCode !== 0 || !output) {
+      const detail = result.stderr.trim() || result.stdout.trim();
+      throw new Error(detail ? `${failureMessage} ${detail}` : failureMessage);
+    }
+    return output;
+  };
+
+  const capsuleFingerprint = (capsule: AgentChatCrossMachineHandoffCapsule): string =>
+    createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+  const validateCrossMachineHandoffCapsule: (
+    value: unknown,
+  ) => asserts value is AgentChatCrossMachineHandoffCapsule = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("The handoff capsule is malformed.");
+    }
+    const capsule = value as AgentChatCrossMachineHandoffCapsule;
+    if (capsule.version !== 1) throw new Error("This handoff capsule version is not supported.");
+    requireCrossMachineHandoffId(capsule.handoffId);
+    if (
+      typeof capsule.createdAt !== "string"
+      || capsule.createdAt.length > 64
+      || !Number.isFinite(Date.parse(capsule.createdAt))
+    ) {
+      throw new Error("The handoff capsule has an invalid creation time.");
+    }
+    if (!capsule.source || typeof capsule.source !== "object" || !capsule.target || typeof capsule.target !== "object") {
+      throw new Error("The handoff capsule is missing source or target metadata.");
+    }
+    const assertPortableText = (
+      field: unknown,
+      maxLength: number,
+      label: string,
+      options: { allowEmpty?: boolean } = {},
+    ): string => {
+      if (
+        typeof field !== "string"
+        || (!options.allowEmpty && !field.trim())
+        || field.length > maxLength
+        || field.includes("\0")
+        || redactSecrets(field) !== field
+      ) {
+        throw new Error(`The handoff capsule has an invalid ${label}.`);
+      }
+      return field;
+    };
+    const boundedSourceFields: Array<[unknown, number, string]> = [
+      [capsule.source.machineName, 200, "source machine name"],
+      [capsule.source.sessionId, 200, "source session id"],
+      [capsule.source.model, 300, "source model"],
+      [capsule.source.laneName, 200, "source lane name"],
+      [capsule.source.branchRef, 255, "source branch"],
+      [capsule.source.headSha, 64, "source commit"],
+      [capsule.source.originUrl, 2_048, "source origin"],
+      [capsule.target.targetModelId, 300, "target model"],
+    ];
+    for (const [field, maxLength, label] of boundedSourceFields) {
+      assertPortableText(field, maxLength, label);
+    }
+    if (capsule.source.title != null) {
+      assertPortableText(capsule.source.title, 300, "source title", { allowEmpty: true });
+    }
+    if (!/^[0-9a-f]{40,64}$/i.test(capsule.source.headSha)) {
+      throw new Error("The handoff capsule has an invalid source commit.");
+    }
+    if (!new Set<string>(["claude", "codex", "opencode", "cursor", "droid"]).has(capsule.source.provider)) {
+      throw new Error("The handoff capsule has an invalid source provider.");
+    }
+    if (
+      sanitizePortableGitRemote(capsule.source.originUrl) !== capsule.source.originUrl
+      || !normalizeGitRemoteIdentity(capsule.source.originUrl)
+    ) {
+      throw new Error("The handoff capsule origin must not contain embedded credentials.");
+    }
+    assertPortableText(capsule.brief, 16_000, "handoff brief", { allowEmpty: true });
+    assertPortableText(capsule.continuationPrompt, 4_000, "continuation instruction");
+    if (capsule.target.cursorConfigValues != null) {
+      throw new Error("Machine-local Cursor configuration cannot be included in a handoff capsule.");
+    }
+    if (capsule.target.reasoningEffort != null) {
+      assertPortableText(capsule.target.reasoningEffort, 100, "target reasoning effort");
+    }
+    if (capsule.target.cursorModeId != null) {
+      assertPortableText(capsule.target.cursorModeId, 200, "target Cursor mode");
+    }
+    const artifactLists = [capsule.artifacts?.fileChanges, capsule.artifacts?.commands, capsule.artifacts?.errors];
+    if (artifactLists.some((entries) =>
+      !Array.isArray(entries)
+      || entries.length > 12
+      || entries.some((entry) => {
+        try {
+          assertPortableText(entry, 1_000, "artifact reference", { allowEmpty: true });
+          return false;
+        } catch {
+          return true;
+        }
+      })
+    )) {
+      throw new Error("The handoff artifact references exceed their portable limits.");
+    }
+    if (
+      !Array.isArray(capsule.linearIssues)
+      || capsule.linearIssues.length > 12
+      || capsule.linearIssues.some((issue) =>
+        !issue
+        || (() => {
+          try {
+            assertPortableText(issue.identifier, 100, "issue identifier");
+            assertPortableText(issue.title, 300, "issue title", { allowEmpty: true });
+            return issue.url != null
+              && (
+                typeof issue.url !== "string"
+                || issue.url.length > 2_048
+                || sanitizePortableReferenceUrl(issue.url) !== issue.url
+              );
+          } catch {
+            return true;
+          }
+        })()
+      )
+    ) {
+      throw new Error("The handoff issue references exceed their portable limits.");
+    }
+  };
+
+  const persistCrossMachineHandoffRecord = (record: CrossMachineHandoffRecord): void => {
+    db?.setJson(crossMachineHandoffRecordKey(record.handoffId), record);
+  };
+
+  const readCrossMachineHandoffRecord = (handoffId: string): CrossMachineHandoffRecord | null => {
+    const value = db?.getJson<unknown>(crossMachineHandoffRecordKey(handoffId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<CrossMachineHandoffRecord>;
+    if (record.version !== 1 || record.handoffId !== handoffId || typeof record.capsuleFingerprint !== "string") {
+      return null;
+    }
+    if (
+      record.state !== "preparing"
+      && record.state !== "lane_ready"
+      && record.state !== "chat_ready"
+      && record.state !== "dispatched"
+      && record.state !== "complete"
+      && record.state !== "failed"
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      handoffId,
+      capsuleFingerprint: record.capsuleFingerprint,
+      state: record.state,
+      laneId: typeof record.laneId === "string" ? record.laneId : null,
+      sessionId: typeof record.sessionId === "string" ? record.sessionId : null,
+      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date(0).toISOString(),
+      lastError: typeof record.lastError === "string" ? record.lastError : null,
+    };
+  };
+
+  const requireCrossMachineSourceReady = async (managed: ManagedChatSession) => {
+    ensureSessionIdleForHandoff(managed);
+    const lane = await laneService.getSummary(managed.session.laneId, { includeStatus: true });
+    if (!lane) throw new Error("The source lane could not be loaded.");
+    if (lane.status.rebaseInProgress) {
+      throw new Error("Finish or abort the current rebase before sending this chat.");
+    }
+    const porcelain = await runGit(["status", "--porcelain=v1"], {
+      cwd: lane.worktreePath,
+      timeoutMs: 15_000,
+    });
+    if (porcelain.exitCode !== 0) {
+      throw new Error(`ADE could not inspect the source lane. ${porcelain.stderr.trim()}`.trim());
+    }
+    if (porcelain.stdout.trim()) {
+      throw new Error("Commit or discard every source lane change before sending this chat.");
+    }
+
+    const branchRef = await requireGitBranchForHandoff(lane.branchRef, lane.worktreePath);
+    const headSha = await requireGitOutputForHandoff(
+      ["rev-parse", "HEAD"],
+      lane.worktreePath,
+      "ADE could not resolve the source commit.",
+    );
+    const upstreamSha = await requireGitOutputForHandoff(
+      ["rev-parse", "@{upstream}"],
+      lane.worktreePath,
+      "Publish this branch and configure its upstream before sending the chat.",
+    );
+    if (upstreamSha !== headSha) {
+      throw new Error("Push the source branch until its upstream exactly matches the current commit.");
+    }
+    const rawOriginUrl = await requireGitOutputForHandoff(
+      ["remote", "get-url", "origin"],
+      lane.worktreePath,
+      "This project needs an origin remote before it can be sent.",
+    );
+    const originUrl = sanitizePortableGitRemote(rawOriginUrl);
+    if (!normalizeGitRemoteIdentity(originUrl) || originUrl.length > 2_048 || originUrl.includes("\0")) {
+      throw new Error("The project's origin URL is not portable.");
+    }
+    const remoteBranchLine = await requireGitOutputForHandoff(
+      ["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`],
+      lane.worktreePath,
+      `ADE could not verify '${branchRef}' on origin. Push the branch and check remote access.`,
+      30_000,
+    );
+    const remoteHeadSha = remoteBranchLine.split(/\s+/)[0]?.trim() ?? "";
+    if (remoteHeadSha !== headSha) {
+      throw new Error("The remote branch does not point at the source lane's current commit. Push again, then retry.");
+    }
+    return { lane, branchRef, headSha, rawOriginUrl, originUrl };
+  };
+
+  const prepareCrossMachineHandoff = async (
+    args: AgentChatPrepareCrossMachineHandoffArgs,
+  ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
+    const handoffId = requireCrossMachineHandoffId(args.handoffId);
+    const sourceSessionId = args.sourceSessionId?.trim();
+    if (!sourceSessionId) throw new Error("A source chat is required for this handoff.");
+
+    const managed = ensureManagedSession(sourceSessionId);
+    const sourceSession = await getSessionSummary(sourceSessionId);
+    if (!sourceSession) throw new Error("The source chat could not be loaded.");
+    if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
+      throw new Error("Only Work chats can be sent to another machine.");
+    }
+    const { lane, branchRef, headSha, rawOriginUrl, originUrl } = await requireCrossMachineSourceReady(managed);
+
+    const targetId = args.targetModelId?.trim();
+    const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
+    if (!targetDescriptor || targetDescriptor.deprecated) {
+      throw new Error("Select an available destination model before sending this chat.");
+    }
+    const portableText = (value: string): string => {
+      let next = redactSecrets(value);
+      for (const [needle, replacement] of [
+        [lane.worktreePath, "<repo>"],
+        [projectRoot, "<repo>"],
+        [os.homedir(), "~"],
+      ] as const) {
+        if (needle) next = next.split(needle).join(replacement);
+      }
+      return next;
+    };
+    const rawTranscript = await getChatTranscript({ sessionId: sourceSessionId, limit: 12, maxChars: 12_000 });
+    const transcript = {
+      ...rawTranscript,
+      entries: rawTranscript.entries.map((entry) => ({
+        ...entry,
+        text: portableText(entry.text),
+        ...(entry.displayText ? { displayText: portableText(entry.displayText) } : {}),
+      })),
+    };
+    const rawArtifacts = collectHandoffArtifacts(readTranscriptEnvelopes(managed));
+    const artifacts: HandoffArtifacts = {
+      fileChanges: rawArtifacts.fileChanges.map(portableText),
+      commands: rawArtifacts.commands.map(portableText),
+      errors: rawArtifacts.errors.map(portableText),
+    };
+    const generatedBrief = await generateHandoffBrief({
+      managed,
+      sourceSession,
+      targetDescriptor,
+      transcript,
+      artifacts,
+    });
+    const rawContinuationPrompt = typeof args.continuationPrompt === "string"
+      ? args.continuationPrompt.trim()
+      : "";
+    if (rawContinuationPrompt.length > 4_000) {
+      throw new Error("Keep the continuation note under 4,000 characters.");
+    }
+    const continuationPrompt = portableText(rawContinuationPrompt);
+    const rawLinearIssues = (laneService.listLinearIssuesForSession?.({ chatSessionId: sourceSessionId }) ?? [])
+      .slice(0, 12)
+      .map((link) => ({
+        identifier: link.issue.identifier.slice(0, 100),
+        title: link.issue.title.slice(0, 300),
+        url: link.issue.url,
+      }));
+    const linearIssues = rawLinearIssues.map((issue) => ({
+      identifier: portableText(issue.identifier).slice(0, 100),
+      title: portableText(issue.title).slice(0, 300),
+      url: sanitizePortableReferenceUrl(issue.url),
+    }));
+    const sourceMachineName = portableText(os.hostname().trim() || "source machine").slice(0, 200);
+    const sourceModel = portableText(managed.session.model).slice(0, 300);
+    const sourceTitle = sourceSession.title?.trim()
+      ? portableText(sourceSession.title.trim()).slice(0, 300)
+      : null;
+    const sourceLaneName = portableText(lane.name).slice(0, 200);
+    const capsule: AgentChatCrossMachineHandoffCapsule = {
+      version: 1,
+      handoffId,
+      createdAt: nowIso(),
+      source: {
+        machineName: sourceMachineName || "source machine",
+        sessionId: sourceSessionId,
+        provider: managed.session.provider,
+        model: sourceModel,
+        title: sourceTitle,
+        laneName: sourceLaneName || "handoff lane",
+        branchRef,
+        headSha,
+        originUrl,
+      },
+      target: {
+        targetModelId: targetDescriptor.id,
+        ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+        ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
+        ...(args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
+        ...(args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
+        ...(args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
+        ...(args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
+        ...(args.opencodePermissionMode ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
+        ...(args.droidPermissionMode ? { droidPermissionMode: args.droidPermissionMode } : {}),
+        ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
+        ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
+        // Cursor config values are machine-local and may contain private
+        // runtime configuration. The destination resolves its own settings.
+      },
+      brief: portableText(generatedBrief.brief.trim()).slice(0, 16_000),
+      artifacts: {
+        fileChanges: artifacts.fileChanges.map((entry) => portableText(entry).slice(0, 1_000)),
+        commands: artifacts.commands.map((entry) => portableText(entry).slice(0, 1_000)),
+        errors: artifacts.errors.map((entry) => portableText(entry).slice(0, 1_000)),
+      },
+      linearIssues,
+      continuationPrompt: continuationPrompt || CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
+    };
+    const sanitizedSensitiveContext = capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000)
+      || continuationPrompt !== rawContinuationPrompt
+      || originUrl !== rawOriginUrl
+      || sourceMachineName !== (os.hostname().trim() || "source machine")
+      || sourceModel !== managed.session.model
+      || sourceTitle !== (sourceSession.title?.trim() || null)
+      || sourceLaneName !== lane.name
+      || transcript.entries.some((entry, index) => entry.text !== rawTranscript.entries[index]?.text)
+      || capsule.artifacts.fileChanges.some((entry, index) => entry !== rawArtifacts.fileChanges[index]?.slice(0, 1_000))
+      || capsule.artifacts.commands.some((entry, index) => entry !== rawArtifacts.commands[index]?.slice(0, 1_000))
+      || capsule.artifacts.errors.some((entry, index) => entry !== rawArtifacts.errors[index]?.slice(0, 1_000))
+      || linearIssues.some((issue, index) =>
+        issue.identifier !== rawLinearIssues[index]?.identifier
+        || issue.title !== rawLinearIssues[index]?.title
+        || issue.url !== (rawLinearIssues[index]?.url ?? null)
+      );
+    return {
+      capsule,
+      capsuleFingerprint: capsuleFingerprint(capsule),
+      usedFallbackSummary: generatedBrief.usedFallbackSummary,
+      sanitizedSensitiveContext,
+    };
+  };
+
+  const validateCrossMachineSource = async (
+    args: AgentChatValidateCrossMachineSourceArgs,
+  ): Promise<void> => {
+    validateCrossMachineHandoffCapsule(args.capsule);
+    const sourceSessionId = args.sourceSessionId?.trim();
+    if (!sourceSessionId || args.capsule.source.sessionId !== sourceSessionId) {
+      throw new Error("The prepared handoff no longer matches the source chat.");
+    }
+    const expectedFingerprint = capsuleFingerprint(args.capsule);
+    if (args.capsuleFingerprint?.trim() !== expectedFingerprint) {
+      throw new Error("The prepared handoff changed before final confirmation. Review it again.");
+    }
+    const managed = ensureManagedSession(sourceSessionId);
+    if ((managed.session.surface ?? "work") !== "work") {
+      throw new Error("Only Work chats can be sent to another machine.");
+    }
+    if (
+      managed.session.provider !== args.capsule.source.provider
+      || managed.session.model !== args.capsule.source.model
+    ) {
+      throw new Error("The source chat model changed after the handoff was prepared. Review the handoff again.");
+    }
+    const current = await requireCrossMachineSourceReady(managed);
+    if (
+      current.branchRef !== args.capsule.source.branchRef
+      || current.headSha !== args.capsule.source.headSha
+      || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(args.capsule.source.originUrl)
+    ) {
+      throw new Error("The source branch changed after the handoff was prepared. Run the checks again before sending.");
+    }
+    const preparedAt = Date.parse(args.capsule.createdAt);
+    const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
+      const timestamp = Date.parse(entry.timestamp);
+      return Number.isFinite(timestamp) && timestamp > preparedAt;
+    });
+    if (hasNewChatActivity) {
+      throw new Error("The source chat changed after the handoff brief was prepared. Go back and prepare a fresh handoff.");
+    }
+  };
+
+  const preflightCrossMachineDestination = async (
+    args: AgentChatCrossMachineDestinationPreflightArgs,
+  ): Promise<AgentChatCrossMachineDestinationPreflightResult> => {
+    const blockingErrors: string[] = [];
+    const warnings: string[] = [];
+    const targetId = args.targetModelId?.trim();
+    const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
+    if (!targetDescriptor || targetDescriptor.deprecated) {
+      blockingErrors.push(`Model '${targetId || "unknown"}' is not supported by this ADE runtime.`);
+    }
+
+    let providerAuthorized = false;
+    let modelAvailable = false;
+    if (targetDescriptor) {
+      const targetProvider = resolveProviderGroupForModel(targetDescriptor);
+      try {
+        const availableModels = await getAvailableModels({
+          provider: targetProvider,
+          activateRuntime: targetProvider === "cursor" || targetProvider === "droid" || targetProvider === "opencode",
+          ...(targetProvider === "cursor" ? { cursorSource: "sdk" } : {}),
+        });
+        modelAvailable = availableModels.some((model) =>
+          model.id === targetDescriptor.id || model.modelId === targetDescriptor.id,
+        );
+        providerAuthorized = availableModels.length > 0;
+      } catch (error) {
+        warnings.push(`ADE could not finish the destination model check: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!providerAuthorized) blockingErrors.push(`Sign in to ${targetProvider} on this machine and refresh its model list.`);
+      else if (!modelAvailable) blockingErrors.push(`${targetDescriptor.displayName} is not available on this machine.`);
+    }
+
+    let branchRef = "";
+    try {
+      branchRef = await requireGitBranchForHandoff(args.sourceBranchRef, projectRoot);
+    } catch (error) {
+      blockingErrors.push(error instanceof Error ? error.message : String(error));
+    }
+    const expectedHead = typeof args.sourceHeadSha === "string" ? args.sourceHeadSha.trim() : "";
+    if (!/^[0-9a-f]{40,64}$/i.test(expectedHead)) {
+      blockingErrors.push("The source commit identifier is invalid.");
+    }
+
+    let remoteBranchHeadSha: string | null = null;
+    if (branchRef && /^[0-9a-f]{40,64}$/i.test(expectedHead)) {
+      const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+        cwd: projectRoot,
+        timeoutMs: 30_000,
+      });
+      if (remote.exitCode !== 0) {
+        blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
+      } else {
+        remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
+        if (!remoteBranchHeadSha) blockingErrors.push(`Origin does not contain branch '${branchRef}'.`);
+        else if (remoteBranchHeadSha !== expectedHead) blockingErrors.push("The destination sees a different remote branch commit than the source machine.");
+      }
+    }
+
+    let existingLaneId: string | null = null;
+    if (branchRef) {
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+      const existingLane = lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
+      if (existingLane) {
+        existingLaneId = existingLane.id;
+        if (existingLane.status.dirty) blockingErrors.push(`Destination lane '${existingLane.name}' has uncommitted changes.`);
+        if (existingLane.status.rebaseInProgress) blockingErrors.push(`Destination lane '${existingLane.name}' has a rebase in progress.`);
+        const existingHead = await runGit(["rev-parse", "HEAD"], { cwd: existingLane.worktreePath, timeoutMs: 8_000 });
+        if (existingHead.exitCode !== 0 || existingHead.stdout.trim() !== expectedHead) {
+          blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
+        } else if (!existingLane.status.dirty && !existingLane.status.rebaseInProgress) {
+          warnings.push(`ADE will reuse the existing clean lane '${existingLane.name}'.`);
+        }
+      } else {
+        const localHead = await runGit(["rev-parse", "--verify", `refs/heads/${branchRef}`], {
+          cwd: projectRoot,
+          timeoutMs: 8_000,
+        });
+        if (localHead.exitCode === 0 && localHead.stdout.trim() !== expectedHead) {
+          blockingErrors.push(`A different local branch named '${branchRef}' already exists on the destination.`);
+        }
+      }
+    }
+
+    return {
+      providerAuthorized,
+      modelAvailable,
+      remoteBranchHeadSha,
+      existingLaneId,
+      blockingErrors: Array.from(new Set(blockingErrors)),
+      warnings: Array.from(new Set(warnings)),
+    };
+  };
+
+  const buildCrossMachineHandoffPrompt = (capsule: AgentChatCrossMachineHandoffCapsule): string => {
+    const issueLines = capsule.linearIssues.map((issue) =>
+      `- ${issue.identifier}: ${issue.title}${issue.url ? ` (${issue.url})` : ""}`,
+    );
+    return [
+      "This message was injected automatically by ADE during a cross-machine chat handoff.",
+      `The user moved this task from ${capsule.source.machineName} to this machine.`,
+      `The destination lane was recreated from ${capsule.source.branchRef} at ${capsule.source.headSha}.`,
+      "Continue the same task from the bounded brief below. Do not claim access to the source machine's provider history, terminals, secrets, caches, or untransferred artifacts.",
+      "Verify the local destination workspace before editing, then continue from the next open action.",
+      "",
+      capsule.brief,
+      issueLines.length ? ["", "## Referenced Linear issues", ...issueLines].join("\n") : null,
+      "",
+      "## User continuation instruction",
+      capsule.continuationPrompt,
+    ].filter((line): line is string => line != null).join("\n");
+  };
+
+  const crossMachineHandoffAcceptInFlight = new Map<string, {
+    capsuleFingerprint: string;
+    promise: Promise<AgentChatAcceptCrossMachineHandoffResult>;
+  }>();
+
+  const acceptCrossMachineHandoffCore = async (
+    args: AgentChatAcceptCrossMachineHandoffArgs,
+  ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
+    const capsule = args.capsule;
+    validateCrossMachineHandoffCapsule(capsule);
+    const handoffId = requireCrossMachineHandoffId(capsule.handoffId);
+    const suppliedFingerprint = typeof args.capsuleFingerprint === "string" ? args.capsuleFingerprint.trim() : "";
+    const expectedFingerprint = capsuleFingerprint(capsule);
+    if (!/^[0-9a-f]{64}$/i.test(suppliedFingerprint) || suppliedFingerprint !== expectedFingerprint) {
+      throw new Error("The handoff capsule changed in transit. Start a new handoff from the source machine.");
+    }
+    const priorRecord = readCrossMachineHandoffRecord(handoffId);
+    if (priorRecord && priorRecord.capsuleFingerprint !== expectedFingerprint) {
+      throw new Error("This handoff replay identifier is already bound to different content.");
+    }
+    if (
+      (priorRecord?.state === "complete" || priorRecord?.state === "dispatched")
+      && priorRecord.laneId
+      && priorRecord.sessionId
+    ) {
+      const completedSession = ensureManagedSession(priorRecord.sessionId).session;
+      if (priorRecord.state === "dispatched") {
+        persistCrossMachineHandoffRecord({
+          ...priorRecord,
+          state: "complete",
+          updatedAt: nowIso(),
+          lastError: null,
+        });
+      }
+      return {
+        handoffId,
+        laneId: priorRecord.laneId,
+        session: completedSession,
+        reusedLane: true,
+        reusedSession: true,
+      };
+    }
+
+    const origin = await requireGitOutputForHandoff(
+      ["remote", "get-url", "origin"],
+      projectRoot,
+      "The destination project does not have an origin remote.",
+    );
+    if (normalizeGitRemoteIdentity(origin) !== normalizeGitRemoteIdentity(capsule.source.originUrl)) {
+      throw new Error("The destination project points at a different Git repository than the source handoff.");
+    }
+    const branchRef = await requireGitBranchForHandoff(capsule.source.branchRef, projectRoot);
+    const destinationPreflight = await preflightCrossMachineDestination({
+      targetModelId: capsule.target.targetModelId,
+      sourceBranchRef: branchRef,
+      sourceHeadSha: capsule.source.headSha,
+    });
+    if (destinationPreflight.blockingErrors.length) {
+      throw new Error(destinationPreflight.blockingErrors.join(" "));
+    }
+
+    let record: CrossMachineHandoffRecord = priorRecord ?? {
+      version: 1,
+      handoffId,
+      capsuleFingerprint: expectedFingerprint,
+      state: "preparing",
+      laneId: null,
+      sessionId: null,
+      updatedAt: nowIso(),
+      lastError: null,
+    };
+    persistCrossMachineHandoffRecord(record);
+
+    try {
+      const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
+        cwd: projectRoot,
+        timeoutMs: 60_000,
+      });
+      if (fetch.exitCode !== 0) {
+        throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+      }
+      const fetchedHead = await requireGitOutputForHandoff(
+        ["rev-parse", `refs/remotes/origin/${branchRef}`],
+        projectRoot,
+        `The destination could not resolve origin/${branchRef}.`,
+      );
+      if (fetchedHead !== capsule.source.headSha) {
+        throw new Error("The fetched destination branch no longer matches the source handoff commit.");
+      }
+
+      let lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+      let destinationLane = record.laneId ? lanes.find((lane) => lane.id === record.laneId) ?? null : null;
+      destinationLane ??= lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
+      const reusedLane = Boolean(destinationLane);
+      if (!destinationLane) {
+        try {
+          destinationLane = await laneService.importBranch({
+            branchRef,
+            name: capsule.source.laneName,
+            description: `Received from ${capsule.source.machineName}`,
+          });
+        } catch (error) {
+          lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+          destinationLane = lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
+          if (!destinationLane) throw error;
+        }
+      }
+      const destinationHead = await requireGitOutputForHandoff(
+        ["rev-parse", "HEAD"],
+        destinationLane.worktreePath,
+        "The destination lane does not have a readable commit.",
+      );
+      if (destinationHead !== capsule.source.headSha) {
+        throw new Error("The destination lane was created at a different commit than the source handoff.");
+      }
+      record = { ...record, state: "lane_ready", laneId: destinationLane.id, updatedAt: nowIso(), lastError: null };
+      persistCrossMachineHandoffRecord(record);
+
+      const targetDescriptor = getModelById(capsule.target.targetModelId) ?? resolveModelAlias(capsule.target.targetModelId);
+      if (!targetDescriptor || targetDescriptor.deprecated) {
+        throw new Error(`Destination model '${capsule.target.targetModelId}' is no longer available.`);
+      }
+      const targetProvider = resolveProviderGroupForModel(targetDescriptor);
+      const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
+      const deterministicSessionId = deterministicChatSessionId(`cross-machine-handoff:${handoffId}`);
+      const reusedSession = Boolean(sessionService.get(deterministicSessionId));
+      const session = await createSessionInternal({
+        laneId: destinationLane.id,
+        provider: targetProvider,
+        model: targetModel,
+        modelId: targetDescriptor.id,
+        title: capsule.source.title ? `Handoff · ${capsule.source.title}` : `Handoff · ${capsule.source.laneName}`,
+        sessionProfile: "workflow",
+        reasoningEffort: pickHandoffReasoningEffort(targetDescriptor, capsule.target.reasoningEffort),
+        fastMode: modelSupportsFastMode(targetDescriptor) ? capsule.target.fastMode : undefined,
+        claudePermissionMode: capsule.target.claudePermissionMode,
+        codexApprovalPolicy: capsule.target.codexApprovalPolicy,
+        codexSandbox: capsule.target.codexSandbox,
+        codexConfigSource: capsule.target.codexConfigSource,
+        opencodePermissionMode: capsule.target.opencodePermissionMode,
+        droidPermissionMode: capsule.target.droidPermissionMode,
+        permissionMode: capsule.target.permissionMode,
+        cursorModeId: capsule.target.cursorModeId,
+        cursorConfigValues: capsule.target.cursorConfigValues,
+        surface: "work",
+        idempotencyKey: `cross-machine-handoff:${handoffId}`,
+      });
+      record = { ...record, state: "chat_ready", sessionId: session.id, updatedAt: nowIso(), lastError: null };
+      persistCrossMachineHandoffRecord(record);
+
+      const destinationManaged = ensureManagedSession(session.id);
+      await sendMessage({
+        sessionId: session.id,
+        text: buildCrossMachineHandoffPrompt(capsule),
+        displayText: [
+          `Chat handed off from ${capsule.source.machineName}`,
+          capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+            ? `Continuation note: ${capsule.continuationPrompt}`
+            : "Continue from the handoff brief.",
+        ].join("\n\n"),
+        metadata: {
+          kind: "cross_machine_handoff",
+          crossMachineHandoffId: handoffId,
+          hideFullPrompt: true,
+        },
+        reasoningEffort: destinationManaged.session.reasoningEffort,
+        executionMode: destinationManaged.session.executionMode ?? null,
+        interactionMode: destinationManaged.session.interactionMode ?? null,
+      }, { awaitBackendDispatch: true });
+
+      record = { ...record, state: "dispatched", updatedAt: nowIso(), lastError: null };
+      persistCrossMachineHandoffRecord(record);
+
+      record = { ...record, state: "complete", updatedAt: nowIso(), lastError: null };
+      persistCrossMachineHandoffRecord(record);
+      return {
+        handoffId,
+        laneId: destinationLane.id,
+        session: ensureManagedSession(session.id).session,
+        reusedLane,
+        reusedSession,
+      };
+    } catch (error) {
+      if (record.state !== "dispatched" && record.state !== "complete") {
+        record = {
+          ...record,
+          state: "failed",
+          updatedAt: nowIso(),
+          lastError: error instanceof Error ? error.message : String(error),
+        };
+        persistCrossMachineHandoffRecord(record);
+      }
+      throw error;
+    }
+  };
+
+  const acceptCrossMachineHandoff = async (
+    args: AgentChatAcceptCrossMachineHandoffArgs,
+  ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
+    validateCrossMachineHandoffCapsule(args.capsule);
+    const handoffId = requireCrossMachineHandoffId(args.capsule.handoffId);
+    const fingerprint = capsuleFingerprint(args.capsule);
+    const inFlight = crossMachineHandoffAcceptInFlight.get(handoffId);
+    if (inFlight) {
+      if (inFlight.capsuleFingerprint !== fingerprint) {
+        throw new Error("This handoff replay identifier is already processing different content.");
+      }
+      return await inFlight.promise;
+    }
+    const promise = acceptCrossMachineHandoffCore(args);
+    crossMachineHandoffAcceptInFlight.set(handoffId, {
+      capsuleFingerprint: fingerprint,
+      promise,
+    });
+    try {
+      return await promise;
+    } finally {
+      const current = crossMachineHandoffAcceptInFlight.get(handoffId);
+      if (current?.promise === promise) crossMachineHandoffAcceptInFlight.delete(handoffId);
+    }
+  };
+
+  const markCrossMachineHandoff = async (args: AgentChatMarkCrossMachineHandoffArgs): Promise<void> => {
+    const sourceSessionId = args.sourceSessionId?.trim();
+    const handoffId = requireCrossMachineHandoffId(args.handoffId);
+    if (!sourceSessionId) throw new Error("A source chat is required to mark the handoff.");
+    const managed = ensureManagedSession(sourceSessionId);
+    const alreadyMarked = readTranscriptEnvelopes(managed).some((entry) =>
+      entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.crossMachineHandoff?.handoffId === handoffId,
+    );
+    if (alreadyMarked) return;
+    const targetMachineName = args.targetMachineName?.trim().slice(0, 200) || "another machine";
+    const targetLaneId = args.targetLaneId?.trim();
+    const targetSessionId = args.targetSessionId?.trim();
+    if (!targetLaneId || !targetSessionId) throw new Error("The completed destination chat is missing its lane or session identifier.");
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "cross_machine_handoff_complete",
+      message: `This chat was handed off to ${targetMachineName}. Work stopped here after the destination chat started; the source remains available for reference.`,
+      detail: {
+        title: "Sent to another machine",
+        summary: `Continued on ${targetMachineName}`,
+        crossMachineHandoff: {
+          handoffId,
+          targetMachineName,
+          targetLaneId,
+          targetSessionId,
+        },
+      },
+    });
+    persistChatState(managed);
   };
 
   type ExternalChatImportErrorCode =
@@ -25200,6 +26075,11 @@ export function createAgentChatService(args: {
     };
     runtime.sdk.bridge.onEvent = (event) => {
       if (managed.runtime !== runtime) return;
+      const pendingDispatchAck = runtime.pendingDispatchAck;
+      if (pendingDispatchAck && pendingDispatchAck.turnId === runtime.activeTurnId) {
+        runtime.pendingDispatchAck = undefined;
+        pendingDispatchAck.resolve();
+      }
       const record = asRecord(event);
       if (record?.type === "session_title_updated") {
         adoptRuntimeSessionTitle(managed, { title: record.title }, "droid_sdk_session_title_updated");
@@ -25277,6 +26157,11 @@ export function createAgentChatService(args: {
 
   const wireCursorSdkBridgeHandlers = (managed: ManagedChatSession, runtime: CursorRuntime): void => {
     runtime.sdk.bridge.onRunStarted = (event, meta) => {
+      const pendingDispatchAck = runtime.pendingDispatchAck;
+      if (pendingDispatchAck && pendingDispatchAck.turnId === runtime.activeTurnId) {
+        runtime.pendingDispatchAck = undefined;
+        pendingDispatchAck.resolve();
+      }
       const isCloud = meta?.runtime === "cloud";
       if (isCloud) {
         const turnId = runtime.activeTurnId;
@@ -25633,6 +26518,7 @@ export function createAgentChatService(args: {
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
     const runtime = await ensureCursorSdkRuntime(managed);
@@ -25731,6 +26617,10 @@ export function createAgentChatService(args: {
         args.onDispatched();
         args.onDispatched = undefined;
       }
+      if (args.onBackendDispatched) {
+        runtime.pendingDispatchAck = { turnId, resolve: args.onBackendDispatched };
+        args.onBackendDispatched = undefined;
+      }
 
       const result = await runtime.sdk.sendPrompt({
         promptText,
@@ -25741,6 +26631,11 @@ export function createAgentChatService(args: {
         idempotencyKey: cursorLocalIdempotencyKey(managed, turnId),
         mode: cursorSdkModeForPolicy(policy),
       });
+      if (runtime.pendingDispatchAck?.turnId === turnId) {
+        const pendingDispatchAck = runtime.pendingDispatchAck;
+        runtime.pendingDispatchAck = undefined;
+        pendingDispatchAck.resolve();
+      }
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -25773,6 +26668,8 @@ export function createAgentChatService(args: {
       appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
+      const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
+      if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
       for (const [, w] of runtime.permissionWaiters) {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn failed.");
@@ -25813,6 +26710,7 @@ export function createAgentChatService(args: {
         appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
+      if (failedBeforeDispatch) throw error;
     } finally {
       const pendingModelSwitchReset = runtime.pendingModelSwitchReset === true;
       runtime.pendingModelSwitchReset = false;
@@ -26004,6 +26902,7 @@ export function createAgentChatService(args: {
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
       cloudOverrides?: AgentChatCloudOverrides;
     },
   ): Promise<void> => {
@@ -26084,6 +26983,10 @@ export function createAgentChatService(args: {
       args.onDispatched();
       args.onDispatched = undefined;
     }
+    if (args.onBackendDispatched) {
+      runtime.pendingDispatchAck = { turnId, resolve: args.onBackendDispatched };
+      args.onBackendDispatched = undefined;
+    }
 
     let runStartedAgentId: string | null = managed.session.cursorCloudAgentId ?? null;
     let runStartedRunId: string | null = null;
@@ -26138,6 +27041,11 @@ export function createAgentChatService(args: {
           "cloud.send.stream",
           payload,
         );
+      }
+      if (runtime.pendingDispatchAck?.turnId === turnId) {
+        const pendingDispatchAck = runtime.pendingDispatchAck;
+        runtime.pendingDispatchAck = undefined;
+        pendingDispatchAck.resolve();
       }
 
       const startedRecord = (result && typeof result === "object" ? result as Record<string, unknown> : {});
@@ -26195,6 +27103,8 @@ export function createAgentChatService(args: {
       appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
+      const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
+      if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
 
@@ -26231,6 +27141,7 @@ export function createAgentChatService(args: {
         appendCtoTurnJournal(managed, { failureNote: `Cloud turn failed: ${msg}` });
       }
       persistChatState(managed);
+      if (failedBeforeDispatch) throw error;
     } finally {
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -26744,6 +27655,7 @@ export function createAgentChatService(args: {
       turnId?: string;
       optimisticDroidTurnStart?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
     const turnId = args.turnId ?? randomUUID();
@@ -26856,6 +27768,10 @@ export function createAgentChatService(args: {
         args.onDispatched();
         args.onDispatched = undefined;
       }
+      if (args.onBackendDispatched) {
+        runtime.pendingDispatchAck = { turnId, resolve: args.onBackendDispatched };
+        args.onBackendDispatched = undefined;
+      }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
       const droidHarnessPrompt = isPersonalSession(managed.session)
@@ -26893,6 +27809,11 @@ export function createAgentChatService(args: {
         ...(images.length ? { images } : {}),
         settings: buildDroidSdkSessionSettings(managed, runtime.modelId),
       });
+      if (runtime.pendingDispatchAck?.turnId === turnId) {
+        const pendingDispatchAck = runtime.pendingDispatchAck;
+        runtime.pendingDispatchAck = undefined;
+        pendingDispatchAck.resolve();
+      }
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       const descriptor = resolveSessionModelDescriptor(managed.session);
@@ -26929,6 +27850,8 @@ export function createAgentChatService(args: {
       appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
+      const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
+      if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
       const descriptor = resolveSessionModelDescriptor(managed.session);
       const classified = classifyProviderHostError(
@@ -26980,6 +27903,7 @@ export function createAgentChatService(args: {
         appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
+      if (failedBeforeDispatch) throw error;
     } finally {
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -27015,6 +27939,7 @@ export function createAgentChatService(args: {
       providerSlashCommand,
       forceClaudeUserMessage,
       onDispatched,
+      onBackendDispatched,
       turnId,
       optimisticCursorTurnStart,
       optimisticDroidTurnStart,
@@ -27056,7 +27981,7 @@ export function createAgentChatService(args: {
         metadata,
         laneDirectiveKey,
         providerSlashCommand,
-        onDispatched,
+        onDispatched: onBackendDispatched ?? onDispatched,
       });
       return;
     }
@@ -27092,6 +28017,7 @@ export function createAgentChatService(args: {
           turnId,
           optimisticCursorTurnStart,
           onDispatched,
+          onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
         return;
@@ -27108,6 +28034,7 @@ export function createAgentChatService(args: {
         turnId,
         optimisticCursorTurnStart,
         onDispatched,
+        onBackendDispatched,
       });
       return;
     }
@@ -27131,6 +28058,7 @@ export function createAgentChatService(args: {
         turnId,
         optimisticDroidTurnStart,
         onDispatched,
+        onBackendDispatched,
       });
       return;
     }
@@ -27267,7 +28195,7 @@ export function createAgentChatService(args: {
         laneDirectiveKey,
         providerSlashCommand,
         optimisticCodexTurnStart,
-        onDispatched,
+        onDispatched: onBackendDispatched ?? onDispatched,
       });
       return;
     }
@@ -27314,7 +28242,7 @@ export function createAgentChatService(args: {
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
-      onDispatched,
+      onDispatched: onBackendDispatched ?? onDispatched,
     });
   };
 
@@ -27389,6 +28317,7 @@ export function createAgentChatService(args: {
 
     const turnId = randomUUID();
     prepared.onDispatched?.();
+    prepared.onBackendDispatched?.();
     persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
     emitChatEvent(managed, {
       type: "user_message",
@@ -27432,15 +28361,15 @@ export function createAgentChatService(args: {
 
   async function sendMessage(
     args: AgentChatSendArgs,
-    options: { awaitDispatch?: boolean; routeActiveToSteer: true },
+    options: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer: true },
   ): Promise<void | AgentChatSteerResult>;
   async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean; routeActiveToSteer?: false },
+    options?: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer?: false },
   ): Promise<void>;
   async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean; routeActiveToSteer?: boolean },
+    options?: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer?: boolean },
   ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
@@ -27465,14 +28394,16 @@ export function createAgentChatService(args: {
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
-    const dispatchPromise = options?.awaitDispatch
+    const dispatchPromise = options?.awaitDispatch || options?.awaitBackendDispatch
       ? new Promise<void>((resolve, reject) => {
           let settled = false;
-          prepared.onDispatched = () => {
+          const resolveDispatch = () => {
             if (settled) return;
             settled = true;
             resolve();
           };
+          if (options.awaitBackendDispatch) prepared.onBackendDispatched = resolveDispatch;
+          else prepared.onDispatched = resolveDispatch;
           rejectDispatch = (error: Error) => {
             if (settled) return;
             settled = true;
@@ -27515,10 +28446,9 @@ export function createAgentChatService(args: {
       });
       setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
-      // NOTE: onDispatched is NOT called here. It will be called inside
-      // runCursorTurn after the SDK prompt has been initiated, so the
-      // caller's awaitDispatch promise resolves only once the backend has
-      // acknowledged the prompt.
+      // Dispatch callbacks are resolved by the provider path. Normal sends
+      // preserve the historical queued-local acknowledgement; handoff can opt
+      // into the stronger first-backend-event acknowledgement.
     }
 
     const isCodexGoalControlMessage =
@@ -33218,6 +34148,11 @@ export function createAgentChatService(args: {
     launchHeadless,
     suggestLaneNameFromPrompt,
     handoffSession,
+    prepareCrossMachineHandoff,
+    validateCrossMachineSource,
+    preflightCrossMachineDestination,
+    acceptCrossMachineHandoff,
+    markCrossMachineHandoff,
     sendMessage,
     messageSession,
     setScheduledWorkPaused,

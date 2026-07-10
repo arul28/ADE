@@ -193,6 +193,75 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("preflights destination storage without creating the clone folder", async () => {
+    const { root, registry } = createRegistry();
+    const parentDir = path.join(root, "projects");
+    fs.mkdirSync(parentDir, { recursive: true });
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    expect(initialized).toMatchObject({
+      capabilities: {
+        machineProjects: { handoffStoragePreflight: true },
+      },
+    });
+
+    const preflight = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.getHandoffStoragePreflight",
+      params: { parentDir, repoName: "ade-handoff" },
+    }) as {
+      targetPath: string;
+      requiredBytes: number;
+      freeBytes: number;
+      targetExists: boolean;
+      blockingErrors: string[];
+    };
+
+    expect(preflight.targetPath).toBe(path.join(parentDir, "ade-handoff"));
+    expect(preflight.requiredBytes).toBeGreaterThanOrEqual(1024 * 1024 * 1024);
+    expect(preflight.freeBytes).toBeGreaterThan(0);
+    expect(preflight.targetExists).toBe(false);
+    expect(preflight.blockingErrors).toEqual([]);
+    expect(fs.existsSync(preflight.targetPath)).toBe(false);
+
+    fs.mkdirSync(preflight.targetPath);
+    const occupied = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.getHandoffStoragePreflight",
+      params: { parentDir, repoName: "ade-handoff" },
+    }) as { targetExists: boolean; blockingErrors: string[] };
+    expect(occupied.targetExists).toBe(true);
+    expect(occupied.blockingErrors.join(" ")).toMatch(/already exists/i);
+
+    const destinationAuthFailure = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.getHandoffStoragePreflight",
+      params: {
+        parentDir,
+        repoName: "private-repo",
+        originUrl: `file://${path.join(root, "missing-private.git")}`,
+        branchRef: "feature/handoff",
+        sourceHeadSha: "1".repeat(40),
+      },
+    }) as { blockingErrors: string[] };
+    expect(destinationAuthFailure.blockingErrors.join(" ")).toMatch(
+      /destination cannot read the published repository with its own Git credentials/i,
+    );
+    handler.dispose();
+  });
+
   it("requires projectId for project-scoped methods", async () => {
     const { registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({

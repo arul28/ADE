@@ -111,6 +111,10 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
@@ -604,6 +608,9 @@ import type {
   RemoteRuntimePairWithMachineResult,
   RemoteRuntimeParsedPairingInput,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeHandoffStoragePreflightArgs,
+  RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
@@ -781,6 +788,10 @@ declare global {
           rootPath: string,
         ) => Promise<ProjectDetail>;
         getDefaultParentDir: (id: string) => Promise<string>;
+        getHandoffStoragePreflight: (
+          id: string,
+          input: RemoteRuntimeHandoffStoragePreflightArgs,
+        ) => Promise<RemoteRuntimeHandoffStoragePreflightResult>;
         createProject: (
           id: string,
           input: CreateProjectInput,
@@ -788,6 +799,7 @@ declare global {
         cloneProject: (
           id: string,
           input: CloneProjectInput,
+          options?: RemoteRuntimeCloneProjectOptions,
         ) => Promise<RemoteRuntimeProjectRecord>;
         listMyGitHubRepos: (
           id: string,
@@ -1322,6 +1334,15 @@ declare global {
         handoff: (
           args: AgentChatHandoffArgs,
         ) => Promise<AgentChatHandoffResult>;
+        prepareCrossMachineHandoff: (
+          args: AgentChatPrepareCrossMachineHandoffArgs,
+        ) => Promise<AgentChatPrepareCrossMachineHandoffResult>;
+        validateCrossMachineSource: (
+          args: AgentChatValidateCrossMachineSourceArgs,
+        ) => Promise<void>;
+        markCrossMachineHandoff: (
+          args: AgentChatMarkCrossMachineHandoffArgs,
+        ) => Promise<void>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;
         cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;

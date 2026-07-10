@@ -18,6 +18,9 @@ does and does not travel, and the layers that implement it. Deep-dives:
   transports, no local DB, and the `window.ade` adapter over remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- `cross-machine-session-handoff.md` — the clean/published Git contract,
+  bounded context capsule, destination setup, route confirmation, and
+  idempotent recovery used by **Send to machine**.
 - `push-notifications.md` — the APNs push + Live Activity pipeline:
   Cloudflare push relay, brain publisher, per-device prefs, and the
   Live Activity content-state contract.
@@ -101,6 +104,7 @@ iOS compatibility tests in the same branch.
 | Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
+| Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected ADE desktops |
 | Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
 
 Two devices in the same cluster do **not** have identical `.ade/`
@@ -191,6 +195,9 @@ Runtime support files outside `services/sync/`:
   fields above; `projects.list` resolves host-side icons under a connect-path
   budget (64 icons / 12 MB per call) so large project registries cannot stall
   remote desktop or mobile catalog setup just to inline artwork.
+  `projects.getHandoffStoragePreflight` checks the destination parent path,
+  write access, target collision, free space, and destination-local Git access
+  before the desktop offers to clone a missing handoff repository.
 - `apps/ade-cli/src/services/personalChats/personalChatScope.ts` — lazy
   machine-owned personal runtime injected into both sync ingress paths. It
   validates personal session ownership and exposes the durable transcript path
@@ -212,6 +219,24 @@ Desktop pairing UI:
   and `apps/desktop/src/renderer/components/app/TopBar.test.tsx` — focused
   pairing variants, hidden-PIN generation, QR/copy interactions, web-peer chip,
   and sheet dismissal coverage.
+
+Cross-machine Work chat handoff:
+
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
+  `CrossMachineHandoffModal.tsx` — Handoff-tab entry point and the staged
+  source/destination/clone/review/completion UI.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
+  source readiness, capsule creation and validation, destination preflight,
+  deterministic lane/chat acceptance, durable replay record, and source notice.
+- `apps/desktop/src/shared/crossMachineHandoff.ts` and
+  `apps/desktop/src/shared/types/chat.ts` — portable Git identity/sanitization,
+  untrusted response decoders, capsule DTO, and preflight/result contracts.
+- `apps/desktop/src/main/services/remoteRuntime/remoteConnectionPool.ts`,
+  `remoteConnectionService.ts`, and `apps/desktop/src/main/services/ipc/runtimeBridge.ts`
+  — destination machine capability checks, storage preflight dispatch, route
+  pinning, timeout policy, and local/remote runtime routing.
+- `apps/desktop/src/preload/preload.ts` — source project-runtime routing plus
+  the renderer bridge for machine-level project setup and destination actions.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
@@ -383,6 +408,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
   `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
+  The cross-machine handoff family (`chat.prepareCrossMachineHandoff`,
+  `chat.validateCrossMachineSource`, `chat.preflightCrossMachineDestination`,
+  `chat.acceptCrossMachineHandoff`, and `chat.markCrossMachineHandoff`) keeps
+  source and destination work inside their owning project runtimes. Final
+  acceptance is not queueable; destination idempotency is keyed by the
+  capsule's handoff id and fingerprint instead of relying on command replay.
   Stalled-turn recovery is viewer-allowed but not queueable because it must
   target the currently active Codex turn. Mobile/remote Codex CLI launches
   also resolve the explicitly opted-in, verified standalone Computer Use MCP
@@ -1080,9 +1111,16 @@ feature is merged or because a deliberately isolated-port host is running.
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default on with Settings kill-switch (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
-| Lane portability desktop-to-desktop | Planned |
+| Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
+
+- **Cross-machine session handoff is not database sync or provider-session
+  migration.** It publishes the exact Git commit and sends a bounded,
+  sanitized capsule to a compatible destination runtime. Provider-native
+  thread ids, full transcripts, terminals, artifacts, caches, secrets, and
+  dirty worktree data remain on the source. See
+  [the handoff contract](./cross-machine-session-handoff.md).
 
 - **The runtime owns sync. Desktop is a client.** A desktop window bound
   to a remote runtime is *not* the sync authority for that project; the remote

@@ -95,6 +95,7 @@ const MACHINE_PROJECT_CAPABILITIES = [
   "getDetail",
   "getWorkSummary",
   "getDefaultParentDir",
+  "handoffStoragePreflight",
   "create",
   "clone",
   "listMyGitHubRepos",

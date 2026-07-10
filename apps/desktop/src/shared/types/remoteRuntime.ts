@@ -280,6 +280,7 @@ export type RemoteRuntimeMachineProjectCapability =
   | "getDetail"
   | "getWorkSummary"
   | "getDefaultParentDir"
+  | "handoffStoragePreflight"
   | "create"
   | "clone"
   | "listMyGitHubRepos";
@@ -287,6 +288,30 @@ export type RemoteRuntimeMachineProjectCapability =
 export type RemoteRuntimeCapabilities = {
   projects: boolean;
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
+};
+
+export type RemoteRuntimeHandoffStoragePreflightArgs = {
+  parentDir: string;
+  repoName: string;
+  originUrl?: string;
+  branchRef?: string;
+  sourceHeadSha?: string;
+};
+
+export type RemoteRuntimeCloneProjectOptions = {
+  /** Resolve Git credentials exclusively on the destination machine. */
+  credentialMode?: "destination_only" | "source_forwarded";
+};
+
+export type RemoteRuntimeHandoffStoragePreflightResult = {
+  parentDir: string;
+  targetPath: string;
+  freeBytes: number;
+  requiredBytes: number;
+  hasEnoughSpace: boolean;
+  targetExists: boolean;
+  blockingErrors: string[];
+  warnings: string[];
 };
 
 export type RemoteRuntimeConnectionSnapshot = {
@@ -301,6 +326,11 @@ export type RemoteRuntimeActionRequest = {
   args?: Record<string, unknown>;
   arg?: unknown;
   argsList?: unknown[];
+  /**
+   * Local transport guard. This is enforced before the action leaves the
+   * source machine and is never forwarded to the destination runtime.
+   */
+  requiredRouteKind?: RemoteRuntimeRouteKind;
 };
 
 export type RemoteRuntimeActionResult = {

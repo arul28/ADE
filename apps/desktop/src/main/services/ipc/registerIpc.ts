@@ -281,6 +281,10 @@ import type {
   AgentChatEventHistorySnapshot,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
@@ -6240,6 +6244,30 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.handoffSession(arg);
   });
+
+  ipcMain.handle(
+    IPC.agentChatPrepareCrossMachineHandoff,
+    async (_event, arg: AgentChatPrepareCrossMachineHandoffArgs): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
+      const ctx = ensureAgentChatContext();
+      return await ctx.agentChatService.prepareCrossMachineHandoff(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatValidateCrossMachineSource,
+    async (_event, arg: AgentChatValidateCrossMachineSourceArgs): Promise<void> => {
+      const ctx = ensureAgentChatContext();
+      await ctx.agentChatService.validateCrossMachineSource(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatMarkCrossMachineHandoff,
+    async (_event, arg: AgentChatMarkCrossMachineHandoffArgs): Promise<void> => {
+      const ctx = ensureAgentChatContext();
+      await ctx.agentChatService.markCrossMachineHandoff(arg);
+    },
+  );
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
