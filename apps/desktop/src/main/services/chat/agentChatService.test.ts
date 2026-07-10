@@ -4642,6 +4642,7 @@ describe("createAgentChatService", () => {
 
     it("reconciles a replay to the same destination lane and chat", async () => {
       const branchRef = "feature/handoff";
+      const destinationToken = ["ghp", "destination-token"].join("_");
       installCleanCrossMachineGitFixture(branchRef);
       vi.mocked(detectAllAuth).mockResolvedValue([
         { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
@@ -4656,7 +4657,10 @@ describe("createAgentChatService", () => {
         getJson: vi.fn((key: string) => values.get(key) ?? null),
         setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
       };
-      const { service, laneService, sessionService } = createService({ db });
+      const { service, laneService, sessionService } = createService({
+        db,
+        getLocalGitHubToken: () => destinationToken,
+      });
       const capsule: AgentChatCrossMachineHandoffCapsule = {
         version: 1,
         handoffId: "handoff-replay-1",
@@ -4689,6 +4693,22 @@ describe("createAgentChatService", () => {
       expect(second.reusedSession).toBe(true);
       expect(laneService.importBranch).toHaveBeenCalledTimes(1);
       expect(sessionService.create).toHaveBeenCalledTimes(1);
+      const expectedAuthorization = `AUTHORIZATION: basic ${Buffer.from(
+        `x-access-token:${destinationToken}`,
+        "utf8",
+      ).toString("base64")}`;
+      const remoteAuthCalls = vi.mocked(runGit).mock.calls.filter(([args]) =>
+        args[0] === "ls-remote" || args[0] === "fetch",
+      );
+      expect(remoteAuthCalls).toHaveLength(2);
+      for (const [, options] of remoteAuthCalls) {
+        expect(options?.env).toMatchObject({
+          GIT_TERMINAL_PROMPT: "0",
+          GCM_INTERACTIVE: "Never",
+          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+          GIT_CONFIG_VALUE_0: expectedAuthorization,
+        });
+      }
       expect(Array.from(values.values())).toEqual(expect.arrayContaining([
         expect.objectContaining({
           handoffId: capsule.handoffId,
@@ -4697,6 +4717,7 @@ describe("createAgentChatService", () => {
           sessionId: first.session.id,
         }),
       ]));
+      expect(JSON.stringify(Array.from(values.values()))).not.toContain(destinationToken);
     });
 
     it("serializes concurrent destination acceptance for the same handoff", async () => {

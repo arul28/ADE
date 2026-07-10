@@ -1114,12 +1114,24 @@ describe("createSyncRemoteCommandService", () => {
       handoffId: " handoff-1 ",
       targetModelId: " openai/gpt-5.5 ",
       continuationPrompt: capsule.continuationPrompt,
+      reasoningEffort: " high ",
+      fastMode: true,
+      untrustedExtraField: "must-not-pass-through",
     }))).resolves.toMatchObject({ capsuleFingerprint: "fingerprint-1" });
-    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({
+    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith({
       sourceSessionId: "session-1",
       handoffId: "handoff-1",
       targetModelId: "openai/gpt-5.5",
-    }));
+      continuationPrompt: capsule.continuationPrompt,
+      reasoningEffort: "high",
+      fastMode: true,
+    });
+    await expect(service.execute(makePayload("chat.prepareCrossMachineHandoff", {
+      sourceSessionId: "session-1",
+      handoffId: "handoff-1",
+      targetModelId: "openai/gpt-5.5",
+      codexSandbox: "invalid-sandbox",
+    }))).rejects.toThrow("codexSandbox is invalid");
 
     await expect(service.execute(makePayload("chat.validateCrossMachineSource", {
       sourceSessionId: capsule.source.sessionId,

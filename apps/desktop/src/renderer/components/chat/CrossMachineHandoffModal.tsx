@@ -427,9 +427,13 @@ export function CrossMachineHandoffModal({
       setResult(accepted);
       try {
         await markSource(accepted, selectedConnection);
-        onFinished();
       } catch (markerError) {
         setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError));
+      } finally {
+        // Destination acceptance is the commit point. A source-side marker is
+        // useful bookkeeping, but its failure must not strand the parent UI in
+        // a pre-transfer state or hide the successfully created destination.
+        onFinished();
       }
       setStage("complete");
     } catch (sendError) {

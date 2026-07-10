@@ -676,8 +676,65 @@ function parseCrossMachineDestinationPreflightArgs(
 function parsePrepareCrossMachineHandoffArgs(
   value: Record<string, unknown>,
 ): AgentChatPrepareCrossMachineHandoffArgs {
+  const parseNullableString = (key: string): string | null | undefined => {
+    if (!(key in value)) return undefined;
+    if (value[key] == null) return null;
+    if (typeof value[key] !== "string") {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+    }
+    return value[key].trim();
+  };
+  const parseBoolean = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+    }
+    return value[key];
+  };
+  const parseEnum = <T extends string>(key: string, allowed: readonly T[]): T | undefined => {
+    if (!(key in value)) return undefined;
+    const parsed = asTrimmedString(value[key]);
+    if (!parsed || !allowed.includes(parsed as T)) {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+    }
+    return parsed as T;
+  };
+  const parseConfigValues = (): AgentChatPrepareCrossMachineHandoffArgs["cursorConfigValues"] | undefined => {
+    if (!("cursorConfigValues" in value)) return undefined;
+    if (value.cursorConfigValues == null) return null;
+    if (!isRecord(value.cursorConfigValues)) {
+      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+    }
+    const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
+      const key = rawKey.trim();
+      if (
+        !key
+        || !(
+          typeof entryValue === "string"
+          || typeof entryValue === "boolean"
+          || (typeof entryValue === "number" && Number.isFinite(entryValue))
+        )
+      ) {
+        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+      }
+      return [key, entryValue] as const;
+    });
+    return Object.fromEntries(entries);
+  };
+
+  const continuationPrompt = parseNullableString("continuationPrompt");
+  const reasoningEffort = parseNullableString("reasoningEffort");
+  const fastMode = parseBoolean("fastMode");
+  const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
+  const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
+  const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
+  const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
+  const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
+  const droidPermissionMode = parseEnum("droidPermissionMode", ["read-only", "auto-low", "auto-medium", "auto-high", "agi"] as const);
+  const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
+  const cursorModeId = parseNullableString("cursorModeId");
+  const cursorConfigValues = parseConfigValues();
   return {
-    ...(value as AgentChatPrepareCrossMachineHandoffArgs),
     sourceSessionId: requireString(
       value.sourceSessionId,
       "chat.prepareCrossMachineHandoff requires sourceSessionId.",
@@ -690,6 +747,18 @@ function parsePrepareCrossMachineHandoffArgs(
       value.targetModelId,
       "chat.prepareCrossMachineHandoff requires targetModelId.",
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
+    ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
+    ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
+    ...(codexSandbox !== undefined ? { codexSandbox } : {}),
+    ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
+    ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
+    ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(cursorModeId !== undefined ? { cursorModeId } : {}),
+    ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
   };
 }
 

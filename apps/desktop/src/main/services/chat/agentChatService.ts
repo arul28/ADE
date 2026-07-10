@@ -5652,6 +5652,8 @@ export function createAgentChatService(args: {
   logger: Logger;
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  /** Resolves credentials owned by this runtime only; never supplied by a handoff capsule. */
+  getLocalGitHubToken?: () => string | null | undefined;
   resolveCodexComputerUseMcp?: () =>
     | CodexComputerUseMcpConfig
     | null
@@ -5695,6 +5697,7 @@ export function createAgentChatService(args: {
     logger,
     appVersion,
     getAdeCliAgentEnv,
+    getLocalGitHubToken,
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     onEvent,
@@ -23732,6 +23735,30 @@ export function createAgentChatService(args: {
   const crossMachineHandoffRecordKey = (handoffId: string): string =>
     `agent-chat-cross-machine-handoff:v1:${handoffId}`;
 
+  const destinationGitEnv = (): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = {
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "Never",
+    };
+    let token = "";
+    try {
+      token = getLocalGitHubToken?.()?.trim() ?? "";
+    } catch {
+      // A destination credential helper may still authorize Git. Keep prompts
+      // disabled so a headless handoff fails clearly instead of hanging.
+    }
+    if (!token) return env;
+    const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+    return {
+      ...env,
+      // Git's config environment keeps the destination-owned token out of the
+      // portable capsule, remote URL, command arguments, and persisted state.
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+    };
+  };
+
   const requireCrossMachineHandoffId = (value: unknown): string => {
     const handoffId = typeof value === "string" ? value.trim() : "";
     if (!/^[A-Za-z0-9._:-]{8,128}$/.test(handoffId)) {
@@ -24201,6 +24228,7 @@ export function createAgentChatService(args: {
       const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 30_000,
+        env: destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
         blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
@@ -24342,6 +24370,7 @@ export function createAgentChatService(args: {
       const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 60_000,
+        env: destinationGitEnv(),
       });
       if (fetch.exitCode !== 0) {
         throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);

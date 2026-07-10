@@ -68,7 +68,12 @@ export function sanitizePortableGitRemote(value: string): string {
   const trimmed = value.trim();
   try {
     const parsed = new URL(trimmed);
-    parsed.username = "";
+    // HTTP usernames are frequently tokens or other secret-bearing clone
+    // credentials. SSH usernames (most commonly `git`) identify the transport
+    // account and must survive so the destination can use its own SSH config.
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      parsed.username = "";
+    }
     parsed.password = "";
     parsed.search = "";
     parsed.hash = "";

@@ -14,6 +14,7 @@ describe("CrossMachineHandoffModal", () => {
   const callAction = vi.fn();
 
   beforeEach(() => {
+    callAction.mockReset();
     prepareCrossMachineHandoff.mockResolvedValue({
       capsule: {
         version: 1,
@@ -262,5 +263,33 @@ describe("CrossMachineHandoffModal", () => {
       "remote-project-recovered",
       expect.objectContaining({ action: "preflightCrossMachineDestination" }),
     );
+  });
+
+  it("finishes the accepted handoff when marking the source chat fails", async () => {
+    const onFinished = vi.fn();
+    markCrossMachineHandoff.mockRejectedValueOnce(new Error("source marker unavailable"));
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={onFinished}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /review destination/i }));
+    expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /send and continue/i }));
+
+    expect(await screen.findByText("Handoff complete")).toBeTruthy();
+    expect(screen.getByText(/destination succeeded, but ADE could not mark the source chat/i)).toBeTruthy();
+    expect(screen.getByText(/source marker unavailable/i)).toBeTruthy();
+    expect(onFinished).toHaveBeenCalledTimes(1);
   });
 });

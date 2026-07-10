@@ -15,6 +15,11 @@ describe("cross-machine handoff boundaries", () => {
     expect(sanitizePortableGitRemote(
       "https://user:password@github.com/example/ade.git?token=secret#fragment",
     )).toBe("https://github.com/example/ade.git");
+    expect(sanitizePortableGitRemote(
+      "ssh://git:password@github.com/example/ade.git?token=secret#fragment",
+    )).toBe("ssh://git@github.com/example/ade.git");
+    expect(normalizeGitRemoteIdentity("ssh://git@github.com/example/ade.git"))
+      .toBe("github.com/example/ade");
   });
 
   it("rejects malformed remote preflight and acceptance payloads at the boundary", () => {
