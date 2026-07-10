@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createEventBuffer } from "./eventBuffer";
 import { createMultiProjectRpcRequestHandler } from "./multiProjectRpcServer";
+import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 
@@ -191,6 +192,147 @@ describe("multi-project RPC server", () => {
     expect(await handler({ jsonrpc: "2.0", id: 6, method: "projects.list", params: {} })).toEqual([]);
 
     handler.dispose();
+  });
+
+  it("preflights destination storage without creating the clone folder", async () => {
+    const { root, registry } = createRegistry();
+    const parentDir = path.join(root, "projects");
+    fs.mkdirSync(parentDir, { recursive: true });
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    expect(initialized).toMatchObject({
+      capabilities: {
+        machineProjects: { handoffStoragePreflight: true },
+      },
+    });
+
+    const preflight = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.getHandoffStoragePreflight",
+      params: { parentDir, repoName: "ade-handoff" },
+    }) as {
+      targetPath: string;
+      requiredBytes: number;
+      freeBytes: number;
+      targetExists: boolean;
+      blockingErrors: string[];
+    };
+
+    expect(preflight.targetPath).toBe(path.join(parentDir, "ade-handoff"));
+    expect(preflight.requiredBytes).toBeGreaterThanOrEqual(1024 * 1024 * 1024);
+    expect(preflight.freeBytes).toBeGreaterThan(0);
+    expect(preflight.targetExists).toBe(false);
+    expect(preflight.blockingErrors).toEqual([]);
+    expect(fs.existsSync(preflight.targetPath)).toBe(false);
+
+    fs.mkdirSync(preflight.targetPath);
+    const occupied = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.getHandoffStoragePreflight",
+      params: { parentDir, repoName: "ade-handoff" },
+    }) as { targetExists: boolean; blockingErrors: string[] };
+    expect(occupied.targetExists).toBe(true);
+    expect(occupied.blockingErrors.join(" ")).toMatch(/already exists/i);
+
+    const destinationAuthFailure = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.getHandoffStoragePreflight",
+      params: {
+        parentDir,
+        repoName: "private-repo",
+        originUrl: `file://${path.join(root, "missing-private.git")}`,
+        branchRef: "feature/handoff",
+        sourceHeadSha: "1".repeat(40),
+      },
+    }) as { blockingErrors: string[] };
+    expect(destinationAuthFailure.blockingErrors.join(" ")).toMatch(
+      /destination cannot read the published repository with its own Git credentials/i,
+    );
+    handler.dispose();
+  });
+
+  it("keeps destination GitHub authorization out of preflight command arguments", async () => {
+    const { root, registry } = createRegistry();
+    const parentDir = path.join(root, "projects");
+    fs.mkdirSync(parentDir, { recursive: true });
+    const sourceHeadSha = "2".repeat(40);
+    const destinationToken = "destination-private-token";
+    const originalAdeHome = process.env.ADE_HOME;
+    const originalGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    process.env.ADE_HOME = path.join(root, "machine-home");
+    process.env.ADE_GITHUB_TOKEN = destinationToken;
+    const runGitSpy = vi.spyOn(gitModule, "runGit").mockResolvedValue({
+      exitCode: 0,
+      stdout: `${sourceHeadSha}\trefs/heads/feature/handoff\n`,
+      stderr: "",
+    });
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+    });
+
+    try {
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {},
+      });
+      const preflight = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "projects.getHandoffStoragePreflight",
+        params: {
+          parentDir,
+          repoName: "private-repo",
+          originUrl: "https://github.com/example/private-repo.git",
+          branchRef: "feature/handoff",
+          sourceHeadSha,
+        },
+      }) as { blockingErrors: string[] };
+
+      expect(preflight.blockingErrors).toEqual([]);
+      expect(runGitSpy).toHaveBeenCalledOnce();
+      const [args, options] = runGitSpy.mock.calls[0] ?? [];
+      const expectedAuthorization = `AUTHORIZATION: basic ${Buffer.from(
+        `x-access-token:${destinationToken}`,
+        "utf8",
+      ).toString("base64")}`;
+      expect(args).toEqual([
+        "ls-remote",
+        "--heads",
+        "https://github.com/example/private-repo.git",
+        "refs/heads/feature/handoff",
+      ]);
+      expect(args?.join(" ")).not.toContain(destinationToken);
+      expect(args?.join(" ")).not.toContain(expectedAuthorization);
+      expect(options?.env).toMatchObject({
+        GIT_TERMINAL_PROMPT: "0",
+        GCM_INTERACTIVE: "Never",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+        GIT_CONFIG_VALUE_0: expectedAuthorization,
+      });
+    } finally {
+      handler.dispose();
+      runGitSpy.mockRestore();
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      if (originalGitHubToken === undefined) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = originalGitHubToken;
+    }
   });
 
   it("requires projectId for project-scoped methods", async () => {

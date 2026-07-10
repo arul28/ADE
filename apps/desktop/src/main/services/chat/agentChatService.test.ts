@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
@@ -590,6 +591,23 @@ vi.mock("../ai/droidExecutable", () => ({
   resolveDroidExecutable: vi.fn(() => ({ path: "/usr/local/bin/droid", source: "path" })),
 }));
 
+vi.mock("./droidModelsDiscovery", () => ({
+  discoverDroidSdkModelDescriptors: vi.fn(async () => [{
+    id: "droid/custom:claude-sonnet-5-thinking-32000",
+    providerModelId: "custom:claude-sonnet-5-thinking-32000",
+    displayName: "Claude Sonnet 5 (High)",
+    family: "droid",
+    color: "#a78bfa",
+    capabilities: {
+      tools: true,
+      vision: true,
+      reasoning: true,
+      streaming: true,
+    },
+    reasoningTiers: ["high"],
+  }]),
+}));
+
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
@@ -804,8 +822,9 @@ import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
-import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import type { AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
+import { stableStringify } from "../shared/utils";
 import {
   createDynamicOpenCodeModelDescriptor,
   replaceDynamicOpenCodeModelDescriptors,
@@ -1099,8 +1118,22 @@ function createMockLaneService() {
   };
   fs.mkdirSync(laneRoots["lane-2"], { recursive: true });
   const lanes = [
-    { id: "lane-1", name: "Primary", laneType: "primary", branchRef: "feature/primary", worktreePath: laneRoots["lane-1"] },
-    { id: "lane-2", name: "Selected", laneType: "feature", branchRef: "feature/selected", worktreePath: laneRoots["lane-2"] },
+    {
+      id: "lane-1",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "feature/primary",
+      worktreePath: laneRoots["lane-1"],
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    },
+    {
+      id: "lane-2",
+      name: "Selected",
+      laneType: "feature",
+      branchRef: "feature/selected",
+      worktreePath: laneRoots["lane-2"],
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    },
   ];
   return {
     getLaneBaseAndBranch: vi.fn((laneId: string) => {
@@ -1121,6 +1154,21 @@ function createMockLaneService() {
       };
     }),
     list: vi.fn(async () => lanes),
+    getSummary: vi.fn(async (laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
+    importBranch: vi.fn(async ({ branchRef, name, description }: { branchRef: string; name?: string; description?: string }) => {
+      const lane = {
+        id: `lane-${lanes.length + 1}`,
+        name: name ?? branchRef,
+        description: description ?? null,
+        laneType: "feature",
+        branchRef,
+        worktreePath: path.join(tmpRoot, `imported-lane-${lanes.length + 1}`),
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      };
+      fs.mkdirSync(lane.worktreePath, { recursive: true });
+      lanes.push(lane);
+      return lane;
+    }),
     ensurePrimaryLane: vi.fn(async () => {}),
     create: vi.fn(async ({ name, description, parentLaneId }: { name: string; description?: string; parentLaneId?: string }) => {
       const lane = {
@@ -1131,6 +1179,7 @@ function createMockLaneService() {
         branchRef: `feature/generated-lane-${lanes.length + 1}`,
         worktreePath: path.join(tmpRoot, `generated-lane-${lanes.length + 1}`),
         parentLaneId: parentLaneId ?? "lane-1",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       };
       fs.mkdirSync(lane.worktreePath, { recursive: true });
       lanes.push(lane);
@@ -1462,6 +1511,28 @@ function createService(overrides: Record<string, unknown> = {}) {
   });
 
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
+}
+
+const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
+
+function installCleanCrossMachineGitFixture(
+  branchRef = "feature/primary",
+  porcelain = "",
+  originUrl = "git@github.com:example/ade.git",
+) {
+  vi.mocked(runGit).mockImplementation(async (args) => {
+    const command = args.join(" ");
+    if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
+    if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "ls-remote") return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
+    if (command === `rev-parse refs/remotes/origin/${branchRef}`) return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === `rev-parse --verify refs/heads/${branchRef}`) return { stdout: "", stderr: "", exitCode: 1 };
+    return { stdout: "", stderr: "", exitCode: 0 };
+  });
 }
 
 async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {
@@ -1895,6 +1966,10 @@ describe("createAgentChatService", () => {
     expect(service.createSession).toBeTypeOf("function");
     expect(service.importExternalChatSession).toBeTypeOf("function");
     expect(service.handoffSession).toBeTypeOf("function");
+    expect(service.prepareCrossMachineHandoff).toBeTypeOf("function");
+    expect(service.preflightCrossMachineDestination).toBeTypeOf("function");
+    expect(service.acceptCrossMachineHandoff).toBeTypeOf("function");
+    expect(service.markCrossMachineHandoff).toBeTypeOf("function");
     expect(service.sendMessage).toBeTypeOf("function");
     expect(service.steer).toBeTypeOf("function");
     expect(service.interrupt).toBeTypeOf("function");
@@ -2626,8 +2701,12 @@ describe("createAgentChatService", () => {
       });
 
       // The stale warm query was discarded and a fresh query built with xhigh.
-      const efforts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
-        .map((call) => (call[0] as { effort?: string } | undefined)?.effort)
+      const efforts = [
+        ...vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+          .map((call) => (call[0] as { effort?: string } | undefined)?.effort),
+        ...vi.mocked(claudeSdkResumeSessionCompat).mock.calls
+          .map((call) => (call[1] as { effort?: string } | undefined)?.effort),
+      ]
         .filter((value): value is string => typeof value === "string");
       expect(efforts).toContain("xhigh");
       expect(session.id).toBeDefined();
@@ -2682,8 +2761,12 @@ describe("createAgentChatService", () => {
         timeoutMs: 15_000,
       });
 
-      const appended = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
-        .map((call) => (call[0] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? "")
+      const appended = [
+        ...vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+          .map((call) => (call[0] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? ""),
+        ...vi.mocked(claudeSdkResumeSessionCompat).mock.calls
+          .map((call) => (call[1] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? ""),
+      ]
         .join("\n");
       expect(appended).toContain("Linear-tracked work");
       expect(appended).toContain("ADE-123");
@@ -4433,6 +4516,572 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
         taskType: "handoff_summary",
       }));
+    });
+  });
+
+  describe("cross-machine handoff", () => {
+    const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");
+
+    it("builds a bounded portable capsule only after the source is clean and published", async () => {
+      installCleanCrossMachineGitFixture();
+      const { service, laneService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      laneService.attachLinearIssueToSession({
+        chatSessionId: source.id,
+        issues: [makeLaneLinearIssue()],
+      });
+
+      const prepared = await service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-source-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        continuationPrompt: `Continue with the destination integration test. token=${fakeGitHubToken}`,
+      });
+
+      expect(prepared.capsule).toMatchObject({
+        version: 1,
+        handoffId: "handoff-source-1",
+        source: {
+          branchRef: "feature/primary",
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "git@github.com:example/ade.git",
+        },
+        continuationPrompt: "Continue with the destination integration test. token=[REDACTED]",
+      });
+      expect(prepared.capsule.linearIssues).toEqual([
+        expect.objectContaining({ identifier: "ADE-123" }),
+      ]);
+      expect(prepared.capsule.brief.length).toBeLessThanOrEqual(16_000);
+      expect(prepared.capsuleFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(prepared.sanitizedSensitiveContext).toBe(true);
+      expect(JSON.stringify(prepared.capsule)).not.toContain("threadId");
+      expect(JSON.stringify(prepared.capsule)).not.toContain("sdkSessionId");
+    });
+
+    it("removes credentials from remote URLs, titles, and lane names before transfer", async () => {
+      installCleanCrossMachineGitFixture(
+        "feature/primary",
+        "",
+        `https://git-user:${fakeGitHubToken}@github.com/example/ade.git?token=secret-value#credential`,
+      );
+      const { service, laneService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.updateSession({
+        sessionId: source.id,
+        title: `Review token=${fakeGitHubToken}`,
+        manuallyNamed: true,
+      });
+      const lane = await laneService.getSummary("lane-1");
+      laneService.getSummary.mockResolvedValue({
+        ...lane,
+        name: "Deploy password=super-secret-value",
+      });
+
+      const prepared = await service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-scrubbed-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+      });
+
+      expect(prepared.capsule.source.originUrl).toBe("https://github.com/example/ade.git");
+      expect(prepared.capsule.source.title).toBe("Review token=[REDACTED]");
+      expect(prepared.capsule.source.laneName).toBe("Deploy password=[REDACTED]");
+      expect(JSON.stringify(prepared.capsule)).not.toMatch(/ghp_|super-secret|secret-value|git-user/i);
+      expect(prepared.sanitizedSensitiveContext).toBe(true);
+    });
+
+    it("blocks a dirty source lane before generating or transferring context", async () => {
+      installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await expect(service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-dirty-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+      })).rejects.toThrow("Commit or discard every source lane change");
+    });
+
+    it("revalidates source cleanliness immediately before destination acceptance", async () => {
+      installCleanCrossMachineGitFixture();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      const prepared = await service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-revalidate-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+      });
+      installCleanCrossMachineGitFixture("feature/primary", " M src/changed-after-review.ts\n");
+
+      await expect(service.validateCrossMachineSource({
+        sourceSessionId: source.id,
+        capsule: prepared.capsule,
+        capsuleFingerprint: prepared.capsuleFingerprint,
+      })).rejects.toThrow("Commit or discard every source lane change");
+    });
+
+    it("invalidates a capsule when chat activity arrives while the handoff brief is being generated", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+        installCleanCrossMachineGitFixture();
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "api-key", provider: "openai" },
+          { type: "cli-subscription", cli: "claude", authenticated: true, verified: true },
+        ] as any);
+        vi.mocked(streamText).mockReturnValue({
+          fullStream: (async function* () {
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          })(),
+        } as any);
+        vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+          raw.split(/\r?\n/)
+            .filter((line) => line.trim().length > 0)
+            .flatMap((line) => {
+              try {
+                const parsed = JSON.parse(line) as AgentChatEventEnvelope;
+                return parsed?.event ? [parsed] : [];
+              } catch {
+                return [];
+              }
+            }),
+        );
+        const { service, aiIntegrationService } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+        });
+        vi.mocked(aiIntegrationService.summarizeTerminal).mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date("2026-07-10T12:00:01.000Z"));
+          await service.runSessionTurn({
+            sessionId: source.id,
+            text: "This arrived while the handoff brief was being generated.",
+          });
+          return {
+            text: "## Current goal\n- Continue after the source chat changed.",
+            structuredOutput: null,
+            provider: "codex",
+            model: "openai/gpt-5.4-mini",
+            sessionId: null,
+            inputTokens: null,
+            outputTokens: null,
+            durationMs: 1,
+          } as any;
+        });
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-mid-prepare-activity-1",
+          targetModelId: "opencode/openai/gpt-5.4-mini",
+        });
+
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+        expect(prepared.capsule.createdAt).toBe("2026-07-10T12:00:00.000Z");
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule: prepared.capsule,
+          capsuleFingerprint: prepared.capsuleFingerprint,
+        })).rejects.toThrow("source chat changed after the handoff brief was prepared");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reconciles a replay to the same destination lane and chat", async () => {
+      const branchRef = "feature/handoff";
+      const destinationToken = ["ghp", "destination-token"].join("_");
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+      ] as any);
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const { service, laneService, sessionService } = createService({
+        db,
+        getLocalGitHubToken: () => destinationToken,
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-replay-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: "Cross-machine handoff",
+          laneName: "Feature handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        brief: "## Current goal\n- Finish the handoff.",
+        artifacts: { fileChanges: ["modify src/handoff.ts"], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue from the destination lane.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+      const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(second.laneId).toBe(first.laneId);
+      expect(second.session.id).toBe(first.session.id);
+      expect(second.reusedLane).toBe(true);
+      expect(second.reusedSession).toBe(true);
+      expect(laneService.importBranch).toHaveBeenCalledTimes(1);
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
+      const expectedAuthorization = `AUTHORIZATION: basic ${Buffer.from(
+        `x-access-token:${destinationToken}`,
+        "utf8",
+      ).toString("base64")}`;
+      const remoteAuthCalls = vi.mocked(runGit).mock.calls.filter(([args]) =>
+        args[0] === "ls-remote" || args[0] === "fetch",
+      );
+      expect(remoteAuthCalls).toHaveLength(2);
+      for (const [, options] of remoteAuthCalls) {
+        expect(options?.env).toMatchObject({
+          GIT_TERMINAL_PROMPT: "0",
+          GCM_INTERACTIVE: "Never",
+          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+          GIT_CONFIG_VALUE_0: expectedAuthorization,
+        });
+      }
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          handoffId: capsule.handoffId,
+          state: "complete",
+          laneId: first.laneId,
+          sessionId: first.session.id,
+        }),
+      ]));
+      expect(JSON.stringify(Array.from(values.values()))).not.toContain(destinationToken);
+    });
+
+    it("serializes concurrent destination acceptance for the same handoff", async () => {
+      const branchRef = "feature/handoff-concurrent";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+      ] as any);
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      const { service, laneService, sessionService } = createService();
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-concurrent-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: "Concurrent handoff",
+          laneName: "Concurrent handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      const [first, second] = await Promise.all([
+        service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }),
+        service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }),
+      ]);
+
+      expect(second.session.id).toBe(first.session.id);
+      expect(laneService.importBranch).toHaveBeenCalledTimes(1);
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
+      expect(streamText).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not treat an optimistic user message as a successful dispatch acknowledgement", async () => {
+      const branchRef = "feature/handoff-dispatch-retry";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "droid", path: "/usr/local/bin/droid", authenticated: true, verified: true },
+      ] as any);
+      mockState.droidPromptError = new Error("provider dispatch rejected");
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const { service } = createService({ db });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-dispatch-retry-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: null,
+          laneName: "Dispatch retry",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "droid/custom:claude-sonnet-5-thinking-32000" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await expect(service.acceptCrossMachineHandoff({
+        capsule,
+        capsuleFingerprint: fingerprint,
+      })).rejects.toThrow("provider dispatch rejected");
+      mockState.droidPromptError = null;
+      const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(accepted.session.id).toBeTruthy();
+      expect(mockState.droidPromptCalls).toHaveLength(2);
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({ handoffId: capsule.handoffId, state: "complete" }),
+      ]));
+    });
+
+    it("persists the dispatched checkpoint before publishing the first accepted backend event", async () => {
+      const branchRef = "feature/handoff-dispatch-checkpoint";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+      ] as any);
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-handoff-checkpoint", slash_commands: [] };
+            return;
+          }
+          yield { type: "system", subtype: "init", session_id: "sdk-handoff-checkpoint", slash_commands: [] };
+          yield {
+            type: "assistant",
+            message: {
+              id: "assistant-handoff-checkpoint",
+              model: "claude-sonnet-5",
+              content: [{
+                type: "tool_use",
+                id: "tool-handoff-checkpoint",
+                name: "Read",
+                input: { file_path: "README.md" },
+              }],
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-handoff-checkpoint",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-handoff-checkpoint",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      let stateAtFirstBackendEvent: string | null = null;
+      const eventTypes: string[] = [];
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => {
+          eventTypes.push(event.event.type);
+          if (event.event.type !== "tool_call" || stateAtFirstBackendEvent !== null) return;
+          const record = Array.from(values.values()).find((value) =>
+            typeof value === "object" && value !== null && "state" in value,
+          ) as { state?: string } | undefined;
+          stateAtFirstBackendEvent = record?.state ?? null;
+        },
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-dispatch-checkpoint-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: null,
+          laneName: "Dispatch checkpoint",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "anthropic/claude-sonnet-5" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(streamCall).toBeGreaterThan(1);
+      await vi.waitFor(() => expect(eventTypes).toContain("tool_call"));
+      expect(stateAtFirstBackendEvent).toBe("dispatched");
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({ handoffId: capsule.handoffId, state: "complete" }),
+      ]));
+    });
+
+    it("rejects a Claude handoff when authentication fails before the backend acknowledges the prompt", async () => {
+      const branchRef = "feature/handoff-claude-auth";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+      ] as any);
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-handoff-auth", slash_commands: [] };
+            yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-handoff-auth" };
+            return;
+          }
+          yield { type: "system", subtype: "init", session_id: "sdk-handoff-auth", slash_commands: [] };
+          yield {
+            type: "assistant",
+            error: "authentication_failed",
+            message: {
+              content: [{ type: "text", text: "Failed to authenticate. API Error: 401" }],
+            },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-handoff-auth",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-claude-auth-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: null,
+          laneName: "Claude auth handoff",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "anthropic/claude-sonnet-5" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await expect(service.acceptCrossMachineHandoff({
+        capsule,
+        capsuleFingerprint: fingerprint,
+      })).rejects.toThrow("Claude authentication failed");
+
+      expect(events.some((event) => event.event.type === "user_message")).toBe(true);
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          handoffId: capsule.handoffId,
+          state: "failed",
+          lastError: expect.stringMatching(/authentication failed/i),
+        }),
+      ]));
+    });
+
+    it("rejects a handoff capsule whose fingerprint changed in transit", async () => {
+      const { service } = createService();
+      const capsule = {
+        version: 1,
+        handoffId: "handoff-tampered-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "Source Mac",
+          sessionId: "source-session",
+          provider: "codex",
+          model: "gpt-5.5",
+          title: null,
+          laneName: "Feature lane",
+          branchRef: "feature/handoff",
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "openai/gpt-5.5" },
+        brief: "Continue the task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      } as AgentChatCrossMachineHandoffCapsule;
+
+      await expect(service.acceptCrossMachineHandoff({
+        capsule,
+        capsuleFingerprint: "0".repeat(64),
+      })).rejects.toThrow("changed in transit");
     });
   });
 

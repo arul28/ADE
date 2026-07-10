@@ -13,6 +13,7 @@ import type {
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
@@ -97,6 +98,20 @@ type RemoteConnectionPoolConnectOptions = {
   bypassFailureBackoff?: boolean;
 };
 
+function assertRequiredActionRoute(
+  entry: PoolEntry,
+  requiredRouteKind: RemoteRuntimeRouteKind | undefined,
+): void {
+  if (!requiredRouteKind) return;
+  const actualRouteKind = entry.result.route?.kind;
+  if (actualRouteKind === requiredRouteKind) return;
+  const actualLabel = actualRouteKind ? `'${actualRouteKind}'` : "an unknown route";
+  throw new Error(
+    `The destination route changed from '${requiredRouteKind}' to ${actualLabel}. `
+      + "Review the connection security and confirm the handoff again.",
+  );
+}
+
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
@@ -107,6 +122,9 @@ function isRemoteRuntimeConnectionError(error: unknown): boolean {
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["chat.suggestLaneNameFromPrompt", 120_000],
+  ["chat.prepareCrossMachineHandoff", 120_000],
+  ["chat.preflightCrossMachineDestination", 60_000],
+  ["chat.acceptCrossMachineHandoff", 180_000],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
@@ -130,6 +148,7 @@ const MACHINE_PROJECT_METHOD_CAPABILITY = new Map<string, RemoteRuntimeMachinePr
   ["projects.getDetail", "getDetail"],
   ["projects.getWorkSummary", "getWorkSummary"],
   ["projects.getDefaultParentDir", "getDefaultParentDir"],
+  ["projects.getHandoffStoragePreflight", "handoffStoragePreflight"],
   ["projects.create", "create"],
   ["projects.clone", "clone"],
   ["projects.listMyGitHubRepos", "listMyGitHubRepos"],
@@ -140,6 +159,7 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
   getDetail: "reading remote project details",
   getWorkSummary: "checking remote worktree state",
   getDefaultParentDir: "reading the default remote project folder",
+  handoffStoragePreflight: "checking remote handoff storage",
   create: "creating remote projects",
   clone: "cloning remote projects",
   listMyGitHubRepos: "listing GitHub repositories on the remote machine",
@@ -498,6 +518,7 @@ export class RemoteConnectionPool {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     const entry = await this.requireEntry(targetId);
+    assertRequiredActionRoute(entry, request.requiredRouteKind);
     return await this.callActionWithEntry(entry, projectId, request);
   }
 
@@ -508,7 +529,10 @@ export class RemoteConnectionPool {
   ): Promise<RemoteRuntimeActionResult> {
     return await this.withEntryForTarget(
       target,
-      (entry) => this.callActionWithEntry(entry, projectId, request),
+      (entry) => {
+        assertRequiredActionRoute(entry, request.requiredRouteKind);
+        return this.callActionWithEntry(entry, projectId, request);
+      },
       { retryOnConnectionError: shouldRetryRemoteRuntimeAction(request) },
     );
   }

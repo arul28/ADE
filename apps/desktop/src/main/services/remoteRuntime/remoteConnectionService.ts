@@ -21,6 +21,8 @@ import type {
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeHandoffStoragePreflightArgs,
+  RemoteRuntimeHandoffStoragePreflightResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeStreamEventsRequest,
@@ -52,6 +54,7 @@ import {
   getSshHostKeyTrustForTarget,
   trustSshHostKeyForTarget,
 } from "./sshTransport";
+import { decodeRemoteRuntimeHandoffStoragePreflightResult } from "../../../shared/crossMachineHandoff";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -658,6 +661,18 @@ export class RemoteConnectionService {
     return typeof value === "string" && value.trim()
       ? value.trim()
       : "~/Projects";
+  }
+
+  async getHandoffStoragePreflight(
+    targetId: string,
+    input: RemoteRuntimeHandoffStoragePreflightArgs,
+  ): Promise<RemoteRuntimeHandoffStoragePreflightResult> {
+    const value = await this.callMachine(
+      this.requireTarget(targetId),
+      "projects.getHandoffStoragePreflight",
+      asRecord(input),
+    );
+    return decodeRemoteRuntimeHandoffStoragePreflightResult(value);
   }
 
   async createProject(

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type {
   AgentChatCreateArgs,
+  AgentChatAcceptCrossMachineHandoffArgs,
   AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
@@ -17,6 +18,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
+  AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatDroidPermissionMode,
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
@@ -33,11 +35,14 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
+  AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
+  AgentChatValidateCrossMachineSourceArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommandsArgs,
@@ -646,6 +651,172 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
+  };
+}
+
+function parseCrossMachineDestinationPreflightArgs(
+  value: Record<string, unknown>,
+): AgentChatCrossMachineDestinationPreflightArgs {
+  return {
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.preflightCrossMachineDestination requires targetModelId.",
+    ) as AgentChatCrossMachineDestinationPreflightArgs["targetModelId"],
+    sourceBranchRef: requireString(
+      value.sourceBranchRef,
+      "chat.preflightCrossMachineDestination requires sourceBranchRef.",
+    ),
+    sourceHeadSha: requireString(
+      value.sourceHeadSha,
+      "chat.preflightCrossMachineDestination requires sourceHeadSha.",
+    ),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  const parseNullableString = (key: string): string | null | undefined => {
+    if (!(key in value)) return undefined;
+    if (value[key] == null) return null;
+    if (typeof value[key] !== "string") {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+    }
+    return value[key].trim();
+  };
+  const parseBoolean = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+    }
+    return value[key];
+  };
+  const parseEnum = <T extends string>(key: string, allowed: readonly T[]): T | undefined => {
+    if (!(key in value)) return undefined;
+    const parsed = asTrimmedString(value[key]);
+    if (!parsed || !allowed.includes(parsed as T)) {
+      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+    }
+    return parsed as T;
+  };
+  const parseConfigValues = (): AgentChatPrepareCrossMachineHandoffArgs["cursorConfigValues"] | undefined => {
+    if (!("cursorConfigValues" in value)) return undefined;
+    if (value.cursorConfigValues == null) return null;
+    if (!isRecord(value.cursorConfigValues)) {
+      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+    }
+    const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
+      const key = rawKey.trim();
+      if (
+        !key
+        || !(
+          typeof entryValue === "string"
+          || typeof entryValue === "boolean"
+          || (typeof entryValue === "number" && Number.isFinite(entryValue))
+        )
+      ) {
+        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+      }
+      return [key, entryValue] as const;
+    });
+    return Object.fromEntries(entries);
+  };
+
+  const continuationPrompt = parseNullableString("continuationPrompt");
+  const reasoningEffort = parseNullableString("reasoningEffort");
+  const fastMode = parseBoolean("fastMode");
+  const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
+  const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
+  const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
+  const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
+  const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
+  const droidPermissionMode = parseEnum("droidPermissionMode", ["read-only", "auto-low", "auto-medium", "auto-high", "agi"] as const);
+  const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
+  const cursorModeId = parseNullableString("cursorModeId");
+  const cursorConfigValues = parseConfigValues();
+  return {
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+    ),
+    handoffId: requireString(
+      value.handoffId,
+      "chat.prepareCrossMachineHandoff requires handoffId.",
+    ),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.prepareCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
+    ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
+    ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
+    ...(codexSandbox !== undefined ? { codexSandbox } : {}),
+    ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
+    ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
+    ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(cursorModeId !== undefined ? { cursorModeId } : {}),
+    ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
+  };
+}
+
+function parseMarkCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatMarkCrossMachineHandoffArgs {
+  return {
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.markCrossMachineHandoff requires sourceSessionId.",
+    ),
+    handoffId: requireString(value.handoffId, "chat.markCrossMachineHandoff requires handoffId."),
+    targetMachineName: requireString(
+      value.targetMachineName,
+      "chat.markCrossMachineHandoff requires targetMachineName.",
+    ),
+    targetLaneId: requireString(
+      value.targetLaneId,
+      "chat.markCrossMachineHandoff requires targetLaneId.",
+    ),
+    targetSessionId: requireString(
+      value.targetSessionId,
+      "chat.markCrossMachineHandoff requires targetSessionId.",
+    ),
+  };
+}
+
+function parseValidateCrossMachineSourceArgs(
+  value: Record<string, unknown>,
+): AgentChatValidateCrossMachineSourceArgs {
+  if (!isRecord(value.capsule)) {
+    throw new Error("chat.validateCrossMachineSource requires a capsule.");
+  }
+  return {
+    sourceSessionId: requireString(
+      value.sourceSessionId,
+      "chat.validateCrossMachineSource requires sourceSessionId.",
+    ),
+    capsule: value.capsule as AgentChatValidateCrossMachineSourceArgs["capsule"],
+    capsuleFingerprint: requireString(
+      value.capsuleFingerprint,
+      "chat.validateCrossMachineSource requires capsuleFingerprint.",
+    ),
+  };
+}
+
+function parseAcceptCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatAcceptCrossMachineHandoffArgs {
+  if (!isRecord(value.capsule)) {
+    throw new Error("chat.acceptCrossMachineHandoff requires a capsule.");
+  }
+  return {
+    capsule: value.capsule as AgentChatAcceptCrossMachineHandoffArgs["capsule"],
+    capsuleFingerprint: requireString(
+      value.capsuleFingerprint,
+      "chat.acceptCrossMachineHandoff requires capsuleFingerprint.",
+    ),
   };
 }
 
@@ -3555,6 +3726,26 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),
+    ));
+  register("chat.prepareCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").prepareCrossMachineHandoff(
+      parsePrepareCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.validateCrossMachineSource", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").validateCrossMachineSource(
+      parseValidateCrossMachineSourceArgs(payload),
+    ));
+  register("chat.preflightCrossMachineDestination", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").preflightCrossMachineDestination(
+      parseCrossMachineDestinationPreflightArgs(payload),
+    ));
+  register("chat.acceptCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acceptCrossMachineHandoff(
+      parseAcceptCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.markCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
+      parseMarkCrossMachineHandoffArgs(payload),
     ));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(

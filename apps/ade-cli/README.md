@@ -183,6 +183,10 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get
 projects.list    projects.add      projects.remove   projects.touch
+projects.browseDirectories         projects.getDetail
+projects.getWorkSummary            projects.getDefaultParentDir
+projects.getHandoffStoragePreflight
+projects.create  projects.clone    projects.listMyGitHubRepos
 personalChats.call                 personalChats.streamEvents
 runtimeEvents.subscribe   runtimeEvents.unsubscribe
 sync.getStatus            sync.refreshDiscovery

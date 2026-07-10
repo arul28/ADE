@@ -2574,6 +2574,16 @@ describe("adeRpcServer", () => {
 
   it("lists ADE actions across runtime domains", async () => {
     const fixture = createRuntime();
+    const crossMachineActions = [
+      "prepareCrossMachineHandoff",
+      "validateCrossMachineSource",
+      "preflightCrossMachineDestination",
+      "acceptCrossMachineHandoff",
+      "markCrossMachineHandoff",
+    ] as const;
+    for (const action of crossMachineActions) {
+      (fixture.runtime.agentChatService as any)[action] = vi.fn(async (args: unknown) => ({ action, args }));
+    }
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent" });
 
@@ -2594,6 +2604,29 @@ describe("adeRpcServer", () => {
     const getSessionSummary = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getSessionSummary");
     expect(getSessionSummary).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
+    });
+    const listedChatActionNames = chatActions.structuredContent.actions.map((entry: { name: string }) => entry.name);
+    expect(listedChatActionNames).toEqual(expect.arrayContaining(
+      crossMachineActions.map((action) => `chat.${action}`),
+    ));
+
+    const prepared = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "prepareCrossMachineHandoff",
+      args: {
+        sourceSessionId: "chat-1",
+        handoffId: "handoff-1",
+        targetModelId: "openai/gpt-5.5",
+      },
+    });
+    expect(prepared?.isError).toBeUndefined();
+    expect(prepared.structuredContent.result).toEqual({
+      action: "prepareCrossMachineHandoff",
+      args: {
+        sourceSessionId: "chat-1",
+        handoffId: "handoff-1",
+        targetModelId: "openai/gpt-5.5",
+      },
     });
 
     const usageActions = await callTool(handler, "list_ade_actions", { domain: "usage" });

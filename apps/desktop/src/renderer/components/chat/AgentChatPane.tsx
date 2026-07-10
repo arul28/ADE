@@ -134,6 +134,7 @@ import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPick
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
+import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
@@ -3307,6 +3308,7 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
   const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
@@ -4987,6 +4989,36 @@ export function AgentChatPane({
   const handoffButtonTitle = handoffBlocked
     ? "Wait for the current output or approval to finish before handing off this chat."
     : "Create a new work chat on another model and seed it with a summary of this chat.";
+  const crossMachineHandoffTarget = useMemo(() => ({
+    targetModelId: handoffModelId,
+    reasoningEffort: handoffReasoningEffort,
+    ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
+      ? { fastMode: handoffFastMode }
+      : {}),
+    claudePermissionMode: handoffClaudePermissionMode,
+    codexApprovalPolicy: handoffCodexApprovalPolicy,
+    codexSandbox: handoffCodexSandbox,
+    codexConfigSource: handoffCodexConfigSource,
+    opencodePermissionMode: handoffOpenCodePermissionMode,
+    droidPermissionMode: handoffDroidPermissionMode,
+    ...(handoffNativePermissionMode != null ? { permissionMode: handoffNativePermissionMode } : {}),
+    cursorModeId: handoffCursorModeId,
+    cursorConfigValues: handoffCursorConfigValues,
+  }), [
+    handoffClaudePermissionMode,
+    handoffCodexApprovalPolicy,
+    handoffCodexConfigSource,
+    handoffCodexSandbox,
+    handoffCursorConfigValues,
+    handoffCursorModeId,
+    handoffDroidPermissionMode,
+    handoffFastMode,
+    handoffModelId,
+    handoffNativePermissionMode,
+    handoffOpenCodePermissionMode,
+    handoffReasoningEffort,
+    handoffTargetProvider,
+  ]);
   const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
     provider: selectedSession?.provider ?? null,
     status: selectedSession?.status ?? null,
@@ -9491,6 +9523,37 @@ export function AgentChatPane({
   );
   const handoffTabContent = canShowHandoff ? (
     <div className="min-h-0 flex-1 overflow-auto p-4">
+      {!isRemoteProject ? (
+        <div className="mb-4 rounded-xl border border-sky-300/15 bg-[linear-gradient(145deg,rgba(56,189,248,0.09),rgba(255,255,255,0.018))] p-3.5">
+          <div className="flex items-start gap-3">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-sky-300/18 bg-sky-400/10 text-sky-200">
+              <Desktop size={16} weight="duotone" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-sans text-[12px] font-semibold text-fg/86">Continue on another machine</div>
+              <div className="mt-1 text-[10px] leading-4 text-fg/48">
+                Check Git publication, destination storage, runtime compatibility, model access, and route security before ADE recreates the lane and chat.
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCrossMachineHandoffOpen(true)}
+            disabled={!handoffModelId || handoffBusy}
+            className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-sky-300/22 bg-sky-400/11 px-3 font-sans text-[11px] font-semibold text-sky-100 transition-colors hover:bg-sky-400/16 disabled:cursor-not-allowed disabled:opacity-38"
+          >
+            Send to machine
+            <ArrowBendUpRight size={13} />
+          </button>
+          {!handoffModelId ? (
+            <div className="mt-1.5 text-center text-[9px] text-fg/34">Choose the destination model below first.</div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="mb-4 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2.5 text-[10px] leading-4 text-fg/42">
+          Cross-machine handoff starts from a project open on this machine. Open the source project locally to send it elsewhere.
+        </div>
+      )}
       <div className="space-y-1">
         <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
         <div className="text-[11px] leading-5 text-fg/54">
@@ -11291,6 +11354,22 @@ export function AgentChatPane({
         onCancel={closeRewindConfirmDialog}
         onConfirm={confirmRewindDialog}
       />
+      {selectedSessionId && (selectedSession?.laneId ?? laneId) ? (
+        <CrossMachineHandoffModal
+          open={crossMachineHandoffOpen}
+          sourceSessionId={selectedSessionId}
+          sourceLaneId={(selectedSession?.laneId ?? laneId)!}
+          target={crossMachineHandoffTarget}
+          turnActive={turnActive}
+          awaitingInput={selectedSessionAwaitingInput}
+          onStopTurn={interrupt}
+          onClose={() => setCrossMachineHandoffOpen(false)}
+          onFinished={() => {
+            setHandoffNote("");
+            void refreshSessions({ force: true }).catch(() => undefined);
+          }}
+        />
+      ) : null}
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
       {onImportedSession && laneId ? (
         <ImportSessionBrowser

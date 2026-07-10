@@ -34,6 +34,9 @@ import type {
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeHandoffStoragePreflightArgs,
+  RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -55,6 +58,7 @@ import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
 import { readGlobalState } from "../state/globalState";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 
 type RuntimeBridgeArgs = {
   appVersion: string;
@@ -247,26 +251,6 @@ function canBindRemoteProjectToSender(
   return !window.webContents.isDestroyed();
 }
 
-function normalizeGitRemoteForComparison(
-  value: string | null | undefined,
-): string | null {
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  if (!trimmed) return null;
-  const withoutGitSuffix = trimmed.replace(/\.git$/i, "");
-  if (!withoutGitSuffix.includes("://")) {
-    const scpLike = /^(?:[^@/:]+@)?([^:]+):(.+)$/.exec(withoutGitSuffix);
-    if (scpLike?.[1] && scpLike[2]) {
-      return `${scpLike[1].toLowerCase()}/${scpLike[2].replace(/^\/+/, "")}`.toLowerCase();
-    }
-  }
-  try {
-    const parsed = new URL(withoutGitSuffix);
-    return `${parsed.hostname.toLowerCase()}/${parsed.pathname.replace(/^\/+/, "")}`.toLowerCase();
-  } catch {
-    return withoutGitSuffix.toLowerCase();
-  }
-}
-
 async function inspectLocalWorkForRemoteOrigin(args: {
   rootPath: string;
   displayName: string;
@@ -279,7 +263,7 @@ async function inspectLocalWorkForRemoteOrigin(args: {
   });
   if (origin.exitCode !== 0) return null;
   const originUrl = origin.stdout.trim();
-  if (normalizeGitRemoteForComparison(originUrl) !== args.remoteOriginKey)
+  if (normalizeGitRemoteIdentity(originUrl) !== args.remoteOriginKey)
     return null;
   const workSummary = await getProjectWorkSummary(args.rootPath).catch(
     () => null,
@@ -758,6 +742,17 @@ export function registerRuntimeBridge({
   );
 
   ipcMain.handle(
+    IPC.remoteRuntimeGetHandoffStoragePreflight,
+    async (
+      _event,
+      arg: { id: string; input: RemoteRuntimeHandoffStoragePreflightArgs },
+    ): Promise<RemoteRuntimeHandoffStoragePreflightResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.getHandoffStoragePreflight(id, arg?.input);
+    },
+  );
+
+  ipcMain.handle(
     IPC.remoteRuntimeCreateProject,
     async (
       _event,
@@ -775,14 +770,19 @@ export function registerRuntimeBridge({
     IPC.remoteRuntimeCloneProject,
     async (
       _event,
-      arg: { id: string; input?: CloneProjectInput },
+      arg: {
+        id: string;
+        input?: CloneProjectInput;
+        options?: RemoteRuntimeCloneProjectOptions;
+      },
     ): Promise<RemoteRuntimeProjectRecord> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const input = arg?.input ?? { url: "", parentDir: "" };
       const safeInput = stripCloneAuthHeader(input);
       let githubAuthHeader: string | null = null;
       const target = remoteConnectionService.getTarget(id);
-      if (target && hasKnownSshHostKeyForTarget(target)) {
+      const destinationCredentialsOnly = arg?.options?.credentialMode === "destination_only";
+      if (!destinationCredentialsOnly && target && hasKnownSshHostKeyForTarget(target)) {
         try {
           githubAuthHeader = createGitHubAuthHeader(
             getGitHubTokenForRemoteClone?.() ?? null,
@@ -1278,7 +1278,7 @@ export function registerRuntimeBridge({
         remoteConnectionService,
       });
       const remoteOriginKey =
-        normalizeGitRemoteForComparison(remoteGitOriginUrl);
+        normalizeGitRemoteIdentity(remoteGitOriginUrl);
       if (!remoteOriginKey) {
         return {
           remoteProjectId,

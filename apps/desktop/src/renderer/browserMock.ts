@@ -36,6 +36,8 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import {
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
+  type AgentChatPrepareCrossMachineHandoffArgs,
+  type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import {
   ADE_WELCOME_VIDEO_ID,
@@ -3344,10 +3346,52 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStateEvent: noop,
     },
     remoteRuntime: {
-      listTargets: resolved([]),
+      listTargets: resolved([{
+        id: "mock-remote",
+        name: "Studio Mac",
+        hostname: "studio.local",
+        transport: "paired",
+        pairedMachine: { hostIdentity: "mock-studio" },
+        sshUser: null,
+        port: null,
+        sshKeyPath: null,
+        lastSeenArch: "darwin-arm64",
+        runtimeBinaryVersion: "0.0.0-browser",
+        lastConnectedAt: Date.now(),
+      }]),
       getConnectionSnapshot: resolved({
-        connections: [],
-        connectedCount: 0,
+        connections: [{
+          target: {
+            id: "mock-remote",
+            name: "Studio Mac",
+            hostname: "studio.local",
+            transport: "paired",
+            pairedMachine: { hostIdentity: "mock-studio" },
+            sshUser: null,
+            port: null,
+            sshKeyPath: null,
+            lastSeenArch: "darwin-arm64",
+            runtimeBinaryVersion: "0.0.0-browser",
+            lastConnectedAt: Date.now(),
+          },
+          state: "connected",
+          arch: "darwin-arm64",
+          version: "0.0.0-browser",
+          route: { kind: "tailnet", endpoint: "100.64.0.2" },
+          capabilities: {
+            projects: true,
+            machineProjects: {
+              getDefaultParentDir: true,
+              handoffStoragePreflight: true,
+              clone: true,
+            },
+          },
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+          connectedAt: Date.now(),
+        }],
+        connectedCount: 1,
         updatedAt: Date.now(),
       }),
       onConnectionSnapshotChanged: noop,
@@ -3380,7 +3424,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         version: "0.0.0-browser",
         projects: [],
       }),
-      listProjects: resolvedArg([]),
+      listProjects: resolvedArg([{
+        projectId: "mock-remote-project",
+        rootPath: "/Users/ade/Projects/browser-preview",
+        displayName: "Browser Preview",
+        addedAt: Date.now(),
+        lastOpenedAt: Date.now(),
+        gitOriginUrl: "git@github.com:ade/browser-preview.git",
+      }]),
       addProject: async (_id: string, rootPath: string) => ({
         projectId: `mock-${
           rootPath
@@ -3419,6 +3470,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         subdirectoryCount: 0,
       }),
       getDefaultParentDir: resolved("/Users/ade/Projects"),
+      getHandoffStoragePreflight: resolvedArg2({
+        parentDir: "/Users/ade/Projects",
+        targetPath: "/Users/ade/Projects/browser-preview",
+        freeBytes: 128 * 1024 * 1024 * 1024,
+        requiredBytes: 1024 * 1024 * 1024,
+        hasEnoughSpace: true,
+        targetExists: false,
+        blockingErrors: [],
+        warnings: [],
+      }),
       createProject: async (
         _id: string,
         input: { name: string; parentDir: string },
@@ -3467,8 +3528,51 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       callAction: async (
         _id: string,
         _projectId: string,
-        request: { domain: string; action: string },
-      ) => ({
+        request: RemoteRuntimeActionRequest,
+      ) => {
+        if (request.domain === "chat" && request.action === "preflightCrossMachineDestination") {
+          return {
+            domain: request.domain,
+            action: request.action,
+            result: {
+              providerAuthorized: true,
+              modelAvailable: true,
+              remoteBranchHeadSha: request.args?.sourceHeadSha ?? null,
+              existingLaneId: null,
+              blockingErrors: [],
+              warnings: [],
+            },
+            statusHints: {},
+          };
+        }
+        if (request.domain === "chat" && request.action === "acceptCrossMachineHandoff") {
+          const capsule = request.args?.capsule;
+          const handoffId = capsule && typeof capsule === "object" && !Array.isArray(capsule)
+            && typeof (capsule as { handoffId?: unknown }).handoffId === "string"
+            ? (capsule as { handoffId: string }).handoffId
+            : "mock-handoff";
+          return {
+            domain: request.domain,
+            action: request.action,
+            result: {
+              handoffId,
+              laneId: "mock-remote-lane",
+              session: {
+                id: "mock-remote-chat",
+                laneId: "mock-remote-lane",
+                provider: "claude",
+                model: "claude-sonnet-5",
+                status: "active",
+                createdAt: new Date().toISOString(),
+                lastActivityAt: new Date().toISOString(),
+              },
+              reusedLane: false,
+              reusedSession: false,
+            },
+            statusHints: {},
+          };
+        }
+        return ({
         domain: request.domain,
         action: request.action,
         result:
@@ -3483,7 +3587,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               ]
             : null,
         statusHints: {},
-      }),
+        });
+      },
       streamEvents: resolvedArg({ events: [], nextCursor: 0, hasMore: false }),
       checkLocalWork: async (_id: string, project: {
         projectId: string;
@@ -4686,6 +4791,46 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         set: resolvedArg(undefined),
       },
       handoff: resolvedArg({ session: { id: "mock" }, events: [] }),
+      prepareCrossMachineHandoff: async (args: AgentChatPrepareCrossMachineHandoffArgs) => ({
+        capsule: {
+          version: 1,
+          handoffId: args.handoffId,
+          createdAt: new Date().toISOString(),
+          source: {
+            machineName: "Browser Preview",
+            sessionId: args.sourceSessionId,
+            provider: "claude",
+            model: "claude-sonnet-5",
+            title: "Browser preview parity",
+            laneName: "main",
+            branchRef: "main",
+            headSha: "1234567890abcdef1234567890abcdef12345678",
+            originUrl: "git@github.com:ade/browser-preview.git",
+          },
+          target: {
+            targetModelId: args.targetModelId,
+            reasoningEffort: args.reasoningEffort,
+            fastMode: args.fastMode,
+            claudePermissionMode: args.claudePermissionMode,
+            codexApprovalPolicy: args.codexApprovalPolicy,
+            codexSandbox: args.codexSandbox,
+            codexConfigSource: args.codexConfigSource,
+            opencodePermissionMode: args.opencodePermissionMode,
+            droidPermissionMode: args.droidPermissionMode,
+            permissionMode: args.permissionMode,
+            cursorModeId: args.cursorModeId,
+          },
+          brief: "## Current goal\n- Continue polishing the browser preview handoff flow.\n\n## Important decisions and preserved context\n- Keep the setup clear and failure-aware.\n\n## Files, commands, and errors to preserve\n- apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx\n\n## Next action or open issue\n- Verify the destination handoff UI.",
+          artifacts: { fileChanges: [], commands: [], errors: [] },
+          linearIssues: [],
+          continuationPrompt: args.continuationPrompt?.trim() || "Continue from the handoff brief.",
+        },
+        capsuleFingerprint: "a".repeat(64),
+        usedFallbackSummary: false,
+        sanitizedSensitiveContext: false,
+      }),
+      validateCrossMachineSource: resolvedArg(undefined),
+      markCrossMachineHandoff: resolvedArg(undefined),
       send: resolvedArg(undefined),
       steer: resolvedArg(undefined),
       cancelSteer: resolvedArg(undefined),
@@ -5353,7 +5498,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       pull: resolvedArg({ ok: true }),
       undoLastHeadChange: resolvedArg({ ok: true }),
       redoLastHeadChange: resolvedArg({ ok: true }),
-      getSyncStatus: resolvedArg({ ahead: 0, behind: 0 }),
+      getSyncStatus: resolvedArg({
+        hasUpstream: true,
+        upstreamState: "tracking",
+        upstreamRef: "origin/main",
+        ahead: 0,
+        behind: 0,
+        diverged: false,
+        recommendedAction: "none",
+      }),
+      getOriginRemote: resolvedArg({
+        remoteUrl: "git@github.com:ade/browser-preview.git",
+        branch: "main",
+      }),
       getUserIdentity: resolvedArg({ name: "Mock User", email: "mock@example.com" }),
       sync: resolvedArg({ ok: true }),
       push: resolvedArg({ ok: true }),

@@ -1026,6 +1026,7 @@ export async function createAdeRuntime(args: {
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      getLocalGitHubToken: () => headlessLinearServices.githubService.getTokenOrThrow(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         pushEvent("runtime", event as unknown as Record<string, unknown>);
