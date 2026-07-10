@@ -4640,6 +4640,75 @@ describe("createAgentChatService", () => {
       })).rejects.toThrow("Commit or discard every source lane change");
     });
 
+    it("invalidates a capsule when chat activity arrives while the handoff brief is being generated", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+        installCleanCrossMachineGitFixture();
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "api-key", provider: "openai" },
+          { type: "cli-subscription", cli: "claude", authenticated: true, verified: true },
+        ] as any);
+        vi.mocked(streamText).mockReturnValue({
+          fullStream: (async function* () {
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          })(),
+        } as any);
+        vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+          raw.split(/\r?\n/)
+            .filter((line) => line.trim().length > 0)
+            .flatMap((line) => {
+              try {
+                const parsed = JSON.parse(line) as AgentChatEventEnvelope;
+                return parsed?.event ? [parsed] : [];
+              } catch {
+                return [];
+              }
+            }),
+        );
+        const { service, aiIntegrationService } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+        });
+        vi.mocked(aiIntegrationService.summarizeTerminal).mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date("2026-07-10T12:00:01.000Z"));
+          await service.runSessionTurn({
+            sessionId: source.id,
+            text: "This arrived while the handoff brief was being generated.",
+          });
+          return {
+            text: "## Current goal\n- Continue after the source chat changed.",
+            structuredOutput: null,
+            provider: "codex",
+            model: "openai/gpt-5.4-mini",
+            sessionId: null,
+            inputTokens: null,
+            outputTokens: null,
+            durationMs: 1,
+          } as any;
+        });
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-mid-prepare-activity-1",
+          targetModelId: "opencode/openai/gpt-5.4-mini",
+        });
+
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+        expect(prepared.capsule.createdAt).toBe("2026-07-10T12:00:00.000Z");
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule: prepared.capsule,
+          capsuleFingerprint: prepared.capsuleFingerprint,
+        })).rejects.toThrow("source chat changed after the handoff brief was prepared");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reconciles a replay to the same destination lane and chat", async () => {
       const branchRef = "feature/handoff";
       const destinationToken = ["ghp", "destination-token"].join("_");
@@ -4811,6 +4880,98 @@ describe("createAgentChatService", () => {
 
       expect(accepted.session.id).toBeTruthy();
       expect(mockState.droidPromptCalls).toHaveLength(2);
+      expect(Array.from(values.values())).toEqual(expect.arrayContaining([
+        expect.objectContaining({ handoffId: capsule.handoffId, state: "complete" }),
+      ]));
+    });
+
+    it("persists the dispatched checkpoint before publishing the first accepted backend event", async () => {
+      const branchRef = "feature/handoff-dispatch-checkpoint";
+      installCleanCrossMachineGitFixture(branchRef);
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+      ] as any);
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-handoff-checkpoint", slash_commands: [] };
+            return;
+          }
+          yield { type: "system", subtype: "init", session_id: "sdk-handoff-checkpoint", slash_commands: [] };
+          yield {
+            type: "assistant",
+            message: {
+              id: "assistant-handoff-checkpoint",
+              model: "claude-sonnet-5",
+              content: [{
+                type: "tool_use",
+                id: "tool-handoff-checkpoint",
+                name: "Read",
+                input: { file_path: "README.md" },
+              }],
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-handoff-checkpoint",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-handoff-checkpoint",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      let stateAtFirstBackendEvent: string | null = null;
+      const eventTypes: string[] = [];
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => {
+          eventTypes.push(event.event.type);
+          if (event.event.type !== "tool_call" || stateAtFirstBackendEvent !== null) return;
+          const record = Array.from(values.values()).find((value) =>
+            typeof value === "object" && value !== null && "state" in value,
+          ) as { state?: string } | undefined;
+          stateAtFirstBackendEvent = record?.state ?? null;
+        },
+      });
+      const capsule: AgentChatCrossMachineHandoffCapsule = {
+        version: 1,
+        handoffId: "handoff-dispatch-checkpoint-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "MacBook",
+          sessionId: "source-session",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.4",
+          title: null,
+          laneName: "Dispatch checkpoint",
+          branchRef,
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "anthropic/claude-sonnet-5" },
+        brief: "Continue the same task.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue.",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(streamCall).toBeGreaterThan(1);
+      await vi.waitFor(() => expect(eventTypes).toContain("tool_call"));
+      expect(stateAtFirstBackendEvent).toBe("dispatched");
       expect(Array.from(values.values())).toEqual(expect.arrayContaining([
         expect.objectContaining({ handoffId: capsule.handoffId, state: "complete" }),
       ]));

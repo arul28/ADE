@@ -24030,6 +24030,7 @@ export function createAgentChatService(args: {
       }
       return next;
     };
+    const snapshotCreatedAt = nowIso();
     const rawTranscript = await getChatTranscript({ sessionId: sourceSessionId, limit: 12, maxChars: 12_000 });
     const transcript = {
       ...rawTranscript,
@@ -24080,7 +24081,7 @@ export function createAgentChatService(args: {
     const capsule: AgentChatCrossMachineHandoffCapsule = {
       version: 1,
       handoffId,
-      createdAt: nowIso(),
+      createdAt: snapshotCreatedAt,
       source: {
         machineName: sourceMachineName || "source machine",
         sessionId: sourceSessionId,
@@ -24171,6 +24172,8 @@ export function createAgentChatService(args: {
       throw new Error("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
     const preparedAt = Date.parse(args.capsule.createdAt);
+    flushQueuedTranscriptWrite(managed.transcriptPath);
+    flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
     const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
       const timestamp = Date.parse(entry.timestamp);
       return Number.isFinite(timestamp) && timestamp > preparedAt;
@@ -24462,10 +24465,19 @@ export function createAgentChatService(args: {
         reasoningEffort: destinationManaged.session.reasoningEffort,
         executionMode: destinationManaged.session.executionMode ?? null,
         interactionMode: destinationManaged.session.interactionMode ?? null,
-      }, { awaitBackendDispatch: true });
-
-      record = { ...record, state: "dispatched", updatedAt: nowIso(), lastError: null };
-      persistCrossMachineHandoffRecord(record);
+      }, {
+        awaitBackendDispatch: true,
+        onBackendDispatched: () => {
+          const dispatchedRecord: CrossMachineHandoffRecord = {
+            ...record,
+            state: "dispatched",
+            updatedAt: nowIso(),
+            lastError: null,
+          };
+          persistCrossMachineHandoffRecord(dispatchedRecord);
+          record = dispatchedRecord;
+        },
+      });
 
       record = { ...record, state: "complete", updatedAt: nowIso(), lastError: null };
       persistCrossMachineHandoffRecord(record);
@@ -28420,15 +28432,30 @@ export function createAgentChatService(args: {
 
   async function sendMessage(
     args: AgentChatSendArgs,
-    options: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer: true },
+    options: {
+      awaitDispatch?: boolean;
+      awaitBackendDispatch?: boolean;
+      onBackendDispatched?: () => void;
+      routeActiveToSteer: true;
+    },
   ): Promise<void | AgentChatSteerResult>;
   async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer?: false },
+    options?: {
+      awaitDispatch?: boolean;
+      awaitBackendDispatch?: boolean;
+      onBackendDispatched?: () => void;
+      routeActiveToSteer?: false;
+    },
   ): Promise<void>;
   async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean; awaitBackendDispatch?: boolean; routeActiveToSteer?: boolean },
+    options?: {
+      awaitDispatch?: boolean;
+      awaitBackendDispatch?: boolean;
+      onBackendDispatched?: () => void;
+      routeActiveToSteer?: boolean;
+    },
   ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
@@ -28458,6 +28485,13 @@ export function createAgentChatService(args: {
           let settled = false;
           const resolveDispatch = () => {
             if (settled) return;
+            try {
+              options.onBackendDispatched?.();
+            } catch (error) {
+              settled = true;
+              reject(error instanceof Error ? error : new Error(String(error)));
+              return;
+            }
             settled = true;
             resolve();
           };
