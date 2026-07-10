@@ -309,10 +309,14 @@ import { copyToClipboard } from "../lib/clipboard";
 import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
+  SUBAGENT_PANE_ROSTER_CAPACITY,
   subagentIndexForPaneLine,
   subagentPaneContentFromRightPane,
   subagentTranscriptMessagesToEvents,
+  type SubagentPaneDisclosureSection,
   type SubagentPaneRow,
+  type SubagentPaneTarget,
+  type SubagentPaneViewState,
 } from "./subagentPane";
 import { readClaudeStatusLineConfig, runClaudeStatusLineCommand } from "./statusline";
 import {
@@ -2893,6 +2897,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
+  const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
+  const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
+  const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
+    if (!activeSessionId) return;
+    setSubagentPaneViewStateBySessionId((current) => ({
+      ...current,
+      [activeSessionId]: update(current[activeSessionId] ?? {}),
+    }));
+  }, [activeSessionId]);
+  const activateSubagentPaneTarget = useCallback((target: SubagentPaneTarget, resumeOffset: number) => {
+    if (target.type === "snapshot") {
+      setRightSelectionIndex(target.index + resumeOffset);
+      return;
+    }
+    if (target.type === "toggle-section") {
+      updateSubagentPaneViewState((current) => ({
+        ...current,
+        collapsed: { ...current.collapsed, [target.section]: current.collapsed?.[target.section] !== true },
+      }));
+      return;
+    }
+    if (target.type === "toggle-earlier") {
+      updateSubagentPaneViewState((current) => ({
+        ...current,
+        earlierExpanded: { ...current.earlierExpanded, [target.section]: current.earlierExpanded?.[target.section] !== true },
+      }));
+      return;
+    }
+    if (target.type === "show-all") {
+      updateSubagentPaneViewState((current) => ({
+        ...current,
+        showAll: { ...current.showAll, [target.section]: true },
+      }));
+      return;
+    }
+    updateSubagentPaneViewState((current) => ({
+      ...current,
+      cleared: { ...current.cleared, [target.section]: [] },
+    }));
+  }, [updateSubagentPaneViewState]);
   const [rightChatsClosedExpanded, setRightChatsClosedExpanded] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
@@ -3917,9 +3961,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // visible (0 = resume, 1 = main, …). Clamp prior selection back into range
     // when the roster shrinks (e.g., a subagent finishes and is reaped).
     const resumeOffset = rightPane.kind === "chat-info" ? chatInfoSelectionOffset(rightPane.info) : 0;
-    const rowCount = buildSubagentPaneRows(content).filter((row) => row.kind === "snapshot").length + resumeOffset;
+    const rowCount = buildSubagentPaneRows(content, subagentPaneViewState).filter((row) => row.kind === "snapshot").length + resumeOffset;
     setRightSelectionIndex((index) => Math.max(0, Math.min(Number.isFinite(index) ? Math.floor(index) : 0, rowCount)));
-  }, [rightPane]);
+  }, [rightPane, subagentPaneViewState]);
   useEffect(() => {
     if (!inspectedSubagentId) return;
     if (rightPane.kind !== "chat-info" || !rightOpen || !subagentSnapshots.some((snap) => snap.id === inspectedSubagentId)) {
@@ -12157,10 +12201,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             const resumeOffset = chatInfoSelectionOffset(rightPane.info);
             const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
             const subagentContent = subagentPaneContentFromRightPane(rightPane);
-            const nextIndex = subagentContent
-              ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset)
+            const target = subagentContent
+              ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
               : null;
-            if (nextIndex != null) setRightSelectionIndex(nextIndex + resumeOffset);
+            if (target) activateSubagentPaneTarget(target, resumeOffset);
           }
           return;
         }
@@ -12292,12 +12336,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const resumeOffset = chatInfoSelectionOffset(rightPane.info);
           const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
           const subagentContent = subagentPaneContentFromRightPane(rightPane);
-          const nextIndex = subagentContent
-            ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset)
+          const target = subagentContent
+            ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
             : null;
-          if (nextIndex != null) {
-            setRightSelectionIndex(nextIndex + resumeOffset);
-          }
+          if (target) activateSubagentPaneTarget(target, resumeOffset);
           setRightOpen(true);
           setPaneFocus("details");
         }
@@ -13486,15 +13528,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     const killWorkerKey = key.ctrl && !key.meta && input.toLowerCase() === "k";
+    const chatInfoDisclosureKey = !key.ctrl && !key.meta && !key.shift
+      ? input.toLowerCase()
+      : "";
     if (
       pane === "details"
       && rightOpen
       && rightPane.kind === "chat-info"
-      && (key.upArrow || key.downArrow || key.return || killWorkerKey)
+      && (key.upArrow || key.downArrow || key.return || killWorkerKey || ["c", "e", "a", "x"].includes(chatInfoDisclosureKey))
     ) {
       const subagentContent = subagentPaneContentFromRightPane(rightPane);
       if (!subagentContent) return;
-      const snapshotRows = buildSubagentPaneRows(subagentContent)
+      const paneRows = buildSubagentPaneRows(subagentContent, subagentPaneViewState);
+      const snapshotRows = paneRows
         .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
       // Selection: 0 = main row; 1..N = subagent rows — shifted down by one
       // when the resume row is visible (0 = resume, 1 = main, …).
@@ -13503,6 +13549,48 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const resumeRowSelected = resumeOffset === 1 && rightSelectionIndex === 0;
       const selectedRow = rightSelectionIndex > resumeOffset ? snapshotRows[rightSelectionIndex - 1 - resumeOffset] : null;
       const selectedSnapshot: SubagentSnapshot | null = selectedRow ? selectedRow.snapshot : null;
+      const focusedSection: SubagentPaneDisclosureSection = selectedRow?.section
+        ?? (paneRows.find((row): row is Extract<SubagentPaneRow, { kind: "section-header" }> => row.kind === "section-header")?.section ?? "subagents");
+      const focusedHeader = paneRows.find((row): row is Extract<SubagentPaneRow, { kind: "section-header" }> => (
+        row.kind === "section-header" && row.section === focusedSection
+      ));
+      if (chatInfoDisclosureKey === "c") {
+        if (focusedHeader?.collapsible) {
+          activateSubagentPaneTarget({ type: "toggle-section", section: focusedSection }, resumeOffset);
+          if (!focusedHeader.collapsed) setRightSelectionIndex(resumeOffset);
+        }
+        return;
+      }
+      if (chatInfoDisclosureKey === "e") {
+        if (focusedHeader && (focusedHeader.earlierCount > 0 || focusedHeader.clearedCount > 0)) {
+          activateSubagentPaneTarget({ type: "toggle-earlier", section: focusedSection }, resumeOffset);
+        }
+        return;
+      }
+      if (chatInfoDisclosureKey === "a") {
+        if (paneRows.some((row) => row.kind === "show-all" && row.section === focusedSection)) {
+          activateSubagentPaneTarget({ type: "show-all", section: focusedSection }, resumeOffset);
+        }
+        return;
+      }
+      if (chatInfoDisclosureKey === "x") {
+        const clearIds = paneRows
+          .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => (
+            row.kind === "snapshot" && row.section === focusedSection && row.group === "earlier"
+          ))
+          .map((row) => row.snapshot.id);
+        if (clearIds.length) {
+          updateSubagentPaneViewState((current) => ({
+            ...current,
+            cleared: {
+              ...current.cleared,
+              [focusedSection]: [...new Set([...(current.cleared?.[focusedSection] ?? []), ...clearIds])],
+            },
+          }));
+          setRightSelectionIndex(resumeOffset);
+        }
+        return;
+      }
       // ^k — stop the selected Droid AGI worker. The Droid worker subagent id IS
       // its workerSessionId (see droidSdkEventMapper.mission_worker_started).
       if (killWorkerKey) {
@@ -14949,13 +15037,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (subagentContent) {
           for (let y = rightBodyTop; y <= Math.max(rightBodyTop, rows - 2); y += 1) {
-            const index = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex - resumeOffset);
-            if (index == null) continue;
+            const target = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY);
+            if (!target) continue;
+            const targetKey = target.type === "snapshot" ? `${target.type}:${target.index}` : `${target.type}:${target.section}`;
             addTarget({
-              id: `right:chat-info:${index + resumeOffset}:${y}`,
+              id: `right:chat-info:${targetKey}:${y}`,
               rect: { x: rightStartColumn, y, w: rightPaneWidth, h: 1 },
               onClick: () => {
-                setRightSelectionIndex(index + resumeOffset);
+                activateSubagentPaneTarget(target, resumeOffset);
                 setRightOpen(true);
                 setPaneFocus("details");
               },
@@ -15504,6 +15593,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	              activeProvider={activeCommandProvider as AdeCodeProvider}
 	              width={rightPaneWidth}
               scrollOffsetRows={rightPaneScrollOffsetRows}
+              subagentPaneViewState={subagentPaneViewState}
               modelPickerInputs={rightPaneModelPickerInputs}
               onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
             />

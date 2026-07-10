@@ -8,6 +8,8 @@ import {
   deriveScheduleHistory,
   deriveScheduleItems,
   deriveScheduledWorkSnapshots,
+  isEarlierBackgroundItem,
+  isEarlierScheduleItem,
   nextCronFireAt,
   scheduledNextFireLabel,
   type ChatScheduledWorkSnapshot,
@@ -35,6 +37,15 @@ function snapshot(overrides: Partial<ChatScheduledWorkSnapshot>): ChatScheduledW
 }
 
 describe("chatScheduledWork helpers", () => {
+  it("uses the shared Earlier membership for background and schedule rows", () => {
+    expect(isEarlierBackgroundItem(snapshot({ kind: "background_task", status: "completed" }))).toBe(true);
+    expect(isEarlierBackgroundItem(snapshot({ kind: "background_task", status: "failed" }))).toBe(false);
+    expect(isEarlierScheduleItem(snapshot({ kind: "wakeup", status: "fired", recurring: false }))).toBe(true);
+    expect(isEarlierScheduleItem(snapshot({ kind: "wakeup", status: "fired", recurring: true }))).toBe(false);
+    expect(isEarlierScheduleItem(snapshot({ kind: "cron", status: "cancelled" }))).toBe(true);
+    expect(isEarlierScheduleItem(snapshot({ kind: "cron", status: "missed" }))).toBe(false);
+  });
+
   it("partitions schedule kinds from background tasks", () => {
     const kinds = ["wakeup", "cron", "loop", "remote_trigger", "background_task"] as const;
     const events = kinds.map((kind, index) => envelope({

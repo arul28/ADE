@@ -287,6 +287,30 @@ function getEventTurnId(event: AgentChatEvent): string | null {
   return turnId.length ? turnId : null;
 }
 
+export type AssistantTurnCopyInfo = {
+  text: string;
+  lastTextEventKey: string;
+  textEventCount: number;
+};
+
+export function deriveAssistantTurnCopyMap(
+  rows: readonly TranscriptRenderEnvelope[],
+): Map<string, AssistantTurnCopyInfo> {
+  const result = new Map<string, AssistantTurnCopyInfo>();
+  for (const row of rows) {
+    if (row.event.type !== "text") continue;
+    const turnId = getEventTurnId(row.event);
+    if (!turnId) continue;
+    const existing = result.get(turnId);
+    result.set(turnId, {
+      text: existing ? `${existing.text}\n\n${row.event.text}` : row.event.text,
+      lastTextEventKey: row.key,
+      textEventCount: (existing?.textEventCount ?? 0) + 1,
+    });
+  }
+  return result;
+}
+
 function basenamePathLabel(value: string): string {
   const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
@@ -622,9 +646,13 @@ type RenderEnvelope = {
 function MessageCopyButton({
   value,
   className,
+  label = "Copy",
+  title = "Copy message",
 }: {
   value: string;
   className?: string;
+  label?: string;
+  title?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const mountedRef = useRef(true);
@@ -673,11 +701,11 @@ function MessageCopyButton({
         className,
       )}
       onClick={handleCopy}
-      title={copied ? "Copied" : "Copy message"}
-      aria-label={copied ? "Copied" : "Copy message"}
+      title={copied ? "Copied" : title}
+      aria-label={copied ? "Copied" : title}
     >
       {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
-      <span>{copied ? "Copied" : "Copy"}</span>
+      <span>{copied ? "Copied" : label}</span>
     </button>
   );
 }
@@ -2626,6 +2654,7 @@ function renderEvent(
     mosaic?: MosaicRenderContext;
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
+    assistantTurnCopy?: { text: string } | null;
   }
 ) {
   const event = envelope.event;
@@ -2768,8 +2797,15 @@ function renderEvent(
       >
         {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
         <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 pr-7 text-[length:var(--chat-font-size)] leading-[1.7]">
-          <div className="absolute right-0 top-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div className="absolute right-0 top-0 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
+            {options?.assistantTurnCopy ? (
+              <MessageCopyButton
+                value={options.assistantTurnCopy.text}
+                label="Copy turn"
+                title="Copy whole turn"
+              />
+            ) : null}
           </div>
           <div className="min-w-0">
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
@@ -4129,6 +4165,7 @@ type EventRowProps = {
   mosaic?: MosaicRenderContext;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
+  assistantTurnCopy?: { text: string } | null;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4161,6 +4198,7 @@ const EventRow = React.memo(function EventRow({
   mosaic,
   anchored,
   onScrollToRowKey,
+  assistantTurnCopy,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -4223,6 +4261,7 @@ const EventRow = React.memo(function EventRow({
             turnDiffSummaries,
             mosaic,
             onScrollToRowKey,
+            assistantTurnCopy,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -4702,6 +4741,13 @@ function AgentChatMessageListMain({
     collapseCacheRef.current = { events, rows: nextRows, context };
     return nextRows;
   }, [events]);
+  const assistantTurnCopyByRowKey = useMemo(() => {
+    const byRowKey = new Map<string, AssistantTurnCopyInfo>();
+    for (const info of deriveAssistantTurnCopyMap(rows).values()) {
+      if (info.textEventCount >= 2) byRowKey.set(info.lastTextEventKey, info);
+    }
+    return byRowKey;
+  }, [rows]);
   const groupedRows = useMemo(() => groupChatTranscriptRows(rows), [rows]);
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
   const prevGroupedRowKeysRef = useRef<readonly string[] | null>(null);
@@ -5336,6 +5382,7 @@ function AgentChatMessageListMain({
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
+    const assistantTurnCopy = assistantTurnCopyByRowKey.get(envelope.key) ?? null;
 
     if (virtualized) {
       return (
@@ -5372,6 +5419,7 @@ function AgentChatMessageListMain({
           mosaic={mosaic}
           anchored={anchored}
           onScrollToRowKey={scrollToRowKey}
+          assistantTurnCopy={assistantTurnCopy}
         />
       );
     }
@@ -5407,9 +5455,10 @@ function AgentChatMessageListMain({
         mosaic={mosaic}
         anchored={anchored}
         onScrollToRowKey={scrollToRowKey}
+        assistantTurnCopy={assistantTurnCopy}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

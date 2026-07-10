@@ -241,7 +241,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let firedAt, let late, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
     return .scheduledWorkUpdate(
       id: id,
       kind: kind,
@@ -254,6 +254,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       cron: cron,
       nextRunAt: nextRunAt,
       lastRunAt: lastRunAt,
+      firedAt: firedAt,
+      late: late,
       recurring: recurring,
       durable: durable,
       sourceToolUseId: sourceToolUseId,

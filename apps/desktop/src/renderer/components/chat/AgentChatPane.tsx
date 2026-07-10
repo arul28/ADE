@@ -9326,6 +9326,7 @@ export function AgentChatPane({
   const proofSessionId = selectedSessionId ?? "";
   const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
     <ChatSubagentsPanel
+      sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
       todoItems={selectedTodoItems}
@@ -9347,6 +9348,7 @@ export function AgentChatPane({
         });
       } : undefined}
       variant="pane"
+      className="h-full"
       onSelectSubagent={(selection) => {
         setSubagentView({
           taskId: selection.taskId,
@@ -10698,7 +10700,7 @@ export function AgentChatPane({
 
   const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
   const FLOATING_PANE_CARD_CLASS =
-    "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+    "ade-floating-side-pane flex w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"

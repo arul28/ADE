@@ -20,10 +20,24 @@ import {
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
 import {
+  isEarlierBackgroundItem,
+  isEarlierScheduleItem,
   backgroundCommandLabel,
   compactRelativeDuration,
 } from "../../../../desktop/src/shared/chatScheduledWork";
-import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
+import {
+  BACKGROUND_ACTIVE_CAP,
+  SCHEDULE_ACTIVE_CAP,
+  capPaneSectionItems,
+  groupPaneSectionItems,
+} from "../../../../desktop/src/shared/chatSubagents";
+import {
+  buildSubagentPaneRows,
+  SUBAGENT_PANE_ROSTER_CAPACITY,
+  type SubagentPaneRow,
+  type SubagentPaneViewState,
+  windowSubagentPaneRows,
+} from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
 import { TokenBar } from "./FooterControls";
@@ -794,36 +808,29 @@ export function ChatInfoResumeRow({ selected }: { selected: boolean }) {
   );
 }
 
-function rosterWindow(rowCount: number, selected: number, capacity: number): { start: number; end: number } {
-  if (rowCount <= capacity) return { start: 0, end: rowCount };
-  const half = Math.floor(capacity / 2);
-  let start = Math.max(0, selected - half);
-  let end = start + capacity;
-  if (end > rowCount) {
-    end = rowCount;
-    start = end - capacity;
-  }
-  return { start, end };
-}
-
 function ChatInfoRoster({
   info,
   selectedIndex,
   brandColor,
   width,
+  viewState,
 }: {
   info: ChatInfoSnapshot;
   selectedIndex: number;
   brandColor: string;
   width: number;
+  viewState: SubagentPaneViewState;
 }) {
   const inner = Math.max(10, width - 4);
-  const snapshotRows = buildSubagentPaneRows(info)
+  const paneRows = buildSubagentPaneRows(info, viewState);
+  const snapshotRows = paneRows
     .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
-  const runCount = snapshotRows.filter((row) => row.snapshot.status === "running").length;
-  const doneCount = snapshotRows.filter((row) => row.snapshot.status === "completed").length;
-  const failedCount = snapshotRows.filter((row) => row.snapshot.status === "failed").length;
-  const bgCount = snapshotRows.filter((row) => row.section === "background").length;
+  const clearedIds = new Set(Object.values(viewState.cleared ?? {}).flatMap((ids) => [...(ids ?? [])]));
+  const countedSnapshots = info.snapshots.filter((snapshot) => !clearedIds.has(snapshot.id));
+  const runCount = countedSnapshots.filter((snapshot) => snapshot.status === "running").length;
+  const doneCount = countedSnapshots.filter((snapshot) => snapshot.status === "completed").length;
+  const failedCount = countedSnapshots.filter((snapshot) => snapshot.status === "failed").length;
+  const bgCount = countedSnapshots.filter((snapshot) => snapshot.background === true).length;
   // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
   // A negative index means the selection sits ABOVE the roster (the resume
   // row) — nothing in the roster highlights.
@@ -840,13 +847,22 @@ function ChatInfoRoster({
         bgCount ? `${bgCount} bg` : null,
       ].filter((value): value is string => value !== null).join(" · ");
 
-  const ROSTER_CAPACITY = 5;
   const subagentSelectedIndex = mainSelected ? -1 : selected - 1;
   const selectedSnapshot = !mainSelected ? (snapshotRows[subagentSelectedIndex]?.snapshot ?? null) : null;
-  const window = rosterWindow(snapshotRows.length, Math.max(0, subagentSelectedIndex), ROSTER_CAPACITY);
-  const visibleSlice = snapshotRows.slice(window.start, window.end);
-  const hiddenBefore = window.start;
-  const hiddenAfter = snapshotRows.length - window.end;
+  const selectedSection = !mainSelected ? snapshotRows[subagentSelectedIndex]?.section ?? null : null;
+  const selectedHeader = selectedSection
+    ? paneRows.find((row): row is Extract<SubagentPaneRow, { kind: "section-header" }> => row.kind === "section-header" && row.section === selectedSection)
+    : null;
+  const disclosureHints = selectedHeader ? [
+    ...(selectedHeader.collapsible ? ["c section"] : []),
+    ...(selectedHeader.earlierCount > 0 || selectedHeader.clearedCount > 0 ? ["e earlier"] : []),
+    ...(paneRows.some((row) => row.kind === "show-all" && row.section === selectedSection) ? ["a all"] : []),
+  ] : [];
+  const { visibleRows: visibleSlice, hiddenBefore, hiddenAfter } = windowSubagentPaneRows(
+    paneRows,
+    selected,
+    SUBAGENT_PANE_ROSTER_CAPACITY,
+  );
 
   return (
     <Box flexDirection="column">
@@ -861,19 +877,31 @@ function ChatInfoRoster({
         </Box>
         <Text color={theme.color.t4} dimColor>{showingMain ? "viewing" : "return ↵"}</Text>
       </Box>
-      {snapshotRows.length === 0 ? (
+      {info.snapshots.length === 0 ? (
         <Text color={theme.color.t4} dimColor>{" "}no subagents yet</Text>
       ) : (
         <>
           {hiddenBefore > 0 ? (
             <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} earlier`}</Text>
           ) : null}
-          {visibleSlice.map((row, sliceIndex) => {
-            const rosterIndex = window.start + sliceIndex;
-            const previousSection = rosterIndex === 0
-              ? "main"
-              : snapshotRows[rosterIndex - 1]?.section;
-            const showSection = row.section !== previousSection;
+          {visibleSlice.map((row) => {
+            if (row.kind === "section-header") {
+              return <RosterSectionHead key={row.key} row={row} />;
+            }
+            if (row.kind === "earlier-toggle") {
+              return (
+                <Text key={row.key} color={theme.color.t4} dimColor>
+                  {`  ${row.expanded ? "▾" : "▸"} earlier (${row.count})${row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}`}
+                </Text>
+              );
+            }
+            if (row.kind === "show-all") {
+              return <Text key={row.key} color={theme.color.t4} dimColor>{`  + show all (${row.hiddenCount})`}</Text>;
+            }
+            if (row.kind === "restore-cleared") {
+              return <Text key={row.key} color={theme.color.t4} dimColor>{`  restore (${row.count})`}</Text>;
+            }
+            const rosterIndex = snapshotRows.findIndex((candidate) => candidate.key === row.key);
             const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
             const kind = subagentAgentKind(row.snapshot.status);
             // Background rows get a cyan glyph tint so the eye can sort them out
@@ -889,7 +917,6 @@ function ChatInfoRoster({
             const detail = isSelected ? selectedRosterDetail(row.snapshot, info.capability) : null;
             return (
               <Box key={row.key} flexDirection="column">
-                {showSection ? <RosterSectionHead section={row.section} /> : null}
                 <Box flexDirection="row">
                   <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
                   <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
@@ -912,7 +939,7 @@ function ChatInfoRoster({
         </>
       )}
       <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>{rosterFooterHint(info, mainSelected, selectedSnapshot)}</Text>
+        <Text color={theme.color.t4} dimColor>{rosterFooterHint(info, mainSelected, selectedSnapshot, disclosureHints)}</Text>
       </Box>
       {info.mission ? <ChatInfoMissionBlock mission={info.mission} width={width} brandColor={brandColor} /> : null}
     </Box>
@@ -927,6 +954,7 @@ function rosterFooterHint(
   info: ChatInfoSnapshot,
   mainSelected: boolean,
   selectedSnapshot: SubagentSnapshot | null,
+  disclosureHints: string[],
 ): string {
   const parts = ["↑↓ focus"];
   if (mainSelected) {
@@ -942,6 +970,7 @@ function rosterFooterHint(
   ) {
     parts.push("^k kill");
   }
+  parts.push(...disclosureHints);
   parts.push("esc → main");
   return parts.join(" · ");
 }
@@ -949,14 +978,16 @@ function rosterFooterHint(
 // Section heading for the roster — matches the 2-line allowance built into
 // `subagentPaneSelectableLineOffsets` (one blank-margin line + one title line)
 // so the mouse-click line-math stays accurate.
-function RosterSectionHead({ section }: { section: SubagentPaneRow["section"] }) {
-  let label = "subagents";
-  if (section === "background") label = "background";
-  else if (section === "teammates") label = "teammates";
-  const color = section === "background" ? theme.color.tool : theme.color.t4;
+function RosterSectionHead({ row }: { row: Extract<SubagentPaneRow, { kind: "section-header" }> }) {
+  const color = row.section === "background" ? theme.color.tool : theme.color.t4;
+  const count = row.earlierCount
+    ? `${row.activeCount} · ${row.earlierCount} earlier`
+    : `${row.activeCount}`;
   return (
     <Box marginTop={1}>
-      <Text color={color} dimColor>{label}</Text>
+      <Text color={color} dimColor>
+        {row.collapsible ? (row.collapsed ? "▸ " : "▾ ") : ""}{row.label.toLowerCase()} {count}{row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}
+      </Text>
     </Box>
   );
 }
@@ -1019,7 +1050,6 @@ function ChatInfoMissionBlock({ mission, width, brandColor }: { mission: Mission
 // Desktop ChatTasksPanel parity: latest todo_update snapshot. Rendered BELOW
 // the roster (like Mission) so the roster's click line-math stays intact.
 const TASKS_VISIBLE_CAP = 6;
-const SCHEDULE_VISIBLE_CAP = 5;
 
 function scheduleStatusColor(status: ChatScheduledWorkSnapshot["status"]): string {
   if (status === "running" || status === "fired") return theme.color.running;
@@ -1058,65 +1088,89 @@ function nextWakeCountdown(value: string | null | undefined, nowMs: number): str
   return compactRelativeDuration(Math.max(60_000, timestampMs - nowMs));
 }
 
-function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: ChatInfoSnapshot; brandColor: string; width: number; viewState: SubagentPaneViewState }) {
   const nextWake = nextWakeCountdown(info.nextWakeAt, Date.now());
   if (!info.scheduledWork.length && !nextWake) return null;
   const inner = Math.max(10, width - 4);
-  const visible = info.scheduledWork.slice(0, SCHEDULE_VISIBLE_CAP);
-  const hiddenAfter = info.scheduledWork.length - visible.length;
+  const clearedIds = new Set(viewState.cleared?.schedule ?? []);
+  const grouped = groupPaneSectionItems(info.scheduledWork, {
+    isEarlier: isEarlierScheduleItem,
+    isCleared: (item) => clearedIds.has(item.id),
+    isPinned: () => false,
+  });
+  const capped = viewState.showAll?.schedule
+    ? { visible: grouped.active, hiddenCount: 0 }
+    : capPaneSectionItems(grouped.active, SCHEDULE_ACTIVE_CAP, (item) => item.status === "failed");
+  const earlierExpanded = viewState.earlierExpanded?.schedule === true;
+  const renderItem = (item: ChatScheduledWorkSnapshot, earlier: boolean) => {
+    const detail = scheduleLineDetail(item);
+    const label = `${scheduleKindLabel(item.kind)} · ${item.status}${item.late ? " · late" : ""}`;
+    const titleBudget = Math.max(6, inner - label.length - 4);
+    return (
+      <Box key={item.id} flexDirection="column">
+        <Text color={scheduleStatusColor(item.status)} dimColor={earlier} wrap="truncate-end">
+          {scheduleStatusGlyph(item.status)} {endTruncate(item.title, titleBudget)} <Text color={theme.color.t4}>{label}</Text>
+        </Text>
+        {detail ? (
+          <Text color={theme.color.t4} dimColor wrap="truncate-end">
+            {"  "}{endTruncate(detail, inner - 2)}
+          </Text>
+        ) : null}
+      </Box>
+    );
+  };
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="SCHEDULE" hint={info.scheduledWork.length ? `${info.scheduledWork.length}` : ""} color={brandColor} width={width} />
+      <ChatInfoSectionHead title="SCHEDULE" hint={grouped.earlier.length ? `${grouped.active.length} · ${grouped.earlier.length} earlier` : `${grouped.active.length}`} color={brandColor} width={width} />
       {nextWake ? (
         <Text color={theme.color.t2} wrap="truncate-end">
           {` ⏰ next wake ${nextWake}`}
         </Text>
       ) : null}
-      {visible.map((item) => {
-        const detail = scheduleLineDetail(item);
-        // Mirror desktop's history row: a fired-behind-schedule wake reads `· late`.
-        const label = `${scheduleKindLabel(item.kind)} · ${item.status}${item.late ? " · late" : ""}`;
-        const titleBudget = Math.max(6, inner - label.length - 4);
-        return (
-          <Box key={item.id} flexDirection="column">
-            <Text color={scheduleStatusColor(item.status)} wrap="truncate-end">
-              {scheduleStatusGlyph(item.status)} {endTruncate(item.title, titleBudget)} <Text color={theme.color.t4}>{label}</Text>
-            </Text>
-            {detail ? (
-              <Text color={theme.color.t4} dimColor wrap="truncate-end">
-                {"  "}{endTruncate(detail, inner - 2)}
-              </Text>
-            ) : null}
-          </Box>
-        );
-      })}
-      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+      {capped.visible.map((item) => renderItem(item, false))}
+      {capped.hiddenCount > 0 ? <Text color={theme.color.t4} dimColor>{`  + show all (${capped.hiddenCount})`}</Text> : null}
+      {grouped.earlier.length > 0 || grouped.clearedCount > 0 ? (
+        <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} earlier (${grouped.earlier.length})${grouped.clearedCount ? ` · ${grouped.clearedCount} hidden` : ""}`}</Text>
+      ) : null}
+      {earlierExpanded ? grouped.earlier.map((item) => renderItem(item, true)) : null}
+      {earlierExpanded && grouped.clearedCount > 0 ? <Text color={theme.color.t4} dimColor>{`  restore (${grouped.clearedCount})`}</Text> : null}
     </Box>
   );
 }
 
 // Background command tasks — mirrors the desktop actions-pane Background
 // section. Each row: `$ <smart label>  status` (ASCII, one line).
-function ChatInfoBackgroundBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+function ChatInfoBackgroundBlock({ info, brandColor, width, viewState }: { info: ChatInfoSnapshot; brandColor: string; width: number; viewState: SubagentPaneViewState }) {
   if (!info.backgroundWork.length) return null;
   const inner = Math.max(10, width - 4);
-  const visible = info.backgroundWork.slice(0, SCHEDULE_VISIBLE_CAP);
-  const hiddenAfter = info.backgroundWork.length - visible.length;
+  const clearedIds = new Set(viewState.cleared?.background ?? []);
+  const grouped = groupPaneSectionItems(info.backgroundWork, {
+    isEarlier: isEarlierBackgroundItem,
+    isCleared: (item) => clearedIds.has(item.id),
+    isPinned: () => false,
+  });
+  const capped = viewState.showAll?.background
+    ? { visible: grouped.active, hiddenCount: 0 }
+    : capPaneSectionItems(grouped.active, BACKGROUND_ACTIVE_CAP, (item) => item.status === "failed");
+  const earlierExpanded = viewState.earlierExpanded?.background === true;
+  const renderItem = (item: ChatScheduledWorkSnapshot) => {
+    const raw = (item.title || item.prompt || item.summary || "").trim();
+    const label = backgroundCommandLabel(raw) || raw || "background command";
+    const status = ` ${item.status}`;
+    const labelBudget = Math.max(6, inner - status.length - 4);
+    return (
+      <Text key={item.id} color={scheduleStatusColor(item.status)} wrap="truncate-end">
+        {"$ "}{endTruncate(label, labelBudget)} <Text color={theme.color.t4}>{item.status}</Text>
+      </Text>
+    );
+  };
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="BACKGROUND" hint={`${info.backgroundWork.length}`} color={brandColor} width={width} />
-      {visible.map((item) => {
-        const raw = (item.title || item.prompt || item.summary || "").trim();
-        const label = backgroundCommandLabel(raw) || raw || "background command";
-        const status = ` ${item.status}`;
-        const labelBudget = Math.max(6, inner - status.length - 4);
-        return (
-          <Text key={item.id} color={scheduleStatusColor(item.status)} wrap="truncate-end">
-            {"$ "}{endTruncate(label, labelBudget)} <Text color={theme.color.t4}>{item.status}</Text>
-          </Text>
-        );
-      })}
-      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+      <ChatInfoSectionHead title="BACKGROUND" hint={grouped.earlier.length ? `${grouped.active.length} · ${grouped.earlier.length} earlier` : `${grouped.active.length}`} color={brandColor} width={width} />
+      {capped.visible.map(renderItem)}
+      {capped.hiddenCount > 0 ? <Text color={theme.color.t4} dimColor>{`  + show all (${capped.hiddenCount})`}</Text> : null}
+      {grouped.earlier.length > 0 || grouped.clearedCount > 0 ? <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} earlier (${grouped.earlier.length})`}</Text> : null}
+      {earlierExpanded ? grouped.earlier.map(renderItem) : null}
     </Box>
   );
 }
@@ -1181,10 +1235,12 @@ function ChatInfoPane({
   info,
   selectedIndex,
   width,
+  subagentPaneViewState,
 }: {
   info: ChatInfoSnapshot;
   selectedIndex: number;
   width: number;
+  subagentPaneViewState: SubagentPaneViewState;
 }) {
   const brand = theme.provider(info.provider);
   // With the resume row visible the selection space shifts by one (0 = resume,
@@ -1197,10 +1253,10 @@ function ChatInfoPane({
       <ChatInfoHeader info={info} width={width} />
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
+      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
+      <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>
   );
@@ -2147,6 +2203,7 @@ function RightPaneComponent({
   modelPickerInputs,
   onModelPickerMeasureOrigin,
   scrollOffsetRows = 0,
+  subagentPaneViewState = {},
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
@@ -2156,6 +2213,7 @@ function RightPaneComponent({
   activeProvider?: AdeCodeProvider | null;
   width?: number;
   scrollOffsetRows?: number;
+  subagentPaneViewState?: SubagentPaneViewState;
   /** Reports the model-picker's measured content origin for click hit-testing. */
   onModelPickerMeasureOrigin?: (origin: { x: number; y: number; width: number }) => void;
   /** Data passed in by app.tsx for the model-picker content kind. */
@@ -2310,7 +2368,7 @@ function RightPaneComponent({
       ) : null}
 
       {content.kind === "chat-info" ? (
-        <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} />
+        <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} subagentPaneViewState={subagentPaneViewState} />
       ) : null}
 
       {content.kind === "model-picker" && modelPickerInputs ? (

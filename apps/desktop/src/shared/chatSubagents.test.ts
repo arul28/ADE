@@ -1,12 +1,81 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent } from "./types/chat";
 import {
+  buildSubagentPaneRows,
+  groupPaneSectionItems,
+  isEarlierSubagentSnapshot,
   deriveSubagentTimelineRows,
   isBackgroundShellCommand,
   isRealSubagent,
   preferSubagentSummary,
   subagentAgentKey,
+  subagentIndexForPaneLine,
+  type SubagentSnapshot,
 } from "./chatSubagents";
+
+function paneSnapshot(id: string, status: SubagentSnapshot["status"], overrides: Partial<SubagentSnapshot> = {}): SubagentSnapshot {
+  return {
+    id,
+    name: id,
+    kind: "subagent",
+    status,
+    summary: id,
+    ...overrides,
+  };
+}
+
+describe("chat pane scalability helpers", () => {
+  it("partitions in source order while pins override earlier and cleared membership", () => {
+    const running = paneSnapshot("running", "running");
+    const completed = paneSnapshot("completed", "completed");
+    const stopped = paneSnapshot("stopped", "stopped");
+    const failed = paneSnapshot("failed", "failed");
+
+    expect(groupPaneSectionItems([running, completed, stopped, failed], {
+      isEarlier: isEarlierSubagentSnapshot,
+      isCleared: (item) => item.id === "stopped" || item.id === "completed",
+      isPinned: (item) => item.id === "completed",
+    })).toEqual({
+      active: [running, completed, failed],
+      earlier: [],
+      clearedCount: 1,
+    });
+  });
+
+  it("emits grouped disclosure rows with caps, clear state, and tagged targets", () => {
+    const snapshots = Array.from({ length: 14 }, (_, index) => paneSnapshot(`running-${index}`, "running"));
+    snapshots.splice(4, 0, paneSnapshot("failed", "failed"));
+    snapshots.push(paneSnapshot("done", "completed"));
+
+    const rows = buildSubagentPaneRows({ snapshots }, {});
+    expect(rows.find((row) => row.kind === "section-header")).toMatchObject({
+      activeCount: 15,
+      earlierCount: 1,
+      collapsible: true,
+      hasClear: true,
+    });
+    expect(rows.filter((row) => row.kind === "snapshot" && row.group === "active")).toHaveLength(12);
+    expect(rows.find((row) => row.kind === "show-all")).toMatchObject({ hiddenCount: 3 });
+    expect(rows.find((row) => row.kind === "earlier-toggle")).toMatchObject({ count: 1, expanded: false });
+
+    const showAllLine = rows.slice(0, rows.findIndex((row) => row.kind === "show-all"))
+      .reduce((line, row) => line + (row.kind === "section-header" || row.kind === "main" ? 2 : 1), 0);
+    expect(subagentIndexForPaneLine({ snapshots }, showAllLine, 0, {})).toEqual({
+      type: "show-all",
+      section: "subagents",
+    });
+
+    const clearedRows = buildSubagentPaneRows({ snapshots }, {
+      earlierExpanded: { subagents: true },
+      cleared: { subagents: ["done"] },
+    });
+    expect(clearedRows.find((row) => row.kind === "earlier-toggle")).toMatchObject({
+      count: 0,
+      clearedCount: 1,
+    });
+    expect(clearedRows.find((row) => row.kind === "restore-cleared")).toMatchObject({ count: 1 });
+  });
+});
 
 describe("chatSubagents timeline helpers", () => {
   it("normalizes agent keys and prefers meaningful, richer summaries", () => {

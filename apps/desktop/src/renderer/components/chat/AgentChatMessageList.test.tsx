@@ -434,6 +434,63 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("copies a multi-block assistant turn from the last text row", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "First block.", itemId: "text-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Second block.", itemId: "text-2", turnId: "turn-1" },
+      },
+    ]);
+
+    expect(screen.getAllByRole("button", { name: "Copy message" })).toHaveLength(2);
+    const turnButton = screen.getByRole("button", { name: "Copy whole turn" });
+    fireEvent.click(turnButton);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
+  });
+
+  it("does not add turn-copy chrome for single-block or legacy null-turn text", () => {
+    const { rerender } = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "One block.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ]);
+    expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+
+    rerender(
+      <MemoryRouter>
+        <AgentChatMessageList
+          events={[
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:00.000Z",
+              event: { type: "text", text: "Legacy one.", itemId: "legacy-1" },
+            },
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:01.000Z",
+              event: { type: "text", text: "Legacy two.", itemId: "legacy-2" },
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+  });
+
   it("copies assistant code blocks from the transcript", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

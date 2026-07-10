@@ -247,6 +247,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           cron: optionalString(eventDict["cron"]),
           nextRunAt: optionalString(eventDict["nextRunAt"]),
           lastRunAt: optionalString(eventDict["lastRunAt"]),
+          firedAt: optionalString(eventDict["firedAt"]),
+          late: workBoolValue(eventDict["late"]),
           recurring: workBoolValue(eventDict["recurring"]),
           durable: workBoolValue(eventDict["durable"]),
           sourceToolUseId: optionalString(eventDict["sourceToolUseId"]),

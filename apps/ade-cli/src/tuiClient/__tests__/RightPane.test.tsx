@@ -191,6 +191,45 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("agent-07");
   });
 
+  it("windows grouped roster rows while keeping Show all and Earlier affordances reachable", () => {
+    const snapshots: ChatInfoSnapshot["snapshots"] = [
+      ...Array.from({ length: 13 }, (_, index) => ({
+        id: `run-${index}`,
+        name: `running-${index}`,
+        kind: "subagent" as const,
+        status: "running" as const,
+        summary: "working",
+      })),
+      { id: "done-1", name: "completed-agent", kind: "subagent", status: "completed", summary: "done" },
+    ];
+    const collapsed = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ snapshots }) }}
+        subagentPaneViewState={{}}
+        selectedIndex={12}
+        focused
+        width={80}
+      />,
+    );
+    const collapsedFrame = stripAnsi(collapsed.lastFrame() ?? "");
+
+    expect(collapsedFrame).toContain("+ show all (1)");
+    expect(collapsedFrame).toContain("▸ earlier (1)");
+    expect(collapsedFrame).toMatch(/↑\s+\d+\s+earlier/);
+    expect(collapsedFrame).not.toContain("completed-agent");
+
+    const expanded = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ snapshots }) }}
+        subagentPaneViewState={{ showAll: { subagents: true }, earlierExpanded: { subagents: true } }}
+        selectedIndex={14}
+        focused
+        width={80}
+      />,
+    );
+    expect(stripAnsi(expanded.lastFrame() ?? "")).toContain("completed-agent");
+  });
+
   it("separates foreground subagents from background tasks with section headers", () => {
     const result = render(
       <RightPane
@@ -327,7 +366,7 @@ describe("RightPane chat info", () => {
   });
 
   it("caps scheduled work rows in narrow chat info panes", () => {
-    const scheduledWork: ChatInfoSnapshot["scheduledWork"] = Array.from({ length: 7 }, (_, index) => {
+    const scheduledWork: ChatInfoSnapshot["scheduledWork"] = Array.from({ length: 12 }, (_, index) => {
       const ordinal = String(index + 1).padStart(2, "0");
       return {
         id: `wake-${ordinal}`,
@@ -355,9 +394,9 @@ describe("RightPane chat info", () => {
 
     expect(frame).toContain("SCHEDULE");
     expect(frame).toContain("Wakeup 01");
-    expect(frame).toContain("Wakeup 05");
-    expect(frame).not.toContain("Wakeup 06");
-    expect(frame).toContain("↓ 2 more");
+    expect(frame).toContain("Wakeup 10");
+    expect(frame).not.toContain("Wakeup 11");
+    expect(frame).toContain("+ show all (2)");
     expect(longestLine).toBeLessThanOrEqual(44);
   });
 
@@ -391,6 +430,7 @@ describe("RightPane chat info", () => {
             ],
           }),
         }}
+        subagentPaneViewState={{ earlierExpanded: { schedule: true } }}
         focused
         width={80}
       />,
