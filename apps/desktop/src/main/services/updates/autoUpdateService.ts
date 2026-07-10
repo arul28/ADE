@@ -889,12 +889,8 @@ export function createAutoUpdateService({
       if (snapshot.status !== "ready" || !snapshot.version) return false;
       const run = async (): Promise<boolean> => {
         currentPhase = "verification";
-        const refreshResult = await waitForInstallStep(
-          refreshReadyUpdateBeforeInstall(),
-          "verification",
-          "ADE could not verify the update in time. Check your connection and try again.",
-        );
-        if (!refreshResult.completed || !refreshResult.value) return false;
+        const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
+        if (!refreshSucceeded) return false;
         // After refresh, snapshot may have been replaced; re-check version
         // (refreshReadyUpdateBeforeInstall returns false if snapshot is no
         // longer "ready" with a version, but be explicit for the narrowing).

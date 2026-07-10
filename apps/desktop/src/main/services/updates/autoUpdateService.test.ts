@@ -679,6 +679,64 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("allows a newer update download to outlive the install watchdog before starting handoff", async () => {
+    vi.useFakeTimers();
+    let finishDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    });
+    const newerUpdate = {
+      version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", size: 100 * 1024 * 1024, sha512: "test" }],
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", newerUpdate);
+      return { updateInfo: newerUpdate };
+    });
+    updater.downloadUpdate.mockImplementationOnce(async () => {
+      await downloadGate;
+      updater.emit("update-downloaded", newerUpdate);
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      installWatchdogMs: 1_000,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    const installPromise = service.quitAndInstall();
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "downloading",
+      version: "1.2.4",
+    });
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+
+    finishDownload();
+    await expect(installPromise).resolves.toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.4",
+    });
+
+    service.dispose();
+  });
+
   it("does not install a ready update when latest-version verification fails", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
