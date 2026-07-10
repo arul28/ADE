@@ -1,6 +1,6 @@
 ## Picking the right models for work delegation
 
-Three tiers. Fable 5 for thinking, gpt-5.6-sol for building, Opus 4.8 for everything in between. Never use Sonnet or Haiku for anything.
+Three tiers. Fable 5 for thinking, gpt-5.6-sol for building, Opus 4.8 for everything in between. With a tight, self-contained prompt Opus also handles implementation well when gpt-5.6-sol is unavailable. Sonnet is acceptable only for genuinely trivial mechanical subtasks; never use Haiku.
 
 | model    | use for |
 |----------|---------|
