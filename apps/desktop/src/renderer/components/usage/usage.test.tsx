@@ -598,6 +598,18 @@ describe("usage components", () => {
       expect(screen.getByText("GitHub")).toBeTruthy();
     });
 
+    it("counts a github-only day toward the heatmap intensity", () => {
+      const stats = makeEmptyActivityStats();
+      stats.daily = [{ ...stats.daily[0]!, githubCommits: 3, githubPrs: 1, githubAdditions: 200, githubDeletions: 20 }];
+      const { container } = render(<ActivityModule stats={stats} preset="7d" onPresetChange={vi.fn()} />);
+
+      const grid = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      const cell = grid.children[0] as HTMLElement;
+      // The single github-only day is the max, so its intensity must be full (1),
+      // not zero — proving dayValue folds in the github fields.
+      expect(Number(cell.getAttribute("data-intensity"))).toBeGreaterThan(0);
+    });
+
     it("shows a streak chip once the streak reaches three days", () => {
       render(<ActivityModule stats={makeActivityStats({ summary: { ...makeActivityStats().summary, currentStreakDays: 5 } })} preset="7d" onPresetChange={vi.fn()} />);
       expect(screen.getByText("5-day streak")).toBeTruthy();

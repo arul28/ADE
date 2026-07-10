@@ -12,7 +12,7 @@ import { areAutomationsEnabledForPackagedState } from "../../../shared/automatio
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
-import { buildPrAiResolutionContextKey, isAdeUsageScope } from "../../../shared/types";
+import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
@@ -4877,8 +4877,17 @@ export function registerIpc({
   ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
     const ctx = getCtx();
     if (arg != null && !isRecord(arg)) throw new Error("usage stats expects an object payload.");
+    if (arg?.preset != null && !isAdeUsageRangePreset(arg.preset)) {
+      throw new Error("usage stats preset must be today, 7d, 30d, year, or all.");
+    }
     if (arg?.scope != null && !isAdeUsageScope(arg.scope)) {
       throw new Error("usage stats scope must be machine or project.");
+    }
+    if (arg?.since != null && Number.isNaN(Date.parse(arg.since))) {
+      throw new Error("usage stats since must be an ISO timestamp.");
+    }
+    if (arg?.until != null && Number.isNaN(Date.parse(arg.until))) {
+      throw new Error("usage stats until must be an ISO timestamp.");
     }
     return ctx.usageTrackingService?.getAdeUsageStats(arg ?? {}) ?? null;
   });

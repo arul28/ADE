@@ -1620,14 +1620,93 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("keeps GitHub stats cache entries precise for same-day custom ranges", async () => {
+  it("widens custom ranges to local days for providers, database stats, and GitHub stats", async () => {
+    const since = new Date(2026, 6, 1, 12, 0, 0, 0);
+    const until = new Date(2026, 6, 2, 12, 0, 0, 0);
+    const expectedSince = new Date(2026, 6, 1, 0, 0, 0, 0).toISOString();
+    const expectedUntil = new Date(2026, 6, 2, 23, 59, 59, 999).toISOString();
+    const collectDatabaseStats = vi.fn(() => null);
     const logger = createLogger();
     const scanGitHubStats = vi.fn(async (range: any) => ({
       repo: "arul28/ADE",
       available: true,
       fetchedAt: range.until,
       error: null,
-      commitsCreated: new Date(range.until).getUTCHours(),
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    }));
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        ...createFastDependencies(),
+        scanCodexLogs: vi.fn(async () => [
+          {
+            messageId: "before-since-on-boundary-day",
+            model: "gpt-5.5",
+            originator: "codex_cli_rs",
+            inputTokens: 70,
+            outputTokens: 30,
+            cachedTokens: 0,
+            timestamp: new Date(2026, 6, 1, 8, 0, 0, 0).getTime(),
+          },
+          {
+            messageId: "after-until-on-boundary-day",
+            model: "gpt-5.5",
+            originator: "codex_cli_rs",
+            inputTokens: 150,
+            outputTokens: 50,
+            cachedTokens: 0,
+            timestamp: new Date(2026, 6, 2, 20, 0, 0, 0).getTime(),
+          },
+          {
+            messageId: "outside-range",
+            model: "gpt-5.5",
+            originator: "codex_cli_rs",
+            inputTokens: 400,
+            outputTokens: 0,
+            cachedTokens: 0,
+            timestamp: new Date(2026, 6, 3, 12, 0, 0, 0).getTime(),
+          },
+        ]),
+        scanGitHubStats,
+        collectDatabaseStats,
+      },
+    });
+
+    await service.forceRefresh();
+    const stats = await service.getAdeUsageStats({
+      preset: "all",
+      since: since.toISOString(),
+      until: until.toISOString(),
+    });
+
+    expect(stats.range).toEqual({
+      preset: "all",
+      since: expectedSince,
+      until: expectedUntil,
+    });
+    expect(collectDatabaseStats).toHaveBeenCalledWith(stats.range);
+    expect(scanGitHubStats).toHaveBeenCalledWith(stats.range);
+    expect(stats.providers.find((provider) => provider.provider === "codex")?.totalTokens).toBe(300);
+
+    service.dispose();
+  });
+
+  it("shares a GitHub stats cache entry across custom times on the same local days", async () => {
+    const logger = createLogger();
+    const scanGitHubStats = vi.fn(async (range: any) => ({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: range.until,
+      error: null,
+      commitsCreated: 1,
       prsTracked: 0,
       prsOpen: 0,
       prsMerged: 0,
@@ -1645,42 +1724,29 @@ describe("createUsageTrackingService", () => {
       },
     });
 
-    const firstLoading = await service.getAdeUsageStats({
+    await service.getAdeUsageStats({
       preset: "today",
-      since: "2026-05-30T00:00:00.000Z",
-      until: "2026-05-30T10:00:00.000Z",
+      since: new Date(2026, 4, 30, 8).toISOString(),
+      until: new Date(2026, 4, 30, 10).toISOString(),
     });
     await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setImmediate(resolve));
-    const first = await service.getAdeUsageStats({
+    const stats = await service.getAdeUsageStats({
       preset: "today",
-      since: "2026-05-30T00:00:00.000Z",
-      until: "2026-05-30T10:00:00.000Z",
-    });
-    const secondLoading = await service.getAdeUsageStats({
-      preset: "today",
-      since: "2026-05-30T00:00:00.000Z",
-      until: "2026-05-30T11:00:00.000Z",
-    });
-    await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(2));
-    await new Promise((resolve) => setImmediate(resolve));
-    const second = await service.getAdeUsageStats({
-      preset: "today",
-      since: "2026-05-30T00:00:00.000Z",
-      until: "2026-05-30T11:00:00.000Z",
+      since: new Date(2026, 4, 30, 9).toISOString(),
+      until: new Date(2026, 4, 30, 11).toISOString(),
     });
 
-    expect(firstLoading.freshness?.state).toBe("refreshing");
-    expect(secondLoading.freshness?.state).toBe("refreshing");
-    expect(first.githubActivity?.commits).toBe(10);
-    expect(second.githubActivity?.commits).toBe(11);
-    expect(scanGitHubStats).toHaveBeenCalledTimes(2);
+    expect(stats.githubActivity?.commits).toBe(1);
+    expect(scanGitHubStats).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });
 
   it("clamps inverted custom ranges before scanning GitHub stats", async () => {
     const logger = createLogger();
+    const laterDay = new Date(2026, 4, 31, 12, 0, 0, 0);
+    const earlierDay = new Date(2026, 4, 30, 12, 0, 0, 0);
     const scanGitHubStats = vi.fn(async () => ({
       repo: "arul28/ADE",
       available: true,
@@ -1706,13 +1772,13 @@ describe("createUsageTrackingService", () => {
 
     await service.getAdeUsageStats({
       preset: "7d",
-      since: "2026-05-31T00:00:00.000Z",
-      until: "2026-05-30T00:00:00.000Z",
+      since: laterDay.toISOString(),
+      until: earlierDay.toISOString(),
     });
 
     expect(scanGitHubStats).toHaveBeenCalledWith(expect.objectContaining({
-      since: "2026-05-30T00:00:00.000Z",
-      until: "2026-05-30T00:00:00.000Z",
+      since: new Date(2026, 4, 30, 0, 0, 0, 0).toISOString(),
+      until: new Date(2026, 4, 30, 23, 59, 59, 999).toISOString(),
     }));
 
     service.dispose();

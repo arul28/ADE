@@ -127,7 +127,18 @@ function formatDay(date: string): string {
 }
 
 function dayValue(point: AdeUsageDailyPoint): number {
-  return point.totalTokens + point.sessions * 4_000 + (point.interactions ?? 0) * 1_500;
+  return (
+    point.totalTokens
+    + point.sessions * 4_000
+    + (point.interactions ?? 0) * 1_500
+    // GitHub-only days (no local tokens/sessions) still count toward the
+    // heatmap intensity, consistent with dayHasActivity: commits/PRs weighted
+    // like sessions-scale events, additions/deletions as raw line counts.
+    + (point.githubCommits ?? 0) * 3_000
+    + (point.githubPrs ?? 0) * 5_000
+    + (point.githubAdditions ?? 0)
+    + (point.githubDeletions ?? 0)
+  );
 }
 
 function dayHasActivity(point: AdeUsageDailyPoint): boolean {
@@ -339,6 +350,7 @@ function ActivityHeatmap({
         <span
           key={point.date}
           className="rounded-[2px]"
+          data-intensity={intensity.toFixed(2)}
           style={{
             background:
               intensity === 0

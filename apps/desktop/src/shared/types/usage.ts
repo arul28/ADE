@@ -88,7 +88,9 @@ export type AdeUsageEstimationKind = "exact" | "chars" | "distribution" | "mixed
 
 export type GetAdeUsageStatsArgs = {
   preset?: AdeUsageRangePreset;
+  /** Custom timestamps are widened to include the whole machine-local calendar day. */
   since?: string | null;
+  /** Custom timestamps are widened to include the whole machine-local calendar day. */
   until?: string | null;
   /** Defaults to "machine" (legacy behavior). */
   scope?: AdeUsageScope;

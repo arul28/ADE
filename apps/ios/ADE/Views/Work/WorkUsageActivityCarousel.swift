@@ -75,7 +75,9 @@ private struct WorkUsageVisualBucket: Identifiable {
   var tokens: Int { inputTokens + outputTokens + cachedTokens }
   var code: Int { insertions + deletions }
   var githubCode: Int { githubAdditions + githubDeletions }
-  var activity: Int { tokens + sessions * 4_000 + interactions * 1_500 }
+  // GitHub line changes count toward the heatmap intensity too, so a day of
+  // GitHub-only activity does not render as an empty cell.
+  var activity: Int { tokens + sessions * 4_000 + interactions * 1_500 + githubCode }
 }
 
 /// Compact day detail surfaced by a tap on a bar or heatmap cell.
@@ -86,10 +88,13 @@ private struct WorkUsageBucketDetail: Equatable {
   var cachedTokens: Int
   var insertions: Int
   var deletions: Int
+  var githubAdditions: Int
+  var githubDeletions: Int
   var sessions: Int
 
   var totalTokens: Int { inputTokens + outputTokens + cachedTokens }
   var code: Int { insertions + deletions }
+  var githubCode: Int { githubAdditions + githubDeletions }
 }
 
 private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: Int) -> [WorkUsageVisualBucket] {
@@ -175,7 +180,11 @@ struct WorkUsageActivityCarousel: View {
   private var hasActivity: Bool {
     guard let daily = stats?.daily else { return false }
     return daily.contains { point in
-      (point.totalTokens ?? 0) > 0 || (point.sessions ?? 0) > 0
+      // The host sends per-day input/output/cached tokens but not a per-day
+      // totalTokens, so derive the day's token total the same way the bucket
+      // does — otherwise a tokens-only day falls through to the warm-empty state.
+      let dayTokens = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
+      return dayTokens > 0 || (point.sessions ?? 0) > 0
         || (point.insertions ?? 0) > 0 || (point.deletions ?? 0) > 0
         || (point.githubCommits ?? 0) > 0 || (point.githubPrs ?? 0) > 0
         || (point.githubAdditions ?? 0) > 0 || (point.githubDeletions ?? 0) > 0
@@ -427,6 +436,11 @@ private struct WorkUsageTooltip: View {
           .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
       }
+      if detail.githubCode > 0 {
+        Text("GitHub +\(workUsageCompact(detail.githubAdditions)) / -\(workUsageCompact(detail.githubDeletions))")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
@@ -494,6 +508,8 @@ private struct WorkUsageHeatmap: View {
       cachedTokens: bucket.cachedTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
+      githubAdditions: bucket.githubAdditions,
+      githubDeletions: bucket.githubDeletions,
       sessions: bucket.sessions
     )
   }
@@ -628,6 +644,8 @@ private struct WorkUsageBars: View {
       cachedTokens: bucket.cachedTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
+      githubAdditions: bucket.githubAdditions,
+      githubDeletions: bucket.githubDeletions,
       sessions: bucket.sessions
     )
   }

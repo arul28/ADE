@@ -1306,6 +1306,47 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("validates usage range arguments before forwarding renderer IPC", async () => {
+    const getAdeUsageStats = vi.fn(async () => ({ generatedAt: "2026-07-09T12:00:00.000Z" }));
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        usageTrackingService: { getAdeUsageStats },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+    const handler = ipcHandlers.get(IPC.usageGetAdeStats)!;
+
+    await expect(handler(eventForSender(), { preset: "decade" })).rejects.toThrow(
+      "usage stats preset must be today, 7d, 30d, year, or all.",
+    );
+    await expect(handler(eventForSender(), { since: "not-a-date" })).rejects.toThrow(
+      "usage stats since must be an ISO timestamp.",
+    );
+    await expect(handler(eventForSender(), { until: "not-a-date" })).rejects.toThrow(
+      "usage stats until must be an ISO timestamp.",
+    );
+    expect(getAdeUsageStats).not.toHaveBeenCalled();
+
+    const args = {
+      preset: "30d",
+      since: "2026-07-01T12:00:00.000Z",
+      until: "2026-07-02T12:00:00.000Z",
+    };
+    await expect(handler(eventForSender(), args)).resolves.toEqual({
+      generatedAt: "2026-07-09T12:00:00.000Z",
+    });
+    expect(getAdeUsageStats).toHaveBeenCalledWith(args);
+  });
+
   it("uses the sender window's bound local project for iOS Simulator window sources", async () => {
     const repoGetStatus = vi.fn(async () => ({
       platform: "darwin",

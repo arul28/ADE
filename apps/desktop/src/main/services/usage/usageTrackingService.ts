@@ -1074,6 +1074,17 @@ function startOfLocalDayOffsetIso(nowMs: number, daysBack: number): string {
   return localDayOffset(nowMs, -Math.max(0, daysBack))?.toISOString() ?? new Date(nowMs).toISOString();
 }
 
+function widenRangeToLocalDays(range: ResolvedAdeUsageRange): ResolvedAdeUsageRange {
+  const since = range.since
+    ? localDayOffset(range.since, 0)?.toISOString() ?? range.since
+    : null;
+  const nextDay = localDayOffset(range.until, 1);
+  const until = nextDay
+    ? new Date(nextDay.getTime() - 1).toISOString()
+    : range.until;
+  return { ...range, since, until };
+}
+
 function normalizePreset(value: unknown): AdeUsageRangePreset {
   return isAdeUsageRangePreset(value) ? value : "7d";
 }
@@ -1093,27 +1104,37 @@ function resolveAdeUsageRange(args: GetAdeUsageStatsArgs | undefined, nowMs: num
   const until = validIsoOrNull(args?.until ?? null) ?? new Date(nowMs).toISOString();
   const untilMs = Date.parse(until);
   const explicitSince = validIsoOrNull(args?.since ?? null);
+  let range: ResolvedAdeUsageRange;
   if (explicitSince) {
-    return {
+    range = {
       preset,
       since: Date.parse(explicitSince) > untilMs ? until : explicitSince,
       until,
     };
+  } else {
+    switch (preset) {
+      case "today":
+        range = { preset, since: startOfLocalDayIso(untilMs), until };
+        break;
+      case "30d":
+        range = { preset, since: startOfLocalDayOffsetIso(untilMs, 29), until };
+        break;
+      case "year":
+        range = { preset, since: startOfLocalDayOffsetIso(untilMs, 364), until };
+        break;
+      case "all":
+        range = { preset, since: null, until };
+        break;
+      case "7d":
+      default:
+        range = { preset: "7d", since: startOfLocalDayOffsetIso(untilMs, 6), until };
+        break;
+    }
   }
 
-  switch (preset) {
-    case "today":
-      return { preset, since: startOfLocalDayIso(untilMs), until };
-    case "30d":
-      return { preset, since: startOfLocalDayOffsetIso(untilMs, 29), until };
-    case "year":
-      return { preset, since: startOfLocalDayOffsetIso(untilMs, 364), until };
-    case "all":
-      return { preset, since: null, until };
-    case "7d":
-    default:
-      return { preset: "7d", since: startOfLocalDayOffsetIso(untilMs, 6), until };
-  }
+  // Provider snapshots are calendar-day buckets. Widen custom timestamps here
+  // so provider, database, and GitHub sources all use the same local-day range.
+  return args?.since || args?.until ? widenRangeToLocalDays(range) : range;
 }
 
 type ProviderModelAggregation = {
