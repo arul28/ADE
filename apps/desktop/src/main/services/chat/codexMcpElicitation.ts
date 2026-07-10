@@ -121,8 +121,15 @@ export function mcpElicitationContent(
   for (const [id, propertyValue] of entries) {
     const raw = answers?.[id];
     const property = readRecord(propertyValue);
-    if (property?.type === "array" && Array.isArray(raw)) {
-      content[id] = raw.map((value) => value.trim()).filter(Boolean);
+    if (property?.type === "array") {
+      const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : null;
+      if (values) {
+        const itemSchema = readRecord(property.items);
+        content[id] = values
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+          .map((value) => coerceMcpElicitationValue(value, itemSchema));
+      }
       continue;
     }
     const value = Array.isArray(raw) ? raw.at(-1) : raw;

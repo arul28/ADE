@@ -75,4 +75,31 @@ describe("Codex MCP elicitation mapping", () => {
       settings: { safe: true },
     });
   });
+
+  it.each([
+    ["integer", ["1", "not-an-integer"], [1, "not-an-integer"]],
+    ["number", ["1.25", "not-a-number"], [1.25, "not-a-number"]],
+    ["boolean", ["true", "false"], [true, false]],
+    ["string", ["01", "true"], ["01", "true"]],
+  ])("coerces %s MCP array answers through the item schema", (itemType, raw, expected) => {
+    const schema = {
+      type: "object",
+      properties: {
+        values: { type: "array", items: { type: itemType } },
+      },
+    };
+
+    expect(mcpElicitationContent(schema, { values: raw }, null)).toEqual({ values: expected });
+  });
+
+  it("keeps a single selected MCP array answer array-shaped", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        values: { type: "array", items: { type: "integer" } },
+      },
+    };
+
+    expect(mcpElicitationContent(schema, { values: "2" }, null)).toEqual({ values: [2] });
+  });
 });
