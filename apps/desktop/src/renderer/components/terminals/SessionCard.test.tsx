@@ -106,6 +106,20 @@ describe("SessionCard orchestration identity", () => {
 
     expect(screen.queryByLabelText("Awaiting your input")).toBeNull();
   });
+
+  it("renders a Claude session tag beside the title", () => {
+    render(
+      <SessionCard
+        session={makeSession({ toolType: "claude-chat", claudeTag: "customer-ready" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("customer-ready").getAttribute("title")).toBe("customer-ready");
+  });
 });
 
 describe("SessionCard auto-naming status", () => {

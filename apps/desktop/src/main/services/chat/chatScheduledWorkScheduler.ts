@@ -55,7 +55,7 @@ export type ChatScheduledWorkSchedulerOptions = {
   now?: () => number;
   timers?: ChatScheduledWorkTimerApi;
   isGlobalPaused(): boolean;
-  sessionState(sessionId: string): "active" | "archived" | "missing";
+  sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
   fire(schedule: ChatScheduledWorkRecord, context: { late: boolean }): Promise<void>;
   onTransition?: (
     schedule: ChatScheduledWorkRecord,

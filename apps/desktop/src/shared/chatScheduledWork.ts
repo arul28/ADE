@@ -130,6 +130,19 @@ export function isFiredOneShotWakeup(snapshot: ChatScheduledWorkSnapshot): boole
     && ONE_SHOT_HISTORY_STATUSES.has(snapshot.status);
 }
 
+export function isEarlierBackgroundItem(snapshot: ChatScheduledWorkSnapshot): boolean {
+  return snapshot.status === "completed"
+    || snapshot.status === "cancelled"
+    || snapshot.status === "stopped";
+}
+
+export function isEarlierScheduleItem(snapshot: ChatScheduledWorkSnapshot): boolean {
+  return isFiredOneShotWakeup(snapshot)
+    || snapshot.status === "completed"
+    || snapshot.status === "cancelled"
+    || snapshot.status === "stopped";
+}
+
 export function deriveScheduleHistory(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
   return deriveScheduleItems(events).filter(isFiredOneShotWakeup);
 }

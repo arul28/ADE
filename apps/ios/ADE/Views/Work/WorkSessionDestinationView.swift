@@ -795,6 +795,7 @@ struct WorkSessionDestinationView: View {
       }
       .sheet(isPresented: $chatInfoPresented) {
         WorkChatInfoDetailsSheet(
+          sessionId: sessionId,
           subagentSnapshots: subagentSnapshots,
           scheduledWorkSnapshots: scheduledWorkSnapshots,
           provider: subagentProvider,

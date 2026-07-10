@@ -2555,7 +2555,8 @@ struct WorkChatInfoActivePopup: View {
 
 func workScheduledWorkIsActive(_ item: WorkScheduledWorkSnapshot) -> Bool {
   let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  return status == "scheduled" || status == "running" || status == "fired"
+  return !workScheduleItemIsEarlier(item)
+    && ["scheduled", "paused", "running", "fired", "failed", "missed"].contains(status)
 }
 
 func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> Int {
@@ -2569,6 +2570,7 @@ func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> I
 /// `deriveScheduleItems` / `deriveBackgroundItems`). Empty sections are hidden;
 /// a shared empty state renders only when all three are empty.
 struct WorkChatInfoDetailsSheet: View {
+  let sessionId: String
   let subagentSnapshots: [WorkSubagentSnapshot]
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
   let provider: String?
@@ -2576,17 +2578,53 @@ struct WorkChatInfoDetailsSheet: View {
   let probingTaskId: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
+  @AppStorage private var paneUiRaw: String
+  @AppStorage private var paneClearedRaw: String
+  @State private var showAllSections: Set<String> = []
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  // Mirrors SUBAGENTS_ACTIVE_CAP / BACKGROUND_ACTIVE_CAP / SCHEDULE_ACTIVE_CAP,
+  // the pane storage-key/empty-state shapes, and the section-hint format in
+  // apps/desktop/src/shared/chatSubagents.ts + ChatSubagentsPanel.tsx — keep
+  // the twins in sync when changing any of them.
+  private let subagentsCap = 12
+  private let backgroundCap = 8
+  private let scheduleCap = 10
+
+  init(
+    sessionId: String,
+    subagentSnapshots: [WorkSubagentSnapshot],
+    scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
+    provider: String?,
+    selectedTaskId: String?,
+    probingTaskId: String?,
+    expandedTaskIds: Binding<Set<String>>,
+    onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void
+  ) {
+    self.sessionId = sessionId
+    self.subagentSnapshots = subagentSnapshots
+    self.scheduledWorkSnapshots = scheduledWorkSnapshots
+    self.provider = provider
+    self.selectedTaskId = selectedTaskId
+    self.probingTaskId = probingTaskId
+    self._expandedTaskIds = expandedTaskIds
+    self.onSelect = onSelect
+    self._paneUiRaw = AppStorage(
+      wrappedValue: #"{"collapsed":{},"earlier":{}}"#,
+      "ade.chat.paneUi.v1:\(sessionId)"
+    )
+    self._paneClearedRaw = AppStorage(
+      wrappedValue: #"{"subagents":[],"background":[],"schedule":[]}"#,
+      "ade.chat.paneCleared.v1:\(sessionId)"
+    )
+  }
 
   /// Real subagents only (command-shaped historical snapshots are classified
   /// out via the shared background-shell predicate), foreground + background
-  /// merged into one list; running agents sort first.
+  /// merged into one list. Source order is stable; terminal rows move into the
+  /// Earlier partition without reordering survivors.
   private var subagents: [WorkSubagentSnapshot] {
-    let real = workChatInfoSubagents(subagentSnapshots)
-    return real.sorted { lhs, rhs in
-      let lhsWeight = lhs.status == .running ? 0 : 1
-      let rhsWeight = rhs.status == .running ? 0 : 1
-      return lhsWeight < rhsWeight
-    }
+    workChatInfoSubagents(subagentSnapshots)
   }
 
   private var backgroundItems: [WorkScheduledWorkSnapshot] {
@@ -2601,7 +2639,137 @@ struct WorkChatInfoDetailsSheet: View {
     subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty
   }
 
+  private func jsonObject(_ raw: String) -> [String: Any] {
+    guard let data = raw.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return [:]
+    }
+    return object
+  }
+
+  private func jsonString(_ object: [String: Any], fallback: String) -> String {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+          let value = String(data: data, encoding: .utf8) else {
+      return fallback
+    }
+    return value
+  }
+
+  private func paneFlag(_ field: String, section: String) -> Bool {
+    let object = jsonObject(paneUiRaw)
+    let values = object[field] as? [String: Any]
+    return values?[section] as? Bool ?? false
+  }
+
+  private func setPaneFlag(_ field: String, section: String, value: Bool) {
+    var object = jsonObject(paneUiRaw)
+    var values = object[field] as? [String: Any] ?? [:]
+    values[section] = value
+    object[field] = values
+    paneUiRaw = jsonString(object, fallback: #"{"collapsed":{},"earlier":{}}"#)
+  }
+
+  private func clearedIds(_ section: String) -> Set<String> {
+    let object = jsonObject(paneClearedRaw)
+    return Set((object[section] as? [String] ?? []).filter { !$0.isEmpty })
+  }
+
+  private func clear(_ section: String, ids: [String]) {
+    var object = jsonObject(paneClearedRaw)
+    let existing = object[section] as? [String] ?? []
+    object[section] = (existing + ids).reduce(into: [String]()) { result, id in
+      if !id.isEmpty, !result.contains(id) { result.append(id) }
+    }
+    for key in ["subagents", "background", "schedule"] where object[key] == nil {
+      object[key] = []
+    }
+    paneClearedRaw = jsonString(object, fallback: #"{"subagents":[],"background":[],"schedule":[]}"#)
+  }
+
+  private func restore(_ section: String) {
+    var object = jsonObject(paneClearedRaw)
+    object[section] = []
+    for key in ["subagents", "background", "schedule"] where object[key] == nil {
+      object[key] = []
+    }
+    paneClearedRaw = jsonString(object, fallback: #"{"subagents":[],"background":[],"schedule":[]}"#)
+  }
+
+  private func withPaneAnimation(_ changes: () -> Void) {
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18), changes)
+  }
+
+  private func partitionSubagents(_ items: [WorkSubagentSnapshot]) -> (active: [WorkSubagentSnapshot], earlier: [WorkSubagentSnapshot], clearedCount: Int) {
+    let cleared = clearedIds("subagents")
+    let pinned = Set([selectedTaskId].compactMap { $0 }).union(expandedTaskIds)
+    var active: [WorkSubagentSnapshot] = []
+    var earlier: [WorkSubagentSnapshot] = []
+    var clearedCount = 0
+    for item in items {
+      if pinned.contains(item.taskId) {
+        active.append(item)
+      } else if cleared.contains(item.taskId) {
+        clearedCount += 1
+      } else if workSubagentIsEarlier(item) {
+        earlier.append(item)
+      } else {
+        active.append(item)
+      }
+    }
+    return (active, earlier, clearedCount)
+  }
+
+  private func partitionScheduled(
+    _ items: [WorkScheduledWorkSnapshot],
+    section: String,
+    isEarlier: (WorkScheduledWorkSnapshot) -> Bool
+  ) -> (active: [WorkScheduledWorkSnapshot], earlier: [WorkScheduledWorkSnapshot], clearedCount: Int) {
+    let cleared = clearedIds(section)
+    var active: [WorkScheduledWorkSnapshot] = []
+    var earlier: [WorkScheduledWorkSnapshot] = []
+    var clearedCount = 0
+    for item in items {
+      if cleared.contains(item.id) {
+        clearedCount += 1
+      } else if isEarlier(item) {
+        earlier.append(item)
+      } else {
+        active.append(item)
+      }
+    }
+    return (active, earlier, clearedCount)
+  }
+
+  private func capped<T>(_ items: [T], cap: Int, showAll: Bool, isExempt: (T) -> Bool) -> (visible: [T], hiddenCount: Int) {
+    guard !showAll, items.count > cap else { return (items, 0) }
+    let visible = items.enumerated().compactMap { index, item in
+      index < cap || isExempt(item) ? item : nil
+    }
+    return (visible, items.count - visible.count)
+  }
+
+  private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
+    let activeLabel = running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active)"
+    return ([activeLabel]
+      + (earlier > 0 ? ["\(earlier) earlier"] : [])
+      + (hidden > 0 ? ["\(hidden) hidden"] : []))
+      .joined(separator: " · ")
+  }
+
   var body: some View {
+    let subagentPartition = partitionSubagents(subagents)
+    let backgroundPartition = partitionScheduled(backgroundItems, section: "background", isEarlier: workBackgroundItemIsEarlier)
+    let schedulePartition = partitionScheduled(scheduleItems, section: "schedule", isEarlier: workScheduleItemIsEarlier)
+    let visibleSubagents = capped(subagentPartition.active, cap: subagentsCap, showAll: showAllSections.contains("subagents")) {
+      $0.status == .failed || selectedTaskId == $0.taskId || expandedTaskIds.contains($0.taskId)
+    }
+    let visibleBackground = capped(backgroundPartition.active, cap: backgroundCap, showAll: showAllSections.contains("background")) {
+      $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed"
+    }
+    let visibleSchedule = capped(schedulePartition.active, cap: scheduleCap, showAll: showAllSections.contains("schedule")) {
+      $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed"
+    }
     NavigationStack {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 16) {
@@ -2614,27 +2782,63 @@ struct WorkChatInfoDetailsSheet: View {
             .padding(.top, 24)
           } else {
             if !subagents.isEmpty {
-              section(title: "Subagents", count: subagents.count) {
-                VStack(spacing: 6) {
-                  ForEach(subagents) { snapshot in
-                    subagentRow(snapshot)
-                  }
-                }
+              section(
+                title: "Subagents",
+                hint: sectionHint(
+                  active: subagentPartition.active.count,
+                  earlier: subagentPartition.earlier.count,
+                  hidden: subagentPartition.clearedCount,
+                  running: subagentPartition.active.count { $0.status == .running },
+                  failed: subagentPartition.active.count { $0.status == .failed }
+                ),
+                key: "subagents",
+                collapsible: !subagentPartition.earlier.isEmpty || subagentPartition.active.count > subagentsCap,
+                clearIds: subagentPartition.earlier.map(\.taskId),
+                clearedCount: subagentPartition.clearedCount,
+                allClear: subagentPartition.active.isEmpty && subagentPartition.earlier.isEmpty && subagentPartition.clearedCount > 0
+              ) {
+                scalableSectionBody(title: "Subagents", sectionKey: "subagents", spacing: 6, partition: subagentPartition, visible: visibleSubagents) { snapshot, _ in subagentRow(snapshot) }
               }
             }
             if !backgroundItems.isEmpty {
-              section(title: "Background", count: backgroundItems.count) {
-                VStack(spacing: 8) {
-                  ForEach(backgroundItems) { item in
-                    WorkBackgroundWorkRow(item: item)
-                  }
-                }
+              section(
+                title: "Background",
+                hint: sectionHint(
+                  active: backgroundPartition.active.count,
+                  earlier: backgroundPartition.earlier.count,
+                  hidden: backgroundPartition.clearedCount,
+                  running: backgroundPartition.active.count { $0.status.lowercased() == "running" },
+                  failed: backgroundPartition.active.count { $0.status.lowercased() == "failed" }
+                ),
+                key: "background",
+                collapsible: !backgroundPartition.earlier.isEmpty || backgroundPartition.active.count > backgroundCap,
+                clearIds: backgroundPartition.earlier.map(\.id),
+                clearedCount: backgroundPartition.clearedCount,
+                allClear: backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0
+              ) {
+                scalableSectionBody(title: "Background", sectionKey: "background", spacing: 8, partition: backgroundPartition, visible: visibleBackground) { item, _ in WorkBackgroundWorkRow(item: item) }
               }
             }
             if !scheduleItems.isEmpty {
-              section(title: "Schedule", count: scheduleItems.count) {
-                VStack(spacing: 8) {
-                  ForEach(scheduleItems) { item in
+              section(
+                title: "Schedule",
+                hint: sectionHint(
+                  active: schedulePartition.active.count,
+                  earlier: schedulePartition.earlier.count,
+                  hidden: schedulePartition.clearedCount,
+                  running: schedulePartition.active.count { $0.status.lowercased() == "running" },
+                  failed: schedulePartition.active.count { $0.status.lowercased() == "failed" }
+                ),
+                key: "schedule",
+                collapsible: !schedulePartition.earlier.isEmpty || schedulePartition.active.count > scheduleCap,
+                clearIds: schedulePartition.earlier.map(\.id),
+                clearedCount: schedulePartition.clearedCount,
+                allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0
+              ) {
+                scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 8, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
+                  if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
+                    WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
+                  } else {
                     WorkScheduledWorkRow(item: item)
                   }
                 }
@@ -2663,20 +2867,123 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   @ViewBuilder
-  private func section<Content: View>(title: String, count: Int, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack {
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .textCase(.uppercase)
-        Spacer(minLength: 0)
-        Text("\(count)")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
+  private func scalableSectionBody<Item: Identifiable, Row: View>(
+    title: String, sectionKey: String, spacing: CGFloat,
+    partition: (active: [Item], earlier: [Item], clearedCount: Int),
+    visible: (visible: [Item], hiddenCount: Int),
+    @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
+  ) -> some View {
+    VStack(spacing: spacing) {
+      if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
+      ForEach(visible.visible) { item in row(item, false) }
+      showAllButton(section: sectionKey, hiddenCount: visible.hiddenCount)
+      earlierButton(section: sectionKey, count: partition.earlier.count, clearedCount: partition.clearedCount)
+      if paneFlag("earlier", section: sectionKey) {
+        ForEach(partition.earlier) { item in row(item, true) }
+        restoreButton(section: sectionKey, count: partition.clearedCount)
       }
-      content()
     }
+  }
+
+  @ViewBuilder
+  private func section<Content: View>(
+    title: String,
+    hint: String,
+    key: String,
+    collapsible: Bool,
+    clearIds: [String],
+    clearedCount: Int,
+    allClear: Bool,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    let collapsed = collapsible && paneFlag("collapsed", section: key)
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        if collapsible {
+          Button {
+            withPaneAnimation { setPaneFlag("collapsed", section: key, value: !collapsed) }
+          } label: {
+            HStack(spacing: 6) {
+              Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                .font(.caption2.bold())
+              Text(title)
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+              Spacer(minLength: 0)
+              Text(hint).font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(ADEColor.textMuted)
+            .contentShape(.rect)
+          }
+          .buttonStyle(.plain)
+          .frame(maxWidth: .infinity, minHeight: 44)
+        } else {
+          Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .textCase(.uppercase)
+          Spacer(minLength: 0)
+          Text(allClear ? "all clear" : hint)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        if allClear {
+          Button("Restore (\(clearedCount))") { restore(key) }
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        } else if !clearIds.isEmpty {
+          Button("Clear") { clear(key, ids: clearIds) }
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      if !collapsed { content() }
+    }
+  }
+
+  @ViewBuilder
+  private func showAllButton(section: String, hiddenCount: Int) -> some View {
+    if hiddenCount > 0 {
+      Button("Show all (\(hiddenCount))") { showAllSections.insert(section) }
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(minHeight: 44)
+    }
+  }
+
+  @ViewBuilder
+  private func earlierButton(section: String, count: Int, clearedCount: Int) -> some View {
+    if count > 0 || clearedCount > 0 {
+      let expanded = paneFlag("earlier", section: section)
+      Button {
+        withPaneAnimation { setPaneFlag("earlier", section: section, value: !expanded) }
+      } label: {
+        Label(
+          "Earlier (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")",
+          systemImage: expanded ? "chevron.down" : "chevron.right"
+        )
+      }
+      .buttonStyle(.plain)
+      .font(.caption)
+      .foregroundStyle(ADEColor.textMuted)
+      .frame(minHeight: 44)
+    }
+  }
+
+  @ViewBuilder
+  private func restoreButton(section: String, count: Int) -> some View {
+    if count > 0 {
+      Button("Restore (\(count))") { restore(section) }
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(minHeight: 44)
+    }
+  }
+
+  private func allClearRow(_ title: String) -> some View {
+    Text("\(title) · all clear")
+      .font(.caption)
+      .foregroundStyle(ADEColor.textMuted)
   }
 }
 

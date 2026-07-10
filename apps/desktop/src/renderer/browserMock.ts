@@ -4742,6 +4742,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listClaudeSessions: resolvedArg([]),
       getClaudeSessionInfo: resolvedArg(null),
       getClaudeSessionMessages: resolvedArg([]),
+      getMainTranscript: resolvedArg(null),
       getSubagentTranscript: resolvedArg(null),
       getContextUsage: resolvedArg(null),
       rewindFiles: resolvedArg({

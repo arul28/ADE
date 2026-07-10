@@ -6,13 +6,19 @@ export {
   buildSubagentTranscriptEvents,
   isLifecycleEventForSnapshot,
   selectedSubagentSnapshot,
+  SUBAGENT_PANE_ROSTER_CAPACITY,
   subagentIndexForPaneLine,
   subagentPaneSelectableLineOffsets,
   subagentTranscriptMessagesToEvents,
+  windowSubagentPaneRows,
 } from "../../../desktop/src/shared/chatSubagents";
 export type {
+  SubagentPaneDisclosureSection,
   SubagentPaneRow,
   SubagentPaneSection,
+  SubagentPaneTarget,
+  SubagentPaneViewSection,
+  SubagentPaneViewState,
 } from "../../../desktop/src/shared/chatSubagents";
 
 export type SubagentPaneContent = SharedSubagentPaneContent & {

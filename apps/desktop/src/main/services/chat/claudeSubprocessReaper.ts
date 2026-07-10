@@ -22,6 +22,11 @@ export type ClaudeSubprocessRecord = ClaudeSubprocessMetadata & {
 };
 
 type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, null>;
+type LiveClaudeSubprocess = {
+  record: ClaudeSubprocessRecord;
+  process: SpawnedProcess;
+  killTimer: ReturnType<typeof setTimeout> | null;
+};
 
 export type ClaudeSubprocessReaper = ReturnType<typeof createClaudeSubprocessReaper>;
 
@@ -43,7 +48,7 @@ export function createClaudeSubprocessReaper(args: {
     ? null
     : args.registryPath ?? path.join(os.tmpdir(), "ade-claude-subprocesses.json");
   const processKill = args.processKill ?? ((pid: number, signal?: NodeJS.Signals | 0) => process.kill(pid, signal as NodeJS.Signals | undefined));
-  const live = new Map<number, { record: ClaudeSubprocessRecord; process: SpawnedProcess; killTimer: ReturnType<typeof setTimeout> | null }>();
+  const live = new Map<number, LiveClaudeSubprocess>();
 
   const readRegistry = (): ClaudeSubprocessRecord[] => {
     if (!registryPath || !fs.existsSync(registryPath)) return [];
@@ -226,43 +231,61 @@ export function createClaudeSubprocessReaper(args: {
     return child;
   };
 
-  const reapAll = (reason: string): void => {
-    for (const [pid, entry] of live) {
-      const child = entry.process;
-      if (!child.killed && child.exitCode === null) {
-        logger.warn("agent_chat.claude_subprocess_terminate", {
+  const terminateLiveEntry = (
+    pid: number,
+    entry: LiveClaudeSubprocess,
+    reason: string,
+  ): void => {
+    const child = entry.process;
+    // `child.killed` only means "a signal was sent", not "the process exited" —
+    // gate on exit/signal codes so a hung child still gets the SIGKILL escalation.
+    const exited = () => child.exitCode !== null || (child as { signalCode?: string | null }).signalCode != null;
+    if (exited() || entry.killTimer) return;
+    logger.warn("agent_chat.claude_subprocess_terminate", {
+      pid,
+      sessionId: entry.record.sessionId,
+      reason,
+    });
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // Best effort; the process may already be gone.
+    }
+    entry.killTimer = setTimer(() => {
+      if (!exited()) {
+        logger.warn("agent_chat.claude_subprocess_kill", {
           pid,
           sessionId: entry.record.sessionId,
           reason,
         });
         try {
-          child.kill("SIGTERM");
+          child.kill("SIGKILL");
         } catch {
           // Best effort; the process may already be gone.
         }
-        entry.killTimer = setTimer(() => {
-          if (!child.killed && child.exitCode === null) {
-            logger.warn("agent_chat.claude_subprocess_kill", {
-              pid,
-              sessionId: entry.record.sessionId,
-              reason,
-            });
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // Best effort; the process may already be gone.
-            }
-          }
-          removeRegistryPid(pid);
-        }, killGraceMs);
-        entry.killTimer.unref?.();
       }
+      removeRegistryPid(pid);
+    }, killGraceMs);
+    entry.killTimer.unref?.();
+  };
+
+  const reapForSession = (sessionId: string, reason: string): void => {
+    for (const [pid, entry] of live) {
+      if (entry.record.sessionId !== sessionId) continue;
+      terminateLiveEntry(pid, entry, reason);
+    }
+  };
+
+  const reapAll = (reason: string): void => {
+    for (const [pid, entry] of live) {
+      terminateLiveEntry(pid, entry, reason);
     }
   };
 
   return {
     register,
     spawnClaudeCodeProcess,
+    reapForSession,
     reapAll,
     reapStaleRegistry,
     liveRecords: (): ClaudeSubprocessRecord[] => [...live.values()].map((entry) => ({ ...entry.record })),

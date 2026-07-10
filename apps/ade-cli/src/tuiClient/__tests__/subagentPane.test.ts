@@ -3,6 +3,7 @@ import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
   selectedSubagentSnapshot,
+  SUBAGENT_PANE_ROSTER_CAPACITY,
   subagentIndexForPaneLine,
   subagentPaneSelectableLineOffsets,
   subagentTranscriptMessagesToEvents,
@@ -12,6 +13,7 @@ import { resolveSubagentCapability } from "../../../../desktop/src/shared/subage
 import { renderChatLines } from "../format";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { RightPaneContent } from "../types";
+import type { SubagentSnapshot } from "../types";
 
 const session: AgentChatSessionSummary = {
   sessionId: "s1",
@@ -82,17 +84,69 @@ describe("subagent pane helpers", () => {
     const offsets = subagentPaneSelectableLineOffsets(content, 1);
 
     expect(offsets.length).toBe(5);
-    expect(subagentIndexForPaneLine(content, offsets[0]!, 1)).toBe(0);
-    expect(subagentIndexForPaneLine(content, offsets[1]!, 1)).toBe(1);
-    expect(subagentIndexForPaneLine(content, offsets[3]!, 1)).toBe(3);
-    expect(subagentIndexForPaneLine(content, offsets[4]! + 1, 1)).toBe(4);
+    expect(subagentIndexForPaneLine(content, offsets[0]!, 1)).toEqual({ type: "snapshot", index: 0 });
+    expect(subagentIndexForPaneLine(content, offsets[1]!, 1)).toEqual({ type: "snapshot", index: 1 });
+    expect(subagentIndexForPaneLine(content, offsets[3]!, 1)).toEqual({ type: "snapshot", index: 3 });
+    expect(subagentIndexForPaneLine(content, offsets[4]!, 1)).toEqual({ type: "snapshot", index: 4 });
     expect(subagentIndexForPaneLine(content, offsets[0]! - 2, 1)).toBeNull();
   });
 
   it("only accounts for detail lines on the selected subagent row", () => {
+    // Offsets are anchored at the calibrated preamble baseline (4) that
+    // app.tsx's subagentPaneTop formula assumes — see
+    // SUBAGENT_PANE_TABLE_START_LINE in shared/chatSubagents.ts.
     const content = rosterPaneContent();
-    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([4, 8, 10, 13, 16]);
-    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([4, 8, 9, 13, 16]);
+    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([4, 6, 8, 9, 10]);
+    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([4, 6, 7, 9, 10]);
+  });
+
+  it("snaps near-miss clicks to the nearest interactive row", () => {
+    const content = rosterPaneContent();
+    const offsets = subagentPaneSelectableLineOffsets(content, 1);
+    // One line above/below a row (inside a non-interactive span or gap) still
+    // resolves — the TUI's constant paneTop drifts when variable blocks render
+    // above the roster, and dead-dropping every near miss made clicks brittle.
+    expect(subagentIndexForPaneLine(content, offsets[0]! + 1, 1)).toEqual({ type: "snapshot", index: 0 });
+    // Far outside the roster stays null.
+    expect(subagentIndexForPaneLine(content, 0, 1)).toBeNull();
+    expect(subagentIndexForPaneLine(content, offsets[4]! + 4, 1)).toBeNull();
+  });
+
+  it("emits grouped section, show-all, Earlier, and tagged action rows", () => {
+    const snapshots: SubagentSnapshot[] = Array.from({ length: 13 }, (_, index) => ({
+      id: `run-${index}`,
+      name: `run ${index}`,
+      kind: "subagent" as const,
+      status: "running" as const,
+      summary: "working",
+    }));
+    snapshots.push({ id: "done", name: "done", kind: "subagent", status: "completed", summary: "done" });
+    const content = { snapshots };
+    const rows = buildSubagentPaneRows(content, {});
+
+    expect(rows.find((row) => row.kind === "section-header")).toMatchObject({
+      section: "subagents",
+      activeCount: 13,
+      earlierCount: 1,
+      collapsible: true,
+    });
+    expect(rows.find((row) => row.kind === "show-all")).toMatchObject({ hiddenCount: 1 });
+    expect(rows.find((row) => row.kind === "earlier-toggle")).toMatchObject({ count: 1, expanded: false });
+
+    const actionTargets = Array.from({ length: 40 }, (_, line) => subagentIndexForPaneLine(content, line, 0, {}))
+      .filter((target) => target && target.type !== "snapshot");
+    expect(actionTargets).toContainEqual({ type: "show-all", section: "subagents" });
+    expect(actionTargets).toContainEqual({ type: "toggle-earlier", section: "subagents" });
+
+    const windowedTargets = Array.from({ length: 20 }, (_, line) => subagentIndexForPaneLine(
+      content,
+      line,
+      12,
+      {},
+      SUBAGENT_PANE_ROSTER_CAPACITY,
+    )).filter((target) => target && target.type !== "snapshot");
+    expect(windowedTargets).toContainEqual({ type: "show-all", section: "subagents" });
+    expect(windowedTargets).toContainEqual({ type: "toggle-earlier", section: "subagents" });
   });
 
   it("builds a focused transcript without unrelated subagent output", () => {

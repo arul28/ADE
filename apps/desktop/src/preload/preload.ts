@@ -316,6 +316,7 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
@@ -5426,6 +5427,12 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AgentChatClaudeSessionMessage[]> =>
       callProjectRuntimeActionOr("chat", "getClaudeSessionMessages", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetClaudeSessionMessages, args),
+      ),
+    getMainTranscript: async (
+      args: AgentChatMainTranscriptArgs,
+    ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
+      callProjectRuntimeActionOr("chat", "getMainTranscript", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetMainTranscript, args),
       ),
     getSubagentTranscript: async (
       args: AgentChatSubagentTranscriptArgs,

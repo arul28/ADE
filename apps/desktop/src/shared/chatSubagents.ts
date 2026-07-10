@@ -56,20 +56,97 @@ export type ChatInfoPlan = {
   live: boolean;
 } | null;
 
+// iOS mirrors these caps, the pane storage-key/empty-state shapes, and the
+// section-hint format in WorkChatRichCardViews.swift (WorkChatInfoDetailsSheet)
+// — keep the twins in sync when changing any of them.
+export const SUBAGENTS_ACTIVE_CAP = 12;
+export const BACKGROUND_ACTIVE_CAP = 8;
+export const SCHEDULE_ACTIVE_CAP = 10;
+export const PROGRESS_CAP = 14;
+export const TASKS_CAP = 12;
+export const SUBAGENT_PANE_ROSTER_CAPACITY = 5;
+
+export type PaneSectionKey = "progress" | "tasks" | "subagents" | "background" | "schedule";
+
+export function groupPaneSectionItems<T>(items: T[], opts: {
+  isEarlier: (item: T) => boolean;
+  isCleared: (item: T) => boolean;
+  isPinned: (item: T) => boolean;
+}): { active: T[]; earlier: T[]; clearedCount: number } {
+  const active: T[] = [];
+  const earlier: T[] = [];
+  let clearedCount = 0;
+
+  for (const item of items) {
+    if (opts.isPinned(item)) {
+      active.push(item);
+    } else if (opts.isCleared(item)) {
+      clearedCount += 1;
+    } else if (opts.isEarlier(item)) {
+      earlier.push(item);
+    } else {
+      active.push(item);
+    }
+  }
+
+  return { active, earlier, clearedCount };
+}
+
+export function capPaneSectionItems<T>(
+  items: T[],
+  cap: number,
+  isExempt: (item: T) => boolean,
+): { visible: T[]; hiddenCount: number } {
+  if (items.length <= cap) return { visible: items, hiddenCount: 0 };
+  const visible = items.filter((item, index) => index < cap || isExempt(item));
+  return { visible, hiddenCount: items.length - visible.length };
+}
+
+export function isEarlierSubagentSnapshot(snapshot: Pick<SubagentSnapshot, "status">): boolean {
+  return snapshot.status === "completed" || snapshot.status === "stopped";
+}
+
 export type SubagentPaneSection = "main" | "subagents" | "teammates" | "background";
+
+export type SubagentPaneDisclosureSection = Exclude<SubagentPaneSection, "main">;
+export type SubagentPaneViewSection = SubagentPaneDisclosureSection | "schedule";
+
+export type SubagentPaneViewState = {
+  collapsed?: Partial<Record<SubagentPaneViewSection, boolean>>;
+  earlierExpanded?: Partial<Record<SubagentPaneViewSection, boolean>>;
+  showAll?: Partial<Record<SubagentPaneViewSection, boolean>>;
+  cleared?: Partial<Record<SubagentPaneViewSection, readonly string[] | ReadonlySet<string>>>;
+  pinnedIds?: readonly string[] | ReadonlySet<string>;
+};
 
 export type SubagentPaneRow =
   | { kind: "main"; key: "main"; section: "main"; label: string }
-  | { kind: "snapshot"; key: string; section: Exclude<SubagentPaneSection, "main">; snapshot: SubagentSnapshot };
+  | {
+      kind: "section-header";
+      key: string;
+      section: SubagentPaneDisclosureSection;
+      label: string;
+      activeCount: number;
+      earlierCount: number;
+      clearedCount: number;
+      collapsible: boolean;
+      collapsed: boolean;
+      hasClear: boolean;
+    }
+  | {
+      kind: "snapshot";
+      key: string;
+      section: SubagentPaneDisclosureSection;
+      snapshot: SubagentSnapshot;
+      group?: "active" | "earlier";
+    }
+  | { kind: "earlier-toggle"; key: string; section: SubagentPaneDisclosureSection; count: number; expanded: boolean; clearedCount: number }
+  | { kind: "show-all"; key: string; section: SubagentPaneDisclosureSection; hiddenCount: number }
+  | { kind: "restore-cleared"; key: string; section: SubagentPaneDisclosureSection; count: number };
 
 export type SubagentPaneContent = {
   snapshots: SubagentSnapshot[];
 };
-
-// Vertical offset of the first selectable roster row in the rendered chat-info
-// pane (header + status + plan + goal occupy the preceding lines). Used only by
-// the mouse-click → row mapper.
-const SUBAGENT_PANE_TABLE_START_LINE = 4;
 
 function textField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -824,82 +901,273 @@ export function subagentActivitySummaryFromEvents(events: AgentChatEventEnvelope
   return { totalCount: snapshots.size, runningCount };
 }
 
-export function buildSubagentPaneRows(content: SubagentPaneContent): SubagentPaneRow[] {
+export function buildSubagentPaneRows(
+  content: SubagentPaneContent,
+  viewState?: SubagentPaneViewState,
+): SubagentPaneRow[] {
   const foregroundSubagents = content.snapshots.filter((snap) => (
     snap.kind === "subagent"
     && snap.background !== true
   ));
-  const runningWeight = (snap: SubagentSnapshot): number => (snap.status === "running" ? 0 : 1);
-  const sortedForegroundSubagents = [...foregroundSubagents].sort(
-    (left, right) => runningWeight(left) - runningWeight(right),
-  );
   const teammates = content.snapshots.filter((snap) => snap.kind === "teammate");
   const background = content.snapshots.filter((snap) => snap.kind === "subagent" && snap.background === true);
 
-  return [
-    { kind: "main", key: "main", section: "main", label: "main" },
-    ...sortedForegroundSubagents.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "subagents" as const, snapshot })),
-    ...teammates.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "teammates" as const, snapshot })),
-    ...background.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "background" as const, snapshot })),
+  if (!viewState) {
+    const runningWeight = (snap: SubagentSnapshot): number => (snap.status === "running" ? 0 : 1);
+    const sortedForegroundSubagents = [...foregroundSubagents].sort(
+      (left, right) => runningWeight(left) - runningWeight(right),
+    );
+
+    return [
+      { kind: "main", key: "main", section: "main", label: "main" },
+      ...sortedForegroundSubagents.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "subagents" as const, snapshot })),
+      ...teammates.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "teammates" as const, snapshot })),
+      ...background.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "background" as const, snapshot })),
+    ];
+  }
+
+  const rows: SubagentPaneRow[] = [{ kind: "main", key: "main", section: "main", label: "main" }];
+  const pinnedIds = new Set(viewState.pinnedIds ?? []);
+  const sections: Array<{
+    section: SubagentPaneDisclosureSection;
+    label: string;
+    items: SubagentSnapshot[];
+    cap: number;
+    scalable: boolean;
+  }> = [
+    { section: "subagents", label: "SUBAGENTS", items: foregroundSubagents, cap: SUBAGENTS_ACTIVE_CAP, scalable: true },
+    { section: "teammates", label: "TEAMMATES", items: teammates, cap: Number.POSITIVE_INFINITY, scalable: false },
+    { section: "background", label: "BACKGROUND", items: background, cap: BACKGROUND_ACTIVE_CAP, scalable: true },
   ];
+
+  for (const { section, label, items, cap, scalable } of sections) {
+    if (!items.length) continue;
+    const clearedIds = new Set(viewState.cleared?.[section] ?? []);
+    const grouped = scalable
+      ? groupPaneSectionItems(items, {
+          isEarlier: isEarlierSubagentSnapshot,
+          isCleared: (snapshot) => clearedIds.has(snapshot.id),
+          isPinned: (snapshot) => pinnedIds.has(snapshot.id),
+        })
+      : { active: items, earlier: [], clearedCount: 0 };
+    const collapsible = scalable && (grouped.earlier.length > 0 || grouped.active.length > cap);
+    const collapsed = collapsible && viewState.collapsed?.[section] === true;
+    rows.push({
+      kind: "section-header",
+      key: `section:${section}`,
+      section,
+      label,
+      activeCount: grouped.active.length,
+      earlierCount: grouped.earlier.length,
+      clearedCount: grouped.clearedCount,
+      collapsible,
+      collapsed,
+      hasClear: grouped.earlier.length > 0,
+    });
+    if (collapsed) continue;
+
+    const capped = viewState.showAll?.[section]
+      ? { visible: grouped.active, hiddenCount: 0 }
+      : capPaneSectionItems(grouped.active, cap, (snapshot) => (
+          snapshot.status === "failed" || pinnedIds.has(snapshot.id)
+        ));
+    rows.push(...capped.visible.map((snapshot) => ({
+      kind: "snapshot" as const,
+      key: snapshot.id,
+      section,
+      snapshot,
+      group: "active" as const,
+    })));
+    if (capped.hiddenCount > 0) {
+      rows.push({ kind: "show-all", key: `show-all:${section}`, section, hiddenCount: capped.hiddenCount });
+    }
+
+    const earlierExpanded = viewState.earlierExpanded?.[section] === true;
+    if (grouped.earlier.length > 0 || grouped.clearedCount > 0) {
+      rows.push({
+        kind: "earlier-toggle",
+        key: `earlier:${section}`,
+        section,
+        count: grouped.earlier.length,
+        expanded: earlierExpanded,
+        clearedCount: grouped.clearedCount,
+      });
+    }
+    if (earlierExpanded) {
+      rows.push(...grouped.earlier.map((snapshot) => ({
+        kind: "snapshot" as const,
+        key: snapshot.id,
+        section,
+        snapshot,
+        group: "earlier" as const,
+      })));
+      if (grouped.clearedCount > 0) {
+        rows.push({ kind: "restore-cleared", key: `restore:${section}`, section, count: grouped.clearedCount });
+      }
+    } else if (grouped.active.length === 0 && grouped.earlier.length === 0 && grouped.clearedCount > 0) {
+      rows.push({ kind: "restore-cleared", key: `restore:${section}`, section, count: grouped.clearedCount });
+    }
+  }
+
+  return rows;
 }
 
 export function selectedSubagentSnapshot(
   content: SubagentPaneContent,
   selectedIndex: number,
+  viewState?: SubagentPaneViewState,
 ): SubagentSnapshot | null {
-  const row = buildSubagentPaneRows(content)[selectedIndex] ?? null;
+  const row = buildSubagentPaneRows(content, viewState)
+    .filter((candidate) => candidate.kind === "main" || candidate.kind === "snapshot")[selectedIndex] ?? null;
   return row?.kind === "snapshot" ? row.snapshot : null;
+}
+
+// Calibrated preamble offset the ade-code TUI mouse mapper assumes. The caller
+// passes `mouse.y - subagentPaneTop`, and app.tsx's subagentPaneTop formula was
+// tuned against this baseline (the CHATS head + chat-info preamble rows that
+// render above the "main" row). Changing one side without the other shifts
+// every roster click by the same amount.
+const SUBAGENT_PANE_TABLE_START_LINE = 4;
+
+function subagentPaneRowLineSpan(row: SubagentPaneRow, selected: boolean): number {
+  if (row.kind === "section-header") return 2;
+  if (row.kind === "main") return 2;
+  if (row.kind === "snapshot") {
+    return selected && (row.snapshot.lastToolName || row.snapshot.summary) ? 2 : 1;
+  }
+  return 1;
+}
+
+export function windowSubagentPaneRows(
+  rows: readonly SubagentPaneRow[],
+  selectedIndex: number,
+  capacity = SUBAGENT_PANE_ROSTER_CAPACITY,
+): { visibleRows: Exclude<SubagentPaneRow, { kind: "main" }>[]; hiddenBefore: number; hiddenAfter: number } {
+  const rosterRows = rows.filter((row): row is Exclude<SubagentPaneRow, { kind: "main" }> => row.kind !== "main");
+  if (rosterRows.length <= capacity) {
+    return { visibleRows: rosterRows, hiddenBefore: 0, hiddenAfter: 0 };
+  }
+  const snapshotRows = rows.filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => (
+    row.kind === "snapshot"
+  ));
+  const selectedKey = selectedIndex > 0 ? snapshotRows[selectedIndex - 1]?.key : null;
+  const selectedRosterIndex = Math.max(0, rosterRows.findIndex((row) => row.key === selectedKey));
+  const half = Math.floor(capacity / 2);
+  let start = Math.max(0, selectedRosterIndex - half);
+  let end = start + capacity;
+  if (end > rosterRows.length) {
+    end = rosterRows.length;
+    start = end - capacity;
+  }
+  return {
+    visibleRows: rosterRows.slice(start, end),
+    hiddenBefore: start,
+    hiddenAfter: rosterRows.length - end,
+  };
 }
 
 export function subagentPaneSelectableLineOffsets(
   content: SubagentPaneContent,
   selectedIndex = 0,
+  viewState?: SubagentPaneViewState,
 ): number[] {
-  const rows = buildSubagentPaneRows(content);
+  const rows = buildSubagentPaneRows(content, viewState);
   const offsets: number[] = [];
   let line = SUBAGENT_PANE_TABLE_START_LINE;
+  let selectableIndex = 0;
 
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]!;
-    const previous = rows[index - 1];
-    const showSection = row.section !== "main" && previous?.section !== row.section;
-    if (showSection) line += 2;
-    offsets.push(line);
-    line += 1;
-    const selectedSnapshotHasDetail = row.kind === "snapshot"
-      && index === selectedIndex
-      && (row.snapshot.lastToolName || row.snapshot.summary);
-    if (row.kind === "main" || selectedSnapshotHasDetail) {
-      line += 1;
+  for (const row of rows) {
+    const selectable = row.kind === "main" || row.kind === "snapshot";
+    const selected = selectable && selectableIndex === selectedIndex;
+    if (selectable) {
+      offsets.push(line);
+      selectableIndex += 1;
     }
+    line += subagentPaneRowLineSpan(row, selected);
   }
 
   return offsets;
 }
 
+export type SubagentPaneTarget =
+  | { type: "snapshot"; index: number }
+  | { type: "toggle-section"; section: SubagentPaneDisclosureSection }
+  | { type: "toggle-earlier"; section: SubagentPaneDisclosureSection }
+  | { type: "show-all"; section: SubagentPaneDisclosureSection }
+  | { type: "restore"; section: SubagentPaneDisclosureSection };
+
 export function subagentIndexForPaneLine(
   content: SubagentPaneContent,
   line: number,
   selectedIndex = 0,
-): number | null {
+  viewState?: SubagentPaneViewState,
+  windowCapacity?: number,
+): SubagentPaneTarget | null {
   if (!Number.isFinite(line)) return null;
-  const offsets = subagentPaneSelectableLineOffsets(content, selectedIndex);
-  if (!offsets.length) return null;
-  const first = offsets[0]!;
-  const last = offsets[offsets.length - 1]!;
-  if (line < first - 1 || line > last + 1) return null;
-
-  let bestIndex = 0;
+  const rows = buildSubagentPaneRows(content, viewState);
+  const snapshotIndexByKey = new Map(
+    rows
+      .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot")
+      .map((row, index) => [row.key, index + 1]),
+  );
+  const windowed = windowCapacity == null
+    ? { visibleRows: rows.filter((row) => row.kind !== "main"), hiddenBefore: 0, hiddenAfter: 0 }
+    : windowSubagentPaneRows(rows, selectedIndex, windowCapacity);
+  const visibleRows: Array<SubagentPaneRow | null> = [
+    rows.find((row) => row.kind === "main") ?? null,
+    ...(windowed.hiddenBefore > 0 ? [null] : []),
+    ...windowed.visibleRows,
+    ...(windowed.hiddenAfter > 0 ? [null] : []),
+  ];
+  let rowLine = SUBAGENT_PANE_TABLE_START_LINE;
+  const anchors: Array<{ line: number; target: SubagentPaneTarget }> = [];
+  let exactHit: SubagentPaneTarget | null = null;
+  let insideNonInteractive = false;
+  for (const row of visibleRows) {
+    const selectableIndex = row?.kind === "main"
+      ? 0
+      : row?.kind === "snapshot"
+        ? snapshotIndexByKey.get(row.key) ?? -1
+        : -1;
+    const selected = selectableIndex === selectedIndex;
+    const span = row ? subagentPaneRowLineSpan(row, selected) : 1;
+    const target: SubagentPaneTarget | null = !row
+      ? null
+      : row.kind === "main" || row.kind === "snapshot"
+        ? { type: "snapshot", index: selectableIndex }
+        : row.kind === "section-header"
+          ? (row.collapsible ? { type: "toggle-section", section: row.section } : null)
+          : row.kind === "earlier-toggle"
+            ? { type: "toggle-earlier", section: row.section }
+            : row.kind === "show-all"
+              ? { type: "show-all", section: row.section }
+              : { type: "restore", section: row.section };
+    if (target) anchors.push({ line: rowLine, target });
+    if (line >= rowLine && line < rowLine + span) {
+      if (target) exactHit = target;
+      else insideNonInteractive = true;
+    }
+    rowLine += span;
+  }
+  if (exactHit) return exactHit;
+  if (!anchors.length) return null;
+  // Near-miss tolerance (the pre-grouping mapper snapped to the nearest row):
+  // the constant paneTop the TUI passes drifts by a line or two when variable
+  // blocks (plan, goal banner) sit above the roster, so a click inside a
+  // non-interactive span or just past the roster bounds snaps to the nearest
+  // interactive row instead of dead-dropping.
+  const first = anchors[0]!.line;
+  if (!insideNonInteractive && (line < first - 1 || line > rowLine)) return null;
+  let best = anchors[0]!;
   let bestDistance = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < offsets.length; index += 1) {
-    const distance = Math.abs(line - offsets[index]!);
+  for (const anchor of anchors) {
+    const distance = Math.abs(line - anchor.line);
     if (distance < bestDistance) {
-      bestIndex = index;
+      best = anchor;
       bestDistance = distance;
     }
   }
-  return bestIndex;
+  return best.target;
 }
 
 export function isLifecycleEventForSnapshot(event: AgentChatEvent, snapshot: SubagentSnapshot): boolean {

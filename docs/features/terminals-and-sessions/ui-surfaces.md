@@ -620,14 +620,21 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 Right-click menu with branches per session type:
 
-- Chat: Rename (inline text input, sets `manuallyNamed: true`), Delete,
-  archive/restore, Go to lane, Copy session ID.
+- Chat: Rename (inline text input, sets `manuallyNamed: true`), Set tag…
+  (Claude only), Delete, archive/restore, Go to lane, Copy session ID.
 - PTY: Stop runtime (dispatches `ptyDispose`), Go to lane, Copy
   session ID.
 
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
 up to `renameError` in `TerminalsPage`.
+
+`Set tag…` is a second inline editor that reuses the same input chrome.
+It appears only for running `claude-chat` sessions (writing a tag needs a
+live Claude SDK runtime — `updateSession` throws for ended sessions),
+submits `agentChat.updateSession({ sessionId, tag })` where an empty
+value clears the tag, and the resolved `claudeTag` renders as a small
+mono pill on the session card.
 
 ## Work view hook: `useWorkSessions.ts`
 

@@ -52,6 +52,7 @@ import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
+import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -223,6 +224,7 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
@@ -5801,6 +5803,7 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS = 4_000_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+  const envelopeSpliceRepairAttemptedSessionIds = new Set<string>();
 
   const safeJsonChars = (value: unknown): number => {
     try {
@@ -12023,6 +12026,13 @@ export function createAgentChatService(args: {
       if (preserveProviderResumeState) persistChatState(managed);
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.query?.close(); } catch { /* ignore */ }
+      if (
+        openCodeReason === "ended_session"
+        || openCodeReason === "handle_close"
+        || openCodeReason === "model_switch"
+      ) {
+        claudeSubprocessReaper.reapForSession(managed.session.id, openCodeReason);
+      }
       managed.runtime.inputPump?.close();
       try { managed.runtime.warmQuery?.close(); } catch { /* ignore */ }
       managed.runtime.query = null;
@@ -12221,6 +12231,7 @@ export function createAgentChatService(args: {
     status: TerminalSessionStatus,
     options?: { exitCode?: number | null; summary?: string | null }
   ): Promise<void> => {
+    pendingNativeScheduledWakeBySession.delete(managed.session.id);
     if (managed.endedNotified) return;
     managed.endedNotified = true;
     clearSubagentSnapshots(managed.session.id);
@@ -12232,6 +12243,22 @@ export function createAgentChatService(args: {
       pending.resolve({ decision: "cancel" });
     }
     managed.localPendingInputs.clear();
+
+    if (status === "disposed") {
+      await scheduledWorkReady;
+      if (scheduledWorkScheduler) {
+        // This cancel snapshot runs while the session row still reads "running",
+        // so a racing in-flight-turn upsert could slip past it. That is safe only
+        // because saveState is synchronous (better-sqlite3): the awaits resolve on
+        // microtasks, sessionService.end below runs before any timer fires, and
+        // the leaked schedule cancels at fire time via sessionState === "ended".
+        // If saveState ever becomes async I/O, mark the row terminal first.
+        await Promise.all(
+          scheduledWorkScheduler.list(managed.session.id).map((schedule) =>
+            scheduledWorkScheduler!.cancel(schedule.id)),
+        );
+      }
+    }
 
     if (options?.summary !== undefined) {
       sessionService.setSummary(managed.session.id, options.summary);
@@ -14371,7 +14398,7 @@ export function createAgentChatService(args: {
       if (runtime.interrupted) {
         throw new Error("Claude turn interrupted during warmup.");
       }
-      let sessionQuery = ensureClaudeQuery(managed, runtime);
+      let sessionQuery = await ensureClaudeQuery(managed, runtime);
 
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
@@ -14390,7 +14417,7 @@ export function createAgentChatService(args: {
             error: String(permErr),
           });
           resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
-          sessionQuery = ensureClaudeQuery(managed, runtime);
+          sessionQuery = await ensureClaudeQuery(managed, runtime);
           sessionControl = getClaudeQueryControl(sessionQuery);
           if (typeof sessionControl.setPermissionMode === "function") {
             await sessionControl.setPermissionMode(turnPermissionMode);
@@ -22027,7 +22054,79 @@ export function createAgentChatService(args: {
     }
   };
 
-  const ensureClaudeQuery = (managed: ManagedChatSession, runtime: ClaudeRuntime): ClaudeQuery => {
+  const repairClaudeEnvelopeSplicesBeforeResume = async (
+    managed: ManagedChatSession,
+    sdkSessionId: string,
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    if (envelopeSpliceRepairAttemptedSessionIds.has(sessionId)) return;
+    envelopeSpliceRepairAttemptedSessionIds.add(sessionId);
+
+    let sdkMessages: ClaudeSdkSessionMessage[];
+    try {
+      sdkMessages = await getClaudeSdkSessionMessages(sdkSessionId, {
+        dir: managed.laneWorktreePath,
+      });
+    } catch (error) {
+      // A transient fetch failure (store locked, file not flushed yet) should
+      // not burn the once-per-process attempt — release the guard so a later
+      // resume can retry the repair.
+      envelopeSpliceRepairAttemptedSessionIds.delete(sessionId);
+      logger.debug("agent_chat.envelope_splice_repair_skipped", {
+        sessionId,
+        sdkSessionId,
+        reason: "sdk_messages_unavailable",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const transcriptPaths = [...new Set([
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+      managed.transcriptPath,
+    ].filter((candidate) => candidate.trim().length > 0))];
+    let repairedTurns = 0;
+    let filesChanged = 0;
+    for (const transcriptPath of transcriptPaths) {
+      flushQueuedTranscriptWrite(transcriptPath);
+      const result = repairSplicedEnvelopeFileSync(transcriptPath, sdkMessages, {
+        onSkip: (reason, detail) => {
+          logger.debug("agent_chat.envelope_splice_repair_skipped", {
+            sessionId,
+            sdkSessionId,
+            transcriptPath,
+            reason,
+            ...(reason === "oversize" && typeof detail === "number" ? { fileBytes: detail } : {}),
+          });
+        },
+      });
+      if (result.changed) {
+        filesChanged += 1;
+        // The dedicated and legacy files mirror the same turns. Report the
+        // logical repaired-turn count, not the number of repaired copies.
+        repairedTurns = Math.max(repairedTurns, result.repairedTurns);
+      }
+    }
+
+    if (!filesChanged) {
+      logger.debug("agent_chat.envelope_splice_repair_not_needed", { sessionId, sdkSessionId });
+      return;
+    }
+    eventHistoryBySession.delete(sessionId);
+    transcriptHistoryCacheBySession.delete(sessionId);
+    logger.info("agent_chat.envelope_splice_repaired", {
+      sessionId,
+      sdkSessionId,
+      repairedTurns,
+      filesChanged,
+    });
+    emitTransientChatEnvelope(sessionId, {
+      type: "session_meta_updated",
+      historyInvalidated: true,
+    });
+  };
+
+  const ensureClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     if (runtime.query && runtime.inputPump) return runtime.query;
 
     const pump = new ClaudeInputPump();
@@ -22068,6 +22167,10 @@ export function createAgentChatService(args: {
           at: "resume",
         });
       }
+      // Must run AFTER the thinking-transcript repair: that repair can rekey
+      // SDK message ids, and the splice repair keys rebuilt envelopes to the
+      // post-rekey ids it reads via getSessionMessages.
+      await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
     }
 
     let sessionQuery: ClaudeQuery;
@@ -22325,6 +22428,7 @@ export function createAgentChatService(args: {
               at: "prewarm",
             });
           }
+          await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
         }
 
         if (runtime.warmupCancelled) {
@@ -28638,6 +28742,9 @@ export function createAgentChatService(args: {
       : hasPersistedCodexServiceTier
         ? persisted?.codexServiceTier ?? null
         : undefined;
+    const claudeTag = provider === "claude"
+      ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
+      : undefined;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -28719,6 +28826,7 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
+      ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt: (() => {
         const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
         return next == null ? null : new Date(next).toISOString();
@@ -28798,6 +28906,9 @@ export function createAgentChatService(args: {
     await scheduledWorkReady;
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
+
+  const pendingNativeScheduledWakeCountForTesting = (sessionId: string): number =>
+    pendingNativeScheduledWakeBySession.get(sessionId)?.length ?? 0;
 
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
@@ -28888,6 +28999,20 @@ export function createAgentChatService(args: {
         }
         errors.push(`${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    await scheduledWorkReady;
+    if (scheduledWorkScheduler) {
+      await Promise.all(
+        scheduledWorkScheduler.list()
+          .filter((schedule) => {
+            const row = sessionService.get(schedule.sessionId);
+            // `!row` deliberately widens the sweep to globally-orphaned
+            // schedules (no session row left) — they would self-cancel at
+            // fire time anyway; lane teardown just reaps them earlier.
+            return !row || row.laneId === laneId;
+          })
+          .map((schedule) => scheduledWorkScheduler!.cancel(schedule.id)),
+      );
     }
     if (errors.length > 0) {
       throw new Error(`Failed to close ${errors.length} chat session${errors.length === 1 ? "" : "s"}: ${errors.join("; ")}`);
@@ -30043,7 +30168,10 @@ export function createAgentChatService(args: {
     return await loadModelCatalogRequest(catalogArgs);
   };
 
-  const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
+  const disposeManagedSession = async (
+    { sessionId }: AgentChatDisposeArgs,
+    terminalStatus: "disposed" | "detached",
+  ): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
 
@@ -30139,9 +30267,13 @@ export function createAgentChatService(args: {
       cancelQueuedSteers(managed, managed.runtime, "disposed");
     }
 
-    await finishSession(managed, "disposed", {
+    await finishSession(managed, terminalStatus, {
       summary: managed.preview ? `Session closed: ${managed.preview}` : "Session closed."
     });
+  };
+
+  const dispose = async (args: AgentChatDisposeArgs): Promise<void> => {
+    await disposeManagedSession(args, "disposed");
   };
 
   const deleteSession = async ({ sessionId }: AgentChatDeleteArgs): Promise<void> => {
@@ -30256,7 +30388,7 @@ export function createAgentChatService(args: {
     scheduledWorkScheduler?.dispose();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
-        await dispose({ sessionId });
+        await disposeManagedSession({ sessionId }, "detached");
       } catch {
         // ignore shutdown errors
       }
@@ -30776,6 +30908,10 @@ export function createAgentChatService(args: {
       mirrorClaudeSessionPointer(managed, managed.runtime.sdkSessionId, {
         tags: normalizedTag && normalizedTag.length ? [normalizedTag] : [],
       });
+      emitTransientChatEnvelope(sessionId, {
+        type: "session_meta_updated",
+        claudeTag: normalizedTag && normalizedTag.length ? normalizedTag : null,
+      });
     }
     // Allow resetting manuallyNamed independently when no title change is provided
     if (manuallyNamed !== undefined && title === undefined) {
@@ -31113,6 +31249,21 @@ export function createAgentChatService(args: {
     };
   };
 
+  const mapClaudeSdkSessionMessage = (
+    message: ClaudeSdkSessionMessage,
+  ): AgentChatClaudeSessionMessage => {
+    const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+    const text = extractClaudeSessionMessageText(message.message);
+    return {
+      type: message.type,
+      uuid: message.uuid,
+      sessionId: message.session_id,
+      parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
+      message: message.message,
+      ...(text ? { text } : {}),
+    };
+  };
+
   const getClaudeSessionMessages = async ({
     sessionId,
     laneId,
@@ -31136,18 +31287,7 @@ export function createAgentChatService(args: {
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
       ...(typeof includeSystemMessages === "boolean" ? { includeSystemMessages } : {}),
     });
-    return messages.map((message: ClaudeSdkSessionMessage) => {
-      const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
-      const text = extractClaudeSessionMessageText(message.message);
-      return {
-        type: message.type,
-        uuid: message.uuid,
-        sessionId: message.session_id,
-        parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
-        message: message.message,
-        ...(text ? { text } : {}),
-      };
-    });
+    return messages.map(mapClaudeSdkSessionMessage);
   };
 
   /**
@@ -31443,6 +31583,48 @@ export function createAgentChatService(args: {
     messages: AgentChatSubagentTranscriptMessage[],
   ): AgentChatSubagentTranscriptMessage[] =>
     keepNewestWithinCharBudget(messages, SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS, safeJsonChars);
+
+  const getMainTranscript = async ({
+    sessionId,
+    limit,
+    offset,
+  }: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+
+    const managed = managedSessions.get(normalizedSessionId) ?? null;
+    const persisted = readPersistedState(normalizedSessionId);
+    const provider = managed?.session.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
+    if (provider !== "claude") return null;
+
+    const pointer = getClaudeSessionPointerForChat(normalizedSessionId);
+    const claudeSessionId = (
+      (managed?.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null)
+      ?? persisted?.sdkSessionId
+      ?? pointer?.sessionId
+      ?? ""
+    ).trim();
+    if (!claudeSessionId) return null;
+
+    const normalizedLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.min(Math.trunc(limit), 500)
+      : undefined;
+    const normalizedOffset = typeof offset === "number" && Number.isFinite(offset) && offset > 0
+      ? Math.trunc(offset)
+      : undefined;
+    const laneFallback = managed?.laneWorktreePath
+      ? { dir: managed.laneWorktreePath }
+      : await resolveClaudeSessionLaneFallback(row.laneId);
+    const messages = await getClaudeSdkSessionMessages(claudeSessionId, {
+      ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
+      ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+      ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+      includeSystemMessages: true,
+    });
+    return boundSubagentTranscriptResponse(messages.map(mapClaudeSdkSessionMessage));
+  };
 
   function mergeSubagentTranscriptMessages(
     left: AgentChatSubagentTranscriptMessage[],
@@ -31900,7 +32082,7 @@ export function createAgentChatService(args: {
     if (runtime.warmupDone) {
       await runtime.warmupDone.catch(() => undefined);
     }
-      const sessionQuery = ensureClaudeQuery(managed, runtime);
+      const sessionQuery = await ensureClaudeQuery(managed, runtime);
       return sessionQuery;
     };
 
@@ -32828,7 +33010,9 @@ export function createAgentChatService(args: {
     sessionState: (sessionId) => {
       const row = sessionService.get(sessionId);
       if (!row) return "missing";
-      return row.archivedAt ? "archived" : "active";
+      if (row.archivedAt) return "archived";
+      if (row.status === "running" || row.status === "detached") return "active";
+      return "ended";
     },
     fire: async (schedule, context) => {
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
@@ -32885,7 +33069,9 @@ export function createAgentChatService(args: {
       const row = sessionService.get(schedule.sessionId);
       if (!row || row.archivedAt) return;
       const managed = managedSessions.get(schedule.sessionId)
-        ?? (status === "fired" ? ensureManagedSession(schedule.sessionId) : null);
+        ?? (status === "fired" && (row.status === "running" || row.status === "detached")
+          ? ensureManagedSession(schedule.sessionId)
+          : null);
       if (!managed || managed.session.provider !== "claude") return;
 
       const eventStatus: ScheduledWorkEvent["status"] = status === "done" ? "completed" : status;
@@ -32936,6 +33122,7 @@ export function createAgentChatService(args: {
     messageSession,
     setScheduledWorkPaused,
     refreshScheduledWork,
+    pendingNativeScheduledWakeCountForTesting,
     readTranscript,
     setOrchestrationFields,
     getCodexGoal,
@@ -32974,6 +33161,7 @@ export function createAgentChatService(args: {
     listClaudeSessions,
     getClaudeSessionInfo,
     getClaudeSessionMessages,
+    getMainTranscript,
     getSubagentTranscript,
     killDroidWorker,
     getContextUsage,

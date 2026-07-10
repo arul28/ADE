@@ -1760,7 +1760,7 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["subagent_progress", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description ?? "", summary, toolName ?? "", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
   case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
     return ["subagent_result", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", status, summary, label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
-  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let firedAt, let late, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
     var parts = ["scheduled_work_update", id, turnId ?? "", kind, status]
     parts.append(origin ?? "")
     parts.append(title ?? "")
@@ -1770,6 +1770,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     parts.append(cron ?? "")
     parts.append(nextRunAt ?? "")
     parts.append(lastRunAt ?? "")
+    parts.append(firedAt ?? "")
+    parts.append(late.map { $0 ? "1" : "0" } ?? "")
     parts.append(recurring.map { $0 ? "1" : "0" } ?? "")
     parts.append(durable.map { $0 ? "1" : "0" } ?? "")
     parts.append(sourceToolUseId ?? "")

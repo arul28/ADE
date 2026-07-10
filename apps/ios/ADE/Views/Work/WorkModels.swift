@@ -635,6 +635,8 @@ struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
   let cron: String?
   let nextRunAt: String?
   let lastRunAt: String?
+  let firedAt: String?
+  let late: Bool?
   let recurring: Bool?
   let durable: Bool?
   let sourceToolUseId: String?
@@ -880,7 +882,7 @@ enum WorkChatEvent: Equatable {
   case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
-  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
+  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, firedAt: String?, late: Bool?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
   case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [WorkPendingQuestionOption], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)

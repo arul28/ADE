@@ -111,6 +111,8 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** First tag mirrored from the backing Claude SDK session pointer. */
+  claudeTag?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */
   chatSessionId?: string | null;
   /**

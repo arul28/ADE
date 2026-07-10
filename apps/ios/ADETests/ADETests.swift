@@ -9741,9 +9741,8 @@ final class ADETests: XCTestCase {
 
   /// Durable-wakeup parity (desktop 93d7f889): the host now emits `paused`,
   /// `fired`, and `late` on scheduled_work_update. iOS carries `status` as a raw
-  /// String, so new/unknown statuses must decode without crashing and must not
-  /// be treated as active. Extra host fields (`firedAt`, `late`) that iOS does
-  /// not model must be ignored, not fatal.
+  /// String, so new/unknown statuses must decode without crashing. Host
+  /// `firedAt` / `late` fields are retained for the Earlier history row.
   func testParseWorkChatTranscriptToleratesPausedAndUnknownScheduleStatuses() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"paused","origin":"schedule_cron","title":"Nightly checks","cron":"0 9 * * *","turnId":"turn-1"}}
@@ -9763,20 +9762,23 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(byId["cron-1"]?.status, "paused")
     XCTAssertEqual(byId["wakeup-2"]?.status, "fired")
+    XCTAssertEqual(byId["wakeup-2"]?.firedAt, "2026-07-08T00:00:02.000Z")
+    XCTAssertEqual(byId["wakeup-2"]?.late, true)
     XCTAssertEqual(byId["future-1"]?.status, "totally_new_status")
 
-    // Paused schedules are dormant, not active — they must not inflate the
-    // Chat Info active badge count.
+    // Paused schedules stay in the active partition but read dormant in UI.
     XCTAssertTrue(workScheduledWorkIsPaused("paused"))
     XCTAssertFalse(workScheduledWorkIsPaused("scheduled"))
     if let paused = byId["cron-1"] {
-      XCTAssertFalse(workScheduledWorkIsActive(paused))
+      XCTAssertTrue(workScheduledWorkIsActive(paused))
     } else {
       XCTFail("Expected paused snapshot")
     }
-    // `fired` still counts as active (an in-flight wakeup turn).
+    // Fired one-shot wakeups move to Earlier, while recurring fires stay active.
     if let fired = byId["wakeup-2"] {
-      XCTAssertTrue(workScheduledWorkIsActive(fired))
+      XCTAssertTrue(workScheduleItemIsFiredOneShotWakeup(fired))
+      XCTAssertTrue(workScheduleItemIsEarlier(fired))
+      XCTAssertFalse(workScheduledWorkIsActive(fired))
     } else {
       XCTFail("Expected fired snapshot")
     }
@@ -9785,6 +9787,24 @@ final class ADETests: XCTestCase {
     // section (not Background) of the Chat Info sheet.
     let scheduleItems = workChatInfoScheduleItems(snapshot.scheduledWorkSnapshots)
     XCTAssertEqual(Set(scheduleItems.map(\.id)), ["cron-1", "wakeup-2", "future-1"])
+  }
+
+  func testChatInfoEarlierMembershipMatchesDesktopPredicates() throws {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"bg-done","kind":"background_task","status":"completed","title":"Done"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"bg-failed","kind":"background_task","status":"failed","title":"Failed"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"wake-one","kind":"wakeup","status":"fired","recurring":false,"title":"One shot"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:04.000Z","sequence":4,"event":{"type":"scheduled_work_update","id":"wake-recurring","kind":"wakeup","status":"fired","recurring":true,"title":"Recurring"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:05.000Z","sequence":5,"event":{"type":"scheduled_work_update","id":"cron-cancelled","kind":"cron","status":"cancelled","title":"Cancelled"}}
+    """
+    let snapshots = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    let byId = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, $0) })
+
+    XCTAssertTrue(workBackgroundItemIsEarlier(try XCTUnwrap(byId["bg-done"])))
+    XCTAssertFalse(workBackgroundItemIsEarlier(try XCTUnwrap(byId["bg-failed"])))
+    XCTAssertTrue(workScheduleItemIsEarlier(try XCTUnwrap(byId["wake-one"])))
+    XCTAssertFalse(workScheduleItemIsEarlier(try XCTUnwrap(byId["wake-recurring"])))
+    XCTAssertTrue(workScheduleItemIsEarlier(try XCTUnwrap(byId["cron-cancelled"])))
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {

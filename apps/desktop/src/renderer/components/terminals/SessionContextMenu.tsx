@@ -20,6 +20,7 @@ type SessionContextMenuProps = {
   onGoToLane: (session: TerminalSessionSummary) => void;
   onCopySessionId: (id: string) => void;
   onRename: (session: TerminalSessionSummary, newTitle: string) => void;
+  onSetChatTag?: (session: TerminalSessionSummary, tag: string | null) => void;
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
@@ -40,6 +41,7 @@ export function SessionContextMenu({
   onGoToLane,
   onCopySessionId,
   onRename,
+  onSetChatTag,
   onCopySessionDeepLink,
   onOpenSessionInWeb,
   onTogglePinned,
@@ -48,28 +50,30 @@ export function SessionContextMenu({
   onRemoveFromGrid,
 }: SessionContextMenuProps) {
   const [renaming, setRenaming] = useState(false);
+  const [tagging, setTagging] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
     menu ? { x: menu.x, y: menu.y } : null,
-    renaming,
+    renaming || tagging,
   );
 
-  // Reset rename state when menu changes
+  // Reset inline edit state when the target menu changes.
   useEffect(() => {
     setRenaming(false);
+    setTagging(false);
     setDraft("");
     finalizedRef.current = false;
   }, [menu]);
 
-  // Focus input when entering rename mode
+  // Focus whichever inline editor was opened.
   useEffect(() => {
-    if (renaming && inputRef.current) {
+    if ((renaming || tagging) && inputRef.current) {
       inputRef.current.focus();
       inputRef.current.select();
     }
-  }, [renaming]);
+  }, [renaming, tagging]);
 
   if (!menu) return null;
 
@@ -85,6 +89,13 @@ export function SessionContextMenu({
     if (trimmed.length > 0) {
       onRename(session, trimmed);
     }
+    onClose();
+  };
+  const commitTag = () => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
+    const trimmed = draft.trim();
+    onSetChatTag?.(session, trimmed.length ? trimmed : null);
     onClose();
   };
 
@@ -122,7 +133,26 @@ export function SessionContextMenu({
             />
           </div>
         )}
-        {!renaming && (
+        {tagging && (
+          <div className="px-3 py-1.5">
+            <input
+              ref={inputRef}
+              type="text"
+              aria-label="Set Claude session tag"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitTag(); }
+                if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
+              }}
+              onBlur={commitTag}
+              className="w-full rounded border border-border/30 bg-transparent px-2 py-1 text-xs text-[--color-fg] outline-none focus:border-[--color-accent]"
+              placeholder="Tag (empty clears)..."
+              maxLength={48}
+            />
+          </div>
+        )}
+        {!renaming && !tagging && (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
             onClick={() => { setDraft(session.title); setRenaming(true); }}
@@ -130,6 +160,20 @@ export function SessionContextMenu({
             Rename
           </button>
         )}
+        {/* Tag writes need a live Claude SDK runtime (updateSession throws for
+            ended sessions), so only offer the item while the session runs. */}
+        {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => {
+              finalizedRef.current = false;
+              setDraft(session.claudeTag ?? "");
+              setTagging(true);
+            }}
+          >
+            Set tag…
+          </button>
+        ) : null}
 
         {isRunning && session.ptyId && !isChat ? (
           <button

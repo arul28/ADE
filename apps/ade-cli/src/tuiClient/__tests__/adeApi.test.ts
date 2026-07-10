@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -54,6 +54,21 @@ describe("listLaneDiffStats", () => {
       },
     ]);
     expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
+
+describe("getMainTranscript", () => {
+  it("calls the main transcript chat action with paging arguments", async () => {
+    const action = vi.fn().mockResolvedValue([]);
+    const connection = { action } as unknown as AdeCodeConnection;
+
+    await expect(getMainTranscript(connection, { sessionId: "chat-1", limit: 50, offset: 2 }))
+      .resolves.toEqual([]);
+    expect(action).toHaveBeenCalledWith("chat", "getMainTranscript", {
+      sessionId: "chat-1",
+      limit: 50,
+      offset: 2,
+    });
   });
 });
 

@@ -1935,7 +1935,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
-  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
+  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, firedAt: String?, late: Bool?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
   case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
@@ -2041,6 +2041,8 @@ extension AgentChatEvent {
     case cron
     case nextRunAt
     case lastRunAt
+    case firedAt
+    case late
     case recurring
     case durable
     case sourceToolUseId
@@ -2353,6 +2355,8 @@ extension AgentChatEvent {
         cron: try container.decodeIfPresent(String.self, forKey: .cron),
         nextRunAt: try container.decodeIfPresent(String.self, forKey: .nextRunAt),
         lastRunAt: try container.decodeIfPresent(String.self, forKey: .lastRunAt),
+        firedAt: try container.decodeIfPresent(String.self, forKey: .firedAt),
+        late: try container.decodeIfPresent(Bool.self, forKey: .late),
         recurring: try container.decodeIfPresent(Bool.self, forKey: .recurring),
         durable: try container.decodeIfPresent(Bool.self, forKey: .durable),
         sourceToolUseId: try container.decodeIfPresent(String.self, forKey: .sourceToolUseId),

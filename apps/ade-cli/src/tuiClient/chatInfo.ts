@@ -72,6 +72,7 @@ export function deriveChatInfoSnapshot(args: {
     provider,
     modelLabel: args.modelLabel,
     laneLabel: args.laneLabel,
+    claudeTag: args.activeSession?.claudeTag ?? null,
     contextPercent: args.tokenStats?.percent ?? null,
     tokenSummary: tokenStatsSummary(args.tokenStats),
     goal: args.goal,

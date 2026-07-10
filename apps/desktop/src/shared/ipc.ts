@@ -221,6 +221,7 @@ export const IPC = {
   agentChatListClaudeSessions: "ade.agentChat.claudeSessions.list",
   agentChatGetClaudeSessionInfo: "ade.agentChat.claudeSessions.info",
   agentChatGetClaudeSessionMessages: "ade.agentChat.claudeSessions.messages",
+  agentChatGetMainTranscript: "ade.agentChat.getMainTranscript",
   agentChatGetSubagentTranscript: "ade.agentChat.getSubagentTranscript",
   agentChatGetContextUsage: "ade.agentChat.getContextUsage",
   agentChatRewindFiles: "ade.agentChat.rewindFiles",

@@ -1524,6 +1524,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
+    $ ade chat update <session> --personal --tag "review-ready"
+                                                    Claude-only; --tag "" clears it
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
@@ -7305,6 +7307,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   if (sub === "update" || sub === "configure") {
     const model = readValue(args, ["--model", "--model-id"]);
     const title = readValue(args, ["--title"]);
+    // Claude-only session tag mirrored to the SDK. Pass `--tag ""` to clear it.
+    // Rejected at runtime for non-Claude sessions or before a Claude turn exists.
+    const tag = readValue(args, ["--tag"]);
     const provider = readValue(args, ["--provider"]);
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
@@ -7315,6 +7320,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("updateSession", collectGenericObjectArgs(args, {
         sessionId,
         ...(title !== null ? { title } : {}),
+        ...(tag !== null ? { tag } : {}),
         ...(provider ? { provider } : {}),
         ...(model ? { model, modelId: model } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),

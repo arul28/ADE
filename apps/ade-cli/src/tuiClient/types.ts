@@ -174,6 +174,7 @@ export type ChatInfoSnapshot = {
   provider: AdeCodeProvider;
   modelLabel: string;
   laneLabel: string | null;
+  claudeTag?: string | null;
   contextPercent: number | null;
   tokenSummary: string | null;
   goal: CodexThreadGoal | null;

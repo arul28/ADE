@@ -206,7 +206,7 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptionalText(model, into: &hasher)
     combineOptionalText(reasoningEffort, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let firedAt, let late, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
     hasher.combine(id)
     hasher.combine(kind)
     hasher.combine(status)
@@ -218,6 +218,8 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptional(cron, into: &hasher)
     combineOptional(nextRunAt, into: &hasher)
     combineOptional(lastRunAt, into: &hasher)
+    combineOptional(firedAt, into: &hasher)
+    combineOptional(late, into: &hasher)
     combineOptional(recurring, into: &hasher)
     combineOptional(durable, into: &hasher)
     combineOptional(sourceToolUseId, into: &hasher)
@@ -1006,6 +1008,8 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
       let cron,
       let nextRunAt,
       let lastRunAt,
+      let firedAt,
+      let late,
       let recurring,
       let durable,
       let sourceToolUseId,
@@ -1036,6 +1040,8 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
         cron: nonEmptyWorkTimelineText(cron) ?? existing?.snapshot.cron,
         nextRunAt: nonEmptyWorkTimelineText(nextRunAt) ?? existing?.snapshot.nextRunAt,
         lastRunAt: nonEmptyWorkTimelineText(lastRunAt) ?? existing?.snapshot.lastRunAt,
+        firedAt: nonEmptyWorkTimelineText(firedAt) ?? existing?.snapshot.firedAt,
+        late: late ?? existing?.snapshot.late,
         recurring: recurring ?? existing?.snapshot.recurring,
         durable: durable ?? existing?.snapshot.durable,
         sourceToolUseId: nonEmptyWorkTimelineText(sourceToolUseId) ?? existing?.snapshot.sourceToolUseId,
@@ -1116,6 +1122,29 @@ func workChatInfoBackgroundItems(
   snapshots.filter {
     $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "background_task"
   }
+}
+
+func workSubagentIsEarlier(_ snapshot: WorkSubagentSnapshot) -> Bool {
+  snapshot.status == .succeeded || snapshot.status == .stopped
+}
+
+func workBackgroundItemIsEarlier(_ snapshot: WorkScheduledWorkSnapshot) -> Bool {
+  let status = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return status == "completed" || status == "cancelled" || status == "stopped"
+}
+
+func workScheduleItemIsFiredOneShotWakeup(_ snapshot: WorkScheduledWorkSnapshot) -> Bool {
+  let kind = snapshot.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let status = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return (kind == "wakeup" || kind == "loop")
+    && snapshot.recurring != true
+    && (status == "fired" || status == "completed")
+}
+
+func workScheduleItemIsEarlier(_ snapshot: WorkScheduledWorkSnapshot) -> Bool {
+  if workScheduleItemIsFiredOneShotWakeup(snapshot) { return true }
+  let status = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return status == "completed" || status == "cancelled" || status == "stopped"
 }
 
 func workChatInfoSubagents(
@@ -2491,7 +2520,7 @@ private func eventCard(
       // badge, and the Subagents drawer. Rendering every lifecycle envelope as
       // a normal event card makes mobile chats look much longer than desktop.
       return nil
-    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, let turnId, let error):
+    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
       // Background shell commands are owned by the Chat Info pane's Background
       // section (and a compact timeline finish chip). Mirrors desktop, which
       // stops rendering an inline scheduled-work card for background_task.
@@ -2873,7 +2902,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .subagentStarted(_, _, _, _, _, _, _, _, _, let turnId),
        .subagentProgress(_, _, _, _, _, _, _, _, _, _, let turnId),
        .subagentResult(_, _, _, _, _, _, _, _, _, let turnId),
-       .scheduledWorkUpdate(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let turnId, _),
+       .scheduledWorkUpdate(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let turnId, _),
        .transcriptRetraction(_, _, _, let turnId),
        .structuredQuestion(_, _, _, let turnId),
        .approvalRequest(_, _, _, let turnId),

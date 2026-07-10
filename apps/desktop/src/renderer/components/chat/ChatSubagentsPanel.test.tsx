@@ -188,6 +188,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /Earlier \(1\)/i }));
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
 
     await waitFor(() => expect(probeSubagentTranscript).toHaveBeenCalledTimes(1));
@@ -414,6 +415,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     // Background section shows smart labels (cwd stripped from the collapsed row).
     expect(screen.getByText("npx vitest run t")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Earlier \(1\)/i }));
     expect(screen.getByText("npm run build")).toBeTruthy();
 
     // Schedule row present.
@@ -516,7 +518,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("paused")).toBeTruthy();
   });
 
-  it("moves fired one-shot wakeups into collapsed history and marks late fires", () => {
+  it("moves fired one-shot wakeups into the collapsed Earlier group and marks late fires", () => {
     const firedAt = new Date(2026, 4, 12, 8, 41).toISOString();
     render(
       <ChatSubagentsPanel
@@ -544,13 +546,13 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     );
 
     expect(screen.getByTitle("Recurring CI check")).toBeTruthy();
-    const historyToggle = screen.getByRole("button", { name: "History (1)" });
-    expect(historyToggle.getAttribute("aria-expanded")).toBe("false");
+    const earlierToggle = screen.getByRole("button", { name: "Earlier (1)" });
+    expect(earlierToggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("✓ Check PR CI · fired 8:41 AM · late")).toBeNull();
 
-    fireEvent.click(historyToggle);
+    fireEvent.click(earlierToggle);
 
-    expect(historyToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(earlierToggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("✓ Check PR CI · fired 8:41 AM · late")).toBeTruthy();
     expect(screen.queryByText("done")).toBeNull();
   });
@@ -597,7 +599,89 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /Earlier \(1\)/i }));
     expect(screen.getByText("done")).toBeTruthy();
     expect(screen.queryByText("running")).toBeNull();
+  });
+
+  it("keeps the small case free of collapse, Earlier, Show all, and Clear chrome", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Subagents/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Earlier/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Show all/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
+  it("caps active rows, exempts failed rows, and reveals all rows once", () => {
+    const snapshots = Array.from({ length: 14 }, (_, index): ChatSubagentSnapshot => ({
+      ...baseSnapshot,
+      taskId: `running-${index}`,
+      description: `Running ${index}`,
+      background: false,
+    }));
+    snapshots.push({
+      ...baseSnapshot,
+      taskId: "failed-beyond-cap",
+      description: "Failed beyond cap",
+      status: "failed",
+      background: false,
+    });
+
+    render(<ChatSubagentsPanel snapshots={snapshots} events={[]} variant="pane" />);
+
+    expect(screen.getByTitle("Failed beyond cap")).toBeTruthy();
+    expect(screen.queryByTitle("Running 13")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show all (2 running)" }));
+    expect(screen.getByTitle("Running 13")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Show all/i })).toBeNull();
+  });
+
+  it("clears and restores Earlier rows with the normalized per-session storage shape", () => {
+    const sessionId = "pane-persistence";
+    window.localStorage.removeItem(`ade.chat.paneUi.v1:${sessionId}`);
+    window.localStorage.removeItem(`ade.chat.paneCleared.v1:${sessionId}`);
+    const completed = ["done-1", "done-2"].map((taskId): ChatSubagentSnapshot => ({
+      ...baseSnapshot,
+      taskId,
+      description: taskId,
+      status: "completed",
+      background: false,
+    }));
+
+    render(
+      <ChatSubagentsPanel
+        sessionId={sessionId}
+        snapshots={completed}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByText("Subagents · all clear")).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem(`ade.chat.paneCleared.v1:${sessionId}`) ?? "null")).toEqual({
+      subagents: ["done-1", "done-2"],
+      background: [],
+      schedule: [],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restore (2)" }));
+    expect(screen.getByRole("button", { name: "Earlier (2)" })).toBeTruthy();
+  });
+
+  it("owns the pane scroller and uses sticky opaque section headers", () => {
+    render(<ChatSubagentsPanel snapshots={[baseSnapshot]} events={[]} variant="pane" />);
+
+    const scroller = screen.getByTestId("chat-subagents-pane-scroll");
+    expect(scroller.className).toContain("overflow-y-auto");
+    const header = screen.getByText("Subagents").closest("div");
+    expect(header?.className).toContain("sticky");
+    expect(header?.className).toContain("--work-sidebar-bg");
   });
 });
