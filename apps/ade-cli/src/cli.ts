@@ -15246,7 +15246,31 @@ function formatAutomationIngress(value: unknown): string {
         ["error", githubRelay.lastError],
       ])
     : "";
-  return [gatewayLines, localLines, relayLines].filter(Boolean).join("\n\n");
+  // `delivery` is optional; remote runtimes built before per-trigger delivery
+  // reporting omit it. renderKeyValues drops empty rows, so missing sub-status
+  // entries simply don't render.
+  const delivery = isRecord(result.delivery) ? result.delivery : null;
+  const deliveryLines = delivery
+    ? renderKeyValues("Trigger delivery", [
+        ["github", formatDeliveryStatus(delivery.github)],
+        ["githubWebhook", formatDeliveryStatus(delivery.githubWebhook)],
+        ["webhook", formatDeliveryStatus(delivery.webhook)],
+        ["linear", formatDeliveryStatus(delivery.linear)],
+      ])
+    : "";
+  return [gatewayLines, localLines, relayLines, deliveryLines]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function formatDeliveryStatus(value: unknown): string {
+  if (!isRecord(value)) return "";
+  if (value.ready === true) {
+    const via = asString(value.via);
+    return via ? `ready (${via})` : "ready";
+  }
+  const setupError = asString(value.setupError);
+  return setupError ? `not ready — ${setupError}` : "not ready";
 }
 
 function formatAutomationLinearIngress(value: unknown): string {

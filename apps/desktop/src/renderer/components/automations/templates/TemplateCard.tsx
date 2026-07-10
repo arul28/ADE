@@ -1,8 +1,10 @@
 import { ArrowRight } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
+import { sourceForTriggerType } from "../triggerCatalog";
 import type { AutomationTemplate } from "./templateData";
 import { templateIconFor } from "./templateIcons";
+import { SourceIconBadge, TemplateSourceChip } from "./TemplateSourceChip";
 
 export function TemplateCard({
   template,
@@ -14,6 +16,7 @@ export function TemplateCard({
   className?: string;
 }) {
   const Icon = templateIconFor(template.id);
+  const source = sourceForTriggerType(template.triggerType);
   return (
     <button
       type="button"
@@ -25,14 +28,12 @@ export function TemplateCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
-          <Icon size={16} weight="regular" />
-        </span>
+        <SourceIconBadge source={source} size={32} icon={Icon} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[13px] font-semibold text-fg">{template.name}</span>
             {template.isFlagship ? (
-              <span className="shrink-0 text-[10px] font-medium text-accent">Flagship</span>
+              <span className="shrink-0 text-[10px] font-medium" style={{ color: "#E8B45A" }}>Flagship</span>
             ) : null}
           </div>
           <p className="mt-1 text-[11.5px] leading-relaxed text-muted-fg/75">{template.description}</p>
@@ -44,7 +45,7 @@ export function TemplateCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between">
-        <span className="truncate font-mono text-[9.5px] text-muted-fg/50">{template.triggerType}</span>
+        <TemplateSourceChip triggerType={template.triggerType} />
         {/* Decorative affordance: the whole card is the button; a nested
             <button> would be invalid HTML. */}
         <span className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-1 text-[10.5px] font-medium text-fg/85 transition-colors group-hover:border-accent/40 group-hover:text-accent">

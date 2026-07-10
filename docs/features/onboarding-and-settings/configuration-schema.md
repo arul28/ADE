@@ -386,7 +386,11 @@ callers that bypass must use `{ skipTrust: true }` deliberately.
 
 The trust confirmation dialog (rendered from `RunPage` and
 `SettingsPage`) calls `projectConfigService.confirmTrust()`, which
-writes the new approved hash.
+writes the new approved hash. The Automations tab exposes the same
+`confirmTrust()` via a `Trust config` banner, but only when the rule
+list contains a shared-config (non-`local`) rule; `runRuleNow` blocks
+a manual run solely for rules defined in `.ade/ade.yaml`, so
+local-only automations keep running while shared config is untrusted.
 
 Local config is not trust-gated; users only need to trust their own
 overrides.

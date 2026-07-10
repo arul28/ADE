@@ -155,46 +155,6 @@ export type AutomationIngressSource =
   | "linear-relay"
   | "local-webhook";
 
-export const WEBHOOK_GATEWAY_TRIGGER_TYPES = [
-  "github.pr_opened",
-  "github.pr_updated",
-  "github.pr_merged",
-  "github.pr_closed",
-  "github.pr_commented",
-  "github.pr_review_submitted",
-  "github.issue_opened",
-  "github.issue_edited",
-  "github.issue_closed",
-  "github.issue_labeled",
-  "github.issue_commented",
-  "linear.issue_created",
-  "linear.issue_updated",
-  "linear.issue_assigned",
-  "linear.issue_status_changed",
-  "linear.issue_labeled",
-  "github-webhook",
-  "webhook",
-] as const satisfies readonly AutomationTriggerType[];
-
-export type WebhookGatewayTriggerType = (typeof WEBHOOK_GATEWAY_TRIGGER_TYPES)[number];
-
-// Every external-event trigger type must be gateway-gated. `satisfies` above
-// catches invalid names; this catches a github.*/linear.* union member that
-// was never added to the list (the assignment errors while any is missing).
-type ExternalEventTriggerType = Extract<
-  AutomationTriggerType,
-  `github.${string}` | `linear.${string}` | "github-webhook" | "webhook"
->;
-const WEBHOOK_GATEWAY_COMPLETENESS_CHECK: Record<
-  Exclude<ExternalEventTriggerType, WebhookGatewayTriggerType>,
-  never
-> = {};
-void WEBHOOK_GATEWAY_COMPLETENESS_CHECK;
-
-export function isWebhookGatewayTriggerType(type: AutomationTriggerType | string | null | undefined): type is WebhookGatewayTriggerType {
-  return WEBHOOK_GATEWAY_TRIGGER_TYPES.includes(type as WebhookGatewayTriggerType);
-}
-
 export type AutomationWebhookGatewayStatus = {
   enabled: boolean;
   ready: boolean;
@@ -210,6 +170,37 @@ export type AutomationWebhookGatewayStatus = {
   lastCheckedAt: string | null;
   lastError: string | null;
 };
+
+export type AutomationTriggerDeliveryVia =
+  | "github-relay"
+  | "github-polling"
+  | "local-webhook"
+  | "public-gateway"
+  | "linear-relay";
+
+export type AutomationTriggerDeliveryStatus = {
+  ready: boolean;
+  /** Which path will deliver events when ready; null when not ready. */
+  via: AutomationTriggerDeliveryVia | null;
+  /** Human guidance when not ready; null when ready. */
+  setupError: string | null;
+};
+
+export type AutomationIngressDelivery = {
+  github: AutomationTriggerDeliveryStatus;
+  githubWebhook: AutomationTriggerDeliveryStatus;
+  webhook: AutomationTriggerDeliveryStatus;
+  linear: AutomationTriggerDeliveryStatus;
+};
+
+export function triggerDeliveryKeyForType(type: string): keyof AutomationIngressDelivery | null {
+  // Legacy git.pr_* trigger types alias to github.pr_* (LEGACY_GITHUB_PR_TRIGGER_ALIASES).
+  if (type.startsWith("github.") || type.startsWith("git.pr_")) return "github";
+  if (type.startsWith("linear.")) return "linear";
+  if (type === "github-webhook") return "githubWebhook";
+  if (type === "webhook") return "webhook";
+  return null;
+}
 
 export type AutomationTriggerIssueContext = {
   number: number;
@@ -263,6 +254,8 @@ export type AutomationIngressStatus = {
     lastDeliveryAt: string | null;
     lastError: string | null;
   };
+  /** Optional for compatibility with remote runtimes built before per-trigger delivery reporting. */
+  delivery?: AutomationIngressDelivery;
 };
 
 export type AutomationIngressEventRecord = {

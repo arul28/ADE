@@ -1,20 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { GithubLogo, Tag, X } from "@phosphor-icons/react";
+import { GithubLogo, X } from "@phosphor-icons/react";
 import type { AutomationIngressStatus, AutomationLinearIngressStatus } from "../../../../shared/types";
+import { LINEAR_BRAND, LinearMark } from "../../lanes/linearBrand";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { formatDate } from "../../../lib/format";
-
-type LinearIngressApi = typeof window.ade.automations.linearIngress;
-
-/**
- * The Linear ingress IPC is part of the preload contract, but a remote runtime
- * on an older build may not expose it — probe defensively so the row hides
- * rather than throwing.
- */
-function linearIngressApi(): Partial<LinearIngressApi> | null {
-  return window.ade?.automations?.linearIngress ?? null;
-}
+import { linearIngressApi } from "../linearIngressApi";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (
@@ -78,7 +69,7 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   return (
     <div className="flex items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 text-[11px]">
       <div className="flex items-center gap-1.5" title={`GitHub events: ${gh.label}`}>
-        <GithubLogo size={13} weight="fill" className="text-muted-fg/70" />
+        <GithubLogo size={13} weight="fill" className="text-fg/80" />
         <span className="text-muted-fg/70">GitHub</span>
         <Dot tone={gh.tone} />
         <span className={cn(gh.tone === "off" ? "text-muted-fg/55" : "text-fg/80")}>{gh.label}</span>
@@ -86,7 +77,9 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
 
       {linearAvailable ? (
         <div className="flex items-center gap-1.5" title={linear?.lastError ?? undefined}>
-          <Tag size={13} weight="fill" className="text-muted-fg/70" />
+          <span className="shrink-0" style={{ color: LINEAR_BRAND.primary }}>
+            <LinearMark size={13} />
+          </span>
           <span className="text-muted-fg/70">Linear</span>
           {linear?.state === "ready" ? (
             <>

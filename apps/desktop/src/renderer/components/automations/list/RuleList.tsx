@@ -1,5 +1,5 @@
 import { ArrowClockwise, BookOpen, MagnifyingGlass, Plus } from "@phosphor-icons/react";
-import type { AutomationIngressStatus, AutomationRuleDraft, AutomationRuleSummary } from "../../../../shared/types";
+import type { AutomationIngressDelivery, AutomationIngressStatus, AutomationRuleDraft, AutomationRuleSummary } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { inputCls } from "../designTokens";
@@ -15,7 +15,7 @@ export function RuleList({
   error,
   configTrustRequired,
   ingressStatus,
-  webhookGatewayReady,
+  delivery,
   onSearch,
   onSelect,
   onToggle,
@@ -26,6 +26,7 @@ export function RuleList({
   onOpenTemplates,
   onUseTemplate,
   onRefresh,
+  onConfirmTrust,
 }: {
   rules: AutomationRuleSummary[];
   selectedRuleId: string | null;
@@ -34,7 +35,7 @@ export function RuleList({
   error: string | null;
   configTrustRequired: boolean;
   ingressStatus: AutomationIngressStatus | null;
-  webhookGatewayReady: boolean;
+  delivery: AutomationIngressDelivery | null;
   onSearch: (value: string) => void;
   onSelect: (id: string) => void;
   onToggle: (id: string, enabled: boolean) => void;
@@ -45,6 +46,7 @@ export function RuleList({
   onOpenTemplates: () => void;
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
   onRefresh: () => void;
+  onConfirmTrust: () => void;
 }) {
   return (
     <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
@@ -78,9 +80,16 @@ export function RuleList({
 
       <IngressStatusStrip ingressStatus={ingressStatus} />
 
+      {/* The parent computes this from the UNFILTERED rules so search can't hide the recovery CTA. */}
       {configTrustRequired ? (
         <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-100">
-          Shared project config is untrusted. Confirm trust before ADE runs shared automations.
+          <div className="font-semibold">Shared automations are paused</div>
+          <div className="mt-0.5 leading-relaxed text-amber-100/80">
+            <span className="font-mono">.ade/ade.yaml</span> changed outside this app. Review it, then trust it to let shared automations run.
+          </div>
+          <Button size="sm" variant="outline" className="mt-2 text-amber-100" onClick={onConfirmTrust}>
+            Trust config
+          </Button>
         </div>
       ) : null}
       {error ? (
@@ -96,7 +105,7 @@ export function RuleList({
               <RuleRow
                 key={rule.id}
                 rule={rule}
-                webhookGatewayReady={webhookGatewayReady}
+                delivery={delivery}
                 selected={rule.id === selectedRuleId}
                 onSelect={() => onSelect(rule.id)}
                 onToggle={(enabled) => onToggle(rule.id, enabled)}

@@ -58,6 +58,9 @@ templates/
   templateData.ts              grouped templates (4 flagship + reworked existing)
 settings/
   IngressStatusStrip.tsx       GitHub path (App/relay/polling) + Linear connect/status; dismissible
+templates/
+  TemplateSourceChip.tsx       SourceIconBadge + "Source · Event" chip, both source-accented
+linearIngressApi.ts            defensive window.ade.automations.linearIngress probe (shared)
 ```
 
 Kept as-is: `adeActionSchemas.ts`, `permissionControls.ts`. `shared.ts` keeps
@@ -135,6 +138,25 @@ Builder:
   `Linear events` + `Connect` button / `Connected` / `last event 5m ago`.
 - History: `No runs yet` / `Trigger it manually or wait for the next event.`
   Run reason line uses the trigger sentence; deep links `Open lane`, `Open thread`, `View PR`.
+
+## Brand identity & delivery callouts
+
+Each trigger source and each step kind carries a brand `accent` hex in `triggerCatalog.ts` /
+`actionCatalog.ts` (GitHub grey, Linear indigo via `LinearMark`/`LINEAR_BRAND`, Git orange,
+Lanes violet, Files/Schedule/webhook hues, agent purple, ADE-action blue, delete red). The
+source picker, rule-row schedule hint, template cards/chips, ingress strip Linear row, and step
+icons all tint from that accent (`sourceAccent`/`accentTint` for source tints) instead of the
+single `text-accent` token — so a rule reads its source at a glance.
+
+Delivery state is surfaced only when a path is missing, never as a green "all good" badge:
+- `TriggerCard` renders a `TriggerDeliveryCallout` (amber, the delivery `setupError`, plus an
+  `Open GitHub settings` / `Connect Linear` / `Open Linear settings` action) only when the
+  selected source's `ingressStatus.delivery[key].ready` is false. `Connect Linear` calls
+  `linearIngress.setup()` in place, then `onIngressChanged` re-fetches status.
+- `RuleRow` shows a small amber warning glyph (titled with the `setupError`) when an enabled
+  rule's source has no ready delivery path.
+- The left-rail trust banner shows a `Trust config` CTA (calls `projectConfig.confirmTrust`)
+  only when the rule list contains at least one non-`local` (shared-config) rule.
 
 ## Contracts & graceful degradation
 

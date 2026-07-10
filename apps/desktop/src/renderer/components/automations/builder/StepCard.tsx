@@ -122,12 +122,9 @@ export function StepCard({
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className={cn(
-              "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-              isCleanup ? "bg-amber-500/15 text-amber-300" : "bg-accent/15 text-accent",
-            )}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]"
           >
-            <Icon size={12} weight="fill" />
+            <Icon size={12} weight="fill" style={{ color: def.accent }} />
           </span>
           {!isCleanup ? (
             <span className="text-[10px] font-semibold tracking-wider text-muted-fg/60">STEP {index + 1}</span>

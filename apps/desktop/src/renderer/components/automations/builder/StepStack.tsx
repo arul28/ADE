@@ -229,8 +229,8 @@ function StepMenu({ onPick, className }: { onPick: (kind: StepKind) => void; cla
             onClick={() => onPick(kind)}
             className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]"
           >
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
-              <Icon size={12} weight="fill" />
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+              <Icon size={12} weight="fill" style={{ color: def.accent }} />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
@@ -258,8 +258,8 @@ function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepKind) => void }) {
               onClick={() => onAdd(kind)}
               className="flex items-start gap-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]"
             >
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
-                <Icon size={12} weight="fill" />
+              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+                <Icon size={12} weight="fill" style={{ color: def.accent }} />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[12px] font-semibold text-fg">{def.label}</span>

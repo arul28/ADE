@@ -346,8 +346,20 @@ export function AutomationsWorkspace({
     }
   }, []);
 
+  const confirmTrust = useCallback(async () => {
+    setError(null);
+    try {
+      await window.ade.projectConfig.confirmTrust();
+      await refresh();
+    } catch (err) {
+      setError(extractError(err));
+    }
+  }, [refresh]);
+
   const selectedRule = selectedRuleId ? rules.find((r) => r.id === selectedRuleId) ?? null : null;
-  const webhookGatewayReady = ingressStatus?.webhookGateway.ready === true;
+  const delivery = ingressStatus?.delivery ?? null;
+  // Computed on the UNFILTERED rules so a search can't hide the trust recovery CTA.
+  const sharedTrustBlocked = configTrustRequired && rules.some((rule) => rule.source !== "local");
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }} className="flex h-full min-h-0">
@@ -357,9 +369,9 @@ export function AutomationsWorkspace({
         search={search}
         loading={loading}
         error={error}
-        configTrustRequired={configTrustRequired}
+        configTrustRequired={sharedTrustBlocked}
         ingressStatus={ingressStatus}
-        webhookGatewayReady={webhookGatewayReady}
+        delivery={delivery}
         onSearch={setSearch}
         onSelect={(id) => {
           if (id !== selectedRuleId && !confirmDiscardIfDirty()) return;
@@ -396,6 +408,7 @@ export function AutomationsWorkspace({
           setDetailView("builder");
         }}
         onRefresh={() => void refresh()}
+        onConfirmTrust={() => void confirmTrust()}
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -438,6 +451,7 @@ export function AutomationsWorkspace({
               onSave={() => void saveDraft()}
               onSimulate={() => void simulateDraft()}
               onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
+              onIngressChanged={() => void refresh()}
               saving={saving}
               simulating={simulating}
               running={running}

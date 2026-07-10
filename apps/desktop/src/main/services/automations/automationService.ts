@@ -12,6 +12,7 @@ import type {
   AutomationConfidenceScore,
   AutomationExecution,
   AutomationIngressEventRecord,
+  AutomationIngressDelivery,
   AutomationIngressSource,
   AutomationIngressStatus,
   AutomationWebhookGatewayStatus,
@@ -31,7 +32,7 @@ import type {
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
-import { isWebhookGatewayTriggerType } from "../../../shared/types";
+import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -135,10 +136,6 @@ function ruleTriggers(rule: Pick<AutomationRule, "triggers" | "trigger">): Autom
       ? [rule.trigger]
       : [];
   return triggers;
-}
-
-function ruleNeedsExternalIngress(rule: Pick<AutomationRule, "triggers" | "trigger">): boolean {
-  return ruleTriggers(rule).some((trigger) => isWebhookGatewayTriggerType(trigger.type));
 }
 
 function readGitHubOriginFromConfig(projectRoot: string): string | null {
@@ -1381,38 +1378,75 @@ export function createAutomationService({
     }
   };
 
-  const getIngressSetupError = (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): string | null => {
-    const triggers = ruleTriggers(rule).map((trigger) => normalizeTriggerType(trigger.type));
-    const relayAvailable = ingressStatusRef.githubRelay.configured;
+  const computeDeliveryStatuses = (): AutomationIngressDelivery => {
+    // "polling" counts (first poll may still be in flight at boot); "error"
+    // and "disabled" (auth-pending cooldown, unresolved repo) do not deliver.
+    const relayAvailable = ingressStatusRef.githubRelay.configured
+      && (ingressStatusRef.githubRelay.status === "polling" || ingressStatusRef.githubRelay.status === "ready");
+    const pollingAvailable = capabilityAvailable(githubPollingAvailableRef);
+    const linearAvailable = capabilityAvailable(linearIngressAvailableRef);
     const localWebhookAvailable = ingressStatusRef.localWebhook.listening && ingressStatusRef.localWebhook.healthy;
     const publicGatewayAvailable = ingressStatusRef.webhookGateway.ready;
 
-    if (triggers.some((type) => type.startsWith("linear.")) && !capabilityAvailable(linearIngressAvailableRef)) {
-      return "Connect Linear events in Automations settings.";
-    }
+    const githubVia = relayAvailable
+      ? "github-relay"
+      : pollingAvailable
+        ? "github-polling"
+        : localWebhookAvailable
+          ? "local-webhook"
+          : publicGatewayAvailable
+            ? "public-gateway"
+            : null;
+    const githubWebhookVia = relayAvailable
+      ? "github-relay"
+      : localWebhookAvailable
+        ? "local-webhook"
+        : publicGatewayAvailable
+          ? "public-gateway"
+          : null;
+    const webhookVia = localWebhookAvailable
+      ? "local-webhook"
+      : publicGatewayAvailable
+        ? "public-gateway"
+        : null;
 
-    const hasCanonicalGithubTrigger = triggers.some((type) => type.startsWith("github."));
-    if (
-      hasCanonicalGithubTrigger
-      && !capabilityAvailable(githubPollingAvailableRef)
-      && !relayAvailable
-      && !localWebhookAvailable
-      && !publicGatewayAvailable
-    ) {
-      return "Connect a GitHub repository, configure the GitHub relay, or start the local webhook server in Automations settings.";
-    }
+    return {
+      github: {
+        ready: githubVia != null,
+        via: githubVia,
+        setupError: githubVia == null
+          ? "Connect a GitHub repository, configure the GitHub relay, or start the local webhook server in Automations settings."
+          : null,
+      },
+      githubWebhook: {
+        ready: githubWebhookVia != null,
+        via: githubWebhookVia,
+        setupError: githubWebhookVia == null
+          ? "Configure the GitHub relay or start the local webhook server in Automations settings."
+          : null,
+      },
+      webhook: {
+        ready: webhookVia != null,
+        via: webhookVia,
+        setupError: webhookVia == null
+          ? "Start the local webhook server or configure ADE Webhook Gateway in Automations settings."
+          : null,
+      },
+      linear: {
+        ready: linearAvailable,
+        via: linearAvailable ? "linear-relay" : null,
+        setupError: linearAvailable ? null : "Connect Linear events in Automations settings.",
+      },
+    };
+  };
 
-    if (
-      triggers.includes("github-webhook")
-      && !relayAvailable
-      && !localWebhookAvailable
-      && !publicGatewayAvailable
-    ) {
-      return "Configure the GitHub relay or start the local webhook server in Automations settings.";
-    }
-
-    if (triggers.includes("webhook") && !localWebhookAvailable && !publicGatewayAvailable) {
-      return "Start the local webhook server or configure ADE Webhook Gateway in Automations settings.";
+  const getIngressSetupError = (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): string | null => {
+    const delivery = computeDeliveryStatuses();
+    for (const trigger of ruleTriggers(rule)) {
+      const deliveryKey = triggerDeliveryKeyForType(normalizeTriggerType(trigger.type));
+      if (deliveryKey && !delivery[deliveryKey].ready) {
+        return delivery[deliveryKey].setupError;
+      }
     }
     return null;
   };
@@ -2914,8 +2948,12 @@ export function createAutomationService({
     trigger: TriggerContext,
     options: { dryRun?: boolean } = {},
   ): Promise<AutomationRun> => {
-    if (projectConfigService.get().trust.requiresSharedTrust) {
-      throw new Error("Shared config is untrusted. Confirm trust to run automations.");
+    const snapshot = projectConfigService.get();
+    const sharedAutomations = snapshot.shared?.automations;
+    const isSharedRule = Array.isArray(sharedAutomations)
+      && sharedAutomations.some((sharedRule) => sharedRule?.id === rule.id);
+    if (snapshot.trust.requiresSharedTrust && isSharedRule) {
+      throw new Error("Shared project config (.ade/ade.yaml) changed and is untrusted. Review and trust it from the Automations tab to run shared automations.");
     }
     if (options.dryRun) {
       return await simulateDryRun(rule, trigger);
@@ -3156,7 +3194,7 @@ export function createAutomationService({
     const desired = new Set<string>();
     for (const rule of rules) {
       if (!rule.enabled) continue;
-      const ingressSetupError = ruleNeedsExternalIngress(rule) ? getIngressSetupError(rule) : null;
+      const ingressSetupError = getIngressSetupError(rule);
       if (ingressSetupError) {
         logger.warn("automations.external_trigger_waiting_for_ingress", {
           automationId: rule.id,
@@ -3634,6 +3672,7 @@ export function createAutomationService({
       };
       return {
         ...ingressStatusRef,
+        delivery: computeDeliveryStatuses(),
       };
     },
 
