@@ -4405,6 +4405,9 @@ struct MobileAdeUsageDailyPoint: Codable, Equatable, Identifiable {
   var totalTokens: Int?
   /// Cache-read tokens for the day (provider ledgers). Absent on older hosts.
   var cachedTokens: Int?
+  /// Local (ADE DB / git operations) measures — never merged with GitHub values.
+  var commits: Int?
+  var prs: Int?
   var insertions: Int?
   var deletions: Int?
   var filesChanged: Int?

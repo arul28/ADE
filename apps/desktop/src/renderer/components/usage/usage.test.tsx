@@ -7,6 +7,7 @@ import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
   AiSettingsStatus,
+  AdeUsageDailyPoint,
   AdeUsageStats,
   BudgetCapConfig,
   UsageSnapshot,
@@ -636,16 +637,25 @@ describe("usage components", () => {
       expect(screen.getByText("GitHub")).toBeTruthy();
     });
 
-    it("counts a github-only day toward the heatmap intensity", () => {
-      const stats = makeEmptyActivityStats();
-      stats.daily = [{ ...stats.daily[0]!, githubCommits: 3, githubPrs: 1, githubAdditions: 200, githubDeletions: 20 }];
-      const { container } = render(<ActivityModule stats={stats} preset="7d" onPresetChange={vi.fn()} />);
+    it("counts every activity dimension: local-git-only and github-commit-only days score as active", () => {
+      // Each case is a day with ONLY the listed dimensions non-zero (no tokens,
+      // no sessions). Both must (a) escape the warm-empty state and (b) score
+      // non-zero heatmap intensity — proving the predicate and score share the
+      // complete field set.
+      const cases: Array<Partial<AdeUsageDailyPoint>> = [
+        { commits: 4, prs: 1, filesChanged: 3, insertions: 120, deletions: 8 }, // local git only
+        { githubCommits: 5 }, // github commit only (no additions/deletions)
+      ];
+      for (const overrides of cases) {
+        const stats = makeEmptyActivityStats();
+        stats.daily = [{ ...stats.daily[0]!, ...overrides }];
+        const { container, unmount } = render(<ActivityModule stats={stats} preset="7d" onPresetChange={vi.fn()} />);
 
-      const grid = container.querySelector('[aria-label="Daily activity heatmap"]')!;
-      const cell = grid.children[0] as HTMLElement;
-      // The single github-only day is the max, so its intensity must be full (1),
-      // not zero — proving dayValue folds in the github fields.
-      expect(Number(cell.getAttribute("data-intensity"))).toBeGreaterThan(0);
+        expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
+        const cell = container.querySelector('[aria-label="Daily activity heatmap"]')!.children[0] as HTMLElement;
+        expect(Number(cell.getAttribute("data-intensity"))).toBeGreaterThan(0);
+        unmount();
+      }
     });
     it("shows a streak chip once the streak reaches three days", () => {
       render(<ActivityModule stats={makeActivityStats({ summary: { ...makeActivityStats().summary, currentStreakDays: 5 } })} preset="7d" onPresetChange={vi.fn()} />);
