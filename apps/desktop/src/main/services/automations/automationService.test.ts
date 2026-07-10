@@ -392,6 +392,39 @@ describe("automation ingress enable gating", () => {
     });
   });
 
+  it("does not count an errored GitHub relay as a delivery path", () => {
+    const rule = normalizeRuntimeRule({
+      id: "github-relay-error",
+      name: "GitHub relay error",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "github.issue_labeled" }],
+      trigger: { type: "github.issue_labeled" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:github-relay-error",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule, {}, { githubPollingAvailable: () => false });
+
+    service.updateIngressStatus({
+      githubRelay: { configured: true, healthy: false, status: "error" },
+    });
+
+    expect(service.getIngressStatus().delivery?.github).toEqual({
+      ready: false,
+      via: null,
+      setupError: "Connect a GitHub repository, configure the GitHub relay, or start the local webhook server in Automations settings.",
+    });
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Connect a GitHub repository/);
+  });
+
   it("treats legacy git.pr_* triggers as GitHub delivery for enable-gating", () => {
     const rule = normalizeRuntimeRule({
       id: "legacy-git-pr",

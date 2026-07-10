@@ -1379,7 +1379,10 @@ export function createAutomationService({
   };
 
   const computeDeliveryStatuses = (): AutomationIngressDelivery => {
-    const relayAvailable = ingressStatusRef.githubRelay.configured;
+    // "polling" counts (first poll may still be in flight at boot); "error"
+    // and "disabled" (auth-pending cooldown, unresolved repo) do not deliver.
+    const relayAvailable = ingressStatusRef.githubRelay.configured
+      && (ingressStatusRef.githubRelay.status === "polling" || ingressStatusRef.githubRelay.status === "ready");
     const pollingAvailable = capabilityAvailable(githubPollingAvailableRef);
     const linearAvailable = capabilityAvailable(linearIngressAvailableRef);
     const localWebhookAvailable = ingressStatusRef.localWebhook.listening && ingressStatusRef.localWebhook.healthy;
