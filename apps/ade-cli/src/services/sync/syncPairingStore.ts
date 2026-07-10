@@ -140,7 +140,12 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
-      const runtimeHostGranted = consumeRuntimeHostGrant(options?.runtimeHostGrant);
+      // The server grant is necessary but not sufficient: pairing links can be
+      // copied into phone/browser/custom clients, which must never become full
+      // runtime hosts. Consume every presented grant to preserve its one-time
+      // semantics, then authorize only a peer that paired as a desktop.
+      const consumedRuntimeHostGrant = consumeRuntimeHostGrant(options?.runtimeHostGrant);
+      const runtimeHostGranted = consumedRuntimeHostGrant && peer.deviceType === "desktop";
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
       const existing = records[peer.deviceId] ?? null;

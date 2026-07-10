@@ -230,7 +230,7 @@ describe("registerRuntimeBridge", () => {
       machineName: "Studio",
       relayAvailable: true,
     });
-    expect(callSync).toHaveBeenCalledWith("sync.getWebPairingInfo");
+    expect(callSync).toHaveBeenCalledWith("sync.getDesktopPairingInfo");
   });
 
   it("does not start saved remote autoconnect when disabled for dev/test runs", async () => {
