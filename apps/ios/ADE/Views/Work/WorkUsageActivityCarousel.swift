@@ -177,6 +177,8 @@ struct WorkUsageActivityCarousel: View {
     return daily.contains { point in
       (point.totalTokens ?? 0) > 0 || (point.sessions ?? 0) > 0
         || (point.insertions ?? 0) > 0 || (point.deletions ?? 0) > 0
+        || (point.githubCommits ?? 0) > 0 || (point.githubPrs ?? 0) > 0
+        || (point.githubAdditions ?? 0) > 0 || (point.githubDeletions ?? 0) > 0
         || (point.interactions ?? 0) > 0
     }
   }
@@ -443,25 +445,45 @@ private struct WorkUsageHeatmap: View {
   var body: some View {
     let buckets = workUsageBuckets(points, maxCount: 70)
     let maximum = max(1, buckets.map(\.activity).max() ?? 1)
-    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 14), spacing: 3) {
-      ForEach(buckets) { bucket in
-        RoundedRectangle(cornerRadius: 2, style: .continuous)
-          .fill(bucket.activity == 0
-            ? ADEColor.textMuted.opacity(0.10)
-            : WorkUsageColors.heatmap.opacity(0.25 + 0.72 * Double(bucket.activity) / Double(maximum)))
-          .frame(height: 11)
-          .overlay {
-            if selectedId == bucket.date {
-              RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .stroke(ADEColor.textPrimary.opacity(0.6), lineWidth: 1)
+    // Fill the box: a short range is one tall row of large cells; longer ranges
+    // use a 7-row calendar grid (columns = weeks). Cells stretch to fill both
+    // dimensions instead of leaving the chart area mostly blank.
+    let rows = buckets.count <= 7 ? 1 : 7
+    let columns = stride(from: 0, to: buckets.count, by: rows).map { start in
+      Array(buckets[start..<min(start + rows, buckets.count)])
+    }
+    HStack(spacing: 3) {
+      ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+        VStack(spacing: 3) {
+          ForEach(column) { bucket in
+            cell(bucket, maximum: maximum)
+          }
+          if column.count < rows {
+            ForEach(0..<(rows - column.count), id: \.self) { _ in
+              Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
           }
-          .contentShape(Rectangle())
-          .onTapGesture { onSelect(detail(bucket)) }
-          .accessibilityLabel("\(workUsageFormatDay(bucket.date)), \(workUsageCompact(bucket.tokens)) tokens")
+        }
       }
     }
-    .frame(maxHeight: .infinity, alignment: .center)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  private func cell(_ bucket: WorkUsageVisualBucket, maximum: Int) -> some View {
+    RoundedRectangle(cornerRadius: 2, style: .continuous)
+      .fill(bucket.activity == 0
+        ? ADEColor.textMuted.opacity(0.10)
+        : WorkUsageColors.heatmap.opacity(0.25 + 0.72 * Double(bucket.activity) / Double(maximum)))
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .overlay {
+        if selectedId == bucket.date {
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .stroke(ADEColor.textPrimary.opacity(0.6), lineWidth: 1)
+        }
+      }
+      .contentShape(Rectangle())
+      .onTapGesture { onSelect(detail(bucket)) }
+      .accessibilityLabel("\(workUsageFormatDay(bucket.date)), \(workUsageCompact(bucket.tokens)) tokens")
   }
 
   private func detail(_ bucket: WorkUsageVisualBucket) -> WorkUsageBucketDetail {
@@ -493,14 +515,22 @@ private struct WorkUsageBars: View {
     let githubMax = anyGithub ? (buckets.map(\.githubCode).max() ?? 1) : 1
     let maximum = max(1, localMax, githubMax)
     let anyCache = mode == .tokens && buckets.contains { $0.cachedTokens > 0 }
+    let hasData = buckets.contains { (mode == .tokens ? $0.tokens : $0.code + $0.githubCode) > 0 }
 
     VStack(spacing: 6) {
-      GeometryReader { proxy in
-        HStack(alignment: .bottom, spacing: 2) {
-          ForEach(Array(buckets.enumerated()), id: \.element.id) { index, bucket in
-            bar(bucket: bucket, index: index, height: proxy.size.height, maximum: maximum, anyGithub: anyGithub)
+      if hasData {
+        GeometryReader { proxy in
+          HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(buckets.enumerated()), id: \.element.id) { index, bucket in
+              bar(bucket: bucket, index: index, height: proxy.size.height, maximum: maximum, anyGithub: anyGithub)
+            }
           }
         }
+      } else {
+        Text(mode == .tokens ? "No token usage in this range." : "No code changes in this range.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
       legend(anyCache: anyCache, anyGithub: anyGithub)
     }
@@ -620,7 +650,7 @@ private struct WorkUsageClientMix: View {
     let visible = clients.filter { $0.interactions > 0 }.sorted { $0.interactions > $1.interactions }
     let total = max(1, visible.reduce(0) { $0 + $1.interactions })
     if visible.isEmpty {
-      WorkUsageWarmEmpty()
+      WorkUsageTabEmptyHint(message: "No client activity in this range.")
     } else {
       VStack(spacing: 10) {
         GeometryReader { proxy in
@@ -656,6 +686,20 @@ private struct WorkUsageClientMix: View {
       .accessibilityElement(children: .combine)
       .accessibilityLabel("Where you use ADE")
     }
+  }
+}
+
+/// Muted, centered hint for a tab whose own series is empty while the module has
+/// data on other tabs (so the global warm-empty state does not apply).
+private struct WorkUsageTabEmptyHint: View {
+  let message: String
+  var body: some View {
+    Text(message)
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textMuted)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .accessibilityLabel(message)
   }
 }
 
