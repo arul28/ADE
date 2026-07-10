@@ -24,7 +24,10 @@ vi.mock("../shared/ClaudeCacheTtlBadge", () => ({
   ),
 }));
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("WorkSurfaceHeader", () => {
   it("renders the title and skips lane chip / git toolbar / cache badge when their flags are off", () => {
@@ -95,6 +98,32 @@ describe("WorkSurfaceHeader", () => {
     const landed = screen.getByText("Fix the login redirect");
     expect(landed.getAttribute("data-title-landed")).toBe("true");
     expect(landed.className).toContain("ade-title-landed");
+
+    fireEvent.animationEnd(landed);
+    expect(landed.getAttribute("data-title-landed")).toBeNull();
+    expect(landed.className).not.toContain("ade-title-landed");
+    expect(landed.className).toContain("text-white");
+  });
+
+  it("keeps a landed title plain when reduced motion is preferred", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    const { rerender } = render(<WorkSurfaceHeader title="Claude Chat" />);
+
+    rerender(<WorkSurfaceHeader title="Fix the login redirect" />);
+
+    const title = screen.getByText("Fix the login redirect");
+    expect(title.getAttribute("data-title-landed")).toBeNull();
+    expect(title.className).not.toContain("ade-title-landed");
+    expect(title.className).toContain("text-white");
   });
 
   it("does not shimmer when the title changes between two real titles", () => {

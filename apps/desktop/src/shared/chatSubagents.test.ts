@@ -189,6 +189,48 @@ describe("chatSubagents timeline helpers", () => {
     });
   });
 
+  it("keeps a terminal spawn terminal when late progress arrives", () => {
+    const rows = deriveSubagentTimelineRows([
+      {
+        type: "subagent_started",
+        taskId: "task-1",
+        agentType: "Explore",
+        description: "Inspect lifecycle state",
+        taskType: "subagent",
+      },
+      {
+        type: "subagent_result",
+        taskId: "task-1",
+        agentType: "Explore",
+        status: "completed",
+        summary: "Lifecycle state verified",
+        taskType: "subagent",
+      },
+      {
+        type: "subagent_progress",
+        taskId: "task-1",
+        agentType: "Explore",
+        summary: "Late progress tick",
+        lastToolName: "read_file",
+        usage: { toolUses: 9 },
+        taskType: "subagent",
+      },
+    ]);
+
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: "spawn",
+      status: "completed",
+      statusLine: "Inspect lifecycle state",
+      lastToolName: null,
+      toolCount: null,
+    }));
+    expect(rows[1]).toEqual(expect.objectContaining({
+      kind: "result",
+      status: "completed",
+      summary: "Lifecycle state verified",
+    }));
+  });
+
   it("turns a terminal background shell into one chip without spawn or result rows", () => {
     const events: AgentChatEvent[] = [
       {

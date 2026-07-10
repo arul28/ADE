@@ -10467,6 +10467,19 @@ final class ADETests: XCTestCase {
     let assistantMessages = buildWorkChatMessages(from: transcript)
       .filter { $0.role == "assistant" }
     XCTAssertEqual(assistantMessages.map(\.markdown), ["First second"])
+
+    let fallbackRaw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:03.000Z","sequence":2,"event":{"type":"text","text":"second","messageId":"msg-fallback","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:03.001Z","sequence":1,"event":{"type":"text","text":"First ","messageId":"msg-fallback","turnId":"turn-1"}}
+    """
+    let fallbackTranscript = parseWorkChatTranscript(fallbackRaw)
+    XCTAssertEqual(fallbackTranscript.compactMap(\.sequence), [1, 2])
+    XCTAssertEqual(
+      buildWorkChatMessages(from: fallbackTranscript)
+        .filter { $0.role == "assistant" }
+        .map(\.markdown),
+      ["First second"]
+    )
   }
 
   func testWorkChatMessagesDoNotMergeUnidentifiedAssistantTextAcrossTools() {

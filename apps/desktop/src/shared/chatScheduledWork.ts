@@ -124,10 +124,14 @@ const ONE_SHOT_HISTORY_STATUSES = new Set<AgentChatScheduledWorkStatus>([
   "completed",
 ]);
 
+export function isFiredOneShotWakeup(snapshot: ChatScheduledWorkSnapshot): boolean {
+  return (snapshot.kind === "wakeup" || snapshot.kind === "loop")
+    && snapshot.recurring !== true
+    && ONE_SHOT_HISTORY_STATUSES.has(snapshot.status);
+}
+
 export function deriveScheduleHistory(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
-  return deriveScheduleItems(events).filter((snapshot) =>
-    (snapshot.kind === "wakeup" || snapshot.kind === "loop")
-    && ONE_SHOT_HISTORY_STATUSES.has(snapshot.status));
+  return deriveScheduleItems(events).filter(isFiredOneShotWakeup);
 }
 
 export function deriveActiveScheduleItems(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {

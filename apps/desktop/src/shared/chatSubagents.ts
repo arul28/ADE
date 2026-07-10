@@ -355,6 +355,7 @@ export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTi
     if (event.type === "subagent_started" || event.type === "subagent_progress") {
       state.firstLifecycleEventIndex ??= eventIndex;
       if (!realSubagent) continue;
+      if (event.type === "subagent_progress" && state.lastResultEventIndex >= 0) continue;
       if (!state.spawn) {
         state.spawn = {
           kind: "spawn",

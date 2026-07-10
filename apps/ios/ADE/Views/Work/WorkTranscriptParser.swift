@@ -604,12 +604,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         subagentCommand: subagentCommand
       )
     }
-    .sorted { lhs, rhs in
-      if lhs.timestamp == rhs.timestamp {
-        return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
-      }
-      return lhs.timestamp < rhs.timestamp
-    }
+    .sorted(by: workChatEnvelopeOrderedBefore)
 }
 
 private func parseAgentChatFileRefs(from value: Any?) -> [AgentChatFileRef]? {

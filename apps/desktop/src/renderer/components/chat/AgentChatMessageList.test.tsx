@@ -109,6 +109,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    scrollToRowKeyRequest?: { key: string; requestId: number } | null;
   },
 ) {
   return render(
@@ -121,6 +122,7 @@ function renderMessageList(
         onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
+        scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -1045,6 +1047,68 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "User message 2" }));
 
     expect(transcript.scrollTop).toBeGreaterThan(0);
+  });
+
+  it("handles each external row jump request only once across transcript updates", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          agentType: "Explore",
+          description: "Inspect the chat timeline",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          status: "completed",
+          summary: "Timeline inspected",
+          turnId: "turn-1",
+        },
+      },
+    ];
+    const view = renderMessageList(events);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    const request = { key: "subagent-result:agent-a", requestId: 1 };
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={request} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    expect(transcript.scrollTop).toBeGreaterThan(0);
+
+    transcript.scrollTop = 0;
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList
+          events={[
+            ...events,
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:02.000Z",
+              event: { type: "status", turnStatus: "completed", turnId: "turn-1" },
+            },
+          ]}
+          scrollToRowKeyRequest={request}
+        />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(transcript.scrollTop).toBe(0);
   });
 
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock

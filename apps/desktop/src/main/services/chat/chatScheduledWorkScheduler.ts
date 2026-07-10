@@ -295,11 +295,19 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
-    if (schedule.kind === "cron" && schedule.status === "fired") {
-      schedule.fireAt = schedule.cron
-        ? nextChatScheduledCronFireAt(schedule.cron, Math.max(now(), schedule.lastFiredAt ?? 0)) ?? undefined
-        : undefined;
-      schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
+    if (schedule.status === "fired") {
+      if (schedule.kind === "cron") {
+        schedule.fireAt = schedule.cron
+          ? nextChatScheduledCronFireAt(schedule.cron, Math.max(now(), schedule.lastFiredAt ?? 0)) ?? undefined
+          : undefined;
+        schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
+      } else {
+        // A persisted fired one-shot was already claimed before the previous
+        // process exited. Complete it without delivery so restore preserves
+        // at-most-once semantics.
+        schedule.status = "done";
+      }
+      delete schedule.activeTurnId;
       await persist();
       await emitTransition(schedule, schedule.status);
     } else if (schedule.status === "scheduled" || schedule.status === "paused") {

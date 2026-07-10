@@ -105,6 +105,10 @@ function chatNextWakeLabel(session: AgentChatSessionSummary, nowMs = Date.now())
   return compactRelativeDuration(Math.max(60_000, timestampMs - nowMs));
 }
 
+export function drawerChatLabelWidth(max: number, wakeReserve: number): number {
+  return Math.max(0, max - 4 - wakeReserve);
+}
+
 function DrawerComponent({
   lanes,
   sessions,
@@ -628,7 +632,7 @@ function ChatRow({
   const wakeReserve = wake ? wake.length + 3 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
-  const label = truncate(formatSessionLabel(session), max - 4 - wakeReserve);
+  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve));
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
   // non-selected lane (dimTitle) than under the focused one.

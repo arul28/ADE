@@ -2072,6 +2072,10 @@ button:active, [role="button"]:active {
   .pull-btn-flash {
     animation: none !important;
   }
+  .ade-title-landed {
+    background-image: none !important;
+    -webkit-text-fill-color: currentColor !important;
+  }
   /* Dropdown item stagger — instant appearance under reduced motion */
   [data-radix-dropdown-menu-content] [role="menuitem"],
   [data-radix-select-content] [role="option"] {
@@ -3997,6 +4001,7 @@ button:active, [role="button"]:active {
   background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: ade-title-land 640ms ease-out 1;
 }
 

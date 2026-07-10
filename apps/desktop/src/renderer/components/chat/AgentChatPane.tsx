@@ -3584,14 +3584,17 @@ export function AgentChatPane({
       return;
     }
     const storageKey = `ade.chat.lastViewed.v1:${selectedSessionId}`;
-    let lastViewedAtMs = 0;
+    const openedAtMs = Date.now();
+    let lastViewedAtMs = openedAtMs;
     try {
-      const stored = Number.parseInt(window.localStorage.getItem(storageKey) ?? "", 10);
-      if (Number.isFinite(stored) && stored > 0) lastViewedAtMs = stored;
+      const storedValue = window.localStorage.getItem(storageKey);
+      if (storedValue != null) {
+        const stored = Number.parseInt(storedValue, 10);
+        if (Number.isFinite(stored) && stored > 0) lastViewedAtMs = stored;
+      }
     } catch {
       // Renderer storage is best-effort; a blocked localStorage must not hide chat.
     }
-    const openedAtMs = Date.now();
     setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs, dismissed: false });
     try {
       window.localStorage.setItem(storageKey, String(openedAtMs));

@@ -53,21 +53,22 @@ describe("chatScheduledWork helpers", () => {
     expect(deriveBackgroundItems(events).map((item) => item.kind)).toEqual(["background_task"]);
   });
 
-  it("partitions fired one-shot wakeups into schedule history", () => {
+  it("keeps recurring fired wakeups active and moves fired one-shots to history", () => {
     const events = [
       envelope({
         type: "scheduled_work_update",
-        id: "wake-1",
+        id: "wake-one-shot",
         kind: "wakeup",
-        status: "scheduled",
+        status: "fired",
+        recurring: false,
       }, 0),
       envelope({
         type: "scheduled_work_update",
-        id: "wake-1",
+        id: "wake-recurring",
         kind: "wakeup",
-        status: "completed",
+        status: "fired",
+        recurring: true,
         firedAt: "2026-01-01T12:01:00.000Z",
-        late: true,
       }, 1),
       envelope({
         type: "scheduled_work_update",
@@ -77,11 +78,13 @@ describe("chatScheduledWork helpers", () => {
       }, 2),
     ];
 
-    expect(deriveActiveScheduleItems(events).map((item) => item.id)).toEqual(["cron-1"]);
+    expect(deriveActiveScheduleItems(events).map((item) => item.id)).toEqual([
+      "cron-1",
+      "wake-recurring",
+    ]);
     expect(deriveScheduleHistory(events)).toMatchObject([{
-      id: "wake-1",
-      status: "completed",
-      late: true,
+      id: "wake-one-shot",
+      status: "fired",
     }]);
   });
 

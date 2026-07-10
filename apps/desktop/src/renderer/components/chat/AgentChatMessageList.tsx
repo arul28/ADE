@@ -4585,6 +4585,7 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
+  const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   // Carries the CollapseTranscriptContext alongside events/rows so appended
@@ -4961,6 +4962,8 @@ function AgentChatMessageListMain({
 
   useEffect(() => {
     if (!scrollToRowKeyRequest?.key) return;
+    if (lastHandledScrollToRowRequestIdRef.current === scrollToRowKeyRequest.requestId) return;
+    lastHandledScrollToRowRequestIdRef.current = scrollToRowKeyRequest.requestId;
     scrollToRowKey(scrollToRowKeyRequest.key);
   }, [scrollToRowKey, scrollToRowKeyRequest]);
 

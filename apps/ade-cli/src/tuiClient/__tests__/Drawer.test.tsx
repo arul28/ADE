@@ -4,7 +4,7 @@ import { render } from "ink-testing-library";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
-import { Drawer } from "../components/Drawer";
+import { Drawer, drawerChatLabelWidth } from "../components/Drawer";
 import {
   closedCliRightPaneRow,
   closedCliSessionStatusKind,
@@ -524,7 +524,7 @@ describe("Drawer next-wake marker", () => {
     };
   }
 
-  function renderWith(nextWakeAt: string | null): string {
+  function renderWith(nextWakeAt: string | null, width = 48): string {
     return stripAnsi(render(
       <Drawer
         lanes={[lane("lane-1", "feature", "feature/wake", "2026-05-12T12:00:00.000Z")]}
@@ -537,7 +537,7 @@ describe("Drawer next-wake marker", () => {
         panelHeight={40}
         mode="chats"
         focused
-        width={48}
+        width={width}
       />,
     ).lastFrame() ?? "");
   }
@@ -547,6 +547,15 @@ describe("Drawer next-wake marker", () => {
     const frame = renderWith(nextWakeAt);
     expect(frame).toContain("⏰");
     expect(frame).toContain("12m");
+  });
+
+  it("drops the title before the wake marker can overlap in a narrow drawer", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const frame = renderWith(nextWakeAt, 32);
+    const wakeRow = frame.split("\n").find((line) => line.includes("⏰12m")) ?? "";
+
+    expect(drawerChatLabelWidth(8, "12m".length + 3)).toBe(0);
+    expect(wakeRow).toContain("⏰12m");
   });
 
   it("omits the marker when there is no armed wake (null or past)", () => {

@@ -525,6 +525,13 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         variant="pane"
         scheduleItems={[
           scheduledSnapshot({
+            id: "wake-recurring",
+            kind: "wakeup",
+            status: "fired",
+            recurring: true,
+            title: "Recurring CI check",
+          }),
+          scheduledSnapshot({
             id: "wake-history-1",
             kind: "wakeup",
             status: "completed",
@@ -536,6 +543,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
+    expect(screen.getByTitle("Recurring CI check")).toBeTruthy();
     const historyToggle = screen.getByRole("button", { name: "History (1)" });
     expect(historyToggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("✓ Check PR CI · fired 8:41 AM · late")).toBeNull();

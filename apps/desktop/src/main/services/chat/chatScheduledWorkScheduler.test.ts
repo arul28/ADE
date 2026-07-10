@@ -91,7 +91,7 @@ describe("createChatScheduledWorkScheduler", () => {
     restarted.dispose();
   });
 
-  it("late-fires an overdue one-shot exactly once across another restart", async () => {
+  it("late-fires an overdue one-shot once, then completes its persisted claim on restart", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
     let state: ChatScheduledWorkState | null = storedState([
@@ -117,17 +117,66 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
 
     const afterRestart = createFireMock();
+    const transitions: string[] = [];
     const restarted = createChatScheduledWorkScheduler({
       loadState: () => cloneState(state),
       saveState,
       isGlobalPaused: () => false,
       sessionState: () => "active",
       fire: afterRestart,
+      onTransition: (_schedule, status) => {
+        transitions.push(status);
+      },
     });
     await restarted.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(afterRestart).not.toHaveBeenCalled();
+    expect(transitions).toEqual(["done"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "done",
+    }));
     restarted.dispose();
+  });
+
+  it("recomputes and re-arms a persisted fired cron without re-firing it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      wakeup({
+        id: "cron-1",
+        kind: "cron",
+        cron: "* * * * *",
+        status: "fired",
+        fireAt: START - 60_000,
+        lastFiredAt: START - 30_000,
+        activeTurnId: "stale-turn",
+      }),
+    ]);
+    const fire = createFireMock();
+    const transitions: string[] = [];
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      onTransition: (_schedule, status) => {
+        transitions.push(status);
+      },
+    });
+
+    await scheduler.start();
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(transitions).toEqual(["scheduled"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START + 60_000,
+    }));
+    expect(requireState(state).schedules[0]?.activeTurnId).toBeUndefined();
+    scheduler.dispose();
   });
 
   it("runs one catch-up for three missed cron occurrences, then resumes cadence", async () => {

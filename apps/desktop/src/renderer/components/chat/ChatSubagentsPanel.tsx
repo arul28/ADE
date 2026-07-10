@@ -19,7 +19,12 @@ import type { TodoItemSnapshot } from "./chatExecutionSummary";
 import { ChatTaskList } from "./ChatTasksPanel";
 import type { ChatInfoPlanStep } from "../../../shared/chatSubagents";
 import { isBackgroundShellCommand } from "../../../shared/chatSubagents";
-import { backgroundCommandCwd, backgroundCommandLabel, scheduledNextFireLabel } from "../../../shared/chatScheduledWork";
+import {
+  backgroundCommandCwd,
+  backgroundCommandLabel,
+  isFiredOneShotWakeup,
+  scheduledNextFireLabel,
+} from "../../../shared/chatScheduledWork";
 import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
@@ -643,10 +648,7 @@ export function ChatSubagentsPanel({
     const active: ChatScheduledWorkSnapshot[] = [];
     const history: ChatScheduledWorkSnapshot[] = [];
     for (const item of scheduleItems) {
-      const isFiredOneShotWakeup = (item.kind === "wakeup" || item.kind === "loop")
-        && item.recurring !== true
-        && (item.status === "fired" || item.status === "completed");
-      (isFiredOneShotWakeup ? history : active).push(item);
+      (isFiredOneShotWakeup(item) ? history : active).push(item);
     }
     return { activeScheduleItems: active, scheduleHistoryItems: history };
   }, [scheduleItems]);
