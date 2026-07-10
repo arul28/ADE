@@ -713,6 +713,7 @@ describe("right pane context defaults", () => {
       planStreamingText: null,
       todos: [],
       scheduledWork: [],
+      backgroundWork: [],
       pr: null,
       snapshots: [],
       inspectedSubagentId: null,

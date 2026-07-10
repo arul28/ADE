@@ -56,6 +56,7 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     planStreamingText: null,
     todos: [],
     scheduledWork: [],
+    backgroundWork: [],
     pr: null,
     resumableTerminal: false,
     ...overrides,
@@ -329,6 +330,53 @@ describe("RightPane chat info", () => {
     expect(frame).not.toContain("Wakeup 06");
     expect(frame).toContain("↓ 2 more");
     expect(longestLine).toBeLessThanOrEqual(44);
+  });
+
+  it("renders a BACKGROUND block with smart labels, distinct from SCHEDULE", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            backgroundWork: [
+              {
+                id: "bg-1",
+                kind: "background_task",
+                status: "running",
+                title: "cd /x && npx vitest run t",
+                summary: null,
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:05.000Z",
+              },
+            ],
+            scheduledWork: [
+              {
+                id: "cron-1",
+                kind: "cron",
+                status: "scheduled",
+                title: "Nightly sweep",
+                summary: null,
+                cron: "0 9 * * *",
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:00.000Z",
+              },
+            ],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("BACKGROUND");
+    // Smart label: the `cd /x &&` wrapper is stripped in the collapsed row.
+    expect(frame).toContain("$ npx vitest run t");
+    // SCHEDULE block is separate and holds the cron.
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("Nightly sweep");
+    // BACKGROUND appears before SCHEDULE.
+    expect(frame.indexOf("BACKGROUND")).toBeLessThan(frame.indexOf("SCHEDULE"));
   });
 
   it("renders the plan explanation under the plan steps when present", () => {

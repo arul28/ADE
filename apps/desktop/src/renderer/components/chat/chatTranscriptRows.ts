@@ -4,7 +4,15 @@ import {
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
-import { normalizeSubagentLifecycleEvent } from "../../../shared/chatSubagents";
+import {
+  isBackgroundShellCommand,
+  normalizeSubagentLifecycleEvent,
+  preferSubagentSummary,
+  subagentAgentKey,
+  SUBAGENT_PLACEHOLDER_SUMMARY,
+  type NormalizedSubagentLifecycleEvent,
+} from "../../../shared/chatSubagents";
+import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -96,9 +104,6 @@ export type ChatActivityBundleItem = {
   event: Extract<AgentChatEvent, {
     type:
       | "todo_update"
-      | "subagent_started"
-      | "subagent_progress"
-      | "subagent_result"
       | "scheduled_work_update";
   }>;
 };
@@ -109,10 +114,67 @@ export type ChatActivityBundleEvent = {
   turnId?: string | null;
 };
 
+type SubagentCardStatus = "running" | "completed" | "stopped" | "failed";
+type SubagentCardTerminalStatus = Exclude<SubagentCardStatus, "running">;
+
+/**
+ * Anchor row for a real subagent, pushed once where the agent started and then
+ * mutated IN PLACE (new object, same key) as progress/result events arrive.
+ * Renders the two-row spawn card. Row key: `subagent-spawn:${agentKey}`.
+ */
+export type SubagentSpawnAnchorRenderEvent = {
+  type: "subagent_spawn_anchor";
+  agentKey: string;
+  description: string;
+  agentType: string | null;
+  background: boolean;
+  status: SubagentCardStatus;
+  /** Last meaningful progress summary (placeholder summaries never displace a real one). */
+  statusLine: string | null;
+  lastToolName: string | null;
+  toolCount: number | null;
+  startedAt: string;
+  endedAt: string | null;
+};
+
+/**
+ * Result card row, pushed at the chronological position where the agent ended
+ * and mutated in place if a richer summary arrives later.
+ * Row key: `subagent-result:${agentKey}`.
+ */
+export type SubagentResultCardRenderEvent = {
+  type: "subagent_result_card";
+  agentKey: string;
+  status: SubagentCardTerminalStatus;
+  summaryPreview: string | null;
+  error: string | null;
+  startedAt: string | null;
+  endedAt: string;
+  durationMs: number | null;
+};
+
+/**
+ * Compact finish chip for a backgrounded shell command (no spawn/result cards).
+ * Row key: `background-chip:${agentKey}`.
+ */
+export type BackgroundFinishChipRenderEvent = {
+  type: "background_finish_chip";
+  agentKey: string;
+  label: string;
+  status: SubagentCardTerminalStatus;
+  exitCode: number | null;
+  durationMs: number | null;
+  startedAt: string | null;
+  endedAt: string;
+};
+
 export type ChatTranscriptRenderEvent =
   | ChatTranscriptVisibleEvent
   | RenderReasoningEvent
-  | WorkLogRenderEvent;
+  | WorkLogRenderEvent
+  | SubagentSpawnAnchorRenderEvent
+  | SubagentResultCardRenderEvent
+  | BackgroundFinishChipRenderEvent;
 
 export type ChatTranscriptRenderEnvelope = {
   key: string;
@@ -129,9 +191,52 @@ export type ChatTranscriptGroupedEnvelope = {
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
 
+/**
+ * Live per-subagent state threaded through the collapse pass. `rowIndex` lets an
+ * appended progress/result event index back into the rows array and mutate the
+ * anchor in place (the incremental append path relies on this — collapse NEVER
+ * splices rows, so stored indices stay valid).
+ */
+type SubagentAnchorState = {
+  agentKey: string;
+  /**
+   * Stable identity used for row keys. Fixed at creation from the first agentKey
+   * seen and NEVER changed on rebind — the virtualizer's measuredHeights and
+   * sticky-bottom depend on it. The displayed `agentKey` may migrate taskId →
+   * agentId, but the render keys stay put.
+   */
+  renderKeyBase: string;
+  /** Index of the spawn-anchor row (null for background-shell commands). */
+  rowIndex: number | null;
+  /** Index of the result-card row once the agent ends (null until then). */
+  resultRowIndex: number | null;
+  /** Index of the background finish-chip row (null unless a background shell). */
+  chipRowIndex: number | null;
+  description: string | null;
+  agentType: string | null;
+  taskType: string | null;
+  command: string | null;
+  background: boolean;
+  startedAt: string;
+  endedAt: string | null;
+  progressSummary: string | null;
+  statusLine: string | null;
+  lastToolName: string | null;
+  toolCount: number | null;
+  status: SubagentCardStatus;
+  resultSummary: string | null;
+  error: string | null;
+};
+
 type CollapseTranscriptContext = {
   latestTodoItemsByTurn: Map<string, TodoUpdateTranscriptEvent["items"]>;
+  /** Subagent lifecycle state keyed by agentKey (agentId ?? taskId). */
+  subagentAnchors: Map<string, SubagentAnchorState>;
 };
+
+export function createCollapseTranscriptContext(): CollapseTranscriptContext {
+  return { latestTodoItemsByTurn: new Map(), subagentAnchors: new Map() };
+}
 
 function todoSnapshotKey(turnId: string | null): string {
   return turnId ?? "__global__";
@@ -645,6 +750,276 @@ function appendWorkLogRow(
   });
 }
 
+// ── Subagent lifecycle rows ────────────────────────────────────────────────
+// A real subagent renders as exactly TWO rows: a spawn anchor (mutated in place
+// as progress arrives) and a result card at the settle position. Background
+// shell commands render NO cards — only a single compact finish chip. Keys are
+// identity-derived and stable so the virtualizer's measuredHeights survive
+// mutation and rebind (load-bearing for sticky-bottom).
+
+function subagentText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function longerSubagentText(existing: string | null, incoming: string | null): string | null {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return incoming.length > existing.length ? incoming : existing;
+}
+
+function preferredSubagentAgentType(existing: string | null, incoming: string | null): string | null {
+  if (!incoming) return existing;
+  if (!existing || (existing === "background" && incoming !== "background")) return incoming;
+  return existing;
+}
+
+function meaningfulProgressSummary(summary: string | null): string | null {
+  return summary && !SUBAGENT_PLACEHOLDER_SUMMARY.test(summary) ? summary : null;
+}
+
+function subagentSpawnKey(agentKey: string): string {
+  return `subagent-spawn:${agentKey}`;
+}
+
+function subagentResultKey(agentKey: string): string {
+  return `subagent-result:${agentKey}`;
+}
+
+function backgroundChipKey(agentKey: string): string {
+  return `background-chip:${agentKey}`;
+}
+
+function durationMsBetween(startedAt: string | null, endedAt: string): number | null {
+  if (!startedAt) return null;
+  const start = Date.parse(startedAt);
+  const end = Date.parse(endedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | null {
+  const value = (event as { exitCode?: unknown }).exitCode;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function spawnAnchorEvent(state: SubagentAnchorState): SubagentSpawnAnchorRenderEvent {
+  // agentKey mirrors the stable renderKeyBase so the jump affordances derive the
+  // same row keys the collapse pass assigned (see subagentSpawnKey/subagentResultKey).
+  return {
+    type: "subagent_spawn_anchor",
+    agentKey: state.renderKeyBase,
+    description: state.description ?? "Subagent task",
+    agentType: state.agentType,
+    background: state.background,
+    status: state.status,
+    statusLine: state.statusLine,
+    lastToolName: state.lastToolName,
+    toolCount: state.toolCount,
+    startedAt: state.startedAt,
+    endedAt: state.endedAt,
+  } as SubagentSpawnAnchorRenderEvent;
+}
+
+// The single-line live status (statusLine) always prefers the last MEANINGFUL
+// progress summary; "Task updated"/"Status: …" placeholders never displace a
+// real one — falling back to lastToolName, then the description.
+function computeStatusLine(state: SubagentAnchorState): string | null {
+  return meaningfulProgressSummary(state.progressSummary)
+    ?? state.lastToolName
+    ?? state.description;
+}
+
+function enrichSubagentStateFromEvent(
+  state: SubagentAnchorState,
+  event: NormalizedSubagentLifecycleEvent,
+): void {
+  const record = event as NormalizedSubagentLifecycleEvent & {
+    background?: unknown;
+    description?: unknown;
+    command?: unknown;
+  };
+  state.description = longerSubagentText(state.description, subagentText(record.description));
+  state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
+  state.taskType = subagentText(event.taskType) ?? state.taskType;
+  state.command = longerSubagentText(state.command, subagentText(record.command));
+  if (record.background === true) state.background = true;
+}
+
+function classificationInput(state: SubagentAnchorState) {
+  return {
+    taskType: state.taskType,
+    agentType: state.agentType,
+    command: state.command,
+    description: state.description,
+  };
+}
+
+/**
+ * Handle one of the three subagent lifecycle events. Returns true if the event
+ * was consumed (caller should stop). Mutates rows and context in place.
+ *
+ * INVARIANT: this never SPLICES rows — only pushes at the tail or replaces an
+ * existing row by its stored index. Stored `rowIndex` values in the anchor state
+ * depend on that (the incremental append path reuses them).
+ */
+function handleSubagentLifecycleEvent(
+  rows: ChatTranscriptRenderEnvelope[],
+  event: NormalizedSubagentLifecycleEvent,
+  timestamp: string,
+  context: CollapseTranscriptContext,
+): boolean {
+  const anchors = context.subagentAnchors;
+  const agentKey = subagentAgentKey(event);
+  if (!agentKey) return true;
+
+  const taskId = subagentText(event.taskId);
+  const agentId = subagentText(event.agentId);
+
+  // Rebind: an anchor created under a taskId, then a later event carries agentId
+  // for the same task. Move the map key but KEEP the original renderKey + rows.
+  let state = anchors.get(agentKey)
+    ?? (agentId && taskId ? anchors.get(taskId) : undefined);
+  if (state && state.agentKey !== agentKey) {
+    anchors.delete(state.agentKey);
+    state.agentKey = agentKey;
+    anchors.set(agentKey, state);
+  }
+  // Keep the taskId alias pointing at the same state so a taskId-only later event
+  // still resolves after rebind.
+  if (state && taskId) anchors.set(taskId, state);
+
+  if (!state) {
+    state = {
+      agentKey,
+      renderKeyBase: agentKey,
+      rowIndex: null,
+      resultRowIndex: null,
+      chipRowIndex: null,
+      description: null,
+      agentType: null,
+      taskType: null,
+      command: null,
+      background: false,
+      startedAt: timestamp,
+      endedAt: null,
+      progressSummary: null,
+      statusLine: null,
+      lastToolName: null,
+      toolCount: null,
+      status: "running",
+      resultSummary: null,
+      error: null,
+    };
+    anchors.set(agentKey, state);
+    if (taskId) anchors.set(taskId, state);
+  }
+
+  enrichSubagentStateFromEvent(state, event);
+  const backgroundShell = isBackgroundShellCommand(classificationInput(state));
+
+  if (event.type === "subagent_started" || event.type === "subagent_progress") {
+    if (backgroundShell) return true; // background shell → chip only, no cards
+    if (state.rowIndex == null) {
+      // First lifecycle → push the spawn anchor and record its index.
+      state.status = "running";
+      state.statusLine = computeStatusLine(state);
+      state.rowIndex = rows.length;
+      rows.push({
+        key: subagentSpawnKey(state.renderKeyBase),
+        timestamp,
+        event: spawnAnchorEvent(state),
+      });
+    }
+
+    if (event.type === "subagent_progress") {
+      state.progressSummary = preferSubagentSummary(state.progressSummary, event.summary);
+      const lastToolName = subagentText(event.lastToolName);
+      if (lastToolName) state.lastToolName = lastToolName;
+      if (typeof event.usage?.toolUses === "number") state.toolCount = event.usage.toolUses;
+      if (state.status === "running") state.status = "running";
+    }
+    state.statusLine = computeStatusLine(state);
+
+    // Mutate the anchor row IN PLACE — a NEW object with the SAME key.
+    if (state.rowIndex != null) {
+      const existing = rows[state.rowIndex];
+      if (existing) {
+        rows[state.rowIndex] = {
+          key: existing.key,
+          timestamp,
+          event: spawnAnchorEvent(state),
+        };
+      }
+    }
+    return true;
+  }
+
+  // subagent_result
+  const incomingSummary = preferSubagentSummary(event.summary, event.finalSummary);
+  const terminalStatus = event.status;
+
+  if (backgroundShell) {
+    const label = backgroundCommandLabel(state.command ?? state.description ?? "")
+      || state.command
+      || state.description
+      || "Background command";
+    state.endedAt = timestamp;
+    const chipEvent: BackgroundFinishChipRenderEvent = {
+      type: "background_finish_chip",
+      agentKey: state.renderKeyBase,
+      label,
+      status: terminalStatus,
+      exitCode: backgroundExitCode(event),
+      durationMs: durationMsBetween(state.startedAt, timestamp),
+      startedAt: state.startedAt,
+      endedAt: timestamp,
+    };
+    if (state.chipRowIndex == null) {
+      state.chipRowIndex = rows.length;
+      rows.push({ key: backgroundChipKey(state.renderKeyBase), timestamp, event: chipEvent });
+    } else {
+      const existing = rows[state.chipRowIndex];
+      if (existing) rows[state.chipRowIndex] = { key: existing.key, timestamp, event: chipEvent };
+    }
+    return true;
+  }
+
+  // Real subagent terminal: flip the anchor + push/mutate the result card.
+  state.status = terminalStatus;
+  state.endedAt = timestamp;
+  state.resultSummary = preferSubagentSummary(state.resultSummary, incomingSummary);
+  if (terminalStatus === "failed") {
+    state.error = state.resultSummary ?? state.error;
+  }
+
+  // Flip the anchor terminal (freezes the live line) if it exists.
+  if (state.rowIndex != null) {
+    const existing = rows[state.rowIndex];
+    if (existing) {
+      rows[state.rowIndex] = { key: existing.key, timestamp, event: spawnAnchorEvent(state) };
+    }
+  }
+
+  const resultEvent: SubagentResultCardRenderEvent = {
+    type: "subagent_result_card",
+    agentKey: state.renderKeyBase,
+    status: terminalStatus,
+    summaryPreview: state.resultSummary,
+    error: terminalStatus === "failed" ? state.error : null,
+    startedAt: state.startedAt,
+    endedAt: timestamp,
+    durationMs: durationMsBetween(state.startedAt, timestamp),
+  };
+  if (state.resultRowIndex == null) {
+    state.resultRowIndex = rows.length;
+    rows.push({ key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent });
+  } else {
+    const existing = rows[state.resultRowIndex];
+    if (existing) rows[state.resultRowIndex] = { key: existing.key, timestamp, event: resultEvent };
+  }
+  return true;
+}
+
 export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
@@ -832,13 +1207,20 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  // `background_task` scheduled work is owned by the actions pane — never render
+  // an in-thread row for it. Other scheduled kinds keep their current behavior.
+  if (event.type === "scheduled_work_update" && event.kind === "background_task") {
+    return;
+  }
+
+  // Subagent lifecycle → two-row spawn/result cards (or a single finish chip for
+  // background shell commands). Normalize canonical dotted events first, then
+  // fold every lifecycle event into the anchor state (handled BEFORE the generic
+  // passthrough so no raw subagent_* row ever reaches the activity bundler).
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
-  if (normalizedSubagentEvent && normalizedSubagentEvent !== event) {
-    rows.push({
-      key: buildRenderKey(envelope, sequence),
-      timestamp: envelope.timestamp,
-      event: normalizedSubagentEvent,
-    });
+  if (normalizedSubagentEvent) {
+    const activeContext = context ?? createCollapseTranscriptContext();
+    handleSubagentLifecycleEvent(rows, normalizedSubagentEvent, envelope.timestamp, activeContext);
     return;
   }
 
@@ -903,13 +1285,62 @@ export function appendCollapsedChatTranscriptEvent(
   });
 }
 
-export function collapseChatTranscriptEvents(events: AgentChatEventEnvelope[]): ChatTranscriptRenderEnvelope[] {
+/**
+ * Result of a collapse pass. The context is opaque to callers except that the
+ * incremental path caches it so appended progress/result events can index back
+ * into stored row positions (see {@link collapseChatTranscriptEventsIncrementalWithContext}).
+ */
+export type CollapseTranscriptResult = {
+  rows: ChatTranscriptRenderEnvelope[];
+  context: CollapseTranscriptContext;
+};
+
+export function collapseChatTranscriptEventsWithContext(
+  events: AgentChatEventEnvelope[],
+): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
-  const context: CollapseTranscriptContext = { latestTodoItemsByTurn: new Map() };
+  const context = createCollapseTranscriptContext();
   for (let index = 0; index < events.length; index += 1) {
     appendCollapsedChatTranscriptEvent(rows, events[index]!, index, context);
   }
-  return rows;
+  return { rows, context };
+}
+
+export function collapseChatTranscriptEvents(events: AgentChatEventEnvelope[]): ChatTranscriptRenderEnvelope[] {
+  return collapseChatTranscriptEventsWithContext(events).rows;
+}
+
+/**
+ * Incremental collapse that carries its {@link CollapseTranscriptContext} so
+ * appended progress/result events index back into `previousRows.slice()` and
+ * mutate the subagent anchor row by its stored `rowIndex`. Falls back to a fresh
+ * full recompute on divergence/shrink/todo (those rebuild the context, so stale
+ * indices can never leak). The full-recompute path MUST produce identical output
+ * to the incremental path (guarded by a parity test).
+ */
+export function collapseChatTranscriptEventsIncrementalWithContext(
+  events: AgentChatEventEnvelope[],
+  previousEvents: AgentChatEventEnvelope[],
+  previousRows: ChatTranscriptRenderEnvelope[],
+  previousContext: CollapseTranscriptContext | null,
+): CollapseTranscriptResult {
+  if (!previousEvents.length || events.length < previousEvents.length || !previousContext) {
+    return collapseChatTranscriptEventsWithContext(events);
+  }
+
+  if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
+    return collapseChatTranscriptEventsWithContext(events);
+  }
+
+  if (events.slice(previousEvents.length).some((envelope) => envelope.event.type === "todo_update")) {
+    return collapseChatTranscriptEventsWithContext(events);
+  }
+
+  const rows = previousRows.slice();
+  for (let index = previousEvents.length; index < events.length; index += 1) {
+    appendCollapsedChatTranscriptEvent(rows, events[index]!, index, previousContext);
+  }
+  return { rows, context: previousContext };
 }
 
 export function collapseChatTranscriptEventsIncremental(
@@ -917,23 +1348,17 @@ export function collapseChatTranscriptEventsIncremental(
   previousEvents: AgentChatEventEnvelope[],
   previousRows: ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  if (!previousEvents.length || events.length < previousEvents.length) {
-    return collapseChatTranscriptEvents(events);
-  }
-
-  if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
-    return collapseChatTranscriptEvents(events);
-  }
-
-  if (events.slice(previousEvents.length).some((envelope) => envelope.event.type === "todo_update")) {
-    return collapseChatTranscriptEvents(events);
-  }
-
-  const rows = previousRows.slice();
-  for (let index = previousEvents.length; index < events.length; index += 1) {
-    appendCollapsedChatTranscriptEvent(rows, events[index]!, index);
-  }
-  return rows;
+  // Legacy signature (no carried context): recompute a context from the previous
+  // events so appended subagent lifecycle rows still resolve their anchors.
+  const previousContext = previousEvents.length
+    ? collapseChatTranscriptEventsWithContext(previousEvents).context
+    : null;
+  return collapseChatTranscriptEventsIncrementalWithContext(
+    events,
+    previousEvents,
+    previousRows,
+    previousContext,
+  ).rows;
 }
 
 export function groupConsecutiveWorkLogRows(
@@ -1101,11 +1526,11 @@ export function groupConsecutiveWorkLogRows(
 }
 
 function isActivityBundleSourceEvent(event: ChatTranscriptRenderEvent): event is ChatActivityBundleItem["event"] {
+  // Subagent lifecycle events now render as dedicated spawn/result/chip rows and
+  // never reach here. `background_task` scheduled work is dropped in the collapse
+  // pass (the actions pane owns it); other scheduled kinds keep bundling.
   return event.type === "todo_update"
-    || event.type === "subagent_started"
-    || event.type === "subagent_progress"
-    || event.type === "subagent_result"
-    || event.type === "scheduled_work_update";
+    || (event.type === "scheduled_work_update" && event.kind !== "background_task");
 }
 
 function activityBundleTurnId(event: ChatActivityBundleItem["event"]): string | null {

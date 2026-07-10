@@ -19,6 +19,7 @@ import {
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
+import { backgroundCommandLabel } from "../../../../desktop/src/shared/chatScheduledWork";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
@@ -1073,6 +1074,32 @@ function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnap
   );
 }
 
+// Background command tasks — mirrors the desktop actions-pane Background
+// section. Each row: `$ <smart label>  status` (ASCII, one line).
+function ChatInfoBackgroundBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (!info.backgroundWork.length) return null;
+  const inner = Math.max(10, width - 4);
+  const visible = info.backgroundWork.slice(0, SCHEDULE_VISIBLE_CAP);
+  const hiddenAfter = info.backgroundWork.length - visible.length;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="BACKGROUND" hint={`${info.backgroundWork.length}`} color={brandColor} width={width} />
+      {visible.map((item) => {
+        const raw = (item.title || item.prompt || item.summary || "").trim();
+        const label = backgroundCommandLabel(raw) || raw || "background command";
+        const status = ` ${item.status}`;
+        const labelBudget = Math.max(6, inner - status.length - 4);
+        return (
+          <Text key={item.id} color={scheduleStatusColor(item.status)} wrap="truncate-end">
+            {"$ "}{endTruncate(label, labelBudget)} <Text color={theme.color.t4}>{item.status}</Text>
+          </Text>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+    </Box>
+  );
+}
+
 function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
   if (!info.todos.length) return null;
   const inner = Math.max(10, width - 4);
@@ -1151,6 +1178,7 @@ function ChatInfoPane({
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>

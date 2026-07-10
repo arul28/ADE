@@ -68,20 +68,24 @@ import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
-import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName, type ChatSubagentIdentityInput } from "./chatSubagentIdentity";
 import {
   collapseChatTranscriptEvents,
-  collapseChatTranscriptEventsIncremental,
+  collapseChatTranscriptEventsIncrementalWithContext,
   formatStructuredValue,
   groupChatTranscriptRows,
   readRecord,
   summarizeDiffStats,
   summarizeInlineText,
+  type BackgroundFinishChipRenderEvent,
   type ChatActivityBundleEvent,
   type ChatActivityBundleItem,
+  type CollapseTranscriptResult,
+  type SubagentResultCardRenderEvent,
+  type SubagentSpawnAnchorRenderEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
+import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard } from "./SubagentActivityCards";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { HighlightedCode } from "./CodeHighlighter";
@@ -345,31 +349,6 @@ function formatCompactDuration(value: number | null | undefined): string | null 
   return `${minutes}m`;
 }
 
-function renderSubagentUsage(usage: {
-  totalTokens?: number;
-  toolUses?: number;
-  durationMs?: number;
-  costUsd?: number;
-} | undefined): React.ReactNode {
-  if (!usage) return null;
-  return (
-    <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
-      {usage.totalTokens != null ? (
-        <span>{formatTokenCount(usage.totalTokens)} tokens</span>
-      ) : null}
-      {usage.toolUses != null ? (
-        <span>{usage.toolUses} tool use{usage.toolUses === 1 ? "" : "s"}</span>
-      ) : null}
-      {usage.durationMs != null ? (
-        <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
-      ) : null}
-      {usage.costUsd != null ? (
-        <span>${usage.costUsd.toFixed(4)}</span>
-      ) : null}
-    </div>
-  );
-}
-
 const GLASS_CARD_CLASS = CHAT_TRANSCRIPT_GLASS_CARD_CLASS;
 
 const WORK_LOG_CARD_CLASS = CHAT_WORK_LOG_CARD_CLASS;
@@ -548,7 +527,10 @@ type RenderEnvelope = {
     turnId?: string;
     result?: unknown;
     status: "running" | "completed" | "failed";
-  };
+  }
+  | SubagentSpawnAnchorRenderEvent
+  | SubagentResultCardRenderEvent
+  | BackgroundFinishChipRenderEvent;
 };
 
 function MessageCopyButton({
@@ -881,21 +863,14 @@ function InlineDisclosureRow({
 
 function activityBundleTaskId(item: ChatActivityBundleItem): string | null {
   const event = item.event;
-  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
-    return event.agentId ?? event.taskId;
-  }
   if (event.type === "scheduled_work_update") return event.sourceTaskId ?? event.id;
   return null;
 }
 
-function activityBundleKind(item: ChatActivityBundleItem): "task" | "agent" | "workflow" | "schedule" {
+function activityBundleKind(item: ChatActivityBundleItem): "task" | "schedule" {
   const event = item.event;
-  if (event.type === "todo_update") return "task";
   if (event.type === "scheduled_work_update") return "schedule";
-  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
-    return event.workflowName || event.taskType === "local_workflow" ? "workflow" : "agent";
-  }
-  return "agent";
+  return "task";
 }
 
 function activityBundleStatus(item: ChatActivityBundleItem): string {
@@ -905,30 +880,7 @@ function activityBundleStatus(item: ChatActivityBundleItem): string {
     const completed = event.items.filter((task) => task.status === "completed").length;
     return event.items.length ? `${completed}/${event.items.length} complete` : "updated";
   }
-  if (event.type === "scheduled_work_update") return event.status.replace(/_/g, " ");
-  if (event.type === "subagent_started") return event.background ? "background started" : "started";
-  if (event.type === "subagent_progress") return "running";
-  return event.status === "stopped" ? "stopped" : event.status;
-}
-
-function activitySubagentStatus(item: ChatActivityBundleItem): ChatSubagentSnapshot["status"] {
-  const event = item.event;
-  if (event.type === "subagent_result") return event.status;
-  return "running";
-}
-
-function activitySubagentIdentity(item: ChatActivityBundleItem): ChatSubagentIdentityInput | null {
-  const event = item.event;
-  if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") {
-    return null;
-  }
-  return {
-    taskId: event.taskId,
-    agentId: event.agentId,
-    agentType: event.agentType,
-    label: event.label,
-    description: "description" in event ? event.description : null,
-  };
+  return event.status.replace(/_/g, " ");
 }
 
 function activityBundleTitle(item: ChatActivityBundleItem): string {
@@ -938,15 +890,10 @@ function activityBundleTitle(item: ChatActivityBundleItem): string {
     const active = event.items.find((task) => task.status === "in_progress") ?? event.items.find((task) => task.status !== "completed") ?? event.items.at(-1);
     return active?.description?.trim() || "Task list updated";
   }
-  if (event.type === "scheduled_work_update") {
-    return event.title?.trim()
-      || event.reason?.trim()
-      || event.prompt?.trim()
-      || (event.kind === "cron" ? "Cron schedule" : "Scheduled work");
-  }
-  const identity = activitySubagentIdentity(item);
-  if (identity) return chatSubagentDisplayName(identity);
-  return event.type;
+  return event.title?.trim()
+    || event.reason?.trim()
+    || event.prompt?.trim()
+    || (event.kind === "cron" ? "Cron schedule" : "Scheduled work");
 }
 
 function activityBundleDetail(item: ChatActivityBundleItem): string | null {
@@ -955,31 +902,21 @@ function activityBundleDetail(item: ChatActivityBundleItem): string | null {
     const changed = event.items.filter((task) => task.status !== "pending");
     return changed.slice(0, 3).map((task) => `${task.status.replace("_", " ")}: ${task.description}`).join(" · ") || null;
   }
-  if (event.type === "scheduled_work_update") {
-    return event.summary?.trim()
-      || event.error?.trim()
-      || event.cron?.trim()
-      || event.nextRunAt?.trim()
-      || null;
-  }
-  if (event.type === "subagent_progress") return event.summary?.trim() || event.lastToolName?.trim() || null;
-  if (event.type === "subagent_result") return event.summary?.trim() || event.finalSummary?.trim() || null;
-  return event.description?.trim() || null;
+  return event.summary?.trim()
+    || event.error?.trim()
+    || event.cron?.trim()
+    || event.nextRunAt?.trim()
+    || null;
 }
 
-function activityKindLabel(kind: ReturnType<typeof activityBundleKind>, count?: number): string {
+function activityKindLabel(kind: ReturnType<typeof activityBundleKind>): string {
   if (kind === "task") return "tasks";
-  if (kind === "schedule") return "schedule";
-  if (kind === "workflow") return "workflows";
-  if (count === 1) return "subagent";
-  return "subagents";
+  return "schedule";
 }
 
 function activityKindTone(kind: ReturnType<typeof activityBundleKind>): string {
   if (kind === "task") return "border-cyan-300/14 bg-cyan-300/[0.055] text-cyan-100/72";
-  if (kind === "schedule") return "border-amber-300/14 bg-amber-300/[0.055] text-amber-100/72";
-  if (kind === "workflow") return "border-violet-300/14 bg-violet-300/[0.055] text-violet-100/72";
-  return "border-violet-300/12 bg-violet-300/[0.05] text-violet-100/72";
+  return "border-amber-300/14 bg-amber-300/[0.055] text-amber-100/72";
 }
 
 function activityStatusIcon(item: ChatActivityBundleItem): React.ReactNode {
@@ -1014,82 +951,25 @@ function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: 
 
 function activityBundleDedupeKey(item: ChatActivityBundleItem): string {
   const event = item.event;
-  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
-    return `subagent:${event.agentId ?? event.taskId}`;
-  }
   if (event.type === "scheduled_work_update") {
     return `schedule:${event.sourceTaskId ?? event.id}`;
   }
   return `todo:${item.key}`;
 }
 
-function activitySubagentParentKey(item: ChatActivityBundleItem): string | null {
-  const event = item.event;
-  if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") {
-    return null;
-  }
-  return event.parentToolUseId ?? event.parentAgentId ?? null;
-}
-
-function activitySubagentIdentityKey(item: ChatActivityBundleItem): string | null {
-  const event = item.event;
-  if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") {
-    return null;
-  }
-  return event.agentId ?? event.taskId;
-}
-
-function activitySubagentIsParentPlaceholder(item: ChatActivityBundleItem, parentKey: string): boolean {
-  const event = item.event;
-  return event.type === "subagent_started"
-    && !event.agentId
-    && event.taskId === parentKey
-    && (event.parentToolUseId ?? event.parentAgentId ?? null) === parentKey;
-}
-
-function activityResolvedSubagentKeysByParent(items: ChatActivityBundleItem[]): Map<string, Set<string>> {
-  const keysByParent = new Map<string, Set<string>>();
-  for (const item of items) {
-    const parentKey = activitySubagentParentKey(item);
-    const identityKey = activitySubagentIdentityKey(item);
-    if (!parentKey || !identityKey || identityKey === parentKey) continue;
-    const keys = keysByParent.get(parentKey) ?? new Set<string>();
-    keys.add(identityKey);
-    keysByParent.set(parentKey, keys);
-  }
-  return keysByParent;
-}
-
-function activityBundleFoldKey(
-  item: ChatActivityBundleItem,
-  resolvedKeysByParent: Map<string, Set<string>>,
-): string | null {
-  const parentKey = activitySubagentParentKey(item);
-  if (parentKey && activitySubagentIsParentPlaceholder(item, parentKey)) {
-    const resolvedKeys = resolvedKeysByParent.get(parentKey);
-    if (!resolvedKeys?.size) return activityBundleDedupeKey(item);
-    if (resolvedKeys.size > 1) return null;
-    return `subagent:${Array.from(resolvedKeys)[0]!}`;
-  }
-  return activityBundleDedupeKey(item);
-}
-
+// Now that subagent lifecycle events render as dedicated cards, activity bundles
+// only carry task (todo) + scheduled-work rows. Folding collapses repeated
+// scheduled-work updates for the same id down to the latest.
 function foldActivityBundleItems(items: ChatActivityBundleItem[]): ChatActivityBundleItem[] {
   const folded: ChatActivityBundleItem[] = [];
   const indexByKey = new Map<string, number>();
-  const resolvedKeysByParent = activityResolvedSubagentKeysByParent(items);
   for (const item of items) {
-    const key = activityBundleFoldKey(item, resolvedKeysByParent);
-    if (!key) continue;
+    const key = activityBundleDedupeKey(item);
     const existingIndex = indexByKey.get(key);
     if (existingIndex === undefined) {
       indexByKey.set(key, folded.length);
       folded.push(item);
     } else {
-      const parentKey = activitySubagentParentKey(item);
-      if (parentKey && activitySubagentIsParentPlaceholder(item, parentKey)) {
-        continue;
-      }
       folded[existingIndex] = item;
     }
   }
@@ -1099,18 +979,8 @@ function foldActivityBundleItems(items: ChatActivityBundleItem[]): ChatActivityB
 function activityBundleSummary(items: ChatActivityBundleItem[]): string {
   const kinds = Array.from(new Set(items.map(activityBundleKind)));
   if (items.length === 1) {
-    const item = items[0]!;
-    const kind = activityBundleKind(item);
-    if (kind === "task") return "Task updated";
-    if (kind === "schedule") return "Scheduled work updated";
-    return "Subagent updated";
-  }
-  if (kinds.every((kind) => kind === "agent" || kind === "workflow")) {
-    const statuses = items.map(activityBundleStatus);
-    if (statuses.every((status) => status === "started" || status === "background started")) return "Subagents spawned";
-    if (statuses.every((status) => status === "completed")) return "Subagents completed";
-    if (statuses.every((status) => status === "stopped")) return "Subagents stopped";
-    return "Subagent updates";
+    const kind = activityBundleKind(items[0]!);
+    return kind === "task" ? "Task updated" : "Scheduled work updated";
   }
   if (kinds.length === 1 && kinds[0] === "task") return "Task updates";
   if (kinds.length === 1 && kinds[0] === "schedule") return "Scheduled work updates";
@@ -1130,10 +1000,6 @@ function ActivityBundleRow({
   const detail = activityBundleDetail(item);
   const title = activityBundleTitle(item);
   const taskId = activityBundleTaskId(item);
-  const identity = activitySubagentIdentity(item);
-  const glyphId = identity ? identity.agentId ?? identity.taskId : null;
-  const glyphStatus = activitySubagentStatus(item);
-  const glyphColor = glyphId ? chatSubagentColor(glyphId) : null;
 
   return (
     <button
@@ -1147,11 +1013,7 @@ function ActivityBundleRow({
       onClick={() => openChatInfoFromActivity(sessionId, taskId)}
     >
       <span className="mt-0.5 shrink-0">
-        {identity && glyphId && glyphColor ? (
-          <ChatSubagentGlyph id={glyphId} color={glyphColor} status={glyphStatus} />
-        ) : (
-          activityStatusIcon(item)
-        )}
+        {activityStatusIcon(item)}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -1178,7 +1040,7 @@ function ChatActivityBundle({
   const displayItems = foldActivityBundleItems(event.items);
   const [open, setOpen] = useState(displayItems.length <= 3);
   const kinds = Array.from(new Set(displayItems.map(activityBundleKind)));
-  const primaryKind = kinds[0] ?? "agent";
+  const primaryKind = kinds[0] ?? "task";
   const summary = activityBundleSummary(displayItems);
 
   if (displayItems.length === 1) {
@@ -1204,13 +1066,13 @@ function ChatActivityBundle({
           {open ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
         </button>
         <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-violet-300/[0.075] text-violet-100/70">
-          {primaryKind === "task" ? <ListChecks size={13} weight="regular" /> : primaryKind === "schedule" ? <Target size={13} weight="duotone" /> : <Robot size={13} weight="duotone" />}
+          {primaryKind === "task" ? <ListChecks size={13} weight="regular" /> : <Target size={13} weight="duotone" />}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <span className="truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/76">{summary}</span>
             <span className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em]", activityKindTone(primaryKind))}>
-              {displayItems.length} {activityKindLabel(primaryKind, displayItems.length)}
+              {displayItems.length} {activityKindLabel(primaryKind)}
             </span>
           </div>
         </div>
@@ -2675,6 +2537,8 @@ function renderEvent(
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
     turnDiffSummaries?: TurnDiffSummary[];
     mosaic?: MosaicRenderContext;
+    /** Scroll a row into view by its stable render key (subagent jump affordances). */
+    onScrollToRowKey?: (rowKey: string) => void;
   }
 ) {
   const event = envelope.event;
@@ -2989,107 +2853,38 @@ function renderEvent(
     );
   }
 
-  /* ── Subagent Started ── */
-  if (event.type === "subagent_started") {
+  /* ── Subagent spawn anchor (two-row rendering: spawn card) ── */
+  if (event.type === "subagent_spawn_anchor") {
     return (
-      <motion.div
-        className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.14, ease: "easeOut" }}
-      >
-        <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
-        <div className="flex items-center gap-3 px-4 py-3">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 ade-glow-pulse">
-            <ChatStatusGlyph status="working" size={14} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-violet-300/55">Agent</span>
-              {event.background ? (
-                <span className="rounded-md border border-violet-500/12 bg-violet-500/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em] text-violet-300/50">background</span>
-              ) : null}
-            </div>
-            <div className="mt-0.5 truncate text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">{event.description}</div>
-          </div>
-        </div>
-      </motion.div>
+      <SubagentSpawnCard
+        event={event}
+        onJumpToResult={
+          options?.onScrollToRowKey
+            ? () => options!.onScrollToRowKey?.(`subagent-result:${event.agentKey}`)
+            : undefined
+        }
+      />
     );
   }
 
-  /* ── Subagent Progress ── */
-  if (event.type === "subagent_progress") {
-    const summaryText = summarizeInlineText(event.summary, 140);
+  /* ── Subagent result card ── */
+  if (event.type === "subagent_result_card") {
     return (
-      <InlineDisclosureRow
-        defaultOpen={false}
-        summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
-            <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-violet-500/10">
-              <ChatStatusGlyph status="working" size={11} />
-            </div>
-            <span className="font-medium text-fg/62">Agent running</span>
-            {event.lastToolName?.trim() ? (
-              <span className="rounded-md border border-violet-500/10 bg-violet-500/[0.05] px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] text-violet-300/55">
-                {replaceInternalToolNames(event.lastToolName.trim())}
-              </span>
-            ) : null}
-            {summaryText ? <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">{summaryText}</span> : null}
-          </div>
+      <SubagentResultCard
+        event={event}
+        onViewTranscript={() => openChatInfoFromActivity(options?.sessionId, event.agentKey)}
+        onJumpToStart={
+          options?.onScrollToRowKey
+            ? () => options!.onScrollToRowKey?.(`subagent-spawn:${event.agentKey}`)
+            : undefined
         }
-      >
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
-            {event.description?.trim() ? <span>{event.description.trim()}</span> : null}
-          </div>
-          <div className="text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">
-            {event.summary.trim() || "Waiting for the next progress update."}
-          </div>
-          {renderSubagentUsage(event.usage)}
-        </div>
-      </InlineDisclosureRow>
+      />
     );
   }
 
-  /* ── Subagent Result ── */
-  if (event.type === "subagent_result") {
-    const isSuccess = event.status === "completed";
-    const isStopped = event.status === "stopped";
-    const defaultOpen = !isSuccess;
-    const summaryTruncated = summarizeInlineText(event.summary, 120);
-    return (
-      <InlineDisclosureRow
-        defaultOpen={defaultOpen}
-        summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
-            <div className={cn(
-              "flex h-5 w-5 shrink-0 items-center justify-center rounded-md",
-              isSuccess ? "bg-emerald-500/10" : isStopped ? "bg-amber-500/10" : "bg-red-500/10",
-            )}>
-              {isSuccess ? (
-                <CheckCircle size={12} weight="bold" className="text-emerald-400/80" />
-              ) : isStopped ? (
-                <Circle size={12} weight="fill" className="text-amber-300/80" />
-              ) : (
-                <XCircle size={12} weight="bold" className="text-red-400/80" />
-              )}
-            </div>
-            <span className={cn(
-              "font-medium",
-              isSuccess ? "text-emerald-200/70" : isStopped ? "text-amber-200/70" : "text-red-200/70",
-            )}>
-              {isSuccess ? "Agent finished" : isStopped ? "Agent stopped" : "Agent failed"}
-            </span>
-            {summaryTruncated ? <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">{summaryTruncated}</span> : null}
-          </div>
-        }
-      >
-        <div className="space-y-3">
-          <div className="text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">{event.summary}</div>
-          {renderSubagentUsage(event.usage)}
-        </div>
-      </InlineDisclosureRow>
-    );
+  /* ── Background command finish chip ── */
+  if (event.type === "background_finish_chip") {
+    return <BackgroundFinishChip event={event} />;
   }
 
   /* ── Structured Question ── */
@@ -4254,6 +4049,7 @@ type EventRowProps = {
   runtimeName?: string | null;
   mosaic?: MosaicRenderContext;
   anchored?: boolean;
+  onScrollToRowKey?: (rowKey: string) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4284,6 +4080,7 @@ const EventRow = React.memo(function EventRow({
   runtimeName,
   mosaic,
   anchored,
+  onScrollToRowKey,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -4344,6 +4141,7 @@ const EventRow = React.memo(function EventRow({
             onRewindFiles,
             turnDiffSummaries,
             mosaic,
+            onScrollToRowKey,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -4703,9 +4501,17 @@ function AgentChatMessageListMain({
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: TranscriptRenderEnvelope[] }>({
+  // Carries the CollapseTranscriptContext alongside events/rows so appended
+  // subagent progress/result events can index back into the previous rows and
+  // mutate the anchor by its stored rowIndex (see collapseChatTranscriptRows).
+  const collapseCacheRef = useRef<{
+    events: AgentChatEventEnvelope[];
+    rows: TranscriptRenderEnvelope[];
+    context: CollapseTranscriptResult["context"] | null;
+  }>({
     events: [],
     rows: [],
+    context: null,
   });
   const [stickToBottom, setStickToBottom] = useState(true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
@@ -4800,8 +4606,13 @@ function AgentChatMessageListMain({
 
   const rows = useMemo(() => {
     const cached = collapseCacheRef.current;
-    const nextRows = collapseChatTranscriptEventsIncremental(events, cached.events, cached.rows);
-    collapseCacheRef.current = { events, rows: nextRows };
+    const { rows: nextRows, context } = collapseChatTranscriptEventsIncrementalWithContext(
+      events,
+      cached.events,
+      cached.rows,
+      cached.context,
+    );
+    collapseCacheRef.current = { events, rows: nextRows, context };
     return nextRows;
   }, [events]);
   const groupedRows = useMemo(() => groupChatTranscriptRows(rows), [rows]);
@@ -5054,6 +4865,13 @@ function AgentChatMessageListMain({
     setScrollTop(el.scrollTop);
     return true;
   }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+
+  // Scroll a grouped row into view by its stable render key — used by the
+  // subagent spawn/result "jump to result ↓" / "↑ jump to start" affordances.
+  const scrollToRowKey = useCallback((rowKey: string) => {
+    const rowIndex = groupedRowKeys.indexOf(rowKey);
+    if (rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
+  }, [groupedRowKeys, scrollToRowIndexNearTop]);
 
   const scheduleAnchoredRowCorrection = useCallback((rowKey: string) => {
     if (anchorCorrectionRafRef.current !== null) {
@@ -5458,6 +5276,7 @@ function AgentChatMessageListMain({
           runtimeName={runtimeName}
           mosaic={mosaic}
           anchored={anchored}
+          onScrollToRowKey={scrollToRowKey}
         />
       );
     }
@@ -5491,9 +5310,10 @@ function AgentChatMessageListMain({
         runtimeName={runtimeName}
         mosaic={mosaic}
         anchored={anchored}
+        onScrollToRowKey={scrollToRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

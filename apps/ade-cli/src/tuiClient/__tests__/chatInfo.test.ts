@@ -259,4 +259,55 @@ describe("deriveChatInfoSnapshot", () => {
       }),
     ]);
   });
+
+  it("partitions background_task work into backgroundWork, keeping schedule kinds in scheduledWork", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [
+        env("2026-07-07T12:00:00.000Z", {
+          type: "scheduled_work_update",
+          id: "bg-1",
+          kind: "background_task",
+          status: "running",
+          title: "cd /repo && npm run dev",
+        }, 1),
+        env("2026-07-07T12:00:01.000Z", {
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          title: "Nightly",
+        }, 2),
+      ],
+      activeSession: session({ provider: "claude" }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-8",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.scheduledWork.map((item) => item.id)).toEqual(["cron-1"]);
+    expect(snapshot.backgroundWork.map((item) => item.id)).toEqual(["bg-1"]);
+  });
+
+  it("filters historical command-as-subagent snapshots out of the roster", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ provider: "claude" }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-8",
+      laneLabel: "lane",
+      snapshots: [
+        { id: "real", name: "Explore renderer", kind: "subagent", status: "running", summary: "" },
+        { id: "cmd", name: "npm run dev", kind: "subagent", status: "running", summary: "", taskType: "background" },
+      ],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.snapshots.map((item) => item.id)).toEqual(["real"]);
+  });
 });

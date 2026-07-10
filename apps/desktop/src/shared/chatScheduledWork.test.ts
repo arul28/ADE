@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
 import {
+  backgroundCommandCwd,
   backgroundCommandLabel,
   deriveBackgroundItems,
   deriveScheduleItems,
@@ -54,6 +55,17 @@ describe("chatScheduledWork helpers", () => {
       .toBe("npx vitest run a.test.ts");
     expect(backgroundCommandLabel("\n exec   npm   test \nignored" )).toBe("npm test");
     expect(backgroundCommandLabel("cd /x &&")).toBe("cd /x &&");
+  });
+
+  it("extracts the cwd from a leading cd prefix", () => {
+    expect(backgroundCommandCwd("cd /x/y && npx vitest run a.test.ts")).toBe("/x/y");
+    expect(backgroundCommandCwd("cd \"/path with spaces\" && npm test")).toBe("/path with spaces");
+    expect(backgroundCommandCwd("cd '/single/quoted' && ls")).toBe("/single/quoted");
+    // No cd prefix → null.
+    expect(backgroundCommandCwd("npm test")).toBeNull();
+    expect(backgroundCommandCwd("")).toBeNull();
+    // A cd without a && chain is not a directory prefix for a command.
+    expect(backgroundCommandCwd("cd /x")).toBeNull();
   });
 
   it("stops stale background work when its turn finishes without changing schedules", () => {

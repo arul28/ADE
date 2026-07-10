@@ -85,4 +85,22 @@ describe("WorkSurfaceHeader", () => {
     render(<WorkSurfaceHeader title="X" testId="work-surface-header-cli" />);
     expect(screen.getByTestId("work-surface-header-cli")).toBeTruthy();
   });
+
+  it("shimmers the title when it lands from a provider default to a real title", () => {
+    const { rerender } = render(<WorkSurfaceHeader title="Claude Chat" />);
+    const initial = screen.getByText("Claude Chat");
+    expect(initial.getAttribute("data-title-landed")).toBeNull();
+
+    rerender(<WorkSurfaceHeader title="Fix the login redirect" />);
+    const landed = screen.getByText("Fix the login redirect");
+    expect(landed.getAttribute("data-title-landed")).toBe("true");
+    expect(landed.className).toContain("ade-title-landed");
+  });
+
+  it("does not shimmer when the title changes between two real titles", () => {
+    const { rerender } = render(<WorkSurfaceHeader title="Fix the login redirect" />);
+    rerender(<WorkSurfaceHeader title="Fix the logout redirect" />);
+    const el = screen.getByText("Fix the logout redirect");
+    expect(el.getAttribute("data-title-landed")).toBeNull();
+  });
 });

@@ -5,6 +5,8 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
 import {
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
+  collapseChatTranscriptEventsIncrementalWithContext,
+  collapseChatTranscriptEventsWithContext,
   deriveTurnDividerData,
   extractLocalhostUrlsFromText,
   eventHasPayload,
@@ -292,7 +294,7 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.messageId).toBe("assistant-message-1");
   });
 
-  it("renders subagent lifecycle as a compact activity bundle between assistant text", () => {
+  it("renders a real subagent spawn as its own anchor row between assistant text", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -310,6 +312,7 @@ describe("chatTranscriptRows", () => {
         event: {
           type: "subagent_started",
           taskId: "agent-1",
+          agentType: "Explore",
           description: "Inspect the current route tree",
           turnId: "turn-1",
         },
@@ -328,14 +331,16 @@ describe("chatTranscriptRows", () => {
 
     expect(rows).toHaveLength(3);
     expect(rows[0]!.event.type).toBe("text");
-    expect(rows[1]!.event.type).toBe("activity_bundle");
+    expect(rows[1]!.event.type).toBe("subagent_spawn_anchor");
     expect(rows[2]!.event.type).toBe("text");
-    if (rows[0]!.event.type !== "text" || rows[1]!.event.type !== "activity_bundle" || rows[2]!.event.type !== "text") {
-      throw new Error("Expected a text event");
+    if (rows[0]!.event.type !== "text" || rows[1]!.event.type !== "subagent_spawn_anchor" || rows[2]!.event.type !== "text") {
+      throw new Error("Expected text / spawn anchor / text");
     }
     expect(rows[0]!.event.text).toBe("Hello");
-    expect(rows[1]!.event.items).toHaveLength(1);
-    expect(rows[1]!.event.items[0]!.event.type).toBe("subagent_started");
+    expect(rows[1]!.event.agentKey).toBe("agent-1");
+    expect(rows[1]!.event.description).toBe("Inspect the current route tree");
+    expect(rows[1]!.event.agentType).toBe("Explore");
+    expect(rows[1]!.key).toBe("subagent-spawn:agent-1");
     expect(rows[2]!.event.text).toBe(" world");
   });
 
@@ -1362,7 +1367,7 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.text).toBe("Part 1. Part 2.");
   });
 
-  it("bundles raw subagent progress rows in the grouped transcript", () => {
+  it("folds consecutive subagent progress rows into a single mutated spawn anchor", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -1371,7 +1376,7 @@ describe("chatTranscriptRows edge cases", () => {
           type: "subagent_progress",
           taskId: "task-1",
           turnId: "turn-1",
-          summary: "Working on it...",
+          summary: "Working...",
         },
       },
       {
@@ -1381,16 +1386,17 @@ describe("chatTranscriptRows edge cases", () => {
           type: "subagent_progress",
           taskId: "task-1",
           turnId: "turn-1",
-          summary: "Almost done.",
+          summary: "Almost done, wrapping up.",
         },
       },
     ]);
     expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
-    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
-      "subagent_progress",
-      "subagent_progress",
-    ]);
+    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected subagent_spawn_anchor");
+    expect(rows[0]!.event.agentKey).toBe("task-1");
+    expect(rows[0]!.event.status).toBe("running");
+    // The live status line reflects the last meaningful progress summary
+    // (preferSubagentSummary keeps the richer of two real summaries).
+    expect(rows[0]!.event.statusLine).toBe("Almost done, wrapping up.");
   });
 
   it("renders todo_update deltas within the same turn", () => {
@@ -1429,7 +1435,7 @@ describe("chatTranscriptRows edge cases", () => {
     ]);
   });
 
-  it("bundles adjacent task, subagent, scheduled work, and workflow status updates by turn", () => {
+  it("bundles adjacent task + scheduled work but renders subagents as separate cards", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -1444,9 +1450,11 @@ describe("chatTranscriptRows edge cases", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:01.000Z",
         event: {
-          type: "subagent_started",
-          taskId: "agent-1",
-          description: "Review transcript grouping",
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          title: "Follow-up cron",
           turnId: "turn-1",
         },
       },
@@ -1454,11 +1462,10 @@ describe("chatTranscriptRows edge cases", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:02.000Z",
         event: {
-          type: "scheduled_work_update",
-          id: "cron-1",
-          kind: "cron",
-          status: "scheduled",
-          title: "Follow-up cron",
+          type: "subagent_started",
+          taskId: "agent-1",
+          agentType: "Explore",
+          description: "Review transcript grouping",
           turnId: "turn-1",
         },
       },
@@ -1477,18 +1484,20 @@ describe("chatTranscriptRows edge cases", () => {
       },
     ]);
 
-    expect(rows).toHaveLength(1);
+    // todo + cron bundle; the subagent start/result render as their own cards.
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "activity_bundle",
+      "subagent_spawn_anchor",
+      "subagent_result_card",
+    ]);
     if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
-    expect(rows[0]!.event.turnId).toBe("turn-1");
     expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
       "todo_update",
-      "subagent_started",
       "scheduled_work_update",
-      "subagent_result",
     ]);
   });
 
-  it("normalizes canonical dotted subagent lifecycle events before activity bundling", () => {
+  it("normalizes canonical dotted subagent lifecycle events into spawn + result cards", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -1496,6 +1505,7 @@ describe("chatTranscriptRows edge cases", () => {
         event: {
           type: "subagent.started",
           agentId: "agent-canonical",
+          agentType: "Explore",
           parentToolUseId: "call-spawn",
           description: "Inspect canonical lifecycle events",
           turnId: "turn-1",
@@ -1507,6 +1517,7 @@ describe("chatTranscriptRows edge cases", () => {
         event: {
           type: "subagent.completed",
           agentId: "agent-canonical",
+          agentType: "Explore",
           parentToolUseId: "call-spawn",
           summary: "Canonical lifecycle mapped.",
           status: "completed",
@@ -1515,19 +1526,18 @@ describe("chatTranscriptRows edge cases", () => {
       },
     ]);
 
-    expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
-    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
-      "subagent_started",
-      "subagent_result",
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "subagent_spawn_anchor",
+      "subagent_result_card",
     ]);
-    expect(rows[0]!.event.items[0]!.event).toMatchObject({
-      taskId: "agent-canonical",
-      parentToolUseId: "call-spawn",
-    });
+    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(rows[0]!.event.agentKey).toBe("agent-canonical");
+    expect(rows[0]!.event.status).toBe("completed");
+    if (rows[1]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(rows[1]!.event.summaryPreview).toBe("Canonical lifecycle mapped.");
   });
 
-  it("keeps activity bundles separated when turn ids change", () => {
+  it("gives each subagent its own stable spawn anchor row", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -1535,6 +1545,7 @@ describe("chatTranscriptRows edge cases", () => {
         event: {
           type: "subagent_started",
           taskId: "agent-1",
+          agentType: "Explore",
           description: "First turn",
           turnId: "turn-1",
         },
@@ -1545,6 +1556,7 @@ describe("chatTranscriptRows edge cases", () => {
         event: {
           type: "subagent_started",
           taskId: "agent-2",
+          agentType: "Explore",
           description: "Second turn",
           turnId: "turn-2",
         },
@@ -1552,8 +1564,10 @@ describe("chatTranscriptRows edge cases", () => {
     ]);
 
     expect(rows).toHaveLength(2);
-    expect(rows[0]!.event.type).toBe("activity_bundle");
-    expect(rows[1]!.event.type).toBe("activity_bundle");
+    expect(rows[0]!.event.type).toBe("subagent_spawn_anchor");
+    expect(rows[1]!.event.type).toBe("subagent_spawn_anchor");
+    expect(rows[0]!.key).toBe("subagent-spawn:agent-1");
+    expect(rows[1]!.key).toBe("subagent-spawn:agent-2");
   });
 
   it("keeps activity bundles separated when turn ids are missing", () => {
@@ -1777,5 +1791,362 @@ describe("chatTranscriptRows edge cases", () => {
       preTokens: 120_000,
       postTokens: 40_000,
     });
+  });
+});
+
+function env(
+  timestamp: string,
+  event: AgentChatEventEnvelope["event"],
+): AgentChatEventEnvelope {
+  return { sessionId: "session-1", timestamp, event };
+}
+
+describe("subagent two-row rendering", () => {
+  it("collapses a double subagent_started into exactly one enriched spawn anchor", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Find",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Find update modal component",
+        background: true,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    // Enriched: longer description + background flag adopted.
+    expect(rows[0]!.event.description).toBe("Find update modal component");
+    expect(rows[0]!.event.background).toBe(true);
+    expect(rows[0]!.event.agentType).toBe("Explore");
+    expect(rows[0]!.key).toBe("subagent-spawn:agent-1");
+  });
+
+  it("keeps progress ticks interleaved with tool/text rows to a single anchor and reflects the last meaningful summary", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate route tree",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-1",
+        summary: "Reading files",
+        lastToolName: "Read",
+        usage: { toolUses: 1 },
+      }),
+      env("2026-06-01T10:00:02.000Z", { type: "text", text: "parent thinking", messageId: "m-1" }),
+      env("2026-06-01T10:00:03.000Z", {
+        type: "tool_call",
+        tool: "Read",
+        args: { path: "a.ts" },
+        itemId: "tool-1",
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T10:00:04.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-1",
+        summary: "Task updated",
+        lastToolName: "Grep",
+        usage: { toolUses: 3 },
+      }),
+      env("2026-06-01T10:00:05.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-1",
+        summary: "Located the modal in Modal.tsx",
+        usage: { toolUses: 4 },
+      }),
+    ]);
+
+    // One spawn anchor + one text row + one work-log entry — the progress ticks
+    // never add rows.
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "subagent_spawn_anchor",
+      "text",
+      "work_log_entry",
+    ]);
+    const anchor = rows[0]!;
+    if (anchor.event.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(anchor.event.status).toBe("running");
+    expect(anchor.event.toolCount).toBe(4);
+    // Placeholder "Task updated" never displaces the real summary.
+    expect(anchor.event.statusLine).toBe("Located the modal in Modal.tsx");
+  });
+
+  it("collapses a double subagent_result into one card, richer summary wins, anchor flips terminal", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "Status: completed",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "Found the modal in src/components/UpdateModal.tsx and wired the trigger.",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "subagent_spawn_anchor",
+      "subagent_result_card",
+    ]);
+    const anchor = rows[0]!;
+    const result = rows[1]!;
+    if (anchor.event.type !== "subagent_spawn_anchor") throw new Error("Expected anchor");
+    if (result.event.type !== "subagent_result_card") throw new Error("Expected result card");
+    // Anchor flipped to terminal.
+    expect(anchor.event.status).toBe("completed");
+    expect(anchor.event.endedAt).not.toBeNull();
+    // Richer summary wins over the "Status: …" placeholder.
+    expect(result.event.summaryPreview).toBe(
+      "Found the modal in src/components/UpdateModal.tsx and wired the trigger.",
+    );
+    expect(result.event.status).toBe("completed");
+    expect(result.key).toBe("subagent-result:agent-1");
+  });
+
+  it("mutates the anchor and appends the result at the tail after many intervening rows", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate",
+      }),
+      env("2026-06-01T10:00:01.000Z", { type: "text", text: "one", messageId: "m-1" }),
+      env("2026-06-01T10:00:02.000Z", { type: "text", text: "two", messageId: "m-2" }),
+      env("2026-06-01T10:00:03.000Z", {
+        type: "tool_call",
+        tool: "Read",
+        args: {},
+        itemId: "tool-1",
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T10:00:04.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "done investigating",
+      }),
+    ]);
+
+    expect(rows[0]!.event.type).toBe("subagent_spawn_anchor");
+    expect(rows[rows.length - 1]!.event.type).toBe("subagent_result_card");
+    if (rows[0]!.event.type !== "subagent_spawn_anchor") throw new Error("Expected anchor");
+    expect(rows[0]!.event.status).toBe("completed");
+    expect(rows[0]!.key).toBe("subagent-spawn:agent-1");
+  });
+
+  it("rebinds a taskId anchor to an agentId while keeping the original render key", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "task-1",
+        agentType: "Explore",
+        description: "Investigate",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_progress",
+        taskId: "task-1",
+        agentId: "agent-1",
+        summary: "still going",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "subagent_result",
+        taskId: "task-1",
+        agentId: "agent-1",
+        status: "completed",
+        summary: "complete",
+      }),
+    ]);
+
+    // One anchor + one result card — rebind must not create a second anchor. The
+    // render key stays bound to the original taskId (load-bearing for the virtualizer).
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "subagent_spawn_anchor",
+      "subagent_result_card",
+    ]);
+    expect(rows[0]!.key).toBe("subagent-spawn:task-1");
+    expect(rows[1]!.key).toBe("subagent-result:task-1");
+  });
+
+  it("keeps incremental and full-recompute output identical over a mixed subagent stream", () => {
+    const stream: AgentChatEventEnvelope[] = [
+      env("2026-06-01T10:00:00.000Z", { type: "text", text: "kick off", messageId: "m-1" }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentType: "Explore",
+        description: "Investigate route tree",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-1",
+        summary: "reading files",
+        lastToolName: "Read",
+        usage: { toolUses: 2 },
+      }),
+      env("2026-06-01T10:00:03.000Z", {
+        type: "subagent_started",
+        taskId: "agent-2",
+        agentType: "Explore",
+        description: "Check tests",
+      }),
+      env("2026-06-01T10:00:04.000Z", {
+        type: "tool_call",
+        tool: "Read",
+        args: {},
+        itemId: "tool-1",
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T10:00:05.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "found it",
+      }),
+      env("2026-06-01T10:00:06.000Z", {
+        type: "subagent_progress",
+        taskId: "agent-2",
+        summary: "still running tests",
+        usage: { toolUses: 5 },
+      }),
+      env("2026-06-01T10:00:07.000Z", {
+        type: "subagent_result",
+        taskId: "agent-2",
+        status: "failed",
+        summary: "tests failed",
+      }),
+    ];
+
+    const full = collapseChatTranscriptEvents(stream);
+
+    // Feed the stream one event at a time through the incremental path.
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prevRows = collapseChatTranscriptEventsWithContext(prevEvents).rows;
+    let prevContext = collapseChatTranscriptEventsWithContext(prevEvents).context;
+    for (let index = 1; index <= stream.length; index += 1) {
+      const nextEvents = stream.slice(0, index);
+      const result = collapseChatTranscriptEventsIncrementalWithContext(
+        nextEvents,
+        prevEvents,
+        prevRows,
+        prevContext,
+      );
+      prevEvents = nextEvents;
+      prevRows = result.rows;
+      prevContext = result.context;
+    }
+
+    expect(prevRows).toEqual(full);
+    // Row keys must be identical too (virtualizer identity).
+    expect(prevRows.map((row) => row.key)).toEqual(full.map((row) => row.key));
+
+    // Also verify the legacy no-context incremental signature stays in parity.
+    const legacy = collapseChatTranscriptEventsIncremental(
+      stream,
+      stream.slice(0, stream.length - 1),
+      collapseChatTranscriptEvents(stream.slice(0, stream.length - 1)),
+    );
+    expect(legacy).toEqual(full);
+  });
+
+  it("renders old-style background shell subagent events as one finish chip, no cards", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm run dev",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_progress",
+        taskId: "bg-1",
+        summary: "server starting",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        status: "completed",
+        summary: "exited 0",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "background_finish_chip") throw new Error("Expected finish chip");
+    expect(rows[0]!.event.status).toBe("completed");
+    expect(rows[0]!.event.label).toBe("npm run dev");
+    expect(rows[0]!.key).toBe("background-chip:bg-1");
+  });
+
+  it("dedupes a double background result into one finish chip", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "bg-1",
+        taskType: "background",
+        description: "cd /repo && npm test",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        status: "completed",
+        summary: "Status: completed",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "subagent_result",
+        taskId: "bg-1",
+        taskType: "background",
+        status: "failed",
+        summary: "exit 1",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "background_finish_chip") throw new Error("Expected finish chip");
+    expect(rows[0]!.event.status).toBe("failed");
+  });
+
+  it("drops background_task scheduled_work_update from the in-thread transcript", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", {
+        type: "scheduled_work_update",
+        id: "bg-task-1",
+        kind: "background_task",
+        status: "running",
+        title: "cd /repo && npm run dev",
+      }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "scheduled_work_update",
+        id: "cron-1",
+        kind: "cron",
+        status: "scheduled",
+        title: "Nightly",
+      }),
+    ]);
+
+    // background_task produces no thread row; the cron survives.
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "scheduled_work_update") throw new Error("Expected scheduled_work_update");
+    expect(rows[0]!.event.kind).toBe("cron");
   });
 });

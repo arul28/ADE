@@ -3588,6 +3588,17 @@ export function AgentChatPane({
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedScheduledWorkSnapshots = useMemo(() => deriveScheduledWorkSnapshots(selectedEvents), [selectedEvents]);
+  // Partition scheduled work into schedule kinds (wakeup/cron/loop/remote_trigger)
+  // and background command tasks so the actions pane renders them in distinct
+  // sections. Both the drawer and pane variants receive the same partitioned data.
+  const selectedScheduleItems = useMemo(
+    () => selectedScheduledWorkSnapshots.filter((item) => item.kind !== "background_task"),
+    [selectedScheduledWorkSnapshots],
+  );
+  const selectedBackgroundItems = useMemo(
+    () => selectedScheduledWorkSnapshots.filter((item) => item.kind === "background_task"),
+    [selectedScheduledWorkSnapshots],
+  );
   // Per-runtime subagent capability — the single source of truth for whether
   // clicking a subagent takes over the chat (full transcript) or only opens the
   // inline drawer. Computed from the provider with the same shared resolver the
@@ -9234,7 +9245,8 @@ export function AgentChatPane({
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
       todoItems={selectedTodoItems}
-      scheduledItems={selectedScheduledWorkSnapshots}
+      scheduleItems={selectedScheduleItems}
+      backgroundItems={selectedBackgroundItems}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({

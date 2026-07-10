@@ -149,6 +149,24 @@ export function backgroundCommandLabel(titleOrCommand: string): string {
   return label || original;
 }
 
+/**
+ * Extract the working directory from a leading `cd <path> && …` prefix on a
+ * background command (the same wrapper backgroundCommandLabel strips). Returns
+ * the path (quotes removed) or null when there is no `cd` prefix. Used by the
+ * actions pane to show a dim cwd chip on the expanded background row.
+ */
+export function backgroundCommandCwd(titleOrCommand: string): string | null {
+  const source = firstMeaningfulLine(String(titleOrCommand ?? ""));
+  if (!source) return null;
+  const match = /^cd\s+("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s&])+?)\s*&&/i.exec(source);
+  if (!match) return null;
+  const raw = match[1]!.trim();
+  if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
 type ParsedCronField = {
   values: Set<number>;
   unrestricted: boolean;

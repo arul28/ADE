@@ -41,6 +41,7 @@ function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
 	      planStreamingText: null,
 	      todos: [],
 	      scheduledWork: [],
+	      backgroundWork: [],
 	      pr: null,
       streaming: false,
       inspectedSubagentId: null,
