@@ -747,90 +747,73 @@ struct WorkQueuedSteerRow: View {
           }
         }
       } else {
-        // Disposition ribbon mirrors the desktop staging-card treatment so
-        // users see at a glance what will happen with this message and that
-        // it hasn't been sent yet.
-        HStack(spacing: 6) {
-          Text("Sends after turn")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(ADEColor.accent.opacity(0.12), in: Capsule())
-          Text(relativeTimestamp(steer.timestamp))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-          Spacer(minLength: 0)
-        }
-
-        // Clip the preview at two lines so long queued messages don't blow
-        // out the composer. Full text is still reachable via Edit.
+        // Compact row (mirrors the desktop staged strip): one truncated line of
+        // text, then a muted disposition + timestamp line with icon-only actions.
+        // Icon-only buttons are the fix for mid-word label wrapping ("Inter-rupt")
+        // that the old titleAndIcon chips hit in this non-scrolling HStack.
         Text(steer.text)
-          .font(.caption)
+          .font(.system(size: 13.5))
           .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
+          .lineLimit(1)
           .truncationMode(.tail)
           .frame(maxWidth: .infinity, alignment: .leading)
 
-        HStack(spacing: 8) {
-          Spacer(minLength: 0)
+        HStack(spacing: 6) {
+          Text("Sends after turn")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(relativeTimestamp(steer.timestamp))
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+
+          Spacer(minLength: 8)
+
           if let onDispatchInline {
-            Button {
-              Task { await onDispatchInline() }
-            } label: {
-              Label("Send now", systemImage: "arrow.turn.down.right")
-                .labelStyle(.titleAndIcon)
-                .font(.caption2.weight(.semibold))
+            steerActionButton(
+              systemImage: "paperplane.fill",
+              tint: ADEColor.accent,
+              label: "Send now",
+              hint: "Fold this message into the active turn",
+              identifier: "Work.Chat.StagedStrip.SendNow"
+            ) {
+              await onDispatchInline()
             }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
-            .controlSize(.mini)
-            .disabled(busy || !isLive)
-            .accessibilityHint("Fold this message into the active turn")
-            .accessibilityIdentifier("Work.Chat.StagedStrip.SendNow")
           }
 
           if let onDispatchInterrupt {
-            Button {
-              Task { await onDispatchInterrupt() }
-            } label: {
-              Label("Interrupt", systemImage: "bolt.fill")
-                .labelStyle(.titleAndIcon)
-                .font(.caption2.weight(.semibold))
+            steerActionButton(
+              systemImage: "bolt.fill",
+              tint: ADEColor.warning,
+              label: "Interrupt",
+              hint: "Stop the current turn and run this instead",
+              identifier: "Work.Chat.StagedStrip.Interrupt"
+            ) {
+              await onDispatchInterrupt()
             }
-            .buttonStyle(.glass)
-            .tint(ADEColor.warning)
-            .controlSize(.mini)
-            .disabled(busy || !isLive)
-            .accessibilityHint("Stop the current turn and run this instead")
-            .accessibilityIdentifier("Work.Chat.StagedStrip.Interrupt")
           }
 
-          Button {
+          steerActionButton(
+            systemImage: "pencil",
+            tint: ADEColor.textSecondary,
+            label: "Edit",
+            hint: nil,
+            identifier: "Work.Chat.StagedStrip.Edit"
+          ) {
             onBeginEdit()
-          } label: {
-            Label("Edit", systemImage: "pencil")
-              .labelStyle(.titleAndIcon)
-              .font(.caption2.weight(.semibold))
           }
-          .buttonStyle(.glass)
-          .tint(ADEColor.accent)
-          .controlSize(.mini)
-          .disabled(busy || !isLive)
-          .accessibilityIdentifier("Work.Chat.StagedStrip.Edit")
 
-          Button(role: .destructive) {
-            Task { await onCancel() }
-          } label: {
-            Label("Cancel", systemImage: "xmark")
-              .labelStyle(.titleAndIcon)
-              .font(.caption2.weight(.semibold))
+          steerActionButton(
+            systemImage: "xmark",
+            tint: ADEColor.danger,
+            label: "Cancel staged message",
+            hint: nil,
+            identifier: "Work.Chat.StagedStrip.Cancel"
+          ) {
+            await onCancel()
           }
-          .buttonStyle(.glass)
-          .tint(ADEColor.danger)
-          .controlSize(.mini)
-          .disabled(busy || !isLive)
-          .accessibilityIdentifier("Work.Chat.StagedStrip.Cancel")
         }
       }
     }
@@ -841,6 +824,33 @@ struct WorkQueuedSteerRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .contain)
+  }
+
+  // Icon-only tap target (≥32pt) with an accessibility label so the row's
+  // actions stay compact and never wrap their titles.
+  @ViewBuilder
+  private func steerActionButton(
+    systemImage: String,
+    tint: Color,
+    label: String,
+    hint: String?,
+    identifier: String,
+    action: @escaping @MainActor () async -> Void
+  ) -> some View {
+    Button {
+      Task { await action() }
+    } label: {
+      Image(systemName: systemImage)
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 34, height: 32)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(busy || !isLive)
+    .accessibilityLabel(label)
+    .accessibilityHint(hint ?? "")
+    .accessibilityIdentifier(identifier)
   }
 }
 
@@ -866,6 +876,15 @@ func workPreviewIsWireframe(_ text: String) -> Bool {
   return alignedColumnLines.count >= 2
 }
 
+/// Natural height of the question card's scrollable body, used to fit the
+/// internal ScrollView to its content up to the viewport-derived cap.
+private struct WorkQuestionBodyHeightKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
 struct WorkStructuredQuestionCard: View {
   let question: WorkPendingQuestionModel
   let busy: Bool
@@ -882,6 +901,9 @@ struct WorkStructuredQuestionCard: View {
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
   var fallbackProvider: String? = nil
+  /// Transcript viewport height, used to cap the card so long option lists
+  /// scroll internally instead of overflowing the screen. 0 until measured.
+  var viewportHeight: CGFloat = 0
 
   /// Resolved asking provider: the parsed question source, else the session
   /// fallback. Drives the header verb, logo, and per-provider accent.
@@ -899,6 +921,7 @@ struct WorkStructuredQuestionCard: View {
   @State private var selections: [String: Set<String>] = [:]
   @State private var freeformByQuestion: [String: String] = [:]
   @State private var expandedPreviews: Set<String> = []
+  @State private var measuredBodyHeight: CGFloat? = nil
   @FocusState private var freeformFocused: Bool
 
   private var isPaged: Bool { question.questions.count > 1 }
@@ -908,25 +931,49 @@ struct WorkStructuredQuestionCard: View {
     return question.questions[index]
   }
 
+  private var bodyMaxHeight: CGFloat { max(240, viewportHeight * 0.62) }
+
+  /// Fit the scroll area to its content up to the cap: short lists render at
+  /// their natural height (no scroll, exactly as before); longer lists cap and
+  /// scroll internally. Falls back to the cap until the first measurement lands.
+  private var resolvedBodyHeight: CGFloat {
+    let cap = bodyMaxHeight
+    guard let measured = measuredBodyHeight else { return cap }
+    return min(measured, cap)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       headerRow
 
       if isPaged {
-        TabView(selection: $currentPage) {
-          ForEach(Array(question.questions.enumerated()), id: \.offset) { index, q in
-            questionPage(q)
-              .tag(index)
-              .padding(.bottom, 4)
-          }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .frame(minHeight: 240)
-      } else {
-        questionPage(activeQuestion)
+        questionTabStrip
       }
 
-      if !isPaged, activeQuestion.allowsFreeform {
+      ScrollView {
+        questionPage(activeQuestion)
+          .background(
+            GeometryReader { geo in
+              Color.clear.preference(
+                key: WorkQuestionBodyHeightKey.self,
+                value: geo.size.height
+              )
+            }
+          )
+      }
+      .frame(height: resolvedBodyHeight)
+      .scrollBounceBehavior(.basedOnSize)
+      .onPreferenceChange(WorkQuestionBodyHeightKey.self) { height in
+        guard let measured = measuredBodyHeight else {
+          measuredBodyHeight = height
+          return
+        }
+        if abs(measured - height) > 0.5 {
+          measuredBodyHeight = height
+        }
+      }
+
+      if activeQuestion.allowsFreeform {
         freeformRow(for: activeQuestion)
       }
 
@@ -960,11 +1007,6 @@ struct WorkStructuredQuestionCard: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(providerAccent)
         Spacer(minLength: 0)
-        if isPaged {
-          Text("\(currentPage + 1) of \(question.questions.count)")
-            .font(.caption2.weight(.bold).monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
-        }
       }
       .accessibilityHidden(true)
 
@@ -1029,11 +1071,77 @@ struct WorkStructuredQuestionCard: View {
           }
         }
       }
-
-      if isPaged, q.allowsFreeform {
-        freeformRow(for: q)
-      }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  // Horizontal tab strip replacing the old nested page-view pager: one chip per
+  // question (answered chips get a checkmark) plus an answered-count caption.
+  @ViewBuilder
+  private var questionTabStrip: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(Array(question.questions.enumerated()), id: \.offset) { index, q in
+            questionTabChip(index: index, question: q)
+          }
+        }
+        .padding(.horizontal, 1)
+      }
+      Text("\(answeredCount) of \(question.questions.count) answered")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+
+  @ViewBuilder
+  private func questionTabChip(index: Int, question q: WorkPendingQuestion) -> some View {
+    let isSelected = index == currentPage
+    let answered = isQuestionAnswered(q)
+    let chipLabel: String = {
+      if let header = q.header?.trimmingCharacters(in: .whitespacesAndNewlines), !header.isEmpty {
+        return header
+      }
+      return "Q\(index + 1)"
+    }()
+    Button {
+      withAnimation(.easeInOut(duration: 0.18)) { currentPage = index }
+    } label: {
+      HStack(spacing: 4) {
+        if answered {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.success)
+        }
+        Text(chipLabel)
+          .font(.caption.weight(isSelected ? .semibold : .regular))
+          .lineLimit(1)
+      }
+      .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(
+        isSelected ? providerAccent.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.6),
+        in: Capsule(style: .continuous)
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(isSelected ? providerAccent.opacity(0.5) : ADEColor.border.opacity(0.25), lineWidth: 0.8)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(busy)
+    .accessibilityLabel("Question \(index + 1) of \(question.questions.count)\(answered ? ", answered" : "")")
+  }
+
+  private func isQuestionAnswered(_ q: WorkPendingQuestion) -> Bool {
+    if !(selections[q.questionId] ?? []).isEmpty { return true }
+    let freeform = (freeformByQuestion[q.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return !freeform.isEmpty
+  }
+
+  private var answeredCount: Int {
+    question.questions.filter { isQuestionAnswered($0) }.count
   }
 
   @ViewBuilder
@@ -1066,11 +1174,6 @@ struct WorkStructuredQuestionCard: View {
 
       Spacer(minLength: 8)
 
-      if isPaged {
-        pageIndicator
-        Spacer(minLength: 8)
-      }
-
       Button(submitLabel) {
         Task { await submitAll() }
       }
@@ -1078,24 +1181,6 @@ struct WorkStructuredQuestionCard: View {
       .tint(providerAccent)
       .disabled(busy || !canSubmit)
     }
-  }
-
-  @ViewBuilder
-  private var pageIndicator: some View {
-    HStack(spacing: 6) {
-      ForEach(0..<question.questions.count, id: \.self) { index in
-        Button {
-          withAnimation(.easeInOut(duration: 0.18)) { currentPage = index }
-        } label: {
-          Circle()
-            .fill(index == currentPage ? ADEColor.accent : ADEColor.textMuted.opacity(0.35))
-            .frame(width: index == currentPage ? 7 : 6, height: index == currentPage ? 7 : 6)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Question \(index + 1) of \(question.questions.count)")
-      }
-    }
-    .padding(.horizontal, 4)
   }
 
   private var submitLabel: String {

@@ -253,7 +253,15 @@ Controls and summaries project this runtime state rather than owning it:
   (abort the current turn and run the queued message as the next
   turn). Inline dispatches are reversible until the model reads them
   via `cancelAsyncMessage(uuid)`. The pending-steer queue is persisted
-  with chat state so undelivered messages survive restart.
+  with chat state so undelivered messages survive restart. `sendMessage`
+  accepts an opt-in `routeActiveToSteer` flag (overloaded so the steered
+  path can return an `AgentChatSteerResult`): when set, a non-empty send
+  that arrives while `canRouteActiveSendToSteer` reports the session busy
+  is converted into a `steer()` call rather than starting a competing turn.
+  The desktop composer already routes its own sends, so this flag exists for
+  the sync command handler — a phone that fires `chat.send` mid-turn gets the
+  message queued as a steer instead of racing the live turn (see
+  [remote commands](../sync-and-multi-device/remote-commands.md)).
 - **Identity sessions.** Sessions carrying `identityKey` (now just
   `"cto"`) are filtered out of the Work tab list and rendered by the
   dedicated CTO tab. See [Agent Routing and

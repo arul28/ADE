@@ -893,6 +893,18 @@ struct WorkSessionDestinationView: View {
         syncTranscriptFromLiveEvents()
         await reconcileIdleCanonicalTranscriptIfNeeded()
       }
+      .onChange(of: workChatTranscriptPreferenceStatus(
+        sessionStatus: normalizedWorkChatSessionStatus(session: session, summary: chatSummary),
+        liveTurnActiveHint: liveTurnActiveHint
+      )) { previous, current in
+        // On the active -> non-active transition, force a canonical refresh so
+        // any staged steers the host delivered at turn end stop lingering when
+        // their graduation events never reached the phone. Keyed on the effective
+        // status (which downgrades a stale-active row to idle via the fresher
+        // liveTurnActiveHint) so the belt still fires when the row lags.
+        guard previous == "active", current != "active" else { return }
+        Task { await reconcileOptimisticSteersAfterTurnEnd() }
+      }
       .task(id: emptyTranscriptHydrationKey) {
         await hydrateEmptyTranscriptFromHostIfNeeded()
       }
@@ -1986,6 +1998,22 @@ struct WorkSessionDestinationView: View {
     optimisticPendingSteers.removeAll { steer in
       transcriptContainsResolvedSteer(transcript, steer: steer) || pendingIds.contains(steer.id)
     }
+  }
+
+  /// Belt for the case where the host flushed queued steers at turn end
+  /// (`deliverNextQueuedSteer`) but the graduation events never reached the
+  /// phone, leaving optimistic steers stuck as "Sends after turn" forever.
+  /// After an authoritative refresh from a reachable host, any optimistic steer
+  /// the host no longer lists as pending has been delivered (or cancelled) — the
+  /// steer id is the host-assigned id, so absence is definitive. We never drop
+  /// while the host is unreachable or the refresh came back empty.
+  @MainActor
+  func reconcileOptimisticSteersAfterTurnEnd() async {
+    guard !optimisticPendingSteers.isEmpty, isLiveAndReachable else { return }
+    await loadTranscript(forceRemote: true, preferLightweight: false)
+    guard isLiveAndReachable, !transcript.isEmpty else { return }
+    let canonicalPendingIds = Set(derivePendingWorkSteers(from: transcript).map(\.id))
+    optimisticPendingSteers.removeAll { !canonicalPendingIds.contains($0.id) }
   }
 
   @MainActor

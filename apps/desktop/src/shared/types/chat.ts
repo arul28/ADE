@@ -1792,9 +1792,13 @@ export type AgentChatSendArgs = {
 export type AgentChatSteerArgs = {
   sessionId: string;
   text: string;
+  displayText?: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   metadata?: AgentChatEventMetadata | null | undefined;
+  reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
 };
 
 export type AgentChatSteerResult = {

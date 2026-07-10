@@ -569,9 +569,13 @@ type PersistedChatState = {
 type PersistedPendingSteer = {
   steerId: string;
   text: string;
+  displayText?: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   metadata?: AgentChatEventMetadata | null | undefined;
+  reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
 };
 
 type PendingRpc = {
@@ -725,10 +729,14 @@ type CodexRuntime = {
 type QueuedSteer = {
   steerId: string;
   text: string;
+  displayText?: string;
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
   metadata?: AgentChatEventMetadata | null | undefined;
+  reasoningEffort?: string | null;
+  executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
 };
 
 type ClaudeActiveSubagent = {
@@ -9404,9 +9412,13 @@ export function createAgentChatService(args: {
             pendingSteers: managed.runtime.pendingSteers.map((s): PersistedPendingSteer => ({
               steerId: s.steerId,
               text: s.text,
+              ...(s.displayText ? { displayText: s.displayText } : {}),
               ...(s.attachments.length ? { attachments: s.attachments } : {}),
               ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
               ...(s.metadata ? { metadata: s.metadata } : {}),
+              ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
+              ...(s.executionMode ? { executionMode: s.executionMode } : {}),
+              ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
             })),
           }
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
@@ -22227,6 +22239,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return false;
     }
+    const displayText = nextSteer.displayText?.trim().length ? nextSteer.displayText.trim() : trimmed;
 
     emitChatEvent(managed, {
       type: "system_notice",
@@ -22245,6 +22258,17 @@ export function createAgentChatService(args: {
       purpose: "deliver queued steer",
     });
     const personalSession = isPersonalSession(managed.session);
+    // Apply the per-send execution/interaction mode captured when the steer was
+    // queued, mirroring prepareSendMessage's session mutation + directives.
+    if (managed.session.provider === "claude") {
+      managed.session.interactionMode = nextSteer.interactionMode ?? managed.session.interactionMode ?? "default";
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+    }
+    if (nextSteer.executionMode) {
+      managed.session.executionMode = nextSteer.executionMode;
+    } else if (managed.session.executionMode == null) {
+      managed.session.executionMode = "focused";
+    }
     const laneDirectiveKey = personalSession ? null : executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective =
       laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
@@ -22256,13 +22280,16 @@ export function createAgentChatService(args: {
           })
         : null,
       personalChatUserPromptFallback(managed.session),
+      personalSession ? null : buildExecutionModeDirective(nextSteer.executionMode, managed.session.provider),
+      personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
       buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
     ]);
 
     if (runtime.kind === "claude") {
       await runClaudeTurn(managed, {
         promptText,
-        displayText: trimmed,
+        userText: trimmed,
+        displayText,
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -22272,7 +22299,8 @@ export function createAgentChatService(args: {
     } else if (runtime.kind === "cursor") {
       await runCursorTurn(managed, {
         promptText,
-        displayText: trimmed,
+        userText: trimmed,
+        displayText,
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -22282,7 +22310,8 @@ export function createAgentChatService(args: {
     } else if (runtime.kind === "droid") {
       await runDroidTurn(managed, {
         promptText,
-        displayText: trimmed,
+        userText: trimmed,
+        displayText,
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -22292,7 +22321,8 @@ export function createAgentChatService(args: {
     } else {
       await runTurn(managed, {
         promptText,
-        displayText: trimmed,
+        userText: trimmed,
+        displayText,
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -22315,6 +22345,12 @@ export function createAgentChatService(args: {
     contextAttachments: AgentChatContextAttachment[] = [],
     resolvedAttachments: ResolvedAgentChatFileRef[] = [],
     metadata?: AgentChatEventMetadata | null,
+    extra?: {
+      displayText?: string;
+      reasoningEffort?: string | null;
+      executionMode?: AgentChatExecutionMode | null;
+      interactionMode?: AgentChatInteractionMode | null;
+    },
   ): boolean => {
     if (runtime.pendingSteers.length >= MAX_PENDING_STEERS && !metadata?.scheduledWake) {
       logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
@@ -22326,13 +22362,25 @@ export function createAgentChatService(args: {
       });
       return false;
     }
-    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments, ...(metadata ? { metadata } : {}) });
+    const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
+    runtime.pendingSteers.push({
+      steerId,
+      text,
+      attachments,
+      contextAttachments,
+      resolvedAttachments,
+      ...(metadata ? { metadata } : {}),
+      ...(displayText !== text ? { displayText } : {}),
+      ...(extra?.reasoningEffort != null ? { reasoningEffort: extra.reasoningEffort } : {}),
+      ...(extra?.executionMode ? { executionMode: extra.executionMode } : {}),
+      ...(extra?.interactionMode ? { interactionMode: extra.interactionMode } : {}),
+    });
     const queuedMetadata = metadata?.scheduledWake
       ? Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== "scheduledWake"))
       : metadata;
     emitChatEvent(managed, {
       type: "user_message",
-      text,
+      text: displayText,
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
       ...(queuedMetadata && Object.keys(queuedMetadata).length ? { metadata: queuedMetadata } : {}),
@@ -22527,10 +22575,14 @@ export function createAgentChatService(args: {
       out.push({
         steerId: entry.steerId,
         text,
+        ...(entry.displayText?.trim().length ? { displayText: entry.displayText.trim() } : {}),
         attachments,
         contextAttachments,
         resolvedAttachments,
         ...(entry.metadata ? { metadata: entry.metadata } : {}),
+        ...(typeof entry.reasoningEffort === "string" ? { reasoningEffort: entry.reasoningEffort } : {}),
+        ...(entry.executionMode ? { executionMode: entry.executionMode } : {}),
+        ...(entry.interactionMode ? { interactionMode: entry.interactionMode } : {}),
       });
       if (out.length >= MAX_PENDING_STEERS) break;
     }
@@ -27366,12 +27418,49 @@ export function createAgentChatService(args: {
     return true;
   };
 
-  const sendMessage = async (
+  const canRouteActiveSendToSteer = (managed: ManagedChatSession): boolean => {
+    const runtime = managed.runtime;
+    if (!runtime) return false;
+    if (runtime.kind === "codex") {
+      return Boolean(managed.session.threadId && runtime.activeTurnId);
+    }
+    if (runtime.kind === "claude" || runtime.kind === "opencode") {
+      return runtime.busy || managed.session.status === "active";
+    }
+    return runtime.busy;
+  };
+
+  async function sendMessage(
     args: AgentChatSendArgs,
-    options?: { awaitDispatch?: boolean },
-  ): Promise<void> => {
+    options: { awaitDispatch?: boolean; routeActiveToSteer: true },
+  ): Promise<void | AgentChatSteerResult>;
+  async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: { awaitDispatch?: boolean; routeActiveToSteer?: false },
+  ): Promise<void>;
+  async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: { awaitDispatch?: boolean; routeActiveToSteer?: boolean },
+  ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
+    const managed = ensureManagedSession(args.sessionId);
+    // Empty sends fall through to prepareSendMessage's no-op path instead of
+    // steering, so they don't report queued:false as a delivered message.
+    const routableText = args.text.trim().length > 0 || (args.contextAttachments?.length ?? 0) > 0;
+    if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
+      return steer({
+        sessionId: args.sessionId,
+        text: args.text,
+        displayText: args.displayText,
+        attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
+        reasoningEffort: args.reasoningEffort,
+        executionMode: args.executionMode,
+        interactionMode: args.interactionMode,
+      });
+    }
     const prepared = prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
@@ -27475,9 +27564,9 @@ export function createAgentChatService(args: {
     if (dispatchPromise) {
       await dispatchPromise;
     }
-  };
+  }
 
-  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [], metadata }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const steer = async ({ sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
     const steerId = randomUUID();
     // Allow context-only steers: if text is empty but issue context attachments
@@ -27498,7 +27587,7 @@ export function createAgentChatService(args: {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
-          displayText: trimmed,
+          displayText: displayText ?? trimmed,
           attachments,
           contextAttachments,
           metadata,
@@ -27511,18 +27600,19 @@ export function createAgentChatService(args: {
           runtime,
           sessionId,
           steerId,
-          preparedSteer.visibleText,
+          preparedSteer.submittedText,
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
           preparedSteer.metadata,
+          { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
         return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
-        displayText: trimmed,
+        displayText: displayText ?? trimmed,
         attachments,
         contextAttachments,
         metadata,
@@ -27540,7 +27630,7 @@ export function createAgentChatService(args: {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
-          displayText: trimmed,
+          displayText: displayText ?? trimmed,
           attachments,
           contextAttachments,
           metadata,
@@ -27561,11 +27651,15 @@ export function createAgentChatService(args: {
         }
         rt.pendingSteers.push({
           steerId,
-          text: preparedSteer.visibleText,
+          text: preparedSteer.submittedText,
+          ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
           attachments: preparedSteer.attachments,
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: preparedSteer.resolvedAttachments,
           ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          ...(reasoningEffort != null ? { reasoningEffort } : {}),
+          ...(executionMode ? { executionMode } : {}),
+          ...(interactionMode ? { interactionMode } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
@@ -27590,7 +27684,7 @@ export function createAgentChatService(args: {
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
-        displayText: trimmed,
+        displayText: displayText ?? trimmed,
         attachments,
         contextAttachments,
         metadata,
@@ -27608,7 +27702,7 @@ export function createAgentChatService(args: {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
-          displayText: trimmed,
+          displayText: displayText ?? trimmed,
           attachments: [],
           contextAttachments,
           metadata,
@@ -27630,10 +27724,14 @@ export function createAgentChatService(args: {
         rt.pendingSteers.push({
           steerId,
           text: preparedSteer.submittedText,
+          ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
           attachments: [],
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: [],
           ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          ...(reasoningEffort != null ? { reasoningEffort } : {}),
+          ...(executionMode ? { executionMode } : {}),
+          ...(interactionMode ? { interactionMode } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
@@ -27657,7 +27755,7 @@ export function createAgentChatService(args: {
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
-        displayText: trimmed,
+        displayText: displayText ?? trimmed,
         attachments: [],
         contextAttachments,
         metadata,
@@ -27676,7 +27774,7 @@ export function createAgentChatService(args: {
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
-        displayText: trimmed,
+        displayText: displayText ?? trimmed,
         attachments,
         contextAttachments,
         metadata,
@@ -27764,7 +27862,7 @@ export function createAgentChatService(args: {
     const preparedSteer = prepareSendMessage({
       sessionId,
       text: trimmed,
-      displayText: trimmed,
+      displayText: displayText ?? trimmed,
       attachments,
       contextAttachments,
       metadata,
@@ -27780,11 +27878,12 @@ export function createAgentChatService(args: {
           runtime,
           sessionId,
           steerId,
-          preparedSteer.visibleText,
+          preparedSteer.submittedText,
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
           preparedSteer.metadata,
+          { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
         return { steerId, queued: true };
       }
@@ -27931,6 +28030,7 @@ export function createAgentChatService(args: {
     }
 
     runtime.pendingSteers[idx].text = trimmed;
+    runtime.pendingSteers[idx].displayText = undefined;
     emitChatEvent(managed, {
       type: "user_message",
       text: trimmed,
