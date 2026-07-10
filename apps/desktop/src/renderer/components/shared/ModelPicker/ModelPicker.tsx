@@ -57,6 +57,8 @@ export type ModelPickerProps = {
   hidePermissionRail?: boolean;
   className?: string;
   triggerClassName?: string;
+  openRequestKey?: number;
+  onOpenRequestHandled?: () => void;
 };
 
 export const ModelPicker = memo(function ModelPicker({
@@ -81,11 +83,21 @@ export const ModelPicker = memo(function ModelPicker({
   hidePermissionRail = false,
   className,
   triggerClassName,
+  openRequestKey,
+  onOpenRequestHandled,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [runtimeCatalog, setRuntimeCatalog] = useState<AgentChatModelCatalog | null>(() => getSharedRuntimeCatalog());
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
+
+  useEffect(() => {
+    if (openRequestKey == null) return;
+    if (!disabled) {
+      setOpen(true);
+    }
+    onOpenRequestHandled?.();
+  }, [disabled, onOpenRequestHandled, openRequestKey]);
 
   // Which cursor discovery source this picker surface needs synchronously:
   // chat surfaces run models through the SDK, CLI lane drafts through the

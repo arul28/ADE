@@ -2593,6 +2593,309 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.getByLabelText("Stop active turn")).toBeTruthy();
   });
 
+  it("lets terminal history beat a stale active summary and send the next message", async () => {
+    const session = buildSession("session-1", { status: "active", awaitingInput: false });
+    const terminalEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:52.000Z",
+        sequence: 1,
+        // ADE persists Codex user input before turn/started supplies the
+        // provider turn id. Recovery must associate this by turn boundaries.
+        event: { type: "user_message", text: "Keep shipping the fix." },
+      },
+      ...[2, 3].map((sequence) => ({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.000Z",
+        sequence,
+        event: {
+          type: "error" as const,
+          message: "Selected model is at capacity. Please try a different model.",
+          turnId: "turn-capacity",
+          errorInfo: "serverOverloaded",
+        },
+      })),
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.050Z",
+        sequence: 4,
+        event: {
+          type: "status",
+          turnStatus: "failed",
+          turnId: "turn-capacity",
+          message: "Selected model is at capacity. Please try a different model.",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:53.066Z",
+        sequence: 5,
+        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+      },
+    ];
+    const { emitChatEvent, send } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: terminalEvents,
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Provider capacity")).toBeTruthy();
+    expect(screen.getAllByText("Error")).toHaveLength(1);
+    expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+
+    const modelTrigger = screen.getByRole("button", { name: /^Select model/ });
+    fireEvent.click(screen.getByRole("button", { name: "Choose model" }));
+    await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
+    fireEvent.click(modelTrigger);
+
+    const retryButton = screen.getByRole("button", { name: "Retry turn" }) as HTMLButtonElement;
+    const chooseModelButton = screen.getByRole("button", { name: "Choose model" }) as HTMLButtonElement;
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:54.000Z",
+        sequence: 6,
+        event: { type: "status", turnStatus: "started", turnId: "turn-next" },
+      });
+    });
+    await waitFor(() => {
+      expect(retryButton.disabled).toBe(true);
+      expect(chooseModelButton.disabled).toBe(true);
+    });
+    fireEvent.click(retryButton);
+    expect(send).not.toHaveBeenCalled();
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:55.000Z",
+        sequence: 7,
+        event: { type: "status", turnStatus: "completed", turnId: "turn-next" },
+      });
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:55.001Z",
+        sequence: 8,
+        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.4" },
+      });
+    });
+    await waitFor(() => {
+      expect(retryButton.disabled).toBe(false);
+      expect(chooseModelButton.disabled).toBe(false);
+    });
+
+    fireEvent.click(retryButton);
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Keep shipping the fix.",
+      }));
+    });
+    send.mockClear();
+
+    // A later non-terminal live event must use the same invariant as snapshot
+    // hydration and cannot revive the already-failed turn from the stale summary.
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T18:18:56.000Z",
+        sequence: 9,
+        event: { type: "system_notice", noticeKind: "info", message: "Session metadata refreshed." },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Continue in a new turn." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Continue in a new turn.",
+      }));
+    });
+  });
+
+  it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
+    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      sendError: new Error("turn is already active"),
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:52.000Z",
+            sequence: 1,
+            event: { type: "user_message", text: "Retry the original prompt." },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:52.500Z",
+            sequence: 2,
+            event: { type: "user_message", text: "Do not resend this steer.", steerId: "steer-1" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 3,
+            event: {
+              type: "error",
+              message: "Selected model is at capacity. Please try a different model.",
+              errorInfo: "serverOverloaded",
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.050Z",
+            sequence: 4,
+            event: { type: "status", turnStatus: "failed", turnId: "turn-capacity" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 5,
+            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Retry the original prompt.",
+      }));
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "A turn is already active in this thread. Wait for it to finish before retrying.",
+    );
+  });
+
+  it("does not carry a pending provider-failure model request into another session", async () => {
+    const failedSession = buildSession("session-failed", { status: "idle", awaitingInput: false });
+    const nextSession = buildSession("session-next", { status: "idle", awaitingInput: false });
+    installAdeMocks({
+      sessions: [failedSession, nextSession],
+      eventHistory: ({ sessionId }) => ({
+        sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: sessionId === failedSession.sessionId
+          ? [
+            {
+              sessionId,
+              timestamp: "2026-07-10T18:18:53.000Z",
+              sequence: 1,
+              event: {
+                type: "error",
+                message: "Selected model is at capacity. Please try a different model.",
+                turnId: "turn-capacity",
+                errorInfo: "serverOverloaded",
+              },
+            },
+            {
+              sessionId,
+              timestamp: "2026-07-10T18:18:53.066Z",
+              sequence: 2,
+              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+            },
+          ]
+          : [],
+      }),
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={failedSession.laneId}
+          lockSessionId={failedSession.sessionId}
+          hideSessionTabs
+          initialSessionSummary={failedSession}
+          modelSelectionLocked
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Choose model" }));
+    expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={nextSession.laneId}
+          lockSessionId={nextSession.sessionId}
+          hideSessionTabs
+          initialSessionSummary={nextSession}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5", "anthropic/claude-sonnet-5"],
+    ["cursor", "composer", "cursor/composer"],
+    ["droid", "claude-sonnet-4-5", "droid/claude-sonnet-4-5"],
+    ["opencode", "gpt-5.4-mini", "opencode/openai/gpt-5.4-mini"],
+  ] as const)("keeps %s idle when terminal transcript evidence conflicts with an active summary", async (provider, model, modelId) => {
+    const session = buildSession(`session-${provider}`, {
+      provider,
+      model,
+      modelId,
+      status: "active",
+      awaitingInput: false,
+    });
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+      cursorModels: [{ id: "composer" }],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.050Z",
+            sequence: 1,
+            event: { type: "status", turnStatus: "failed", turnId: `turn-${provider}`, message: "Provider failed." },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 2,
+            event: { type: "done", status: "failed", turnId: `turn-${provider}`, model },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.queryByLabelText("Stop active turn")).toBeNull();
+  });
+
   it("stops active-turn controls immediately when a terminal event streams", async () => {
     const session = buildSession("session-1", { status: "active", awaitingInput: false });
     const { emitChatEvent } = installAdeMocks({
@@ -2623,6 +2926,12 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
       expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
     });
+
+    // The terminal event schedules a locked-session summary refresh. Its stale
+    // active snapshot must not revive the turn after that refresh lands.
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
   it("falls back to a normal send when the active-turn marker is stale", async () => {

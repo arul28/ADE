@@ -283,6 +283,34 @@ describe("ModelPicker", () => {
     expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
   });
 
+  it("consumes an open request while disabled without reopening after re-enable", async () => {
+    const onOpenRequestHandled = vi.fn();
+    const { rerender } = renderPicker({
+      disabled: true,
+      openRequestKey: 1,
+      onOpenRequestHandled,
+    });
+
+    await waitFor(() => expect(onOpenRequestHandled).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
+
+    rerender(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test-surface"
+        models={MODELS}
+        openRequestKey={undefined}
+        onOpenRequestHandled={onOpenRequestHandled}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
+    expect(onOpenRequestHandled).toHaveBeenCalledTimes(1);
+  });
+
   it("respects hidePermissionRail when forwarded", async () => {
     const user = userEvent.setup();
     renderPicker({ hidePermissionRail: true });
