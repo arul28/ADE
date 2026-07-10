@@ -397,8 +397,16 @@ Renderer surfaces:
   and bracketed-pasting a short path/type stub into the PTY, while standalone
   terminals keep the native clipboard-image shortcut behavior. Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
-  fallback for previews), and Shift+drag remains available for local text
-  selection when a full-screen CLI enables terminal mouse tracking.
+  fallback for previews). Shift+drag remains available for local text
+  selection when a full-screen CLI enables terminal mouse tracking; on macOS,
+  ADE translates that gesture to xterm's Option-based force-selection path so
+  remote and local CLI sessions behave the same.
+- `apps/desktop/src/renderer/components/terminals/terminalMacShiftSelection.ts`
+  — macOS-only capture bridge used by `TerminalView`. While terminal mouse
+  tracking is active, it converts an unmodified left-button Shift+mousedown
+  into the Option+mousedown gesture recognized by xterm when
+  `macOptionClickForcesSelection` is enabled, preserving local text selection
+  without forwarding the gesture to the CLI.
 - `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
   pure helper that produces the seed `PaneSplit` for the Work grid from
   an ordered list of session IDs. Accepts a `TilingPreset` of

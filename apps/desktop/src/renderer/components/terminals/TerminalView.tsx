@@ -12,6 +12,7 @@ import {
   type ThemeId,
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
+import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import type {
@@ -110,6 +111,7 @@ type CachedRuntime = {
   imagePasteMode: TerminalImagePasteMode;
   bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
+  macShiftSelectionCleanup: (() => void) | null;
   // Set when a webgl→dom fallback is in flight and the runtime turned
   // invisible before the webgl restore could run. Persists across renderer
   // changes so the restore can be retried on the next visibility-true.
@@ -1088,6 +1090,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   if (runtime.hydrateRetryTimer) clearTimeout(runtime.hydrateRetryTimer);
   if (runtime.hydrationBackfillTimer) clearTimeout(runtime.hydrationBackfillTimer);
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
+  runtime.macShiftSelectionCleanup?.();
 
   try {
     runtime.ptyDataUnsub?.();
@@ -1918,6 +1921,7 @@ function createRuntime(args: {
     // box-drawing borders survive WebGL anti-aliasing without washing out the
     // intended dim/comment palette.
     minimumContrastRatio: 1.1,
+    macOptionClickForcesSelection: true,
     theme: args.theme
   });
 
@@ -1989,6 +1993,7 @@ function createRuntime(args: {
     imagePasteMode: args.imagePasteMode,
     bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
+    macShiftSelectionCleanup: null,
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false,
@@ -2011,6 +2016,11 @@ function createRuntime(args: {
     }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
   }, true);
+  runtime.macShiftSelectionCleanup = installMacShiftSelectionBridge({
+    host,
+    isDisposed: () => runtime.disposed,
+    isMouseTrackingActive: () => isTerminalMouseTrackingActive(runtime),
+  });
 
   term.attachCustomKeyEventHandler((ev) => {
     if (!runtime.inputEnabled) return false;

@@ -1364,10 +1364,12 @@ describe("TerminalView", () => {
       const terminal = mockState.terminalInstances.at(-1) as {
         attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
         getSelection: ReturnType<typeof vi.fn>;
+        options: Record<string, unknown>;
       } | undefined;
       const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
       expect(keyHandler).toBeTruthy();
       terminal!.getSelection.mockReturnValue("selected terminal text");
+      expect(terminal!.options.macOptionClickForcesSelection).toBe(true);
 
       const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
       const writeClipboardText = window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>;
@@ -1683,76 +1685,79 @@ describe("TerminalView", () => {
     });
   });
 
-  it("leaves Shift+mouse gestures available for local selection while terminal mouse tracking is active", async () => {
-    render(<TerminalView ptyId="pty-shift-mouse" sessionId="session-shift-mouse" isActive />);
-    await flushAllTimers();
-
-    const terminal = mockState.terminalInstances.at(-1) as {
-      element: HTMLElement | null;
-    } | undefined;
-    expect(terminal?.element).toBeTruthy();
-
-    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
-    ptyWrite.mockClear();
-
-    const ignoredDown = new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 1,
-      clientX: 0,
-      clientY: 0,
-    });
-    terminal!.element!.dispatchEvent(ignoredDown);
-    expect(ignoredDown.defaultPrevented).toBe(false);
-    expect(ptyWrite).not.toHaveBeenCalled();
-
-    for (const listener of mockState.ptyDataListeners) {
-      listener({
-        ptyId: "pty-shift-mouse",
-        sessionId: "session-shift-mouse",
-        projectRoot: "/project/a",
-        data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
+  it("lets macOS Shift+drag select text while a remote CLI tracks the mouse", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
       });
+
+      render(<TerminalView ptyId="pty-shift-mouse" sessionId="session-shift-mouse" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        element: HTMLElement | null;
+        options: Record<string, unknown>;
+      } | undefined;
+      expect(terminal?.element).toBeTruthy();
+      expect(terminal?.options.macOptionClickForcesSelection).toBe(true);
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+      const mouseDowns: Array<{ altKey: boolean; shiftKey: boolean }> = [];
+      terminal!.element!.addEventListener("mousedown", (event) => {
+        mouseDowns.push({ altKey: event.altKey, shiftKey: event.shiftKey });
+      });
+
+      const ordinarySelection = new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        shiftKey: true,
+        button: 0,
+        buttons: 1,
+      });
+      terminal!.element!.dispatchEvent(ordinarySelection);
+      expect(ordinarySelection.defaultPrevented).toBe(false);
+      expect(mouseDowns).toEqual([{ altKey: false, shiftKey: true }]);
+
+      for (const listener of mockState.ptyDataListeners) {
+        listener({
+          ptyId: "pty-shift-mouse",
+          sessionId: "session-shift-mouse",
+          projectRoot: "/project/a",
+          data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
+        });
+      }
+
+      const forcedSelection = new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        shiftKey: true,
+        button: 0,
+        buttons: 1,
+        clientX: 64,
+        clientY: 72,
+      });
+      terminal!.element!.dispatchEvent(forcedSelection);
+
+      expect(forcedSelection.defaultPrevented).toBe(true);
+      expect(mouseDowns).toEqual([
+        { altKey: false, shiftKey: true },
+        { altKey: true, shiftKey: false },
+      ]);
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
     }
-
-    const down = new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 1,
-      clientX: 0,
-      clientY: 0,
-    });
-    terminal!.element!.dispatchEvent(down);
-
-    const move = new MouseEvent("mousemove", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      buttons: 1,
-      clientX: 64,
-      clientY: 72,
-    });
-    document.dispatchEvent(move);
-
-    const up = new MouseEvent("mouseup", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 0,
-      clientX: 64,
-      clientY: 72,
-    });
-    document.dispatchEvent(up);
-
-    expect(down.defaultPrevented).toBe(false);
-    expect(move.defaultPrevented).toBe(false);
-    expect(up.defaultPrevented).toBe(false);
-    expect(ptyWrite).not.toHaveBeenCalled();
   });
 
   it("falls back to native image paste when macOS Cmd+V does not fire a paste event", async () => {
