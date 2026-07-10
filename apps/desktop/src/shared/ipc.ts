@@ -709,6 +709,8 @@ export const IPC = {
   usageGetAdeStats: "ade.usage.getAdeStats",
   usageGetSnapshot: "ade.usage.getSnapshot",
   usageRefresh: "ade.usage.refresh",
+  usageRefreshHistory: "ade.usage.refreshHistory",
+  usageNoteDemand: "ade.usage.noteDemand",
   usageCheckBudget: "ade.usage.checkBudget",
   usageGetCumulativeUsage: "ade.usage.getCumulativeUsage",
   usageGetBudgetConfig: "ade.usage.getBudgetConfig",

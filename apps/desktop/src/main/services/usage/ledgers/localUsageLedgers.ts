@@ -368,17 +368,16 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
   const seenForkReplayKeys = new Set<string>();
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const sessionsDir = path.join(codexHome, "sessions");
-
-  try {
-    await fs.promises.access(sessionsDir);
-  } catch {
-    return entries;
-  }
-
-  const jsonlFiles = await findJsonlFiles(sessionsDir, LOCAL_COST_SCAN_ALL_DAYS, {
-    maxFiles: LOCAL_COST_SCAN_MAX_FILES,
-    maxFileBytes: LOCAL_COST_SCAN_MAX_FILE_BYTES,
-  });
+  const archivedSessionsDir = path.join(codexHome, "archived_sessions");
+  const sessionRoots = [sessionsDir, archivedSessionsDir].filter((root) => fs.existsSync(root));
+  const jsonlFiles = (await Promise.all(sessionRoots.map((root) => findJsonlFiles(
+    root,
+    LOCAL_COST_SCAN_ALL_DAYS,
+    {
+      maxFiles: LOCAL_COST_SCAN_MAX_FILES,
+      maxFileBytes: LOCAL_COST_SCAN_MAX_FILE_BYTES,
+    },
+  )))).flat();
 
   for (const filePath of jsonlFiles) {
     try {
@@ -509,7 +508,9 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
             cacheWriteTokens: 0,
             timestamp,
           });
-          if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
+          if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) {
+            return reconcileCodexStateTotals(entries, codexHome);
+          }
           continue;
         }
 
@@ -546,7 +547,7 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           : Math.floor(tokenCount * 0.4);
 
         entries.push({
-          messageId: dedupeKey,
+          messageId: `${sessionId}:${dedupeKey === ":" ? record.timestamp ?? entries.length : dedupeKey}`,
           model,
           originator: sessionOriginator,
           ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
@@ -560,11 +561,128 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           timestamp: typeof record.timestamp === "number" ? record.timestamp :
                      typeof record.timestamp === "string" ? new Date(record.timestamp).getTime() : Date.now(),
         });
-        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
+        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) {
+          return reconcileCodexStateTotals(entries, codexHome);
+        }
       }
     } catch {
       // Skip unreadable files
     }
+  }
+
+  return reconcileCodexStateTotals(entries, codexHome);
+}
+
+type CodexStateThreadRow = {
+  id?: unknown;
+  tokens_used?: unknown;
+  model?: unknown;
+  cwd?: unknown;
+  source?: unknown;
+  thread_source?: unknown;
+  created_at?: unknown;
+  updated_at?: unknown;
+};
+
+function newestCodexStateDatabase(codexHome: string): string | null {
+  try {
+    const candidates = fs.readdirSync(codexHome)
+      .map((name) => {
+        const match = /^state_(\d+)\.sqlite$/.exec(name);
+        return match ? { path: path.join(codexHome, name), version: Number(match[1]) } : null;
+      })
+      .filter((value): value is { path: string; version: number } => value !== null)
+      .sort((left, right) => right.version - left.version);
+    return candidates[0]?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Codex Desktop's thread index owns the lifetime total shown in its profile.
+ * JSONL reconstruction keeps the detailed model/day/cost split, but can miss
+ * cumulative context retained by the thread index. Add only the positive
+ * per-thread remainder, distributed across the observed token mix and priced
+ * at zero so the exact lifetime count does not fabricate cost.
+ */
+function reconcileCodexStateTotals(entries: TokenEntry[], codexHome: string): TokenEntry[] {
+  const dbPath = newestCodexStateDatabase(codexHome);
+  if (!dbPath) return entries;
+  const db = openReadonlyUsageDatabase(dbPath);
+  if (!db) return entries;
+
+  let rows: CodexStateThreadRow[] = [];
+  try {
+    rows = usageSqliteAll<CodexStateThreadRow>(db, `
+      select id, tokens_used, model, cwd, source, thread_source, created_at, updated_at
+        from threads
+       where tokens_used > 0
+    `);
+  } catch {
+    try {
+      rows = usageSqliteAll<CodexStateThreadRow>(db, `
+        select id, tokens_used, created_at, updated_at
+          from threads
+         where tokens_used > 0
+      `);
+    } catch {
+      rows = [];
+    }
+  } finally {
+    db.close();
+  }
+  if (rows.length === 0) return entries;
+
+  const observedByThread = new Map<string, { input: number; output: number; cached: number; cacheWrite: number }>();
+  for (const entry of entries) {
+    const separator = entry.messageId.indexOf(":");
+    if (separator <= 0) continue;
+    const threadId = entry.messageId.slice(0, separator);
+    const observed = observedByThread.get(threadId) ?? { input: 0, output: 0, cached: 0, cacheWrite: 0 };
+    observed.input += toNonNegativeInt(entry.inputTokens);
+    observed.output += toNonNegativeInt(entry.outputTokens);
+    observed.cached += toNonNegativeInt(entry.cachedTokens);
+    observed.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
+    observedByThread.set(threadId, observed);
+  }
+
+  for (const row of rows) {
+    const threadId = typeof row.id === "string" ? row.id.trim() : "";
+    const stateTotal = toNonNegativeInt(row.tokens_used);
+    if (!threadId || stateTotal <= 0) continue;
+    const observed = observedByThread.get(threadId) ?? { input: 0, output: 0, cached: 0, cacheWrite: 0 };
+    const observedTotal = observed.input + observed.output + observed.cached + observed.cacheWrite;
+    const remainder = stateTotal - observedTotal;
+    if (remainder <= 0) continue;
+
+    const inputShare = observedTotal > 0 ? observed.input / observedTotal : 1;
+    const outputShare = observedTotal > 0 ? observed.output / observedTotal : 0;
+    const inputTokens = Math.floor(remainder * inputShare);
+    const outputTokens = Math.floor(remainder * outputShare);
+    const cachedTokens = Math.max(0, remainder - inputTokens - outputTokens);
+    const originator = typeof row.thread_source === "string"
+      ? row.thread_source
+      : typeof row.source === "string" ? row.source : "Codex Desktop";
+    const projectPath = typeof row.cwd === "string" ? row.cwd : "";
+
+    entries.push({
+      messageId: `${threadId}:state-total-remainder`,
+      model: typeof row.model === "string" && row.model.trim() ? row.model : "codex",
+      originator,
+      ...(projectPath ? { projectPath } : {}),
+      adeOriginated: originator.trim().toLowerCase().startsWith("ade") || isAdeWorktreePath(projectPath),
+      estimation: "distribution",
+      inputTokens,
+      billableInputTokens: 0,
+      outputTokens,
+      billableOutputTokens: 0,
+      cachedTokens,
+      billableCachedTokens: 0,
+      cacheWriteTokens: 0,
+      costOverrideUsd: 0,
+      timestamp: timestampMsFromUnixish(row.updated_at ?? row.created_at),
+    });
   }
 
   return entries;

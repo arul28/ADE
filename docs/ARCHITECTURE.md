@@ -522,7 +522,9 @@ ade.processes.* / ade.tests.* # processes also expose group bulk ops:
 ade.config.*                 # project config get/save/trust
 ade.keybindings.*
 ade.sync.*                   # device registry, PIN pairing (getPin/setPin/clearPin), QR payload, lane presence announce (setActiveLanePresence), host transfer
-ade.usage.*                  # live provider quotas/budgets plus retrospective ADE activity stats
+ade.usage.*                  # cached live provider quota reads, explicit quota-only refresh,
+                             # adaptive-demand registration, budgets, and a separate
+                             # retrospective history/activity refresh path
 ade.layout.* / ade.graph.*
 ade.computerUse.*
 ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/resolvePreviewMatch/ensurePreviewWorkspace/renderCurrentPreview/renderPreview/openPreviewWorkspace/startStream/stopStream/getStreamStatus/getWindowState/listWindowSources/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel

@@ -3557,6 +3557,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getAdeStats: getBrowserAdeUsageStats,
       getSnapshot: resolved(BROWSER_USAGE_SNAPSHOT),
       refresh: resolved(BROWSER_USAGE_SNAPSHOT),
+      refreshHistory: resolved(BROWSER_USAGE_SNAPSHOT),
+      noteDemand: resolved(BROWSER_USAGE_SNAPSHOT),
       checkBudget: resolvedArg({
         allowed: true,
         warnings: [] as string[],

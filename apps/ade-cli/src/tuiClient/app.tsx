@@ -41,7 +41,7 @@ import type { LaneDeleteRisk, LaneLinearIssue, LaneSummary } from "../../../desk
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
-import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../desktop/src/shared/types";
+import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
@@ -9094,38 +9094,52 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/usage") {
-      if (!sessionId) {
-        addNotice("Usage needs an active chat.", "error");
-        return;
-      }
-      if (activeCommandProvider !== "claude") {
-        addNotice("Usage is available for Claude chats.", "error");
-        return;
-      }
       // Session tokens/cost come straight off the local event stream — always
       // available even when the daemon snapshot carries no quota window. Mirror
       // the token-summary effect's fallback-context resolution.
       const usageFallbackContext = activeSession?.modelId
         ? getModelById(activeSession.modelId)?.contextWindow ?? null
         : null;
-      const stats = latestTokenStats(events, usageFallbackContext);
-      const sessionBlock = {
-        input: stats.inputTokens,
-        output: stats.outputTokens,
-        cost: stats.costUsd,
-      };
-      // Quota windows are reuse-only: the daemon exposes at most a single
-      // rate-limit window (parsed into stats.rateLimit). Render it when present,
-      // otherwise degrade to the session block.
-      const quotaWindows = stats.rateLimit?.usedPercentage != null
-        ? [{
-            id: "rate-limit",
-            label: "Rate limit",
-            percent: stats.rateLimit.usedPercentage,
-            resetAt: stats.rateLimit.resetsAt,
-          }]
-        : undefined;
-      setRightPane({ kind: "usage", title: "Usage", quotaWindows, session: sessionBlock });
+      const stats = sessionId ? latestTokenStats(events, usageFallbackContext) : null;
+      const sessionBlock = stats
+        ? { input: stats.inputTokens, output: stats.outputTokens, cost: stats.costUsd }
+        : null;
+      setRightPane({ kind: "usage", title: "Usage", loading: true, session: sessionBlock });
+      try {
+        const snapshot = await conn.action<UsageSnapshot>("usage", "getUsageSnapshot", {});
+        const providerStatuses = (["claude", "codex", "cursor"] as const).flatMap((provider) => {
+          const status = snapshot.providerStatus?.[provider];
+          if (!status) return [];
+          return [{
+            id: provider,
+            label: providerLabel(provider),
+            state: status.state,
+            source: status.source,
+            updatedAt: status.updatedAt ?? status.lastSuccessAt,
+            message: status.message,
+          }];
+        });
+        const quotaWindows = snapshot.windows.map((window, index) => {
+          const provider = providerLabel(window.provider);
+          const label = window.windowType === "five_hour"
+            ? "5-hour"
+            : window.windowType.replaceAll("_", " ");
+          return {
+            id: `${window.provider}:${window.windowType}:${index}`,
+            label: `${provider} ${label}`,
+            percent: window.percentUsed,
+            resetAt: Math.floor(Date.parse(window.resetsAt) / 1000),
+          };
+        });
+        setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock });
+      } catch (error) {
+        setRightPane({
+          kind: "usage",
+          title: "Usage",
+          session: sessionBlock,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return;
     }
     if (name === "/agents") {

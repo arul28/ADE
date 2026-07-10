@@ -87,8 +87,10 @@ describe("createSyncService", () => {
       preset: "year",
       daily: [],
     }));
+    const getUsageSnapshot = vi.fn(() => ({ windows: [], lastPolledAt: "2026-07-09T12:00:00.000Z", errors: [] }));
+    const forceRefresh = vi.fn(async () => ({ windows: [], lastPolledAt: "2026-07-09T12:01:00.000Z", errors: [] }));
     const service = createService(db, projectRoot, {
-      usageTrackingService: { getAdeUsageStats } as any,
+      usageTrackingService: { getAdeUsageStats, getUsageSnapshot, forceRefresh } as any,
     });
 
     try {
@@ -103,6 +105,18 @@ describe("createSyncService", () => {
         args: { preset: "year" },
       })).resolves.toMatchObject({ preset: "year", daily: [] });
       expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "year" });
+      await expect(service.executeRemoteCommand({
+        commandId: "cmd-usage-quota",
+        action: "usage.getQuotaSnapshot",
+        args: {},
+      })).resolves.toMatchObject({ lastPolledAt: "2026-07-09T12:00:00.000Z" });
+      await expect(service.executeRemoteCommand({
+        commandId: "cmd-refresh-quota",
+        action: "usage.refreshQuota",
+        args: {},
+      })).resolves.toMatchObject({ lastPolledAt: "2026-07-09T12:01:00.000Z" });
+      expect(getUsageSnapshot).toHaveBeenCalledTimes(1);
+      expect(forceRefresh).toHaveBeenCalledWith({ allowInteractiveAuth: false });
     } finally {
       await service.dispose();
       db.close();

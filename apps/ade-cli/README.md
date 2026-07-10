@@ -365,7 +365,8 @@ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
 ade usage snapshot --text
-ade usage refresh --text
+ade --role cto usage refresh --text                # live Claude/Codex quota only
+ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text
 ade usage budget set --from-file budget.json
 ade usage budget check --provider claude --scope global

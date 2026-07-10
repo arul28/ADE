@@ -24,12 +24,13 @@ import type {
   UsageProvider,
   UsageWindow,
   UsagePacing,
+  UsageProviderErrorKind,
+  UsageProviderSource,
   UsageProviderStatus,
   UsageProviderStatusMap,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
-  UsageProviderMessage,
   UsageSnapshot,
 } from "../../../shared/types";
 import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
@@ -42,6 +43,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import {
+  cacheClaudeCredentials,
   clearClaudeCredentialCache,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
@@ -50,8 +52,10 @@ import {
   readCodexCredentials,
   refreshClaudeCredentials,
 } from "../ai/providerCredentialSources";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { stripAnsi } from "../../utils/ansiStrip";
 import {
   ONE_HOUR_CACHE_WRITE_MULTIPLIER,
   refreshDynamicTokenPricing,
@@ -83,6 +87,12 @@ import {
   collectAdeDatabaseUsageStats,
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
+import type {
+  UsageProviderPollContext,
+  UsageProviderPollResult,
+  UsageProviderStrategy,
+  UsageRefreshReason,
+} from "./usageProviderStrategies";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 
 // ── Constants ────────────────────────────────────────────────────
@@ -90,16 +100,23 @@ import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 const DEFAULT_POLL_INTERVAL_MS = 2 * 60_000; // 2 min
 const MIN_POLL_INTERVAL_MS = 60_000;          // 1 min
 const MAX_POLL_INTERVAL_MS = 15 * 60_000;     // 15 min
+const ACTIVE_POLL_INTERVAL_MS = 60_000;
+const IDLE_POLL_INTERVAL_MS = 5 * 60_000;
+const IDLE_AFTER_MS = 15 * 60_000;
+const QUOTA_DEMAND_LEASE_MS = 90_000;
 const COST_CACHE_TTL_MS = 10 * 60_000;        // 10 min
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
-const FORCE_REFRESH_RESPONSE_TIMEOUT_MS = 60_000;
-const USAGE_SNAPSHOT_CACHE_VERSION = 2;
+const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
+const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
+const USAGE_SNAPSHOT_CACHE_VERSION = 3;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
 const GITHUB_STATS_COMMAND_TIMEOUT_MS = 60_000;
 const GITHUB_STATS_FAST_RESPONSE_TIMEOUT_MS = 2_500;
 const GITHUB_STATS_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+let usageSnapshotCacheWriteTail: Promise<void> = Promise.resolve();
+let usageSnapshotCacheWriteSequence = 0;
 
 function isBenignStdinCloseError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -143,15 +160,23 @@ function readCachedUsageSnapshot(logger: Logger): UsageSnapshot | null {
 
 async function writeCachedUsageSnapshot(snapshot: UsageSnapshot, logger: Logger): Promise<void> {
   if (!shouldUseSnapshotCache()) return;
-  try {
-    await fs.promises.mkdir(path.dirname(USAGE_SNAPSHOT_CACHE_PATH), { recursive: true });
-    await fs.promises.writeFile(
-      USAGE_SNAPSHOT_CACHE_PATH,
-      JSON.stringify({ version: USAGE_SNAPSHOT_CACHE_VERSION, snapshot }),
-    );
-  } catch (error) {
-    logger.debug("usage.snapshot_cache_write_failed", { error: getErrorMessage(error) });
-  }
+  const sequence = ++usageSnapshotCacheWriteSequence;
+  const tempPath = `${USAGE_SNAPSHOT_CACHE_PATH}.${process.pid}.${sequence}.tmp`;
+  const write = usageSnapshotCacheWriteTail.then(async () => {
+    try {
+      await fs.promises.mkdir(path.dirname(USAGE_SNAPSHOT_CACHE_PATH), { recursive: true });
+      await fs.promises.writeFile(
+        tempPath,
+        JSON.stringify({ version: USAGE_SNAPSHOT_CACHE_VERSION, snapshot }),
+      );
+      await fs.promises.rename(tempPath, USAGE_SNAPSHOT_CACHE_PATH);
+    } catch (error) {
+      await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+      logger.debug("usage.snapshot_cache_write_failed", { error: getErrorMessage(error) });
+    }
+  });
+  usageSnapshotCacheWriteTail = write;
+  await write;
 }
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -164,7 +189,7 @@ async function fetchJson(
   headers: Record<string, string>,
   timeoutMs = 15_000,
   init?: { method?: string; body?: string },
-): Promise<{ ok: boolean; status: number; data: unknown }> {
+): Promise<{ ok: boolean; status: number; data: unknown; retryAfterMs?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -180,7 +205,23 @@ async function fetchJson(
     } catch {
       data = null;
     }
-    return { ok: resp.ok, status: resp.status, data };
+    const retryAfterHeader = resp.headers?.get?.("retry-after")?.trim();
+    let retryAfterMs: number | undefined;
+    if (retryAfterHeader) {
+      const seconds = Number(retryAfterHeader);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        retryAfterMs = Math.round(seconds * 1000);
+      } else {
+        const retryAt = Date.parse(retryAfterHeader);
+        if (Number.isFinite(retryAt)) retryAfterMs = Math.max(0, retryAt - Date.now());
+      }
+    }
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data,
+      ...(retryAfterMs != null ? { retryAfterMs } : {}),
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -213,11 +254,11 @@ async function fetchJsonWithRetry(
   url: string,
   headers: Record<string, string>,
   opts: RetryOptions = {},
-): Promise<{ ok: boolean; status: number; data: unknown }> {
+): Promise<{ ok: boolean; status: number; data: unknown; retryAfterMs?: number }> {
   const attempts = Math.max(1, opts.attempts ?? 2);
   const timeoutMs = opts.perAttemptTimeoutMs ?? 8_000;
   const backoffMs = opts.backoffMs ?? 400;
-  let last: { ok: boolean; status: number; data: unknown } | null = null;
+  let last: { ok: boolean; status: number; data: unknown; retryAfterMs?: number } | null = null;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0 && backoffMs > 0) {
       await delay(backoffMs * 3 ** (attempt - 1));
@@ -238,6 +279,245 @@ async function fetchJsonWithRetry(
 function computeResetsInMs(resetsAt: string): number {
   if (!resetsAt) return 0;
   return Math.max(0, new Date(resetsAt).getTime() - Date.now());
+}
+
+function errorKindForHttpStatus(status: number): UsageProviderErrorKind {
+  if (status === 401) return "auth";
+  if (status === 403) return "forbidden";
+  if (status === 409) return "conflict";
+  if (status === 429) return "rate_limited";
+  if (status === 0) return "network";
+  return "unknown";
+}
+
+function errorKindForThrown(error: unknown): UsageProviderErrorKind {
+  const message = getErrorMessage(error).toLowerCase();
+  if (message.includes("abort") || message.includes("timed out") || message.includes("timeout")) {
+    return "timeout";
+  }
+  return "network";
+}
+
+async function measureUsagePhase<T>(
+  logger: Logger,
+  args: {
+    provider?: UsageProvider;
+    phase: string;
+    reason: UsageRefreshReason;
+  },
+  work: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const value = await work();
+    logger.debug("usage.refresh.phase", {
+      ...args,
+      durationMs: Date.now() - startedAt,
+      outcome: "ok",
+    });
+    return value;
+  } catch (error) {
+    logger.debug("usage.refresh.phase", {
+      ...args,
+      durationMs: Date.now() - startedAt,
+      outcome: "error",
+      errorKind: errorKindForThrown(error),
+    });
+    throw error;
+  }
+}
+
+function parseClaudeCliReset(raw: string | null, fallbackDurationMs: number, nowMs = Date.now()): string {
+  if (!raw) return new Date(nowMs + fallbackDurationMs).toISOString();
+  const cleaned = raw
+    .replace(/^\s*resets?\s*(?:at\s*)?/i, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\bat\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const timeOnly = cleaned.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (timeOnly) {
+    let hour = Number(timeOnly[1]);
+    const minute = Number(timeOnly[2] ?? 0);
+    const suffix = timeOnly[3]?.toLowerCase();
+    if (suffix === "pm" && hour < 12) hour += 12;
+    if (suffix === "am" && hour === 12) hour = 0;
+    const next = new Date(nowMs);
+    next.setHours(hour, minute, 0, 0);
+    if (next.getTime() <= nowMs) next.setDate(next.getDate() + 1);
+    return next.toISOString();
+  }
+
+  const hasYear = /\b\d{4}\b/.test(cleaned);
+  const candidateText = hasYear ? cleaned : `${cleaned} ${new Date(nowMs).getFullYear()}`;
+  let parsed = Date.parse(candidateText);
+  if (Number.isFinite(parsed)) {
+    if (!hasYear && parsed < nowMs - 86_400_000) {
+      parsed = Date.parse(`${cleaned} ${new Date(nowMs).getFullYear() + 1}`);
+    }
+    if (Number.isFinite(parsed) && parsed > nowMs - 86_400_000) return new Date(parsed).toISOString();
+  }
+  return new Date(nowMs + fallbackDurationMs).toISOString();
+}
+
+function parseClaudeCliWindow(
+  text: string,
+  label: RegExp,
+  windowType: UsageWindow["windowType"],
+  durationMs: number,
+): UsageWindow | null {
+  const match = label.exec(text);
+  if (!match || match.index == null) return null;
+  const tail = text.slice(match.index, match.index + 1_400);
+  const boundary = tail.slice(1).search(/current\s+(?:session|week)/i);
+  const block = boundary >= 0 ? tail.slice(0, boundary + 1) : tail;
+  const percentMatch = block.match(/([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(used|spent|consumed|left|remaining|available)?/i);
+  if (!percentMatch) return null;
+  const rawPercent = Math.max(0, Math.min(100, Number(percentMatch[1])));
+  if (!Number.isFinite(rawPercent)) return null;
+  const qualifier = percentMatch[2]?.toLowerCase();
+  const percentUsed = qualifier === "used" || qualifier === "spent" || qualifier === "consumed"
+    ? rawPercent
+    : 100 - rawPercent;
+  const resetMatch = block.match(/resets?\s*(?:at\s*)?([^\n\r]+)/i);
+  const resetsAt = parseClaudeCliReset(resetMatch?.[0] ?? null, durationMs);
+  return {
+    provider: "claude",
+    windowType,
+    percentUsed,
+    resetsAt,
+    resetsInMs: computeResetsInMs(resetsAt),
+    windowDurationMs: durationMs,
+  };
+}
+
+function parseClaudeCliUsage(text: string): UsageWindow[] {
+  const clean = stripAnsi(text);
+  const panelStart = clean.toLowerCase().lastIndexOf("settings:");
+  const panel = panelStart >= 0 ? clean.slice(panelStart) : clean;
+  return [
+    parseClaudeCliWindow(panel, /current\s+session/i, "five_hour", 5 * 60 * 60_000),
+    parseClaudeCliWindow(panel, /current\s+week\s*\(all\s+models\)/i, "weekly", 7 * 24 * 60 * 60_000),
+  ].filter((window): window is UsageWindow => window != null);
+}
+
+async function captureClaudeCliUsage(logger: Logger): Promise<string> {
+  const module = await import("node-pty");
+  const nodePty = ((module as unknown as { default?: typeof module }).default ?? module);
+  const resolved = resolveClaudeCodeExecutable();
+  const env = { ...process.env, TERM: "xterm-256color" };
+  const invocation = resolveCliSpawnInvocation(resolved.path, [], env);
+  const cwd = path.join(os.homedir(), ".ade", "cache", "claude-usage-probe");
+  await fs.promises.mkdir(cwd, { recursive: true });
+
+  return await new Promise<string>((resolve, reject) => {
+    let output = "";
+    let settled = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const answeredPrompts = new Set<string>();
+    const terminal = nodePty.spawn(invocation.command, invocation.args, {
+      name: "xterm-256color",
+      cols: 100,
+      rows: 40,
+      cwd,
+      env,
+    });
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(enterTimer);
+      if (settleTimer) clearTimeout(settleTimer);
+      try {
+        terminal.kill();
+      } catch {
+        // already exited
+      }
+      if (error) reject(error);
+      else resolve(output);
+    };
+    const timeout = setTimeout(() => {
+      finish(new Error(`Claude CLI /usage timed out after ${CLAUDE_CLI_USAGE_TIMEOUT_MS}ms`));
+    }, CLAUDE_CLI_USAGE_TIMEOUT_MS);
+    timeout.unref?.();
+    const enterTimer = setInterval(() => {
+      try {
+        terminal.write("\r");
+      } catch {
+        // process is exiting
+      }
+    }, 800);
+    enterTimer.unref?.();
+
+    terminal.onData((chunk) => {
+      if (output.length < 120_000) output += chunk.slice(0, 120_000 - output.length);
+      const clean = stripAnsi(output);
+      const lower = clean.toLowerCase();
+      const promptResponses = [
+        ["do you trust the files in this folder?", "y\r"],
+        ["quick safety check:", "\r"],
+        ["yes, i trust this folder", "\r"],
+        ["ready to code here?", "\r"],
+        ["press enter to continue", "\r"],
+      ] as const;
+      for (const [prompt, response] of promptResponses) {
+        if (lower.includes(prompt) && !answeredPrompts.has(prompt)) {
+          answeredPrompts.add(prompt);
+          terminal.write(response);
+        }
+      }
+      if (lower.includes("login") && (lower.includes("not signed in") || lower.includes("authentication required"))) {
+        finish(new Error("Claude CLI sign-in is required."));
+        return;
+      }
+      if (parseClaudeCliUsage(clean).length > 0 && !settleTimer) {
+        settleTimer = setTimeout(() => finish(), 700);
+      }
+    });
+    terminal.onExit(({ exitCode }) => {
+      if (parseClaudeCliUsage(output).length > 0) finish();
+      else finish(new Error(`Claude CLI exited before returning usage (${exitCode}).`));
+    });
+
+    setTimeout(() => {
+      if (settled) return;
+      try {
+        terminal.write("/usage\r");
+      } catch (error) {
+        logger.debug("usage.refresh.phase", {
+          provider: "claude",
+          phase: "cli_write",
+          outcome: "error",
+          errorKind: errorKindForThrown(error),
+        });
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, 500).unref?.();
+  });
+}
+
+async function pollClaudeViaCli(logger: Logger): Promise<UsageProviderPollResult> {
+  try {
+    const output = await captureClaudeCliUsage(logger);
+    const windows = parseClaudeCliUsage(output);
+    if (windows.length === 0) {
+      return {
+        windows: [],
+        source: "cli",
+        errors: ["claude: CLI usage response contained no recognized windows"],
+        errorKind: "invalid_response",
+      };
+    }
+    return { windows, source: "cli", errors: [] };
+  } catch (error) {
+    return {
+      windows: [],
+      source: "cli",
+      errors: [`claude: CLI fallback failed: ${getErrorMessage(error)}`],
+      errorKind: errorKindForThrown(error) === "timeout" ? "timeout" : "unavailable",
+    };
+  }
 }
 
 // ── Claude Usage Polling ─────────────────────────────────────────
@@ -447,199 +727,219 @@ function codexWindowDurationMs(value: unknown): number | null {
   return Math.round(value * 60_000);
 }
 
-function parseCodexDailyUsage7d(data: Record<string, unknown>, nowMs = Date.now()): number[] | null {
-  const bucketsValue = Array.isArray(data.dailyUsageBuckets)
-    ? data.dailyUsageBuckets
-    : Array.isArray(data.daily_usage_buckets)
-      ? data.daily_usage_buckets
-      : null;
-  if (!bucketsValue?.length) return null;
-  const buckets = new Array<number>(7).fill(0);
-  const today = new Date(nowMs);
-  const bucketByDay = new Map<string, number>();
-  for (let index = 0; index < 7; index += 1) {
-    const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index);
-    bucketByDay.set(localDayKey(day), index);
-  }
-  for (const rawBucket of bucketsValue) {
-    const bucket = isRecord(rawBucket) ? rawBucket : null;
-    if (!bucket) continue;
-    const dateText = typeof bucket.startDate === "string"
-      ? bucket.startDate
-      : typeof bucket.start_date === "string"
-        ? bucket.start_date
-        : "";
-    const tokens = typeof bucket.tokens === "number"
-      ? bucket.tokens
-      : typeof bucket.tokens === "string"
-        ? Number(bucket.tokens)
-        : 0;
-    if (!dateText || !Number.isFinite(tokens) || tokens <= 0) continue;
-    const date = new Date(dateText);
-    if (!Number.isFinite(date.getTime())) continue;
-    const offset = bucketByDay.get(localDayKey(date));
-    if (offset == null) continue;
-    buckets[offset] += tokens;
-  }
-  return buckets.some((value) => value > 0) ? buckets : null;
-}
-
-function parseCodexWorkspaceMessages(data: Record<string, unknown>): UsageProviderMessage[] {
-  const messages = Array.isArray(data.messages) ? data.messages : [];
-  return messages.flatMap((rawMessage) => {
-    const message = isRecord(rawMessage) ? rawMessage : null;
-    if (!message) return [];
-    const body = typeof message.messageBody === "string"
-      ? message.messageBody.trim()
-      : typeof message.message_body === "string"
-        ? message.message_body.trim()
-        : "";
-    if (!body) return [];
-    const archivedAt = message.archivedAt ?? message.archived_at;
-    if (archivedAt != null) return [];
-    const kindRaw = typeof message.messageType === "string"
-      ? message.messageType
-      : typeof message.message_type === "string"
-        ? message.message_type
-        : "unknown";
-    const kind: UsageProviderMessage["kind"] =
-      kindRaw === "headline" || kindRaw === "announcement" ? kindRaw : "unknown";
-    const createdAtValue = typeof message.createdAt === "number"
-      ? message.createdAt
-      : typeof message.created_at === "number"
-        ? message.created_at
-        : null;
-    return [{
-      provider: "codex" as const,
-      id: String(message.messageId ?? message.message_id ?? body),
-      kind,
-      message: body,
-      ...(createdAtValue != null ? { createdAt: new Date(createdAtValue * 1000).toISOString() } : {}),
-    }];
-  });
-}
-
 // Cursor usage polling was removed in 2026-05 — Cursor only exposes
 // team-admin endpoints (/teams/spend, /teams/filtered-usage-events,
 // /teams/daily-usage-data) with no personal-user surface, so the per-user
 // drawer state could never be meaningful for the typical ADE user.
 
-async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
-  const windows: UsageWindow[] = [];
-  const errors: string[] = [];
-
-  const creds = await readClaudeCredentialsWithRefresh(logger);
+async function pollClaudeUsage(
+  logger: Logger,
+  context: UsageProviderPollContext = { reason: "user" },
+): Promise<UsageProviderPollResult> {
+  const allowInteractiveSources = context.reason === "user";
+  const creds = await measureUsagePhase(
+    logger,
+    { provider: "claude", phase: "credentials", reason: context.reason },
+    () => readClaudeCredentialsWithRefresh(logger, { allowKeychain: allowInteractiveSources }),
+  );
   if (!creds) {
-    errors.push("claude: no credentials found");
-    return { windows, extraUsage: null, errors };
+    if (allowInteractiveSources) {
+      return await measureUsagePhase(
+        logger,
+        { provider: "claude", phase: "cli_fallback", reason: context.reason },
+        () => pollClaudeViaCli(logger),
+      );
+    }
+    return {
+      windows: [],
+      source: "oauth",
+      extraUsage: null,
+      errors: ["claude: no non-interactive credentials found"],
+      errorKind: "auth",
+    };
   }
 
   try {
-    const result = await fetchJsonWithRetry(CLAUDE_USAGE_URL, {
-      Authorization: `Bearer ${creds.accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-    });
+    const result = await measureUsagePhase(
+      logger,
+      { provider: "claude", phase: "oauth_http", reason: context.reason },
+      () => fetchJsonWithRetry(CLAUDE_USAGE_URL, {
+        Authorization: `Bearer ${creds.accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+      }),
+    );
 
     if (!result.ok) {
-      // On 401, try one refresh cycle and retry
       if (result.status === 401 && creds.refreshToken) {
         logger.info("usage.token_refresh.401_retry");
         clearClaudeCredentialCache();
-        const refreshed = await refreshClaudeCredentials(creds.refreshToken);
+        const refreshed = await measureUsagePhase(
+          logger,
+          { provider: "claude", phase: "token_refresh", reason: context.reason },
+          () => refreshClaudeCredentials(creds.refreshToken!),
+        );
         if (refreshed) {
-          const retry = await fetchJsonWithRetry(CLAUDE_USAGE_URL, {
-            Authorization: `Bearer ${refreshed.accessToken}`,
-            "anthropic-beta": "oauth-2025-04-20",
-          });
+          cacheClaudeCredentials(refreshed);
+          const retry = await measureUsagePhase(
+            logger,
+            { provider: "claude", phase: "oauth_http_retry", reason: context.reason },
+            () => fetchJsonWithRetry(CLAUDE_USAGE_URL, {
+              Authorization: `Bearer ${refreshed.accessToken}`,
+              "anthropic-beta": "oauth-2025-04-20",
+            }),
+          );
           if (retry.ok) {
             const parsed = parseClaudeWindows(retry.data as ClaudeUsageResponse);
-            return { windows: parsed.windows, extraUsage: parsed.extraUsage, errors };
+            if (parsed.windows.length > 0) {
+              return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
+            }
           }
         }
       }
-      errors.push(`claude: API returned ${result.status}`);
-      return { windows, extraUsage: null, errors };
+
+      if (allowInteractiveSources) {
+        const fallback = await measureUsagePhase(
+          logger,
+          { provider: "claude", phase: "cli_fallback", reason: context.reason },
+          () => pollClaudeViaCli(logger),
+        );
+        if (fallback.windows.length > 0) return fallback;
+      }
+      return {
+        windows: [],
+        source: "oauth",
+        extraUsage: null,
+        errors: [`claude: API returned ${result.status}`],
+        errorKind: errorKindForHttpStatus(result.status),
+        ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+      };
     }
 
     const parsed = parseClaudeWindows(result.data as ClaudeUsageResponse);
-    windows.push(...parsed.windows);
     if (parsed.windows.length === 0) {
-      errors.push("claude: usage response contained no recognized windows");
       logger.warn("usage.poll.claude_unrecognized_shape", {
         keys: isRecord(result.data) ? Object.keys(result.data).slice(0, 12) : [],
       });
+      if (allowInteractiveSources) {
+        const fallback = await measureUsagePhase(
+          logger,
+          { provider: "claude", phase: "cli_fallback", reason: context.reason },
+          () => pollClaudeViaCli(logger),
+        );
+        if (fallback.windows.length > 0) return fallback;
+      }
+      return {
+        windows: [],
+        source: "oauth",
+        extraUsage: null,
+        errors: ["claude: usage response contained no recognized windows"],
+        errorKind: "invalid_response",
+      };
     }
-    return { windows, extraUsage: parsed.extraUsage, errors };
-  } catch (err) {
-    errors.push(`claude: ${getErrorMessage(err)}`);
+    return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
+  } catch (error) {
+    if (allowInteractiveSources) {
+      const fallback = await measureUsagePhase(
+        logger,
+        { provider: "claude", phase: "cli_fallback", reason: context.reason },
+        () => pollClaudeViaCli(logger),
+      );
+      if (fallback.windows.length > 0) return fallback;
+    }
+    return {
+      windows: [],
+      source: "oauth",
+      extraUsage: null,
+      errors: [`claude: ${getErrorMessage(error)}`],
+      errorKind: errorKindForThrown(error),
+    };
   }
-
-  return { windows, extraUsage: null, errors };
 }
 
 // ── Codex Usage Polling ──────────────────────────────────────────
 
-async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }> {
-  const windows: UsageWindow[] = [];
-  const errors: string[] = [];
-
-  const creds = await readCodexCredentials();
+async function pollCodexUsage(
+  logger: Logger,
+  context: UsageProviderPollContext = { reason: "user" },
+): Promise<UsageProviderPollResult> {
+  const creds = await measureUsagePhase(
+    logger,
+    { provider: "codex", phase: "credentials", reason: context.reason },
+    () => readCodexCredentials(),
+  );
   if (!creds) {
-    errors.push("codex: no credentials found");
-    return { windows, errors };
+    return {
+      windows: [],
+      source: "http",
+      errors: ["codex: no credentials found"],
+      errorKind: "auth",
+    };
   }
 
-  // Try HTTP API first — skip the stale-token gate; the API will 401 if
-  // the token is truly dead, and tokens often remain valid well past the
-  // local last_refresh timestamp.
   try {
-    const result = await fetchJsonWithRetry(CODEX_USAGE_URL, {
-      Authorization: `Bearer ${creds.accessToken}`,
-    });
+    const result = await measureUsagePhase(
+      logger,
+      { provider: "codex", phase: "quota_http", reason: context.reason },
+      () => fetchJsonWithRetry(CODEX_USAGE_URL, {
+        Authorization: `Bearer ${creds.accessToken}`,
+      }),
+    );
 
-    if (!result.ok) {
-      errors.push(`codex: API returned ${result.status}`);
-      if (result.status >= 400 && result.status < 500 && result.status !== 401) {
-        return { windows, errors };
+    if (result.ok && isRecord(result.data)) {
+      const windows = parseCodexRateLimitWindows(result.data);
+      if (windows.length > 0) {
+        return { windows, source: "http", errors: [] };
       }
-    } else if (result.data && typeof result.data === "object") {
-      windows.push(...parseCodexRateLimitWindows(result.data as Record<string, unknown>));
+      const fallback = await measureUsagePhase(
+        logger,
+        { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
+        () => pollCodexViaCliRpc(logger),
+      );
+      return fallback.windows.length > 0
+        ? { ...fallback, source: "cli", errors: [] }
+        : {
+            ...fallback,
+            source: "cli",
+            errorKind: fallback.errorKind ?? "invalid_response",
+          };
     }
-  } catch {
-    // Fall through to CLI RPC
-  }
 
-  // Codex CLI JSON-RPC supplies native app-server usage/messages. It also
-  // remains the fallback source for rate-limit windows when the legacy HTTP
-  // endpoint is unavailable.
-  try {
-    const rpcResult = await pollCodexViaCliRpc(logger);
-    if (windows.length === 0) {
-      windows.push(...rpcResult.windows);
+    if (!result.ok && (result.status === 401 || RETRYABLE_STATUS.has(result.status))) {
+      const fallback = await measureUsagePhase(
+        logger,
+        { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
+        () => pollCodexViaCliRpc(logger),
+      );
+      if (fallback.windows.length > 0) return { ...fallback, source: "cli", errors: [] };
+      return {
+        ...fallback,
+        source: "cli",
+        errors: [`codex: API returned ${result.status}`, ...fallback.errors],
+        errorKind: fallback.errorKind ?? errorKindForHttpStatus(result.status),
+        ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+      };
     }
-    const dailyUsage7d = rpcResult.dailyUsage7d;
-    const providerMessages = rpcResult.providerMessages;
-    if (rpcResult.errors.length > 0) errors.push(...rpcResult.errors);
-    if (windows.length === 0 && errors.length === 0) {
-      errors.push("codex: usage response contained no recognized windows");
-    }
-    return { windows, errors, ...(dailyUsage7d ? { dailyUsage7d } : {}), ...(providerMessages?.length ? { providerMessages } : {}) };
-  } catch (err) {
-    errors.push(`codex: CLI RPC failed: ${getErrorMessage(err)}`);
-  }
 
-  if (windows.length === 0 && errors.length === 0) {
-    errors.push("codex: usage response contained no recognized windows");
+    return {
+      windows: [],
+      source: "http",
+      errors: [`codex: API returned ${result.status}`],
+      errorKind: errorKindForHttpStatus(result.status),
+      ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+    };
+  } catch (error) {
+    return {
+      windows: [],
+      source: "http",
+      errors: [`codex: ${getErrorMessage(error)}`],
+      errorKind: errorKindForThrown(error),
+    };
   }
-
-  return { windows, errors };
 }
 
-async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }> {
+async function pollCodexViaCliRpc(logger: Logger): Promise<UsageProviderPollResult> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
-  let dailyUsage7d: number[] | undefined;
-  let providerMessages: UsageProviderMessage[] | undefined;
 
   try {
     const initPayload = JSON.stringify({
@@ -670,21 +970,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
       params: {},
     });
 
-    const usagePayload = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "account/usage/read",
-      params: {},
-    });
-
-    const workspaceMessagesPayload = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "account/workspaceMessages/read",
-      params: {},
-    });
-
-    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n${usagePayload}\n${workspaceMessagesPayload}\n`;
+    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n`;
 
     const codexPath = resolveCodexExecutable().path;
     const env = { ...process.env };
@@ -793,23 +1079,27 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
         if (parsedWindows.length > 0) {
           windows.push(...parsedWindows);
         }
-      } else if (id === 2) {
-        const parsedDailyUsage = parseCodexDailyUsage7d(res);
-        if (parsedDailyUsage) {
-          dailyUsage7d = parsedDailyUsage;
-        }
-      } else if (id === 3) {
-        const parsedMessages = parseCodexWorkspaceMessages(res);
-        if (parsedMessages.length > 0) {
-          providerMessages = parsedMessages;
-        }
       }
     }
   } catch (err) {
     errors.push(`codex: CLI RPC error: ${getErrorMessage(err)}`);
+    return {
+      windows,
+      source: "cli",
+      errors,
+      errorKind: errorKindForThrown(err) === "timeout" ? "timeout" : "unavailable",
+    };
   }
 
-  return { windows, errors, ...(dailyUsage7d ? { dailyUsage7d } : {}), ...(providerMessages ? { providerMessages } : {}) };
+  if (windows.length === 0 && errors.length === 0) {
+    errors.push("codex: CLI RPC returned no recognized rate limits");
+  }
+  return {
+    windows,
+    source: "cli",
+    errors,
+    ...(windows.length === 0 ? { errorKind: "invalid_response" as const } : {}),
+  };
 }
 
 // ── Local Cost Scanning ──────────────────────────────────────────
@@ -2159,42 +2449,66 @@ function buildProviderWindows(
   freshWindows: UsageWindow[],
   errors: string[],
   prevWindows: UsageWindow[],
-  prevLastSuccessAt: string | null,
+  prevStatus: UsageProviderStatus | string | null,
   polledAt: string,
+  source?: UsageProviderSource,
+  errorKind?: UsageProviderErrorKind,
+  nextRetryAt?: string | null,
 ): { windows: UsageWindow[]; status: UsageProviderStatus; lastSuccessAt: string | null } {
+  const normalizedPrevStatus: UsageProviderStatus | null = typeof prevStatus === "string"
+    ? { state: "stale", lastSuccessAt: prevStatus, updatedAt: prevStatus }
+    : prevStatus;
+  const prevLastSuccessAt = normalizedPrevStatus?.lastSuccessAt ?? null;
+  const resolvedSource = source ?? normalizedPrevStatus?.source;
   if (freshWindows.length > 0) {
     return {
       windows: freshWindows,
-      status: { state: "ok", lastSuccessAt: polledAt },
+      status: {
+        state: "ok",
+        lastSuccessAt: polledAt,
+        updatedAt: polledAt,
+        lastAttemptAt: polledAt,
+        ...(resolvedSource ? { source: resolvedSource } : {}),
+      },
       lastSuccessAt: polledAt,
     };
   }
 
   const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
-  const unauthed = errors.some((entry) => /no credentials/i.test(entry));
+  const unauthed = errorKind === "auth" || errors.some((entry) => /no .*credentials/i.test(entry));
   // A 401/403 means we reached the API but auth was rejected (expired token,
   // failed refresh) — that's "reconnect", not "couldn't reach".
   const authExpired = errors.some((entry) => /\b(401|403)\b|authentication|invalid.*credential/i.test(entry));
 
+  const carriedWindows = filterUnexpiredCarriedWindows(prevWindows, polledAt);
   if (unauthed || authExpired) {
     return {
-      windows: [],
+      windows: carriedWindows,
       status: {
-        state: unauthed ? "unauthed" : "error",
+        state: "unauthed",
         lastSuccessAt: prevLastSuccessAt,
-        message: unauthed ? undefined : `${name} sign-in expired — reconnect`,
+        updatedAt: normalizedPrevStatus?.updatedAt ?? prevLastSuccessAt,
+        lastAttemptAt: polledAt,
+        errorKind: errorKind ?? "auth",
+        ...(resolvedSource ? { source: resolvedSource } : {}),
+        ...(nextRetryAt ? { nextRetryAt } : {}),
+        message: `${name} sign-in required — reconnect to refresh`,
       },
       lastSuccessAt: prevLastSuccessAt,
     };
   }
 
-  const carriedWindows = filterUnexpiredCarriedWindows(prevWindows, polledAt);
   if (carriedWindows.length > 0) {
     return {
       windows: carriedWindows,
       status: {
         state: "stale",
         lastSuccessAt: prevLastSuccessAt,
+        updatedAt: normalizedPrevStatus?.updatedAt ?? prevLastSuccessAt,
+        lastAttemptAt: polledAt,
+        ...(resolvedSource ? { source: resolvedSource } : {}),
+        ...(errorKind ? { errorKind } : {}),
+        ...(nextRetryAt ? { nextRetryAt } : {}),
         message: `Couldn't refresh ${name} — showing last reading`,
       },
       lastSuccessAt: prevLastSuccessAt,
@@ -2206,6 +2520,11 @@ function buildProviderWindows(
     status: {
       state: "error",
       lastSuccessAt: prevLastSuccessAt,
+      updatedAt: normalizedPrevStatus?.updatedAt ?? prevLastSuccessAt,
+      lastAttemptAt: polledAt,
+      ...(resolvedSource ? { source: resolvedSource } : {}),
+      ...(errorKind ? { errorKind } : {}),
+      ...(nextRetryAt ? { nextRetryAt } : {}),
       message: prevWindows.length > 0
         ? `Couldn't refresh ${name} — last reading expired`
         : `Couldn't reach ${name} — retrying`,
@@ -2219,8 +2538,8 @@ function buildProviderWindows(
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
 
 type UsageTrackingDependencies = {
-  pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
-  pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }>;
+  pollClaudeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollCodexUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
   scanCursorLogs?: () => Promise<TokenEntry[]>;
@@ -2235,8 +2554,18 @@ type UsageTrackingDependencies = {
 };
 
 type PollOptions = {
-  includeCosts?: boolean;
+  reason?: UsageRefreshReason;
 };
+
+function providerBackoffMs(result: UsageProviderPollResult, failureCount: number): number {
+  const exponential = Math.min(
+    MAX_POLL_INTERVAL_MS,
+    60_000 * 2 ** Math.min(4, failureCount - 1),
+  );
+  if (result.errorKind === "rate_limited") return Math.max(result.retryAfterMs ?? 0, exponential);
+  if (result.errorKind === "forbidden") return MAX_POLL_INTERVAL_MS;
+  return exponential;
+}
 
 export function createUsageTrackingService({
   logger,
@@ -2282,11 +2611,21 @@ export function createUsageTrackingService({
   const githubStatsCache = new Map<string, { fetchedAtMs: number; stats: GitHubActivityStats }>();
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
-  let inFlightPollIncludesCosts = false;
-  const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? (() => pollClaudeUsage(logger));
-  const runCodexUsagePoll = dependencies?.pollCodexUsage ?? (() => pollCodexUsage(logger));
+  let inFlightPollReason: UsageRefreshReason | null = null;
+  let inFlightHistoryRefresh: Promise<UsageSnapshot> | null = null;
+  let demandLeaseUntilMs = 0;
+  let lastDemandAtMs = Date.now();
+  const providerFailureCount: Partial<Record<UsageProvider, number>> = {};
+  const providerNextRetryAtMs: Partial<Record<UsageProvider, number>> = {};
+  const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? ((context) => pollClaudeUsage(logger, context));
+  const runCodexUsagePoll = dependencies?.pollCodexUsage ?? ((context) => pollCodexUsage(logger, context));
+  const providerStrategies: UsageProviderStrategy[] = [
+    { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
+    { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
+  ];
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
   const scanCursorCostLogs = dependencies?.scanCursorLogs ?? scanCursorLogs;
@@ -2432,41 +2771,73 @@ export function createUsageTrackingService({
   }
 
   async function poll(options: PollOptions = {}): Promise<UsageSnapshot> {
-    const includeCosts = options.includeCosts !== false;
+    const reason = options.reason ?? "automatic";
     while (inFlightPoll) {
-      if (!includeCosts || inFlightPollIncludesCosts) {
+      if (reason === "automatic" || inFlightPollReason === "user") {
         return await inFlightPoll;
       }
       await inFlightPoll.catch(() => null);
     }
 
     let currentPoll!: Promise<UsageSnapshot>;
-    inFlightPollIncludesCosts = includeCosts;
+    inFlightPollReason = reason;
     currentPoll = Promise.resolve().then(async () => {
       const errors: string[] = [];
       let allWindows: UsageWindow[] = [];
+      const refreshStartedAt = Date.now();
 
       try {
-        const [claudeResult, codexResult, costResult] = await Promise.all([
-          runClaudeUsagePoll().catch((err) => {
-            const msg = `claude: poll failed: ${getErrorMessage(err)}`;
-            logger.warn("usage.poll.claude_failed", { error: msg });
-            return { windows: [] as UsageWindow[], extraUsage: null as ExtraUsage | null, errors: [msg] };
-          }),
-          runCodexUsagePoll().catch((err) => {
-            const msg = `codex: poll failed: ${getErrorMessage(err)}`;
-            logger.warn("usage.poll.codex_failed", { error: msg });
+        const providerTasks = providerStrategies.map(async (strategy) => {
+          const previousStatus = lastSnapshot?.providerStatus?.[strategy.provider] ?? null;
+          const nextRetryMs = providerNextRetryAtMs[strategy.provider] ?? 0;
+          const shouldHonorBackoff = reason === "automatic" || previousStatus?.errorKind === "rate_limited";
+          if (shouldHonorBackoff && nextRetryMs > Date.now()) {
             return {
-              windows: [] as UsageWindow[],
-              errors: [msg],
-              dailyUsage7d: undefined as number[] | undefined,
-              providerMessages: undefined as UsageProviderMessage[] | undefined,
+              provider: strategy.provider,
+              skipped: true as const,
+              result: {
+                windows: [],
+                source: previousStatus?.source,
+                errors: [],
+                errorKind: previousStatus?.errorKind,
+              } satisfies UsageProviderPollResult,
             };
-          }),
-          includeCosts ? pollCosts() : Promise.resolve(cachedCostResult()),
-        ]);
-
-        errors.push(...claudeResult.errors, ...codexResult.errors);
+          }
+          try {
+            const result = await strategy.poll({ reason });
+            if (result.windows.length > 0) {
+              providerFailureCount[strategy.provider] = 0;
+              providerNextRetryAtMs[strategy.provider] = 0;
+            } else {
+              const failureCount = (providerFailureCount[strategy.provider] ?? 0) + 1;
+              providerFailureCount[strategy.provider] = failureCount;
+              providerNextRetryAtMs[strategy.provider] = Date.now() + providerBackoffMs(result, failureCount);
+            }
+            return { provider: strategy.provider, skipped: false as const, result };
+          } catch (error) {
+            const message = `${strategy.provider}: poll failed: ${getErrorMessage(error)}`;
+            logger.warn(`usage.poll.${strategy.provider}_failed`, { error: message });
+            const failureCount = (providerFailureCount[strategy.provider] ?? 0) + 1;
+            providerFailureCount[strategy.provider] = failureCount;
+            providerNextRetryAtMs[strategy.provider] = Date.now()
+              + Math.min(MAX_POLL_INTERVAL_MS, 60_000 * 2 ** Math.min(4, failureCount - 1));
+            return {
+              provider: strategy.provider,
+              skipped: false as const,
+              result: {
+                windows: [],
+                errors: [message],
+                errorKind: errorKindForThrown(error),
+              } satisfies UsageProviderPollResult,
+            };
+          }
+        });
+        const providerResults = await Promise.all(providerTasks);
+        const resultsByProvider = new Map(providerResults.map((entry) => [entry.provider, entry]));
+        const emptyPollResult: UsageProviderPollResult = { windows: [], errors: [] };
+        const claudeResult: UsageProviderPollResult = resultsByProvider.get("claude")?.result ?? emptyPollResult;
+        const codexResult: UsageProviderPollResult = resultsByProvider.get("codex")?.result ?? emptyPollResult;
+        for (const entry of providerResults) errors.push(...entry.result.errors);
 
         // Reconcile each provider against the last snapshot so a transient
         // failure (409/timeout) carries forward good data instead of wiping it.
@@ -2474,17 +2845,29 @@ export function createUsageTrackingService({
         const prevWindows = lastSnapshot?.windows ?? [];
         const providerStatus: UsageProviderStatusMap = {};
         const mergedRaw: UsageWindow[] = [];
-        for (const [provider, result] of [
-          ["claude", claudeResult],
-          ["codex", codexResult],
-        ] as const) {
+        for (const { provider, result, skipped } of providerResults) {
+          const previousStatus = lastSnapshot?.providerStatus?.[provider] ?? null;
+          if (skipped && previousStatus) {
+            providerStatus[provider] = previousStatus;
+            mergedRaw.push(...filterUnexpiredCarriedWindows(
+              prevWindows.filter((window) => window.provider === provider),
+              polledAt,
+            ));
+            continue;
+          }
+          const nextRetryMs = providerNextRetryAtMs[provider] ?? 0;
           const merged = buildProviderWindows(
             provider,
             result.windows,
             result.errors,
             prevWindows.filter((w) => w.provider === provider),
-            providerLastSuccess[provider] ?? null,
+            previousStatus ?? (providerLastSuccess[provider]
+              ? { state: "stale", lastSuccessAt: providerLastSuccess[provider]! }
+              : null),
             polledAt,
+            result.source,
+            result.errorKind,
+            nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
           );
           if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
           providerStatus[provider] = merged.status;
@@ -2502,11 +2885,11 @@ export function createUsageTrackingService({
         const pacingByProvider = calculatePacingByProvider(allWindows);
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
-        else if (providerStatus.claude?.state === "stale") {
+        else if (providerStatus.claude?.state === "stale" || providerStatus.claude?.state === "unauthed") {
           const previousClaudeExtra = lastSnapshot?.extraUsage.find((extra) => extra.provider === "claude");
           if (previousClaudeExtra) extraUsage.push(previousClaudeExtra);
         }
-        const costsLastPolledAt = includeCosts ? polledAt : lastSnapshot?.costsLastPolledAt;
+        const costsLastPolledAt = lastSnapshot?.costsLastPolledAt;
         const dailyUsage7d: Partial<Record<UsageProvider, number[]>> = { ...cachedDaily7d };
         if (codexResult.dailyUsage7d?.some((value) => value > 0)) {
           dailyUsage7d.codex = codexResult.dailyUsage7d;
@@ -2516,6 +2899,7 @@ export function createUsageTrackingService({
           ...(lastSnapshot?.providerMessages ?? []).filter((message) => message.provider !== "codex"),
           ...(codexResult.providerMessages ?? []),
         ];
+        const costResult = cachedCostResult();
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -2538,6 +2922,8 @@ export function createUsageTrackingService({
         emitUpdate(snapshot);
 
         logger.debug("usage.poll.complete", {
+          reason,
+          durationMs: Date.now() - refreshStartedAt,
           windowCount: allWindows.length,
           errorCount: errors.length,
           pacing: pacing.status,
@@ -2557,7 +2943,7 @@ export function createUsageTrackingService({
       } finally {
         if (inFlightPoll === currentPoll) {
           inFlightPoll = null;
-          inFlightPollIncludesCosts = false;
+          inFlightPollReason = null;
         }
       }
     });
@@ -2566,20 +2952,41 @@ export function createUsageTrackingService({
     return await currentPoll;
   }
 
+  function nextPollDelayMs(nowMs = Date.now()): number {
+    if (demandLeaseUntilMs > nowMs) return ACTIVE_POLL_INTERVAL_MS;
+    if (nowMs - lastDemandAtMs >= IDLE_AFTER_MS) return IDLE_POLL_INTERVAL_MS;
+    return pollIntervalMs;
+  }
+
+  function scheduleNextPoll(): void {
+    if (!pollingEnabled) return;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      void poll({ reason: "automatic" })
+        .catch(() => {})
+        .finally(() => {
+          if (pollingEnabled) scheduleNextPoll();
+        });
+    }, nextPollDelayMs());
+    pollTimer.unref?.();
+  }
+
   function start() {
-    if (pollTimer) return;
-    // Automatic provider polling should not walk local agent ledgers. On
-    // machines with multi-GB Codex/Claude logs that scan can block project open
-    // and the runtime action queue; explicit refresh still performs it.
-    void poll({ includeCosts: false }).catch(() => {});
-    pollTimer = setInterval(() => {
-      void poll({ includeCosts: false }).catch(() => {});
-    }, pollIntervalMs);
+    if (pollingEnabled) return;
+    pollingEnabled = true;
+    scheduleNextPoll();
+    void poll({ reason: "automatic" })
+      .catch(() => {})
+      .finally(() => {
+        if (pollingEnabled) scheduleNextPoll();
+      });
   }
 
   function stop() {
+    pollingEnabled = false;
     if (pollTimer) {
-      clearInterval(pollTimer);
+      clearTimeout(pollTimer);
       pollTimer = null;
     }
   }
@@ -2588,26 +2995,80 @@ export function createUsageTrackingService({
     return lastSnapshot ?? emptySnapshot();
   }
 
-  async function forceRefresh(): Promise<UsageSnapshot> {
-    costCacheTimestamp = 0; // Invalidate cost cache
-    cachedProjectCosts = [];
-    projectCostsReady = false;
-    githubStatsCache.clear();
-    githubStatsInFlight.clear();
+  function noteQuotaDemand(): UsageSnapshot {
+    const nowMs = Date.now();
+    lastDemandAtMs = nowMs;
+    demandLeaseUntilMs = nowMs + QUOTA_DEMAND_LEASE_MS;
+    if (pollTimer) scheduleNextPoll();
+    const snapshot = getUsageSnapshot();
+    if (nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
+      void poll({ reason: "automatic" }).catch(() => {});
+    }
+    return snapshot;
+  }
+
+  async function forceRefresh(
+    options: { allowInteractiveAuth?: boolean } = {},
+  ): Promise<UsageSnapshot> {
+    lastDemandAtMs = Date.now();
+    const reason: UsageRefreshReason = options.allowInteractiveAuth === false ? "remote" : "user";
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutSnapshot = new Promise<UsageSnapshot>((resolve) => {
       timeout = setTimeout(() => {
         logger.warn("usage.force_refresh_returning_cached_snapshot", {
-          timeoutMs: FORCE_REFRESH_RESPONSE_TIMEOUT_MS,
+          timeoutMs: QUOTA_REFRESH_RESPONSE_TIMEOUT_MS,
         });
         resolve(lastSnapshot ?? emptySnapshot());
-      }, FORCE_REFRESH_RESPONSE_TIMEOUT_MS).unref?.();
+      }, QUOTA_REFRESH_RESPONSE_TIMEOUT_MS).unref?.();
     });
     try {
-      return await Promise.race([poll({ includeCosts: true }), timeoutSnapshot]);
+      return await Promise.race([poll({ reason }), timeoutSnapshot]);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  async function refreshHistory(
+    options: { reason?: UsageRefreshReason } = {},
+  ): Promise<UsageSnapshot> {
+    if (inFlightHistoryRefresh) return await inFlightHistoryRefresh;
+    costCacheTimestamp = 0;
+    githubStatsCache.clear();
+    githubStatsInFlight.clear();
+    const startedAt = Date.now();
+    let current!: Promise<UsageSnapshot>;
+    current = measureUsagePhase(
+      logger,
+      { phase: "history", reason: options.reason ?? "user" },
+      pollCosts,
+    )
+      .then((costResult) => {
+        const refreshedAt = nowIso();
+        const snapshot: UsageSnapshot = {
+          ...(lastSnapshot ?? emptySnapshot()),
+          costs: costResult.costs,
+          adeCosts: costResult.adeCosts,
+          dailyUsage7d: { ...cachedDaily7d },
+          costsLastPolledAt: refreshedAt,
+        };
+        lastSnapshot = snapshot;
+        void writeCachedUsageSnapshot(snapshot, logger);
+        try {
+          onUpdate?.(snapshot);
+        } catch {
+          // Never crash on callback error.
+        }
+        logger.debug("usage.refresh.history_complete", {
+          durationMs: Date.now() - startedAt,
+          providerCount: costResult.costs.length,
+        });
+        return snapshot;
+      })
+      .finally(() => {
+        if (inFlightHistoryRefresh === current) inFlightHistoryRefresh = null;
+      });
+    inFlightHistoryRefresh = current;
+    return await current;
   }
 
   async function getAdeUsageStats(args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats> {
@@ -2649,13 +3110,15 @@ export function createUsageTrackingService({
     requested: { provider: boolean; github: boolean },
     exactRange = false,
   ): void {
-    const key = `${githubStatsCacheKey(range, exactRange)}:${requested.provider ? "provider" : "github"}`;
+    const key = `${githubStatsCacheKey(range, exactRange)}:${requested.provider ? "provider" : ""}:${requested.github ? "github" : ""}`;
     if (statsRefreshInFlight.has(key)) return;
     const task = (async () => {
       const work: Promise<unknown>[] = [];
-      if (requested.provider) work.push(poll({ includeCosts: true }));
+      if (requested.provider) work.push(refreshHistory({ reason: "automatic" }));
       if (requested.github) work.push(getGithubStatsForRange(range, exactRange, true));
       await Promise.allSettled(work);
+      // History refresh emits when its ledger scan settles. GitHub can finish
+      // later, so always emit again after its cache is populated.
       if (requested.github) emitUpdate(lastSnapshot ?? emptySnapshot());
     })().finally(() => {
       statsRefreshInFlight.delete(key);
@@ -2720,7 +3183,9 @@ export function createUsageTrackingService({
     start,
     stop,
     getUsageSnapshot,
+    noteQuotaDemand,
     forceRefresh,
+    refreshHistory,
     getAdeUsageStats,
     poll,
     dispose: stop,
@@ -2738,6 +3203,7 @@ export const _testing = {
   isClaudeTokenExpiredOrExpiring,
   refreshClaudeCredentials,
   parseClaudeWindows,
+  parseClaudeCliUsage,
   parseCodexRateLimitWindows,
   pollClaudeUsage,
   pollCodexUsage,

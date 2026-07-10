@@ -1961,19 +1961,17 @@ const HELP_BY_COMMAND: Record<string, string> = {
   usage: `${ADE_BANNER}
   Usage and provider quotas
 
-  Reads live provider quota usage (Claude five-hour + weekly, Codex five-hour +
-  weekly, Cursor monthly via the team Admin API), pacing, costs, and budget
-  guardrails. The desktop app surfaces this same data in the top-bar Usage popup.
+  Reads authoritative Claude and Codex quota windows, pacing, cached local
+  history, and budget guardrails. Live quota refresh is intentionally separate
+  from local provider-ledger scans.
 
-    $ ade usage snapshot --text                     Cached snapshot (windows, pacing, costs, errors)
-    $ ade usage refresh --text                      Force a fresh poll (invalidates cost cache)
+    $ ade usage snapshot --text                     Cached quota, source/stale state, and history
+    $ ade --role cto usage refresh --text           Refresh live provider quota only
+    $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
     $ ade usage budget set --from-file budget.json  Save budget guardrail config
     $ ade usage budget check --provider claude --scope global
     $ ade usage budget cumulative --scope global    Cumulative spend for the current week
-
-  Cursor uses the Admin API (https://api.cursor.com/teams/spend) — set
-  CURSOR_ADMIN_API_KEY (or CURSOR_API_KEY) so the poll can authenticate.
 `,
   secrets: `${ADE_BANNER}
   ADE project secrets
@@ -9764,10 +9762,11 @@ function buildUsagePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "refresh" || sub === "poll") {
+    const history = args.includes("--history");
     return {
       kind: "execute",
-      label: "usage refresh",
-      steps: [actionStep("result", "usage", "forceRefresh", {})],
+      label: history ? "usage history refresh" : "usage refresh",
+      steps: [actionStep("result", "usage", history ? "refreshHistory" : "forceRefresh", {})],
     };
   }
   if (sub === "budget") {

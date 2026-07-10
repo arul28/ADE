@@ -7,6 +7,7 @@ import { useShimmerTick } from "../spinTick";
 
 type UsageContent = Extract<RightPaneContent, { kind: "usage" }>;
 type QuotaWindow = NonNullable<UsageContent["quotaWindows"]>[number];
+type ProviderStatus = NonNullable<UsageContent["providerStatuses"]>[number];
 
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
@@ -26,6 +27,36 @@ function formatCost(value: number | null | undefined): string {
   if (value === 0) return "$0.00";
   if (value < 0.01) return "<$0.01";
   return `$${value.toFixed(2)}`;
+}
+
+function formatUpdatedAt(updatedAt: string | null | undefined, nowMs: number): string {
+  if (!updatedAt) return "not updated";
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return "not updated";
+  const ageMs = Math.max(0, nowMs - timestamp);
+  if (ageMs < 60_000) return "just now";
+  if (ageMs < 3_600_000) return `${Math.max(1, Math.floor(ageMs / 60_000))}m ago`;
+  if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3_600_000)}h ago`;
+  return `${Math.floor(ageMs / 86_400_000)}d ago`;
+}
+
+function ProviderStatusRow({ status, nowMs }: { status: ProviderStatus; nowMs: number }) {
+  const source = status.source?.toUpperCase() ?? "WAITING";
+  const isHealthy = status.state === "ok";
+  const stateLabel = status.state === "unauthed" ? "SIGN IN" : status.state.toUpperCase();
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text color={theme.color.t2} bold>{status.label}</Text>
+        <Text color={theme.color.t4} dimColor>{`${source} · ${formatUpdatedAt(status.updatedAt, nowMs)}`}</Text>
+      </Box>
+      {!isHealthy ? (
+        <Text color={theme.color.warning} wrap="wrap">
+          {`${stateLabel} · ${status.message ?? (status.state === "stale" ? "Showing last known quota" : "Quota unavailable")}`}
+        </Text>
+      ) : null}
+    </Box>
+  );
 }
 
 /**
@@ -113,10 +144,17 @@ export function UsagePane({ content, width }: { content: UsageContent; width: nu
   }
 
   const windows = content.quotaWindows ?? [];
+  const providerStatuses = content.providerStatuses ?? [];
   const session = content.session ?? null;
 
   return (
     <Box flexDirection="column">
+      {providerStatuses.map((status, index) => (
+        <Box key={status.id} marginTop={index === 0 ? 0 : 1} flexDirection="column">
+          <ProviderStatusRow status={status} nowMs={nowMs} />
+        </Box>
+      ))}
+
       {windows.length ? (
         windows.map((window, index) => (
           <QuotaWindowRow
@@ -124,7 +162,7 @@ export function UsagePane({ content, width }: { content: UsageContent; width: nu
             window={window}
             width={inner}
             nowMs={nowMs}
-            marginTop={index === 0 ? 0 : 1}
+            marginTop={providerStatuses.length > 0 || index > 0 ? 1 : 0}
           />
         ))
       ) : (

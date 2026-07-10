@@ -10560,6 +10560,26 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func fetchUsageQuotaSnapshot(refresh: Bool = false) async throws -> MobileUsageQuotaSnapshot {
+    let action = refresh ? "usage.refreshQuota" : "usage.getQuotaSnapshot"
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Live usage limits are not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    return try await sendDecodableCommand(
+      action: action,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: refresh ? 22_000_000_000 : 8_000_000_000,
+      as: MobileUsageQuotaSnapshot.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],

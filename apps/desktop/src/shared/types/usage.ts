@@ -372,10 +372,33 @@ export type UsagePacingByProvider = Partial<Record<UsageProvider, UsagePacing>>;
  */
 export type UsageProviderState = "ok" | "stale" | "unauthed" | "error";
 
+export type UsageProviderSource = "oauth" | "http" | "cli";
+
+export type UsageProviderErrorKind =
+  | "auth"
+  | "forbidden"
+  | "conflict"
+  | "rate_limited"
+  | "timeout"
+  | "network"
+  | "invalid_response"
+  | "unavailable"
+  | "unknown";
+
 export type UsageProviderStatus = {
   state: UsageProviderState;
   /** ISO timestamp of the last poll that returned real windows, if any. */
   lastSuccessAt: string | null;
+  /** Provider source that produced the displayed windows. */
+  source?: UsageProviderSource;
+  /** ISO timestamp of the data currently being displayed. */
+  updatedAt?: string | null;
+  /** ISO timestamp of the most recent attempted refresh. */
+  lastAttemptAt?: string | null;
+  /** Typed failure classification for stale/error/unauthed states. */
+  errorKind?: UsageProviderErrorKind;
+  /** ISO timestamp before which automatic refresh should remain backed off. */
+  nextRetryAt?: string | null;
   /** Friendly, log-free reason for a non-ok state (e.g. "Couldn't reach Claude"). */
   message?: string;
 };

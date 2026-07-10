@@ -4313,6 +4313,14 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
+    refreshHistory: async (): Promise<UsageSnapshot | null> =>
+      callProjectRuntimeActionOr("usage", "refreshHistory", {}, () =>
+        ipcRenderer.invoke(IPC.usageRefreshHistory),
+      ),
+    noteDemand: async (): Promise<UsageSnapshot | null> =>
+      callProjectRuntimeActionOr("usage", "noteQuotaDemand", {}, () =>
+        ipcRenderer.invoke(IPC.usageNoteDemand),
+      ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),

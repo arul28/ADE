@@ -12,7 +12,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
-import { ActivityModule, WorkActivityModule } from "./ActivityModule";
+import { ActivityModule, WorkActivityModule, readActivityPersisted } from "./ActivityModule";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import {
@@ -23,7 +23,7 @@ import {
 type UsageComponentTestBridge = {
   usage: Pick<
     Window["ade"]["usage"],
-    "getSnapshot" | "refresh" | "getBudgetConfig" | "saveBudgetConfig" | "onUpdate"
+    "getSnapshot" | "refresh" | "refreshHistory" | "noteDemand" | "getBudgetConfig" | "saveBudgetConfig" | "onUpdate"
   >;
   ai: Pick<Window["ade"]["ai"], "getStatus">;
 };
@@ -87,6 +87,20 @@ function makeQuotaPanelSnapshot(): UsageSnapshot {
         etaHours: null,
         willLastToReset: true,
         resetsInHours: 24,
+      },
+    },
+    providerStatus: {
+      claude: {
+        state: "ok",
+        source: "oauth",
+        lastSuccessAt: "2026-05-08T07:00:00.000Z",
+        updatedAt: "2026-05-08T07:00:00.000Z",
+      },
+      codex: {
+        state: "ok",
+        source: "http",
+        lastSuccessAt: "2026-05-08T07:00:00.000Z",
+        updatedAt: "2026-05-08T07:00:00.000Z",
       },
     },
     costs: [],
@@ -250,6 +264,8 @@ describe("usage components", () => {
       usage: {
         getSnapshot: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
         refresh: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
+        refreshHistory: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
+        noteDemand: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
         getBudgetConfig: vi.fn<[], Promise<BudgetCapConfig>>(async () => ({})),
         saveBudgetConfig: vi.fn<[BudgetCapConfig], Promise<BudgetCapConfig>>(async (config) => config),
         onUpdate: vi.fn<[(snapshot: UsageSnapshot) => void], () => void>(() => () => {}),
@@ -290,6 +306,7 @@ describe("usage components", () => {
       ];
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
       vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
 
       render(<UsageQuotaPanel />);
 
@@ -298,12 +315,13 @@ describe("usage components", () => {
       expect(await screen.findByText("44.0% used")).toBeTruthy();
     });
 
-    it("auto-refreshes once on mount so the drawer never shows stale data", async () => {
+    it("registers non-interactive quota demand on mount without forcing user auth", async () => {
       render(<UsageQuotaPanel />);
 
       await waitFor(() => {
-        expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
+        expect(window.ade.usage.noteDemand).toHaveBeenCalledTimes(1);
       });
+      expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
     it("hides providers whose CLI is not detected on this machine", async () => {
@@ -344,7 +362,21 @@ describe("usage components", () => {
       expect(screen.queryByText("No provider CLIs detected")).toBeNull();
     });
 
-    it("dims the provider card when the CLI is installed but not signed in", async () => {
+    it("shows an explicit reconnect state when the CLI is installed but not signed in", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.windows = snapshot.windows.filter((window) => window.provider !== "claude");
+      snapshot.providerStatus = {
+        ...snapshot.providerStatus,
+        claude: {
+          state: "unauthed",
+          source: "oauth",
+          lastSuccessAt: null,
+          updatedAt: null,
+          message: "Claude sign-in required — reconnect to refresh",
+        },
+      };
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
       vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
         makeAiStatus({
           claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: false }),
@@ -353,7 +385,8 @@ describe("usage components", () => {
 
       render(<UsageQuotaPanel />);
 
-      expect(await screen.findByText("Not signed in")).toBeTruthy();
+      expect(await screen.findByText(/Claude sign-in required/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
       expect(screen.queryByText("20.0% used")).toBeNull();
     });
 
@@ -361,7 +394,7 @@ describe("usage components", () => {
       render(<UsageQuotaPanel />);
 
       await waitFor(() => {
-        expect(window.ade.usage.refresh).toHaveBeenCalled();
+        expect(window.ade.usage.noteDemand).toHaveBeenCalled();
       });
       expect(screen.queryByText("Cursor")).toBeNull();
       expect(screen.queryByText(/Cursor not detected/i)).toBeNull();
@@ -537,6 +570,10 @@ describe("usage components", () => {
   describe("ActivityModule", () => {
     beforeEach(() => localStorage.clear());
 
+    it("defaults new activity views to the all-time range", () => {
+      expect(readActivityPersisted()).toEqual({ tab: "activity", preset: "all" });
+    });
+
     it("switches tabs and persists the selection", async () => {
       render(<ActivityModule stats={makeActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
 
@@ -549,7 +586,6 @@ describe("usage components", () => {
       expect(screen.getByText("Output")).toBeTruthy();
       expect(JSON.parse(localStorage.getItem("ade.activity.module.v1") ?? "{}")).toMatchObject({ tab: "tokens" });
     });
-
     it("uses the unified range vocabulary and reports changes", () => {
       const onPresetChange = vi.fn();
       render(<ActivityModule stats={makeActivityStats()} variant="full" preset="7d" onPresetChange={onPresetChange} />);
@@ -593,6 +629,8 @@ describe("usage components", () => {
       rerender(<ActivityModule stats={githubOnly} preset="7d" onPresetChange={vi.fn()} />);
 
       expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
+      const activityCell = screen.getByRole("img", { name: "Daily activity heatmap" }).querySelector("span");
+      expect((activityCell as HTMLElement).style.background).not.toContain("var(--color-fg) 7%");
       fireEvent.click(screen.getByRole("tab", { name: "Code" }));
       expect(screen.getByRole("img", { name: "Code changes by day, additions and deletions" })).toBeTruthy();
       expect(screen.getByText("GitHub")).toBeTruthy();
@@ -609,19 +647,18 @@ describe("usage components", () => {
       // not zero — proving dayValue folds in the github fields.
       expect(Number(cell.getAttribute("data-intensity"))).toBeGreaterThan(0);
     });
-
     it("shows a streak chip once the streak reaches three days", () => {
       render(<ActivityModule stats={makeActivityStats({ summary: { ...makeActivityStats().summary, currentStreakDays: 5 } })} preset="7d" onPresetChange={vi.fn()} />);
       expect(screen.getByText("5-day streak")).toBeTruthy();
     });
 
-    it("shows a lifetime milestone chip on the all-time range", () => {
+    it("shows the measured all-provider lifetime total on the all-time range", () => {
       const stats = makeActivityStats({
         range: { preset: "all", since: null, until: "2026-07-09T12:00:00.000Z" },
-        summary: { ...makeActivityStats().summary, totalTokens: 120_000_000, currentStreakDays: 0 },
+        summary: { ...makeActivityStats().summary, totalTokens: 101_500_000_000, currentStreakDays: 0 },
       });
       render(<ActivityModule stats={stats} preset="all" onPresetChange={vi.fn()} />);
-      expect(screen.getByText("100M lifetime tokens")).toBeTruthy();
+      expect(screen.getByText("101.5B lifetime tokens")).toBeTruthy();
     });
 
     it("renders bars without motion transitions when reduced motion is preferred", () => {
@@ -735,6 +772,14 @@ describe("usage components", () => {
 
       expect(await screen.findByText(/9\.0M/)).toBeTruthy();
     });
+
+    it("requests all-time stats by default", async () => {
+      render(<WorkActivityModule />);
+
+      await waitFor(() => {
+        expect(window.ade.usage.getAdeStats).toHaveBeenCalledWith({ preset: "all" });
+      });
+    });
   });
 
   describe("AdeUsageSection", () => {
@@ -759,12 +804,13 @@ describe("usage components", () => {
 
     it("round-trips the scope toggle through getAdeStats and persists it", async () => {
       render(<AdeUsageSection />);
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "7d", scope: "project" }));
+      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "project" }));
 
       fireEvent.click(screen.getByRole("button", { name: "This machine" }));
 
-      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "7d", scope: "machine" }));
+      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "machine" }));
       expect(localStorage.getItem("ade.stats.scope.v1")).toBe("machine");
     });
 
@@ -777,6 +823,7 @@ describe("usage components", () => {
       }));
 
       render(<AdeUsageSection />);
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
       expect(await screen.findByText(/Cursor tokens estimated/)).toBeTruthy();
       expect(screen.getByText(/Provider totals scoped to this project/)).toBeTruthy();

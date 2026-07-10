@@ -22,7 +22,7 @@ import { useAppStore } from "../../state/appStore";
 
 const STORAGE_KEY = "ade.activity.module.v1";
 const LEGACY_STORAGE_KEY = "ade.stats.carousel.v1";
-const MILESTONE_STORAGE_KEY = "ade.activity.module.milestones.v1";
+const DEFAULT_PRESET: AdeUsageRangePreset = "all";
 
 const TABS = ["activity", "tokens", "code", "clients"] as const;
 type ActivityTab = (typeof TABS)[number];
@@ -53,7 +53,7 @@ function isPreset(value: unknown): value is AdeUsageRangePreset {
 }
 
 export function readActivityPersisted(): PersistedState {
-  const fallback: PersistedState = { tab: "activity", preset: "7d" };
+  const fallback: PersistedState = { tab: "activity", preset: DEFAULT_PRESET };
   if (typeof localStorage === "undefined") return fallback;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -61,7 +61,7 @@ export function readActivityPersisted(): PersistedState {
       const parsed = JSON.parse(raw) as Partial<PersistedState>;
       return {
         tab: isTab(parsed.tab) ? parsed.tab : "activity",
-        preset: isPreset(parsed.preset) ? parsed.preset : "7d",
+        preset: isPreset(parsed.preset) ? parsed.preset : DEFAULT_PRESET,
       };
     }
     // Migrate the retired carousel key ({ slide, preset }) once, gracefully.
@@ -70,7 +70,7 @@ export function readActivityPersisted(): PersistedState {
       const parsed = JSON.parse(legacy) as { slide?: unknown; preset?: unknown };
       return {
         tab: isTab(parsed.slide) ? parsed.slide : "activity",
-        preset: isPreset(parsed.preset) ? parsed.preset : "7d",
+        preset: isPreset(parsed.preset) ? parsed.preset : DEFAULT_PRESET,
       };
     }
   } catch {
@@ -671,52 +671,22 @@ function RangeControl({
 }
 
 // ---------------------------------------------------------------------------
-// Streak / milestone chip
+// Lifetime total / streak chip
 // ---------------------------------------------------------------------------
 
-const MILESTONES: Array<{ threshold: number; label: string }> = [
-  { threshold: 10_000_000_000, label: "10B lifetime tokens" },
-  { threshold: 5_000_000_000, label: "5B lifetime tokens" },
-  { threshold: 1_000_000_000, label: "1B lifetime tokens" },
-  { threshold: 500_000_000, label: "500M lifetime tokens" },
-  { threshold: 100_000_000, label: "100M lifetime tokens" },
-];
-
-function readShownMilestones(): number[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const parsed = JSON.parse(localStorage.getItem(MILESTONE_STORAGE_KEY) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter((v): v is number => typeof v === "number") : [];
-  } catch {
-    return [];
-  }
-}
-
-function recordShownMilestone(threshold: number): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    const next = Array.from(new Set([...readShownMilestones(), threshold]));
-    localStorage.setItem(MILESTONE_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-}
-
 /**
- * Picks the footer chip: a lifetime-token milestone (only when the loaded range
- * is "all", so it needs no extra fetch) takes priority, else a >=3 day streak.
+ * Shows the measured all-provider lifetime total on the all-time range. Other
+ * ranges retain the streak chip because their token total is range-scoped.
  */
 function useFooterChip(stats: AdeUsageStats | null): { icon: "trophy" | "fire"; label: string; fresh: boolean } | null {
   return useMemo(() => {
     if (!stats) return null;
-    if (stats.range.preset === "all") {
-      const crossed = MILESTONES.find((m) => stats.summary.totalTokens >= m.threshold);
-      if (crossed) {
-        const shown = readShownMilestones();
-        const fresh = !shown.includes(crossed.threshold);
-        if (fresh) recordShownMilestone(crossed.threshold);
-        return { icon: "trophy", label: crossed.label, fresh };
-      }
+    if (stats.range.preset === "all" && stats.summary.totalTokens > 0) {
+      return {
+        icon: "trophy",
+        label: `${formatTokens(stats.summary.totalTokens)} lifetime tokens`,
+        fresh: false,
+      };
     }
     const streak = stats.summary.currentStreakDays ?? 0;
     if (streak >= 3) return { icon: "fire", label: `${streak}-day streak`, fresh: false };

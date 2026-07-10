@@ -154,7 +154,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
-  usage: ["forceRefresh", "poll", "start", "stop"],
+  usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
   search: ["rebuildIndex"],
 };
 
@@ -587,7 +587,16 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "startAppUserDeviceAuth",
   ],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
-  usage: ["forceRefresh", "getAdeUsageStats", "getUsageSnapshot", "poll", "start", "stop"],
+  usage: [
+    "forceRefresh",
+    "getAdeUsageStats",
+    "getUsageSnapshot",
+    "noteQuotaDemand",
+    "refreshHistory",
+    "poll",
+    "start",
+    "stop",
+  ],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [

@@ -19,11 +19,20 @@ describe("RightPane usage", () => {
     const { lastFrame } = renderPane({
       kind: "usage",
       title: "Usage",
+      providerStatuses: [{
+        id: "claude",
+        label: "Claude",
+        state: "ok",
+        source: "oauth",
+        updatedAt: new Date().toISOString(),
+      }],
       quotaWindows: [{ id: "rate-limit", label: "Rate limit", percent: 42, resetAt }],
       session: { input: 12_000, output: 3_400, cost: 0.42 },
     });
     const text = lastFrame() ?? "";
     expect(text).toContain("USAGE");
+    expect(text).toContain("Claude");
+    expect(text).toContain("OAUTH · just now");
     expect(text).toContain("Rate limit");
     expect(text).toContain("42%");
     // Live reset countdown marker.
@@ -33,6 +42,28 @@ describe("RightPane usage", () => {
     expect(text).toContain("12.0k");
     expect(text).toContain("3.4k");
     expect(text).toContain("$0.42");
+  });
+
+  it("marks carried-forward provider data as stale without hiding quota windows", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      providerStatuses: [{
+        id: "codex",
+        label: "Codex",
+        state: "stale",
+        source: "http",
+        updatedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+        message: "Rate limited; retrying soon",
+      }],
+      quotaWindows: [{ id: "codex:weekly", label: "Codex weekly", percent: 61, resetAt: null }],
+      session: null,
+    });
+    const text = lastFrame() ?? "";
+    expect(text).toContain("HTTP · 2m ago");
+    expect(text).toContain("STALE · Rate limited; retrying soon");
+    expect(text).toContain("Codex weekly");
+    expect(text).toContain("61%");
   });
 
   it("degrades to the session block when quota windows are unavailable", () => {

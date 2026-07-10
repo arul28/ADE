@@ -23,8 +23,10 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
+import { UsageQuotaPanel } from "../usage/UsageQuotaPanel";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
+const RANGE_STORAGE_KEY = "ade.stats.range.v1";
 
 const PANEL_STYLE: React.CSSProperties = {
   background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
@@ -52,6 +54,22 @@ function readScope(): AdeUsageScope {
 function persistScope(scope: AdeUsageScope): void {
   try {
     localStorage.setItem(SCOPE_STORAGE_KEY, scope);
+  } catch {
+    // best-effort
+  }
+}
+
+function readPreset(): AdeUsageRangePreset {
+  if (typeof localStorage === "undefined") return "all";
+  const value = localStorage.getItem(RANGE_STORAGE_KEY);
+  return RANGE_OPTIONS.some((option) => option.preset === value)
+    ? value as AdeUsageRangePreset
+    : "all";
+}
+
+function persistPreset(preset: AdeUsageRangePreset): void {
+  try {
+    localStorage.setItem(RANGE_STORAGE_KEY, preset);
   } catch {
     // best-effort
   }
@@ -370,7 +388,8 @@ function metaLine(stats: AdeUsageStats | null, scope: AdeUsageScope): string {
 
 export function AdeUsageSection() {
   const theme = useAppStore((state) => state.theme);
-  const [preset, setPreset] = React.useState<AdeUsageRangePreset>("7d");
+  const [activeTab, setActiveTab] = React.useState<"limits" | "activity">("limits");
+  const [preset, setPreset] = React.useState<AdeUsageRangePreset>(() => readPreset());
   const [scope, setScope] = React.useState<AdeUsageScope>(() => readScope());
   const [cacheScope, setCacheScope] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<AdeUsageStats | null>(null);
@@ -397,7 +416,7 @@ export function AdeUsageSection() {
         setError(null);
         if (force) {
           setRefreshing(true);
-          await window.ade?.usage?.refresh?.();
+          await window.ade?.usage?.refreshHistory?.();
         }
         const result = await window.ade?.usage?.getAdeStats?.({ preset: nextPreset, scope: sourceScope });
         if (!result) throw new Error("Stats are unavailable.");
@@ -453,23 +472,28 @@ export function AdeUsageSection() {
   }, []);
 
   React.useEffect(() => {
-    if (!cacheScope) return;
+    if (!cacheScope || activeTab !== "activity") return;
     void loadStats(preset, scope, cacheScope, false);
-  }, [cacheScope, loadStats, preset, scope]);
+  }, [activeTab, cacheScope, loadStats, preset, scope]);
 
   // Re-fetch when a background ledger refresh completes, instead of a capped
   // freshness-driven retry.
   React.useEffect(() => {
-    if (!cacheScope) return;
+    if (!cacheScope || activeTab !== "activity") return;
     const unsubscribe = window.ade?.usage?.onUpdate?.(() => {
       void loadStats(preset, scope, cacheScope, false);
     });
     return () => unsubscribe?.();
-  }, [cacheScope, loadStats, preset, scope]);
+  }, [activeTab, cacheScope, loadStats, preset, scope]);
 
   const changeScope = React.useCallback((next: AdeUsageScope) => {
     setScope(next);
     persistScope(next);
+  }, []);
+
+  const changePreset = React.useCallback((next: AdeUsageRangePreset) => {
+    setPreset(next);
+    persistPreset(next);
   }, []);
 
   const summary = stats?.summary;
@@ -481,38 +505,56 @@ export function AdeUsageSection() {
       <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div>
           <div style={{ ...LABEL_STYLE, textTransform: "uppercase", letterSpacing: 1.3, marginBottom: 8 }}>Settings</div>
-          <h1 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 26, lineHeight: 1.1, color: COLORS.textPrimary }}>Stats</h1>
+          <h1 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 26, lineHeight: 1.1, color: COLORS.textPrimary }}>Usage</h1>
           <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-            Your ADE activity across desktop, mobile, terminal, and web.
+            {activeTab === "limits"
+              ? "Live Claude and Codex quota from the connected host."
+              : "Your ADE activity across desktop, mobile, terminal, and web."}
           </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%" }}>
           <Segmented
             options={[
-              { value: "project", label: "This project" },
-              { value: "machine", label: "This machine" },
+              { value: "limits", label: "Limits" },
+              { value: "activity", label: "Activity" },
             ]}
-            value={scope}
-            onChange={(value) => changeScope(value as AdeUsageScope)}
+            value={activeTab}
+            onChange={(value) => setActiveTab(value as "limits" | "activity")}
           />
-          <Segmented
-            options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
-            value={preset}
-            onChange={(value) => setPreset(value as AdeUsageRangePreset)}
-          />
-          <button
-            type="button"
-            onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
-            disabled={refreshing || !cacheScope}
-            style={{ ...outlineButton({ height: 34 }), opacity: refreshing ? 0.7 : 1 }}
-          >
-            <ArrowClockwise size={14} />
-            {refreshing ? "Refreshing" : "Refresh"}
-          </button>
+          {activeTab === "activity" ? (
+            <>
+              <Segmented
+                options={[
+                  { value: "project", label: "This project" },
+                  { value: "machine", label: "This machine" },
+                ]}
+                value={scope}
+                onChange={(value) => changeScope(value as AdeUsageScope)}
+              />
+              <Segmented
+                options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
+                value={preset}
+                onChange={(value) => changePreset(value as AdeUsageRangePreset)}
+              />
+              <button
+                type="button"
+                onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
+                disabled={refreshing || !cacheScope}
+                style={{ ...outlineButton({ height: 34 }), opacity: refreshing ? 0.7 : 1 }}
+              >
+                <ArrowClockwise size={14} />
+                {refreshing ? "Refreshing" : "Refresh"}
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
 
+      {activeTab === "limits" ? (
+        <UsageQuotaPanel showRefreshControl className="max-w-3xl" />
+      ) : (
+        <>
       {error ? (
         <div style={{ ...PANEL_STYLE, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{error}</div>
       ) : null}
@@ -586,6 +628,8 @@ export function AdeUsageSection() {
       {meta ? (
         <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>{meta}</div>
       ) : null}
+        </>
+      )}
     </div>
   );
 }

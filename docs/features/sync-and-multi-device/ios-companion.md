@@ -121,6 +121,8 @@ apps/ios/
 │   │   │                                 # handling, prefs, push.getStatus
 │   │   ├── LiveActivityService.swift # ActivityKit start/update/end for the
 │   │   │                             # aggregate "agent runs" activity
+│   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
+│   │   │                               # quota snapshot + refresh state
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
@@ -184,8 +186,8 @@ apps/ios/
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub),
-│   │   │                            # WorkUsageActivityCarousel (fixed
-│   │   │                            #   cross-client new-chat charts),
+│   │   │                            # WorkUsageActivityCarousel (host quota
+│   │   │                            #   limits + cross-client activity charts),
 │   │   │                            # WorkImportSessionScreen +
 │   │   │                            #   WorkExternalSessionAffordances
 │   │   │                            #   (provider session browse/details,
@@ -239,6 +241,7 @@ apps/ios/
 │   │   │                            #   sync.getWebPairingInfo),
 │   │   │                            # SettingsConnectionHeader,
 │   │   │                            #   host compatibility warning banner,
+│   │   │                            #   full usage limits + refresh section,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SettingsVoiceInputSection
@@ -1296,11 +1299,25 @@ against them instead of relying on hardcoded mobile assumptions. A
 runtime that disables a command via policy change is immediately
 reflected in the phone's UI on the next descriptor read.
 
-`usage.getAdeStats` is a viewer-allowed project command shared by iOS and the
-web client. It returns the same stale-while-revalidate snapshot used by desktop
-Stats, including daily points and `desktop` / `mobile` / `tui` / `web` client
-attribution. The phone uses it only for the fixed Work new-chat carousel; it
-does not duplicate the full desktop Stats page.
+The usage commands are viewer-allowed project actions:
+
+- `usage.getQuotaSnapshot` reads the host's cached Claude/Codex quota windows
+  without doing provider or ledger work. `usage.refreshQuota` runs a bounded
+  quota-only refresh with interactive host authentication disabled. Work shows
+  a compact Limits summary and Settings shows the full windows, source,
+  freshness, stale/error state, reset times, and explicit refresh control.
+- `usage.getAdeStats` returns the same stale-while-revalidate activity snapshot
+  used by desktop Stats, including daily points and `desktop` / `mobile` /
+  `tui` / `web` client attribution. The phone uses it for the Activity mode of
+  the Work new-chat carousel rather than duplicating the full desktop Stats
+  page.
+
+`MobileUsageQuotaStore` persists snapshots by host identity, rebinds on machine
+changes, ignores an older in-flight response after a host switch, and clears
+the visible snapshot when the active host is unknown or does not advertise the
+quota actions. Provider credentials remain on the host. A legacy host therefore
+stays connected in limited mode and shows update guidance instead of leaking a
+different machine's cached limits.
 
 ## Implementation status (phone specifics)
 

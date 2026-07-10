@@ -65,7 +65,6 @@ describe("usage ledger end-to-end accuracy", () => {
     const originalClaudeConfigDirs = process.env.CLAUDE_CONFIG_DIRS;
     const originalCodexHome = process.env.CODEX_HOME;
     const originalFactoryDir = process.env.FACTORY_DIR;
-
     try {
       const beforeMidnight = new Date(2026, 9, 31, 23, 59, 0, 0);
       const afterMidnight = new Date(2026, 10, 1, 0, 1, 0, 0);

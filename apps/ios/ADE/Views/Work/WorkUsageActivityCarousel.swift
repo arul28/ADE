@@ -4,7 +4,7 @@ import SwiftUI
 // The struct name is kept for source stability (referenced from WorkNewChatScreen
 // and the Xcode project), but this is the tabbed activity module that matches the
 // desktop redesign — named tabs, a unified range control, split token/code bars,
-// tap tooltips, a warm empty state, and a streak/milestone footer chip.
+// tap tooltips, a warm empty state, exact lifetime totals, and live limits.
 
 private enum WorkUsageRange: String, CaseIterable, Identifiable {
   case today
@@ -30,6 +30,7 @@ private enum WorkUsageTab: String, CaseIterable, Identifiable {
   case tokens
   case code
   case clients
+  case limits
 
   var id: String { rawValue }
   var title: String {
@@ -38,6 +39,7 @@ private enum WorkUsageTab: String, CaseIterable, Identifiable {
     case .tokens: return "Tokens"
     case .code: return "Code"
     case .clients: return "Clients"
+    case .limits: return "Limits"
     }
   }
 }
@@ -144,34 +146,20 @@ private func workUsageFormatDay(_ date: String) -> String {
   return workUsageDayDisplay.string(from: parsed)
 }
 
-private struct WorkUsageMilestone {
-  let threshold: Int
-  let label: String
-}
-
-private let workUsageMilestones: [WorkUsageMilestone] = [
-  WorkUsageMilestone(threshold: 10_000_000_000, label: "10B lifetime tokens"),
-  WorkUsageMilestone(threshold: 5_000_000_000, label: "5B lifetime tokens"),
-  WorkUsageMilestone(threshold: 1_000_000_000, label: "1B lifetime tokens"),
-  WorkUsageMilestone(threshold: 500_000_000, label: "500M lifetime tokens"),
-  WorkUsageMilestone(threshold: 100_000_000, label: "100M lifetime tokens"),
-]
-
 struct WorkUsageActivityCarousel: View {
   @EnvironmentObject private var syncService: SyncService
   @AppStorage("ade.work.activityTab.v1") private var tabRaw = WorkUsageTab.activity.rawValue
-  @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.week.rawValue
-  @AppStorage("ade.work.usageMilestone.v1") private var shownMilestone = 0
+  @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.all.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @ObservedObject private var quotaStore = MobileUsageQuotaStore.shared
   @State private var stats: MobileAdeUsageStats?
   @State private var loadedRange: String?
   @State private var loading = false
   @State private var selection: WorkUsageBucketDetail?
-  @State private var chipScale: CGFloat = 1
 
   private var tab: WorkUsageTab { WorkUsageTab(rawValue: tabRaw) ?? .activity }
-  private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .week }
-  private var loadKey: String { "\(rangeRaw):\(syncService.connectionState.rawValue)" }
+  private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .all }
+  private var loadKey: String { "\(tabRaw):\(rangeRaw):\(syncService.connectionState.rawValue)" }
 
   private var summary: MobileAdeUsageSummary? {
     loadedRange == rangeRaw ? stats?.summary : nil
@@ -192,14 +180,13 @@ struct WorkUsageActivityCarousel: View {
     }
   }
 
-  private var footerChip: (system: String, label: String, fresh: Bool)? {
+  private var footerChip: (system: String, label: String)? {
     guard let summary else { return nil }
-    if range == .all, let totalTokens = summary.totalTokens,
-       let crossed = workUsageMilestones.first(where: { totalTokens >= $0.threshold }) {
-      return ("trophy.fill", crossed.label, crossed.threshold > shownMilestone)
+    if range == .all, let totalTokens = summary.totalTokens, totalTokens > 0 {
+      return ("trophy.fill", "\(workUsageCompact(totalTokens)) lifetime tokens")
     }
     if let streak = summary.currentStreakDays, streak >= 3 {
-      return ("flame.fill", "\(streak)-day streak", false)
+      return ("flame.fill", "\(streak)-day streak")
     }
     return nil
   }
@@ -234,11 +221,15 @@ struct WorkUsageActivityCarousel: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel(accessibilitySummary)
     .task(id: loadKey) { await loadStats() }
+    .task(id: syncService.connectionState.rawValue) {
+      await quotaStore.load(using: syncService)
+    }
     .onChange(of: rangeRaw) { _, _ in selection = nil }
     .onChange(of: tabRaw) { _, _ in selection = nil }
   }
 
   private var accessibilitySummary: String {
+    if tab == .limits { return "Live Claude and Codex limits from the connected machine." }
     guard let summary else { return "Activity for \(range.title). Loading." }
     let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
     return "Activity for \(range.title): \(workUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
@@ -248,7 +239,7 @@ struct WorkUsageActivityCarousel: View {
     HStack(spacing: 8) {
       tabRow
       Spacer(minLength: 6)
-      rangeControl
+      if tab != .limits { rangeControl }
     }
   }
 
@@ -298,7 +289,9 @@ struct WorkUsageActivityCarousel: View {
 
   @ViewBuilder
   private var chartArea: some View {
-    if let stats, loadedRange == rangeRaw {
+    if tab == .limits {
+      WorkUsageQuotaCompact(snapshot: quotaStore.snapshot)
+    } else if let stats, loadedRange == rangeRaw {
       if !hasActivity {
         WorkUsageWarmEmpty()
       } else {
@@ -311,6 +304,8 @@ struct WorkUsageActivityCarousel: View {
           WorkUsageBars(points: stats.daily, mode: .code, selectedId: selection?.date, onSelect: select)
         case .clients:
           WorkUsageClientMix(clients: stats.clients ?? [])
+        case .limits:
+          EmptyView()
         }
       }
     } else if loading {
@@ -323,7 +318,10 @@ struct WorkUsageActivityCarousel: View {
   private var footer: some View {
     HStack(spacing: 6) {
       Group {
-        if let summary {
+        if tab == .limits, let snapshot = quotaStore.snapshot {
+          Text("Checked \(mobileUsageRelativeTime(snapshot.lastPolledAt))")
+          if quotaStore.refreshing { ProgressView().controlSize(.mini) }
+        } else if let summary {
           let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
           Text("\(workUsageCompact(summary.totalTokens ?? 0)) tokens")
           Text("·")
@@ -344,7 +342,7 @@ struct WorkUsageActivityCarousel: View {
 
       Spacer(minLength: 0)
 
-      if let chip = footerChip {
+      if tab != .limits, let chip = footerChip {
         Label(chip.label, systemImage: chip.system)
           .labelStyle(.titleAndIcon)
           .font(.caption2.weight(.medium))
@@ -353,24 +351,11 @@ struct WorkUsageActivityCarousel: View {
           .padding(.vertical, 3)
           .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
           .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6))
-          .scaleEffect(chipScale)
-          .onAppear {
-            guard chip.fresh else { return }
-            shownMilestone = max(shownMilestone, currentMilestoneThreshold())
-            guard !reduceMotion else { return }
-            chipScale = 0.9
-            withAnimation(.snappy(duration: 0.5)) { chipScale = 1 }
-          }
           .accessibilityLabel(chip.label)
       }
     }
     .overlay(alignment: .top) { Divider().opacity(0.12) }
     .padding(.top, 2)
-  }
-
-  private func currentMilestoneThreshold() -> Int {
-    guard range == .all, let totalTokens = summary?.totalTokens else { return shownMilestone }
-    return workUsageMilestones.first(where: { totalTokens >= $0.threshold })?.threshold ?? shownMilestone
   }
 
   private func select(_ detail: WorkUsageBucketDetail) {
@@ -381,6 +366,10 @@ struct WorkUsageActivityCarousel: View {
 
   @MainActor
   private func loadStats() async {
+    guard tab != .limits else {
+      loading = false
+      return
+    }
     let requestedRange = range.rawValue
     guard syncService.supportsRemoteAction("usage.getAdeStats") else {
       stats = nil
@@ -451,6 +440,59 @@ private struct WorkUsageTooltip: View {
   }
 }
 
+private func mobileUsageRelativeTime(_ iso: String) -> String {
+  let fractional = ISO8601DateFormatter()
+  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  guard let date = fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else {
+    return "recently"
+  }
+  let seconds = max(0, Int(Date().timeIntervalSince(date)))
+  if seconds < 60 { return "now" }
+  if seconds < 3_600 { return "\(seconds / 60)m ago" }
+  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
+  return "\(seconds / 86_400)d ago"
+}
+
+private struct WorkUsageQuotaCompact: View {
+  let snapshot: MobileUsageQuotaSnapshot?
+
+  var body: some View {
+    VStack(spacing: 8) {
+      if let snapshot {
+        ForEach(["claude", "codex"], id: \.self) { provider in
+          let windows = snapshot.windows.filter { $0.provider == provider }
+          let fiveHour = windows.first { $0.windowType == "five_hour" }
+          let weekly = windows.first { $0.windowType == "weekly" || $0.windowType == "monthly" }
+          let status = snapshot.providerStatus?[provider]
+          HStack(spacing: 8) {
+            Text(provider == "claude" ? "Claude" : "Codex")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(width: 54, alignment: .leading)
+            Text(fiveHour.map { "5h \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "5h —")
+            Text(weekly.map { "week \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "week —")
+            Spacer(minLength: 0)
+            Text(mobileUsageStatusLabel(status))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          .font(.system(.caption2, design: .monospaced))
+        }
+      } else {
+        Text("Connect to a machine to load live limits.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+  }
+}
+
+private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> String {
+  guard let status else { return "WAITING" }
+  let source = status.source?.uppercased() ?? "UNKNOWN"
+  return status.state == "ok" ? source : "\(status.state.uppercased()) · \(source)"
+}
 private struct WorkUsageHeatmap: View {
   let points: [MobileAdeUsageDailyPoint]
   let selectedId: String?
