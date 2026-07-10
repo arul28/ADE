@@ -218,13 +218,18 @@ Renderer — settings:
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — multi-device sync management. Surfaces the phone-pairing PIN (set
-  / clear / reveal), the QR payload (v2) with its LAN / Tailscale /
-  loopback address candidates, the bootstrap token for desktop peers,
-  the Tailscale MagicDNS discovery status (`svc:ade-sync` publication
-  via `tailscale serve`), and the per-device connection panel used to
-  forget paired phones. The top-bar Mobile popover wraps this section
-  with a TestFlight download action for installing ADE Mobile.
+  — multi-device sync management. The default `variant="all"` shows phone,
+  web-client, and desktop-peer controls in Settings; `"phone"` and `"web"`
+  variants provide focused content for the matching top-bar sheets. It
+  surfaces the phone-pairing PIN (set / clear / reveal, or generate a new
+  six-digit PIN when only the at-rest hash remains), the v3 smart pairing URL
+  with LAN / Tailscale / loopback / relay candidates, the web-client link and
+  QR, the bootstrap token for desktop peers, relay/discovery status, and the
+  per-device panels used to forget paired phones or revoke web clients.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` and `HeaderSheet.tsx`
+  — Mobile and Web connection chips plus their mutually exclusive portaled
+  sheets. The Mobile sheet includes the TestFlight install action; the Web
+  sheet reports connected browser peers and exposes focused browser pairing.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget

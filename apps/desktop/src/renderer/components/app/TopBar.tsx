@@ -14,6 +14,7 @@ import {
   DeviceMobile,
   Folder,
   FolderOpen,
+  Globe,
   Plus,
   Minus,
   Plugs,
@@ -43,6 +44,7 @@ import { cn } from "../ui/cn";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
+import { WEB_CLIENT_BASE_URL } from "../../../shared/webClientUrl";
 import type {
   ProcessRuntime,
   ProjectIcon,
@@ -55,6 +57,7 @@ import type {
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
+import { HeaderSheet, useDialogFocusTrap } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
@@ -190,31 +193,53 @@ function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
   }
   projectIconCache.set(rootPath, icon);
 }
-const PHONE_SYNC_FOCUSABLE_SELECTOR = [
-  "a[href]",
-  "button:not([disabled])",
-  "textarea:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  '[tabindex]:not([tabindex="-1"])',
-].join(",");
-
-function getFocusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(PHONE_SYNC_FOCUSABLE_SELECTOR),
-  ).filter(
-    (element) =>
-      element.getAttribute("aria-hidden") !== "true" &&
-      !element.hasAttribute("disabled") &&
-      element.tabIndex >= 0,
-  );
-}
-
 function isSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   if (!snapshot) return false;
   if (snapshot.client.state === "error") return false;
-  if (snapshot.role === "brain") return snapshot.connectedPeers.length > 0;
+  if (snapshot.role === "brain") {
+    return snapshot.connectedPeers.some((peer) => peer.deviceType === "phone");
+  }
   return snapshot.client.state === "connected";
+}
+
+function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
+  if (!snapshot) return [];
+  if (snapshot.client.state === "error") return [];
+  return snapshot.connectedPeers.filter((peer) => peer.deviceType === "browser");
+}
+
+function isWebSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
+  return connectedWebClients(snapshot).length > 0;
+}
+
+function deriveWebClientTooltip(snapshot: SyncRoleSnapshot | null): string {
+  const clients = connectedWebClients(snapshot);
+  if (clients.length === 0) return "Pair a browser with this machine";
+  const first = clients[0];
+  const name = first.deviceName?.trim();
+  return name ? `${clients.length} connected · ${name}` : `${clients.length} connected`;
+}
+
+function deriveWebSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
+  if (!snapshot) return null;
+  if (snapshot.client.state === "error") return "Web client sync error";
+  if (snapshot.role === "brain") {
+    const count = connectedWebClients(snapshot).length;
+    if (count > 0) {
+      const machineName = snapshot.localDevice.name.trim() || "this machine";
+      return `${count} web client${count === 1 ? "" : "s"} connected to ${machineName}`;
+    }
+    return "Web client pairing ready";
+  }
+  if (snapshot.mode === "standalone") return "Web client pairing ready";
+  switch (snapshot.client.state) {
+    case "connected":
+      return `Linked to ${snapshot.currentBrain?.name ?? "host"}`;
+    case "connecting":
+      return "Connecting…";
+    default:
+      return "Web client sync offline";
+  }
 }
 
 const HEADER_STATUS_COMPACT_MAX_WIDTH_PX = 767;
@@ -509,7 +534,7 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
   if (snapshot.client.state === "error") return "Phone sync error";
   if (snapshot.role === "brain") {
-    const count = snapshot.connectedPeers.length;
+    const count = snapshot.connectedPeers.filter((peer) => peer.deviceType === "phone").length;
     if (count > 0) {
       const machineName = snapshot.localDevice.name.trim() || "this machine";
       return `${count} phone${count === 1 ? "" : "s"} connected to ${machineName}`;
@@ -881,7 +906,7 @@ export function TopBar() {
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
     null,
   );
-  const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
+  const [syncPanelOpen, setSyncPanelOpen] = useState<"phone" | "web" | null>(null);
   const [remotePanelOpen, setRemotePanelOpen] = useState(false);
   const {
     state: remoteDisconnectConfirmState,
@@ -903,12 +928,22 @@ export function TopBar() {
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
+  const webSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const remotePanelRef = useRef<HTMLDivElement | null>(null);
+  const closeSyncPanel = useCallback(() => setSyncPanelOpen(null), []);
+  const closeRemotePanel = useCallback(() => setRemotePanelOpen(false), []);
+  const handleRemotePanelKeyDown = useDialogFocusTrap(
+    remotePanelRef,
+    closeRemotePanel,
+    remotePanelOpen,
+  );
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
-  const chromePanelOccludesNativeBrowser = remotePanelOpen || phoneSyncOpen;
+  const phoneSyncOpen = syncPanelOpen === "phone";
+  const webSyncOpen = syncPanelOpen === "web";
+  const chromePanelOccludesNativeBrowser = remotePanelOpen || syncPanelOpen !== null;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -943,9 +978,12 @@ export function TopBar() {
   const remoteStatusCount = Math.max(connectedRemoteCount, openRemoteProjectTabs.length);
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
+  const webConnected = isWebSyncConnected(syncSnapshot);
+  const webClientTooltip = deriveWebClientTooltip(syncSnapshot);
   const showSyncControl = projectHydrated === true;
   const syncStatusTargetKey =
     remoteBinding?.key ?? project?.rootPath ?? "machine";
+  const syncStatusTargetRef = useRef(syncStatusTargetKey);
 
   useEffect(() => {
     openProjectTabRootsRef.current = openProjectTabRoots;
@@ -1113,14 +1151,6 @@ export function TopBar() {
   }, [setOpenProjectTabRoots]);
 
   useEffect(() => {
-    if (!phoneSyncOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      phoneSyncPanelRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [phoneSyncOpen]);
-
-  useEffect(() => {
     const remoteRuntime = window.ade.remoteRuntime;
     if (!remoteRuntime?.getConnectionSnapshot) return;
     let cancelled = false;
@@ -1141,14 +1171,6 @@ export function TopBar() {
       unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (!remotePanelOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      remotePanelRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [remotePanelOpen]);
 
   useEffect(() => {
     if (!chromePanelOccludesNativeBrowser || typeof window === "undefined") return undefined;
@@ -1179,7 +1201,7 @@ export function TopBar() {
     let disposeSyncEvents: (() => void) | null = null;
     if (!showSyncControl) {
       setSyncSnapshot(null);
-      setPhoneSyncOpen(false);
+      setSyncPanelOpen(null);
       return () => {
         cancelled = true;
       };
@@ -1197,7 +1219,10 @@ export function TopBar() {
             setSyncSnapshot(null);
         });
     };
-    setSyncSnapshot(null);
+    if (syncStatusTargetRef.current !== syncStatusTargetKey) {
+      syncStatusTargetRef.current = syncStatusTargetKey;
+      setSyncSnapshot(null);
+    }
     const startSyncStatus = () => {
       if (cancelled || started) return;
       started = true;
@@ -1218,7 +1243,7 @@ export function TopBar() {
     };
     startupTimer = window.setTimeout(
       startSyncStatus,
-      phoneSyncOpen ? 0 : PHONE_SYNC_STARTUP_DELAY_MS,
+      phoneSyncOpen || webSyncOpen ? 0 : PHONE_SYNC_STARTUP_DELAY_MS,
     );
     window.addEventListener("focus", onFocus);
     return () => {
@@ -1233,7 +1258,7 @@ export function TopBar() {
     // current state. With no project open, sync calls fall back to the
     // machine-level brain service. Focus and explicit drawer opens still
     // refresh immediately.
-  }, [phoneSyncOpen, showSyncControl, syncStatusTargetKey]);
+  }, [phoneSyncOpen, webSyncOpen, showSyncControl, syncStatusTargetKey]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
@@ -1726,77 +1751,14 @@ export function TopBar() {
     [],
   );
 
-  const handlePhoneSyncDialogKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setPhoneSyncOpen(false);
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const panel = phoneSyncPanelRef.current;
-      if (!panel) return;
-      const focusable = getFocusableElements(panel);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (document.activeElement === panel) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    },
-    [],
-  );
-
-  const handleRemotePanelKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setRemotePanelOpen(false);
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const panel = remotePanelRef.current;
-      if (!panel) return;
-      const focusable = getFocusableElements(panel);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (document.activeElement === panel) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    },
-    [],
-  );
-
   const syncLabel = deriveSyncLabel(syncSnapshot) ?? "Phone sync";
+  const webSyncLabel = deriveWebSyncLabel(syncSnapshot) ?? "Web client sync";
   const openMobileTestFlight = useCallback(
     () => openExternalUrl(ADE_MOBILE_TESTFLIGHT_URL),
+    [],
+  );
+  const openWebClient = useCallback(
+    () => openExternalUrl(WEB_CLIENT_BASE_URL),
     [],
   );
 
@@ -1817,8 +1779,14 @@ export function TopBar() {
           ariaExpanded={remotePanelOpen}
           onClick={
             menuLayout
-              ? wrapActivate(() => setRemotePanelOpen(true))
-              : () => setRemotePanelOpen((open) => !open)
+              ? wrapActivate(() => {
+                setSyncPanelOpen(null);
+                setRemotePanelOpen(true);
+              })
+              : () => {
+                setSyncPanelOpen(null);
+                setRemotePanelOpen((open) => !open);
+              }
           }
           icon={(
             <DesktopTower
@@ -1839,11 +1807,45 @@ export function TopBar() {
           ariaExpanded={phoneSyncOpen}
           onClick={
             menuLayout
-              ? wrapActivate(() => setPhoneSyncOpen(true))
-              : () => setPhoneSyncOpen((open) => !open)
+              ? wrapActivate(() => {
+                setRemotePanelOpen(false);
+                setSyncPanelOpen("phone");
+              })
+              : () => {
+                setRemotePanelOpen(false);
+                setSyncPanelOpen((open) => open === "phone" ? null : "phone");
+              }
           }
           icon={(
             <DeviceMobile
+              size={12}
+              weight="regular"
+              className="shrink-0 opacity-85"
+            />
+          )}
+        />
+      ) : null;
+
+      const webChip = showSyncControl && !webMode ? (
+        <ShellConnectionChip
+          layout={menuLayout ? "menu-row" : "chip"}
+          label="Web"
+          connected={webConnected}
+          title={webClientTooltip}
+          ariaExpanded={webSyncOpen}
+          onClick={
+            menuLayout
+              ? wrapActivate(() => {
+                setRemotePanelOpen(false);
+                setSyncPanelOpen("web");
+              })
+              : () => {
+                setRemotePanelOpen(false);
+                setSyncPanelOpen((open) => open === "web" ? null : "web");
+              }
+          }
+          icon={(
+            <Globe
               size={12}
               weight="regular"
               className="shrink-0 opacity-85"
@@ -1863,6 +1865,7 @@ export function TopBar() {
             />
             {remoteChip}
             {mobileChip}
+            {webChip}
           </div>
         );
       }
@@ -1872,17 +1875,22 @@ export function TopBar() {
           <LinearQuickViewButton />
           {remoteChip}
           {mobileChip}
+          {webChip}
           <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>
       );
     },
     [
       phoneSyncOpen,
+      webSyncOpen,
       remoteBinding,
       remoteConnected,
       remotePanelOpen,
       showSyncControl,
       syncConnected,
+      webMode,
+      webConnected,
+      webClientTooltip,
     ],
   );
 
@@ -2393,7 +2401,7 @@ export function TopBar() {
 
         <HeaderStatusMenu
           remoteConnected={remoteConnected}
-          syncConnected={syncConnected}
+          syncConnected={syncConnected || (!webMode && webConnected)}
           showSyncControl={showSyncControl}
         >
           {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
@@ -2471,109 +2479,114 @@ export function TopBar() {
             document.body,
           )
         : null}
-      {remotePanelOpen ? (
-        <div
-          className="fixed inset-0 z-[80]"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          onClick={() => setRemotePanelOpen(false)}
-        >
-          <div
-            ref={remotePanelRef}
-            className={cn(
-              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(820px,calc(100vw-24px))] overflow-y-auto",
-              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-            )}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Remote machines"
-            tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={handleRemotePanelKeyDown}
-          >
-            <button
-              type="button"
-              className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
-              data-variant="ghost"
-              onClick={() => setRemotePanelOpen(false)}
-              title="Close remote machines"
-            >
-              <X size={13} weight="regular" />
-            </button>
-            <div className="p-4 pr-12">
-              <RemoteTargetList
-                onDisconnectRequested={handleRemoteTargetDisconnectRequested}
-                onRemoveRequested={handleRemoteTargetRemoveRequested}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {phoneSyncOpen ? (
-        <div
-          className="fixed inset-0 z-[80]"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          onClick={() => setPhoneSyncOpen(false)}
-        >
-          <div
-            ref={phoneSyncPanelRef}
-            className={cn(
-              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(620px,calc(100vw-24px))] overflow-y-auto",
-              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-            )}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="phone-sync-title"
-            tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={handlePhoneSyncDialogKeyDown}
-          >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <DeviceMobile
-                  size={16}
-                  weight="regular"
-                  className="shrink-0 opacity-85"
-                />
-                <div className="min-w-0">
+      {typeof document !== "undefined"
+        ? createPortal(
+            <>
+              {remotePanelOpen ? (
+                <div
+                  className="fixed inset-0 z-[120]"
+                  style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                  onClick={closeRemotePanel}
+                >
                   <div
-                    id="phone-sync-title"
-                    className="truncate text-[13px] font-semibold"
+                    ref={remotePanelRef}
+                    className={cn(
+                      "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(820px,calc(100vw-24px))] overflow-y-auto",
+                      "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+                    )}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Remote machines"
+                    tabIndex={-1}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={handleRemotePanelKeyDown}
                   >
-                    Connect to the ADE mobile app
-                  </div>
-                  <div className="truncate text-[11px] text-white/55">
-                    {syncLabel}
+                    <button
+                      type="button"
+                      className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
+                      data-variant="ghost"
+                      onClick={closeRemotePanel}
+                      title="Close remote machines"
+                    >
+                      <X size={13} weight="regular" />
+                    </button>
+                    <div className="p-4 pr-12">
+                      <RemoteTargetList
+                        onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+                        onRemoveRequested={handleRemoteTargetRemoveRequested}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
-                  onClick={openMobileTestFlight}
-                  title="Download ADE Mobile from TestFlight"
-                >
-                  <ArrowSquareOut size={12} weight="regular" />
-                  Download
-                </button>
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                  data-variant="ghost"
-                  onClick={() => setPhoneSyncOpen(false)}
-                  title="Close phone sync"
-                >
-                  <X size={13} weight="regular" />
-                </button>
-              </div>
-            </div>
-            <div className="p-4">
-              <SyncDevicesSection />
-            </div>
-          </div>
-        </div>
-      ) : null}
+              ) : null}
+
+              <HeaderSheet
+                open={phoneSyncOpen}
+                panelRef={phoneSyncPanelRef}
+                icon={
+                  <DeviceMobile
+                    size={16}
+                    weight="regular"
+                    className="shrink-0 opacity-85"
+                  />
+                }
+                title="Connect to the ADE mobile app"
+                subtitle={syncLabel}
+                headerActions={
+                  <button
+                    type="button"
+                    className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
+                    onClick={openMobileTestFlight}
+                    title="Download ADE Mobile from TestFlight"
+                  >
+                    <ArrowSquareOut size={12} weight="regular" />
+                    Download
+                  </button>
+                }
+                onClose={closeSyncPanel}
+                ariaLabelledBy="phone-sync-title"
+                closeTitle="Close phone sync"
+              >
+                <div className="p-4">
+                  <SyncDevicesSection variant="phone" />
+                </div>
+              </HeaderSheet>
+
+              <HeaderSheet
+                open={webSyncOpen}
+                panelRef={webSyncPanelRef}
+                icon={
+                  <Globe
+                    size={16}
+                    weight="regular"
+                    className="shrink-0 opacity-85"
+                  />
+                }
+                title="Web client"
+                subtitle={webSyncLabel}
+                headerActions={
+                  <button
+                    type="button"
+                    className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
+                    onClick={openWebClient}
+                    title="Open the ADE web client in your browser"
+                  >
+                    <ArrowSquareOut size={12} weight="regular" />
+                    Open in browser
+                  </button>
+                }
+                onClose={closeSyncPanel}
+                ariaLabelledBy="web-sync-title"
+                closeTitle="Close web client"
+              >
+                <div className="p-4">
+                  <SyncDevicesSection variant="web" />
+                </div>
+              </HeaderSheet>
+            </>,
+            document.body,
+          )
+        : null}
 
       <FeedbackReporterModal
         open={feedbackOpen}

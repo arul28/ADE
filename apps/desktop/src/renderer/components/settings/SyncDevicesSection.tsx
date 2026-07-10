@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check } from "@phosphor-icons/react";
 import { QRCodeSVG } from "qrcode.react";
+import { createPortal } from "react-dom";
 import type {
   SyncAddressCandidate,
   SyncCloudRelayStatus,
@@ -32,6 +34,18 @@ const helperTextStyle: React.CSSProperties = {
   fontSize: 11,
   lineHeight: 1.6,
 };
+
+export type SyncDevicesVariant = "all" | "phone" | "web";
+
+function generateSixDigitPin(): string {
+  const range = 1_000_000;
+  const maxUnbiasedValue = Math.floor(0x1_0000_0000 / range) * range;
+  const sample = new Uint32Array(1);
+  do {
+    globalThis.crypto.getRandomValues(sample);
+  } while (sample[0] >= maxUnbiasedValue);
+  return String(sample[0] % range).padStart(6, "0");
+}
 
 const inputStyle: React.CSSProperties = {
   height: 32,
@@ -189,7 +203,7 @@ function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
   }
 }
 
-export function SyncDevicesSection() {
+export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesVariant } = {}) {
   const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
   const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
   const [cloudRelay, setCloudRelay] = useState<SyncCloudRelayStatus | null>(null);
@@ -264,6 +278,15 @@ export function SyncDevicesSection() {
     setNotice("PIN updated.");
   }), [runAction]);
 
+  // Throwing variant used by the web pairing code's inline "Generate new PIN"
+  // control so it can surface errors next to the button instead of at the
+  // section level. The setter returns the authoritative snapshot, avoiding a
+  // second refresh that could fail after the credential was already changed.
+  const handleSetPinValue = useCallback(async (pin: string) => {
+    const nextStatus = await window.ade.sync.setPin(pin);
+    setStatus(nextStatus);
+  }, []);
+
   const handleClearPin = useCallback(() => runAction(async () => {
     await window.ade.sync.clearPin();
     setNotice("PIN removed. Phones can no longer pair.");
@@ -317,7 +340,12 @@ export function SyncDevicesSection() {
     return <div style={helperTextStyle}>Phone sync is unavailable until ADE has a project to serve.</div>;
   }
 
-  const peerCount = status.connectedPeers.length;
+  const peerType: "phone" | "browser" | null =
+    variant === "phone" ? "phone" : variant === "web" ? "browser" : null;
+  const connectedPeers = peerType
+    ? status.connectedPeers.filter((peer) => peer.deviceType === peerType)
+    : status.connectedPeers;
+  const peerCount = connectedPeers.length;
   const phones = devices.filter((device) => !device.isLocal && device.deviceType === "phone");
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
@@ -328,45 +356,68 @@ export function SyncDevicesSection() {
   const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
   const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery);
 
+  // A "phone" surface keeps phone pairing, discovery, this-computer and the
+  // phones list. A "web" surface keeps only the web client card, its relay row
+  // and the web clients list. "all" (Settings > Sync) shows everything.
+  const showPhone = variant === "all" || variant === "phone";
+  const showWeb = variant === "all" || variant === "web";
+  const onToggleCloudRelay = (enabled: boolean) => runAction(async () => {
+    const next = await window.ade.sync.setCloudRelayEnabled(enabled);
+    setCloudRelay(next);
+  });
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <StatusBar
         connected={peerCount > 0}
         peerCount={peerCount}
         ready={isPhoneSyncReady(status)}
+        readyLabel={variant === "web" ? "Ready - no web clients connected" : undefined}
       />
 
-      {isLocalHost ? (
-        <PairPhoneCard
-          connectInfo={status.pairingConnectInfo}
-          pin={status.pairingPin}
-          pinConfigured={status.pairingPinConfigured}
-          runtimeName={status.runtimeName}
-          busy={busy}
-          cloudRelay={cloudRelay}
-          onToggleCloudRelay={(enabled) => runAction(async () => {
-            const next = await window.ade.sync.setCloudRelayEnabled(enabled);
-            setCloudRelay(next);
-          })}
-          onSavePin={handleSetPin}
-          onGeneratePin={handleGeneratePin}
-          onClearPin={handleClearPin}
-          onSaveRuntimeName={handleSetRuntimeName}
-          onClearRuntimeName={handleClearRuntimeName}
-        />
-      ) : (
-        <ViewerPairingNotice />
-      )}
+      {showPhone ? (
+        isLocalHost ? (
+          <PairPhoneCard
+            connectInfo={status.pairingConnectInfo}
+            pin={status.pairingPin}
+            pinConfigured={status.pairingPinConfigured}
+            runtimeName={status.runtimeName}
+            busy={busy}
+            cloudRelay={cloudRelay}
+            onToggleCloudRelay={onToggleCloudRelay}
+            onSavePin={handleSetPin}
+            onGeneratePin={handleGeneratePin}
+            onClearPin={handleClearPin}
+            onSaveRuntimeName={handleSetRuntimeName}
+            onClearRuntimeName={handleClearRuntimeName}
+          />
+        ) : (
+          <ViewerPairingNotice />
+        )
+      ) : null}
 
-      {isLocalHost ? (
+      {showWeb && isLocalHost ? (
         <WebClientCard
           connectInfo={status.pairingConnectInfo}
           pinConfigured={status.pairingPinConfigured}
           pin={status.pairingPin}
+          busy={busy}
+          onSetPin={handleSetPinValue}
         />
       ) : null}
 
-      {showTailnetDiscovery ? (
+      {/* In "web" mode the relay lives standalone; in "all"/"phone" it renders
+          inside the phone card so we do not duplicate the control. */}
+      {showWeb && !showPhone && isLocalHost && cloudRelay ? (
+        <CloudRelayRow
+          cloudRelay={cloudRelay}
+          busy={busy}
+          onToggle={onToggleCloudRelay}
+          description="Keeps web clients connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay."
+        />
+      ) : null}
+
+      {showPhone && showTailnetDiscovery ? (
         <TailnetDiscoveryPanel
           status={status.tailnetDiscovery}
           hasTailscaleAddress={hasTailscaleAddress}
@@ -379,51 +430,88 @@ export function SyncDevicesSection() {
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
       {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
 
-      <details style={detailBlockStyle}>
-        <summary style={detailSummaryStyle}>
-          <span>This computer</span>
-          <span style={helperTextStyle}>
-            {status.localDevice.name}
-            {" "}&middot;{" "}
-            {formatEndpoint(status.localDevice.lastHost, status.localDevice.lastPort ?? 8787)}
-          </span>
-        </summary>
-        <div style={{ marginTop: 12 }}>
-          <ThisComputerDetails
-            localDevice={status.localDevice}
-            busy={busy}
-            onRename={handleRenameLocal}
-          />
-        </div>
-      </details>
+      {showPhone ? (
+        <details style={detailBlockStyle}>
+          <summary style={detailSummaryStyle}>
+            <span>This computer</span>
+            <span style={helperTextStyle}>
+              {status.localDevice.name}
+              {" "}&middot;{" "}
+              {formatEndpoint(status.localDevice.lastHost, status.localDevice.lastPort ?? 8787)}
+            </span>
+          </summary>
+          <div style={{ marginTop: 12 }}>
+            <ThisComputerDetails
+              localDevice={status.localDevice}
+              busy={busy}
+              onRename={handleRenameLocal}
+            />
+          </div>
+        </details>
+      ) : null}
 
-      <details style={detailBlockStyle}>
-        <summary style={detailSummaryStyle}>
-          <span>Phones</span>
-          <span style={helperTextStyle}>
-            {phones.length === 0
-              ? "None paired"
-              : `${phonesConnected} connected, ${phonesOffline} offline`}
-          </span>
-        </summary>
-        <div style={{ marginTop: 12 }}>
-          <PhonesList devices={phones} busy={busy} onForget={handleForgetDevice} />
-        </div>
-      </details>
+      {showPhone ? (
+        <details style={detailBlockStyle}>
+          <summary style={detailSummaryStyle}>
+            <span>Phones</span>
+            <span style={helperTextStyle}>
+              {phones.length === 0
+                ? "None paired"
+                : `${phonesConnected} connected, ${phonesOffline} offline`}
+            </span>
+          </summary>
+          <div style={{ marginTop: 12 }}>
+            <PhonesList devices={phones} busy={busy} onForget={handleForgetDevice} />
+          </div>
+        </details>
+      ) : null}
 
-      <details style={detailBlockStyle}>
-        <summary style={detailSummaryStyle}>
-          <span>Web clients</span>
-          <span style={helperTextStyle}>
-            {browsers.length === 0
-              ? "None paired"
-              : `${browsersConnected} connected, ${browsersOffline} offline`}
-          </span>
-        </summary>
-        <div style={{ marginTop: 12 }}>
-          <BrowsersList devices={browsers} busy={busy} onForget={handleForgetDevice} />
+      {showWeb ? (
+        <details style={detailBlockStyle}>
+          <summary style={detailSummaryStyle}>
+            <span>Web clients</span>
+            <span style={helperTextStyle}>
+              {browsers.length === 0
+                ? "None paired"
+                : `${browsersConnected} connected, ${browsersOffline} offline`}
+            </span>
+          </summary>
+          <div style={{ marginTop: 12 }}>
+            <BrowsersList devices={browsers} busy={busy} onForget={handleForgetDevice} />
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function CloudRelayRow({
+  cloudRelay,
+  busy,
+  onToggle,
+  description = "Keeps your phone connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay.",
+}: {
+  cloudRelay: SyncCloudRelayStatus;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  description?: string;
+}) {
+  return (
+    <div style={{ ...panelStyle, gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={LABEL_STYLE}>ADE relay</div>
+          <div style={helperTextStyle}>
+            {description}
+          </div>
         </div>
-      </details>
+        <SettingsToggle
+          id="sync-cloud-relay-toggle"
+          checked={cloudRelay.enabled}
+          disabled={busy}
+          onChange={onToggle}
+        />
+      </div>
     </div>
   );
 }
@@ -432,7 +520,17 @@ function isPhoneSyncReady(status: SyncRoleSnapshot): boolean {
   return (status.runtimeRole === "host" || status.role === "brain") && Boolean(status.pairingConnectInfo);
 }
 
-function StatusBar({ connected, peerCount, ready }: { connected: boolean; peerCount: number; ready: boolean }) {
+function StatusBar({
+  connected,
+  peerCount,
+  ready,
+  readyLabel = "Ready - no phones connected",
+}: {
+  connected: boolean;
+  peerCount: number;
+  ready: boolean;
+  readyLabel?: string;
+}) {
   let dotColor: string;
   if (connected) {
     dotColor = COLORS.accent;
@@ -443,7 +541,7 @@ function StatusBar({ connected, peerCount, ready }: { connected: boolean; peerCo
   }
   let label: string;
   if (!connected) {
-    label = ready ? "Ready - no phones connected" : "Unavailable";
+    label = ready ? readyLabel : "Unavailable";
   } else if (peerCount === 1) {
     label = "Connected";
   } else {
@@ -741,22 +839,7 @@ function PairPhoneCard({
       />
 
       {cloudRelay ? (
-        <div style={{ ...panelStyle, gap: 10 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
-            <div style={{ display: "grid", gap: 4 }}>
-              <div style={LABEL_STYLE}>ADE relay</div>
-              <div style={helperTextStyle}>
-                Keeps your phone connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay.
-              </div>
-            </div>
-            <SettingsToggle
-              id="sync-cloud-relay-toggle"
-              checked={cloudRelay.enabled}
-              disabled={busy}
-              onChange={onToggleCloudRelay}
-            />
-          </div>
-        </div>
+        <CloudRelayRow cloudRelay={cloudRelay} busy={busy} onToggle={onToggleCloudRelay} />
       ) : null}
 
       <div style={{ display: "grid", gap: 10 }}>
@@ -795,35 +878,119 @@ function PairPhoneCard({
 // Same ADE-branded treatment as the welcome modal's TestFlight QR: white tile,
 // accent-tinted border, excavated ADE mark in the center (which is why the
 // error-correction level is H). Shared by phone and web-client pairing panels.
-function QrCodeBox({ value, title }: { value: string; title: string }) {
+function QrCodeSvgTile({ value, title, size }: { value: string; title: string; size: number }) {
+  const iconSize = Math.round(size * (32 / 148));
   return (
-    <div style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center" }}>
+    <QRCodeSVG
+      value={value}
+      size={size}
+      level="H"
+      marginSize={1}
+      bgColor="#FFFFFF"
+      fgColor="#111827"
+      title={title}
+      imageSettings={{
+        src: publicAssetUrl("welcome/ade-icon.webp"),
+        height: iconSize,
+        width: iconSize,
+        excavate: true,
+      }}
+    />
+  );
+}
+
+function QrCodeBox({ value, title }: { value: string; title: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const triggerRef = useRef<HTMLDivElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setExpanded(false);
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        dialogRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKey, true);
+      triggerRef.current?.focus();
+    };
+  }, [expanded]);
+
+  return (
+    <>
       <div
-        style={{
-          display: "inline-flex",
-          padding: 14,
-          borderRadius: 14,
-          background: "#FFFFFF",
-          border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
+        ref={triggerRef}
+        role="button"
+        tabIndex={0}
+        title="Click to enlarge"
+        onClick={() => setExpanded(true)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setExpanded(true);
+          }
         }}
+        style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center", cursor: "pointer" }}
       >
-        <QRCodeSVG
-          value={value}
-          size={148}
-          level="H"
-          marginSize={1}
-          bgColor="#FFFFFF"
-          fgColor="#111827"
-          title={title}
-          imageSettings={{
-            src: publicAssetUrl("welcome/ade-icon.webp"),
-            height: 32,
-            width: 32,
-            excavate: true,
+        <div
+          style={{
+            display: "inline-flex",
+            padding: 14,
+            borderRadius: 14,
+            background: "#FFFFFF",
+            border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
           }}
-        />
+        >
+          <QrCodeSvgTile value={value} title={title} size={148} />
+        </div>
       </div>
-    </div>
+      {expanded && typeof document !== "undefined"
+        ? createPortal(
+          <div
+            onClick={() => setExpanded(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 200,
+              display: "grid",
+              placeItems: "center",
+              background: "rgba(0,0,0,0.62)",
+            }}
+          >
+            <div
+              ref={dialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={title}
+              tabIndex={-1}
+              onClick={(event) => event.stopPropagation()}
+              style={{
+                display: "inline-flex",
+                padding: 22,
+                borderRadius: 20,
+                background: "#FFFFFF",
+                border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
+                boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+                outline: "none",
+              }}
+            >
+              <QrCodeSvgTile value={value} title={title} size={360} />
+            </div>
+          </div>,
+          document.body,
+        )
+        : null}
+    </>
   );
 }
 
@@ -839,21 +1006,25 @@ function WebClientCard({
   connectInfo,
   pinConfigured,
   pin,
+  busy,
+  onSetPin,
 }: {
   connectInfo: SyncPairingConnectInfo | null;
   pinConfigured: boolean;
   pin: string | null;
+  busy: boolean;
+  onSetPin: (pin: string) => Promise<void>;
 }) {
   const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
   const pinMissing = !pinConfigured;
   const pinHidden = pinConfigured && !pin;
+  // The hidden-PIN case is handled inline by the pairing code block below, so
+  // the card-level helper stays terse and only covers the other states.
   let pairingHelpText = "Open the link, enter the pairing code in the browser, and the browser pairs to this machine.";
   if (pinMissing) {
-    pairingHelpText = "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above.";
+    pairingHelpText = "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section.";
   } else if (pinHidden) {
-    pairingHelpText =
-      "A PIN is configured but hidden after runtime restart. If you already know it, the existing PIN still pairs. " +
-      "Generate or set a new PIN above only when you need ADE to display or copy one.";
+    pairingHelpText = "";
   }
 
   return (
@@ -895,46 +1066,156 @@ function WebClientCard({
               Scan the QR, or open the pairing link in a browser to pair.
             </div>
             <WebPairLink connectInfo={connectInfo as SyncPairingConnectInfo} />
-            <WebPairCode pin={pin} pinConfigured={pinConfigured} />
+            <WebPairCode pin={pin} pinConfigured={pinConfigured} busy={busy} onSetPin={onSetPin} />
           </div>
         </div>
       ) : (
         <div style={helperTextStyle}>No machine addresses are published yet.</div>
       )}
 
-      <div style={helperTextStyle}>{pairingHelpText}</div>
+      {pairingHelpText ? <div style={helperTextStyle}>{pairingHelpText}</div> : null}
     </div>
   );
 }
 
-function WebPairCode({ pin, pinConfigured }: { pin: string | null; pinConfigured: boolean }) {
+function flashHighlightStyle(active: boolean): React.CSSProperties {
+  return {
+    transition: "background 600ms ease, color 600ms ease",
+    borderRadius: 6,
+    background: active
+      ? "color-mix(in srgb, var(--color-accent, #A78BFA) 22%, transparent)"
+      : "transparent",
+    color: active ? COLORS.textPrimary : undefined,
+  };
+}
+
+function CopiedGlyphLabel({ copied, idle }: { copied: boolean; idle: string }) {
+  if (!copied) return <>{idle}</>;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <Check size={12} weight="bold" />
+      Copied
+    </span>
+  );
+}
+
+function useCopyFeedback() {
   const [copied, setCopied] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
+      if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
+  const showFeedback = useCallback(() => {
+    if (!mountedRef.current) return;
+    if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
+    if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+    setCopied(true);
+    setFlash(true);
+    copiedTimerRef.current = window.setTimeout(() => {
+      copiedTimerRef.current = null;
+      setCopied(false);
+    }, 1500);
+    flashTimerRef.current = window.setTimeout(() => {
+      flashTimerRef.current = null;
+      setFlash(false);
+    }, 600);
+  }, []);
+
+  return { copied, flash, showFeedback };
+}
+
+function WebPairCode({
+  pin,
+  pinConfigured,
+  busy,
+  onSetPin,
+}: {
+  pin: string | null;
+  pinConfigured: boolean;
+  busy: boolean;
+  onSetPin: (pin: string) => Promise<void>;
+}) {
+  const { copied, flash, showFeedback } = useCopyFeedback();
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+
   const handleCopy = useCallback(async () => {
     if (!pin) return;
     try {
-      await window.ade?.app?.writeClipboardText?.(pin);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      const writeClipboardText = window.ade?.app?.writeClipboardText;
+      if (!writeClipboardText) return;
+      await writeClipboardText(pin);
+      showFeedback();
     } catch {
       // Clipboard may be unavailable; the code stays visible to copy manually.
     }
-  }, [pin]);
+  }, [pin, showFeedback]);
+
+  const handleGenerate = useCallback(async () => {
+    if (busy || generating) return;
+    setGenError(null);
+    setGenerating(true);
+    try {
+      await onSetPin(generateSixDigitPin());
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }, [busy, generating, onSetPin]);
+
+  const hiddenPin = pinConfigured && !pin;
 
   return (
     <div style={{ ...panelStyle, gap: 8 }}>
       <div style={LABEL_STYLE}>Pairing code</div>
-      <div style={{ ...codeValueStyle, fontSize: 18, letterSpacing: "0.32em", fontVariantNumeric: "tabular-nums" }}>
+      <div
+        style={{
+          ...codeValueStyle,
+          fontSize: 18,
+          letterSpacing: "0.32em",
+          fontVariantNumeric: "tabular-nums",
+          alignSelf: "start",
+          padding: "0 4px",
+          ...flashHighlightStyle(flash),
+        }}
+      >
         {pin ? pin : pinConfigured ? "••••••" : "Not set"}
       </div>
-      <button
-        type="button"
-        style={outlineButton({ justifySelf: "start", height: 30 })}
-        onClick={() => void handleCopy()}
-        disabled={!pin}
-        title={pin ? undefined : "The PIN is hidden; generate or set a new PIN in the phone pairing section above."}
-      >
-        {copied ? "Copied" : "Copy code"}
-      </button>
+      {hiddenPin ? (
+        <>
+          <button
+            type="button"
+            style={outlineButton({ justifySelf: "start", height: 30, opacity: busy || generating ? 0.6 : 1 })}
+            onClick={() => void handleGenerate()}
+            disabled={busy || generating}
+          >
+            {generating ? "Generating…" : "Generate new PIN"}
+          </button>
+          <div style={helperTextStyle}>Existing PIN still pairs if you know it.</div>
+        </>
+      ) : (
+        <button
+          type="button"
+          style={outlineButton({ justifySelf: "start", height: 30 })}
+          onClick={() => void handleCopy()}
+          disabled={!pin}
+          title={pin ? undefined : "Set a PIN in the phone pairing section to enable copy."}
+        >
+          <CopiedGlyphLabel copied={copied} idle="Copy code" />
+        </button>
+      )}
+      {genError ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{genError}</div> : null}
     </div>
   );
 }
@@ -952,17 +1233,18 @@ function WebPairLink({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
     () => buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
     [connectInfo],
   );
-  const [copied, setCopied] = useState(false);
+  const { copied, flash, showFeedback } = useCopyFeedback();
 
   const handleCopy = useCallback(async () => {
     try {
-      await window.ade?.app?.writeClipboardText?.(url);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      const writeClipboardText = window.ade?.app?.writeClipboardText;
+      if (!writeClipboardText) return;
+      await writeClipboardText(url);
+      showFeedback();
     } catch {
       // Clipboard may be unavailable; leave the link visible to copy manually.
     }
-  }, [url]);
+  }, [showFeedback, url]);
 
   return (
     <div style={{ ...panelStyle, gap: 8 }}>
@@ -973,6 +1255,8 @@ function WebPairLink({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
+          padding: "0 4px",
+          ...flashHighlightStyle(flash),
         }}
         title={url}
       >
@@ -983,7 +1267,7 @@ function WebPairLink({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
         style={outlineButton({ justifySelf: "start", height: 30 })}
         onClick={() => void handleCopy()}
       >
-        {copied ? "Copied" : "Copy link"}
+        <CopiedGlyphLabel copied={copied} idle="Copy link" />
       </button>
     </div>
   );

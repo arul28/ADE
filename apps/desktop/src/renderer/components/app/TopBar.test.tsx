@@ -16,7 +16,17 @@ const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
-  SyncDevicesSection: () => <section data-testid="sync-devices-section">Sync devices panel</section>,
+  SyncDevicesSection: ({ variant = "all" }: { variant?: string }) => (
+    <section data-testid="sync-devices-section" data-variant={variant}>
+      Sync devices panel
+      {variant === "web" ? (
+        <details>
+          <summary>Web clients summary</summary>
+          <button type="button">Hidden revoke</button>
+        </details>
+      ) : null}
+    </section>
+  ),
 }));
 
 vi.mock("./AutoUpdateControl", () => ({
@@ -216,8 +226,10 @@ const resourceUsageMock = vi.fn();
 
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
+  const originalWebClientMode = globalThis.window.__adeWebClient;
 
   beforeEach(() => {
+    delete globalThis.window.__adeWebClient;
     resetStore();
     resourceUsageMock.mockReset();
     resourceUsageMock.mockResolvedValue({
@@ -325,6 +337,11 @@ describe("TopBar", () => {
       delete (globalThis.window as any).ade;
     } else {
       globalThis.window.ade = originalAde;
+    }
+    if (originalWebClientMode === undefined) {
+      delete globalThis.window.__adeWebClient;
+    } else {
+      globalThis.window.__adeWebClient = originalWebClientMode;
     }
   });
 
@@ -875,6 +892,7 @@ describe("TopBar", () => {
 
       expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
       expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+      expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
       expect(screen.getByTitle("Connect a phone to this machine").getAttribute("aria-expanded")).toBe("true");
 
       fireEvent.click(screen.getByTitle("Close phone sync"));
@@ -883,6 +901,114 @@ describe("TopBar", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("opens the web client drawer from the web status control", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<TopBar />);
+
+      // Web chip is present alongside the mobile chip, disconnected until a
+      // browser peer shows up (mock snapshot only has a phone peer).
+      const webChip = screen.getByRole("button", { name: "Web, not connected" });
+      expect(webChip).toBeTruthy();
+      expect(webChip.getAttribute("title")).toBe("Pair a browser with this machine");
+
+      await advancePhoneSyncStartupDelay();
+
+      fireEvent.click(webChip);
+
+      expect(screen.getByText("Web client")).toBeTruthy();
+      const section = screen.getByTestId("sync-devices-section");
+      expect(section.getAttribute("data-variant")).toBe("web");
+      expect(section.closest("header")).toBeNull();
+      expect(screen.getByTitle("Open the ADE web client in your browser")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Web, not connected" }).getAttribute("aria-expanded")).toBe("true");
+
+      fireEvent.click(screen.getByTitle("Close web client"));
+
+      expect(screen.queryByTestId("sync-devices-section")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks the web chip connected when a browser peer is present", async () => {
+    vi.useFakeTimers();
+    const getStatus = vi.fn().mockResolvedValue(
+      makeSyncSnapshot({
+        connectedPeers: [
+          { deviceId: "browser-1", deviceName: "Chrome on MacBook Pro", platform: "macOS", deviceType: "browser" },
+        ],
+      }),
+    );
+    globalThis.window.ade.sync.getStatus = getStatus as any;
+    try {
+      render(<TopBar />);
+
+      await advancePhoneSyncStartupDelay();
+
+      const webChip = screen.getByRole("button", { name: "Web, connected" });
+      expect(webChip).toBeTruthy();
+      expect(webChip.getAttribute("title")).toBe("1 connected · Chrome on MacBook Pro");
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      fireEvent.click(webChip);
+      const dialog = screen.getByTitle("Close web client").closest('[role="dialog"]');
+      expect(dialog?.textContent).toContain("1 web client connected to ADE Desktop");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides the host web-pairing control in hosted web-client mode", () => {
+    globalThis.window.__adeWebClient = true;
+
+    render(<TopBar />);
+
+    expect(screen.queryByRole("button", { name: "Web, not connected" })).toBeNull();
+  });
+
+  it("keeps the phone and web sync sheets mutually exclusive", () => {
+    render(<TopBar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Mobile, not connected" }));
+    expect(screen.getByTitle("Close phone sync")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
+
+    expect(screen.queryByTitle("Close phone sync")).toBeNull();
+    expect(screen.getByTitle("Close web client")).toBeTruthy();
+    expect(screen.getAllByTestId("sync-devices-section")).toHaveLength(1);
+  });
+
+  it("traps focus on the visible web clients summary", () => {
+    render(<TopBar />);
+    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
+
+    const first = screen.getByTitle("Open the ADE web client in your browser");
+    const summary = screen.getByText("Web clients summary");
+    summary.focus();
+    fireEvent.keyDown(summary, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(summary);
+  });
+
+  it("closes the web sheet on Escape without disturbing chip state", () => {
+    render(<TopBar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
+    const dialog = screen.getByTitle("Close web client").closest('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+
+    fireEvent.keyDown(dialog as HTMLElement, { key: "Escape" });
+
+    expect(screen.queryByTestId("sync-devices-section")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Web, not connected" }).getAttribute("aria-expanded"),
+    ).toBe("false");
   });
 
   it("occludes the native browser while the remote machines panel is open", async () => {

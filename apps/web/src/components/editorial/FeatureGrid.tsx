@@ -310,9 +310,9 @@ export function FeatureGrid() {
       <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(44px,5.5vw,84px)]">
         {/* running head */}
         <div className="mb-10 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-4 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
-          <span>ADE &middot; {EDITORIAL_ISSUE.shortMonthYear}</span>
+          <span>ADE · {EDITORIAL_ISSUE.shortMonthYear}</span>
           <span className="hidden sm:block">Catalog</span>
-          <span>{EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; 32</span>
+          <span>{EDITORIAL_ISSUE.volume} · {EDITORIAL_ISSUE.version} · 32</span>
         </div>
 
         {/* folio */}
@@ -348,7 +348,7 @@ export function FeatureGrid() {
           className="mx-auto mb-12 max-w-[52ch] text-center font-serif italic text-[color:var(--color-ink-muted)]"
           style={{ fontSize: "19px", lineHeight: 1.4 }}
         >
-          Every tab you&rsquo;d expect &mdash; and a few you wouldn&rsquo;t.
+          Every tab you’d expect — and a few you wouldn’t.
           They play as you scroll; click any to watch.
         </motion.p>
 

@@ -80,7 +80,7 @@ export function SiteFooter() {
 
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-border/70 pt-6 text-xs text-muted-fg sm:flex-row sm:items-center">
           <div>
-            &copy; {year} ADE.{" "}
+            © {year} ADE.{" "}
             <a className="focus-ring rounded-md hover:text-fg" href={`${LINKS.github}/blob/main/LICENSE`} target="_blank" rel="noreferrer">
               AGPL-3.0 License.
             </a>
