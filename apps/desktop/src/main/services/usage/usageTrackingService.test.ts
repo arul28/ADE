@@ -2019,9 +2019,10 @@ describe("scanCodexLogs", () => {
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({
         model: "gpt-5.5",
-        inputTokens: 1200,
+        inputTokens: 900,
         billableInputTokens: 900,
-        outputTokens: 100,
+        outputTokens: 80,
+        billableOutputTokens: 100,
         cachedTokens: 300,
         billableCachedTokens: 300,
       });
@@ -2180,7 +2181,7 @@ describe("scanCodexLogs", () => {
           "",
         ].join("\n"),
       );
-      fs.truncateSync(filePath, 40 * 1024 * 1024);
+      fs.truncateSync(filePath, 769 * 1024 * 1024);
 
       await expect(scanCodexLogs()).resolves.toEqual([]);
     } finally {

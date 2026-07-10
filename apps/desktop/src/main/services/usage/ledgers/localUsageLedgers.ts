@@ -11,9 +11,6 @@ const LOCAL_COST_SCAN_MAX_FILES = 5_000;
 const LOCAL_COST_SCAN_MAX_FILE_BYTES = 768 * 1024 * 1024;
 const LOCAL_COST_SCAN_MAX_ENTRIES = 1_000_000;
 const LOCAL_COST_SCAN_ALL_DAYS = 3650;
-const CODEX_COST_SCAN_MAX_FILES = 250;
-const CODEX_COST_SCAN_MAX_FILE_BYTES = 32 * 1024 * 1024;
-const CODEX_COST_SCAN_MAX_DAYS = 14;
 const LOCAL_SQLITE_SCAN_MAX_ROWS = 250_000;
 const LOCAL_CURSOR_SQLITE_RECENT_ROWS = 250_000;
 const CURSOR_CHARS_PER_TOKEN = 4;
@@ -378,9 +375,9 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
     return entries;
   }
 
-  const jsonlFiles = await findJsonlFiles(sessionsDir, CODEX_COST_SCAN_MAX_DAYS, {
-    maxFiles: CODEX_COST_SCAN_MAX_FILES,
-    maxFileBytes: CODEX_COST_SCAN_MAX_FILE_BYTES,
+  const jsonlFiles = await findJsonlFiles(sessionsDir, LOCAL_COST_SCAN_ALL_DAYS, {
+    maxFiles: LOCAL_COST_SCAN_MAX_FILES,
+    maxFileBytes: LOCAL_COST_SCAN_MAX_FILE_BYTES,
   });
 
   for (const filePath of jsonlFiles) {
@@ -480,10 +477,14 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
 
           rawInputTokens = Math.max(0, rawInputTokens);
           cachedTokens = Math.max(0, cachedTokens);
-          outputTokens = Math.max(0, outputTokens) + Math.max(0, reasoningTokens);
-          const billableInputTokens = Math.max(0, rawInputTokens - cachedTokens);
-          const inputTokens = Math.max(0, rawInputTokens);
-          if (inputTokens + outputTokens + cachedTokens === 0) continue;
+          outputTokens = Math.max(0, outputTokens);
+          const billableOutputTokens = outputTokens + Math.max(0, reasoningTokens);
+          // Codex reports cached input as a subset of input_tokens. Normalize
+          // to the same mutually exclusive split used by Claude/codeburn so
+          // input + cache read does not double-count the cached portion.
+          const inputTokens = Math.max(0, rawInputTokens - cachedTokens);
+          const billableInputTokens = inputTokens;
+          if (inputTokens + billableOutputTokens + cachedTokens === 0) continue;
 
           const timestamp = timestampMsFromValue(record.timestamp);
           const model = typeof payload.model === "string" && payload.model.trim()
@@ -502,6 +503,7 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
             inputTokens,
             billableInputTokens,
             outputTokens,
+            billableOutputTokens,
             cachedTokens,
             billableCachedTokens: cachedTokens,
             cacheWriteTokens: 0,
@@ -530,13 +532,18 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
 
         const model = typeof record.model === "string" ? record.model : "codex";
 
-        const inputTokens = typeof record.input_tokens === "number" ? record.input_tokens :
-                            typeof record.prompt_tokens === "number" ? record.prompt_tokens : 0;
+        const rawInputTokens = typeof record.input_tokens === "number" ? record.input_tokens :
+                               typeof record.prompt_tokens === "number" ? record.prompt_tokens : 0;
         const outputTokens = typeof record.output_tokens === "number" ? record.output_tokens :
                              typeof record.completion_tokens === "number" ? record.completion_tokens : 0;
         const tokenCount = typeof record.token_count === "number" ? record.token_count : 0;
+        const cachedTokens = typeof record.cached_tokens === "number" ? record.cached_tokens : 0;
 
-        if (inputTokens === 0 && outputTokens === 0 && tokenCount === 0) continue;
+        if (rawInputTokens === 0 && outputTokens === 0 && tokenCount === 0) continue;
+
+        const inputTokens = rawInputTokens > 0
+          ? Math.max(0, rawInputTokens - cachedTokens)
+          : Math.floor(tokenCount * 0.4);
 
         entries.push({
           messageId: dedupeKey,
@@ -544,10 +551,11 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           originator: sessionOriginator,
           ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
           adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
-          inputTokens: inputTokens || Math.floor(tokenCount * 0.4),
+          inputTokens,
+          billableInputTokens: inputTokens,
           outputTokens: outputTokens || Math.ceil(tokenCount * 0.6),
-          cachedTokens: typeof record.cached_tokens === "number" ? record.cached_tokens : 0,
-          billableCachedTokens: typeof record.cached_tokens === "number" ? record.cached_tokens : 0,
+          cachedTokens,
+          billableCachedTokens: cachedTokens,
           cacheWriteTokens: 0,
           timestamp: typeof record.timestamp === "number" ? record.timestamp :
                      typeof record.timestamp === "string" ? new Date(record.timestamp).getTime() : Date.now(),
@@ -1449,10 +1457,35 @@ async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDa
       }));
   }
 
+  async function addJsonlFilesInTree(dir: string): Promise<void> {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(entries.map(async (entry) => {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await addJsonlFilesInTree(entryPath);
+        return;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) return;
+      try {
+        const stat = await fs.promises.stat(entryPath);
+        if (stat.mtimeMs >= cutoff && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+          files.set(entryPath, { path: entryPath, mtimeMs: stat.mtimeMs });
+        }
+      } catch {
+        // Skip files we can't stat.
+      }
+    }));
+  }
+
   for (const projectDir of projectDirs) {
     const projectPath = projectDir;
     await addJsonlFilesInDir(projectPath);
-    await addJsonlFilesInDir(path.join(projectPath, "subagents"));
+    await addJsonlFilesInTree(path.join(projectPath, "subagents"));
 
     let childEntries: fs.Dirent[];
     try {
@@ -1462,7 +1495,7 @@ async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDa
     }
     await Promise.all(childEntries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => addJsonlFilesInDir(path.join(projectPath, entry.name, "subagents"))));
+      .map((entry) => addJsonlFilesInTree(path.join(projectPath, entry.name, "subagents"))));
   }
 
   return newestCandidatePaths(Array.from(files.values()));
