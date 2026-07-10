@@ -510,13 +510,14 @@ Key behaviors:
   120 attempts) until the DOM reports renderable text. The backfill
   also re-arms whenever the tile becomes visible but the xterm rows
   are empty (e.g. after a webgl→dom fallback).
-- **Mouse tracking forwarding** — `TerminalView` tracks DECSET 1000 /
-  1002 / 1003 (SGR mouse modes) by scanning every PTY data chunk via
-  `updateTerminalMouseTrackingModes`. When the embedded TUI has mouse
-  tracking enabled, the renderer installs a Shift-mouse bridge
-  (`installShiftMouseBridge`) that forwards Shift-click + drag as SGR
-  mouse press/move/release sequences so users can drive in-app mouse UIs
-  through the surrounding xterm.
+- **Mouse tracking and forced selection** — `TerminalView` tracks DECSET 1000 /
+  1002 / 1003 mouse modes by scanning every PTY data chunk via
+  `updateTerminalInputModes`, alongside xterm's own mouse-tracking state.
+  xterm continues to forward ordinary mouse input to the embedded TUI. On
+  macOS, `terminalMacShiftSelection.ts` converts left-button Shift+mousedown
+  to xterm's Option-based force-selection gesture only while mouse tracking is
+  active, so local text selection and copy remain available without sending
+  that gesture to the CLI.
 - **Cmd+C → SIGINT on macOS** — when the terminal is focused on macOS,
   ⌘C with no current selection sends `\x03` to the PTY (matches the
   Terminal.app behaviour TUI users expect). Selection-aware copy is
