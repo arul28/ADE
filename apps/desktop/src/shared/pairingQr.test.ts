@@ -47,19 +47,22 @@ describe("pairingQr codec", () => {
     expect(parsedUrl.hash.length).toBeGreaterThan(1);
   });
 
-  it("includes optional relayUrl / claimToken only when provided", () => {
+  it("preserves distinct optional relay, claim, and runtime-grant fields", () => {
     const bare = buildPairingQrPayload({ connectInfo });
     expect(bare.relayUrl).toBeUndefined();
     expect(bare.claimToken).toBeUndefined();
+    expect(bare.runtimeHostGrant).toBeUndefined();
 
     const withRelay = buildPairingQrPayload({
       connectInfo,
       relayUrl: "wss://relay.ade-app.dev/tunnel/abc",
       claimToken: "claim-xyz",
+      runtimeHostGrant: "runtime-grant-xyz",
     });
     const parsed = parsePairingQrUrl(encodePairingQrUrl(withRelay));
     expect(parsed?.relayUrl).toBe("wss://relay.ade-app.dev/tunnel/abc");
     expect(parsed?.claimToken).toBe("claim-xyz");
+    expect(parsed?.runtimeHostGrant).toBe("runtime-grant-xyz");
   });
 
   it("drops a relayUrl that is not a wss:// URL", () => {

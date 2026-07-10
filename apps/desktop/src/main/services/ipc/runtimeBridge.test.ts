@@ -202,6 +202,59 @@ describe("registerRuntimeBridge", () => {
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
   });
 
+  it("reads local pairing info from the local runtime connection", async () => {
+    const callSync = vi.fn(async () => ({
+      pairingUrl: "https://app.ade-app.dev/pair#payload",
+      code: "123456",
+      pinConfigured: true,
+      machineName: "Studio",
+      relayEnabled: true,
+      hasRelayCandidate: true,
+    }));
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callSync } as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: null,
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeGetLocalPairingInfo)?.(eventForSender()),
+    ).resolves.toEqual({
+      url: "https://app.ade-app.dev/pair#payload",
+      pin: "123456",
+      machineName: "Studio",
+      relayAvailable: true,
+    });
+    expect(callSync).toHaveBeenCalledWith("sync.getDesktopPairingInfo");
+  });
+
+  it.each([
+    ["machine name", { pairingUrl: "https://app.ade-app.dev/pair#payload" }],
+    ["pairing URL", { machineName: "Studio" }],
+  ])("rejects local pairing info missing its %s", async (_field, pairingInfo) => {
+    const callSync = vi.fn(async () => pairingInfo);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: { callSync } as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: null,
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeGetLocalPairingInfo)?.(eventForSender()),
+    ).rejects.toThrow("Local ADE runtime did not return pairing information.");
+    expect(callSync).toHaveBeenCalledWith("sync.getDesktopPairingInfo");
+  });
+
   it("does not start saved remote autoconnect when disabled for dev/test runs", async () => {
     const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
     process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";

@@ -201,6 +201,11 @@ Tests:
 - **The browser has no ADE database.** It does not load cr-sqlite, does not
   apply changesets, and does not advertise the `changesetAck` capability. A
   `changeset_batch` only tells the adapter which table domains to refresh.
+- **Protocol version 1 extensions are additive.** The browser decodes the
+  common envelope and ignores valid types it does not implement, including the
+  desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
+  are harmless, and missing additive keys mean the related capability is not
+  available rather than failing the handshake.
 - **IndexedDB is the pairing store.** Clearing site data removes the paired
   secret and the non-extractable DPoP private key, so the browser must pair
   again. The private key cannot be exported for backup or migration.

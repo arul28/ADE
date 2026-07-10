@@ -14097,6 +14097,7 @@ async function runServe(
     { createBrainProjectActionsSyncHandler },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
     { createSyncCloudRelayStore },
+    { setSyncRuntimeRpcHandlerFactory },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -14108,6 +14109,7 @@ async function runServe(
     import("./services/sync/brainProjectActionsSyncHandler"),
     import("./services/sync/rosterBuilder"),
     import("./services/sync/syncCloudRelayStore"),
+    import("./services/sync/syncPairedChannelService"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -14496,6 +14498,7 @@ async function runServe(
     },
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
+  let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -14518,6 +14521,7 @@ async function runServe(
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
+  clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   const startSyncHost = async () => {
     if (preferredSyncProjectId) {
       return await scopeRegistry.switchSyncHost(preferredSyncProjectId);
@@ -14554,6 +14558,8 @@ async function runServe(
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});
     }
+    clearSyncRuntimeRpcHandlerFactory?.();
+    clearSyncRuntimeRpcHandlerFactory = null;
   };
 
   const listen = async (
@@ -14689,6 +14695,7 @@ async function runServe(
   }
   return null;
   } finally {
+    clearSyncRuntimeRpcHandlerFactory?.();
     removeRuntimeProcessErrorBoundary();
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;

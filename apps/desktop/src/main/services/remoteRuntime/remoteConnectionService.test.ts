@@ -1,11 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RemoteRuntimeConnectResult,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
+import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
 import { RemoteConnectionService } from "./remoteConnectionService";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import { PairedRuntimeSshTrustRequiredError } from "./pairedRuntimeErrors";
+
+const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
+const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./sshTransport", () => ({
+  getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
+  trustSshHostKeyForTarget: trustSshHostKeyForTargetMock,
+}));
 
 function target(
   id: string,
@@ -48,6 +58,277 @@ function connectResult(
 }
 
 describe("RemoteConnectionService", () => {
+  beforeEach(() => {
+    getSshHostKeyTrustForTargetMock.mockReset();
+    trustSshHostKeyForTargetMock.mockReset();
+  });
+
+  it("upgrades a discovered ADE sync machine to a paired-first target", () => {
+    const savedCredentials = {
+      version: 1 as const,
+      hostIdentity: {
+        deviceId: "host-1",
+        siteId: "site-1",
+        name: "Studio",
+        platform: "macOS" as const,
+        deviceType: "desktop" as const,
+      },
+      deviceId: "desktop-1",
+      siteId: "desktop-site-1",
+      deviceName: "Laptop",
+      secret: "secret",
+      dpopPrivateKey: "private",
+      dpopPublicKey: "public",
+      endpoints: ["wss://relay.example/connect/machine-1"],
+      machineKey: "machine-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const registry = {
+      list: vi.fn(() => []),
+      get: vi.fn(() => null),
+      save: vi.fn((input) => ({
+        id: "paired-target-1",
+        ...input,
+        sshUser: input.sshUser ?? null,
+        port: input.port ?? null,
+        sshKeyPath: input.sshKeyPath ?? null,
+        lastSeenArch: null,
+        runtimeBinaryVersion: null,
+        lastConnectedAt: null,
+      })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      get: vi.fn(() => savedCredentials),
+      save: vi.fn((value) => value),
+    };
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      {},
+      pairedStore as any,
+    );
+
+    const target = service.saveTarget({
+      name: "Studio",
+      hostname: "studio.example.ts.net",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [],
+    }, {
+      id: "host-1::service",
+      serviceName: "ADE Sync Studio",
+      machineName: "Studio",
+      hostIdentity: "host-1",
+      hostName: "studio.local",
+      port: 8787,
+      addresses: ["192.168.1.20", "100.70.0.2"],
+      primaryRoute: "192.168.1.20",
+      tailscaleAddress: "100.70.0.2",
+      runtimeKind: "brain",
+      runtimeVersion: "1.0.0",
+      connectable: true,
+      projectIds: [],
+      projectCount: 0,
+      lastSeenAt: 1,
+    });
+
+    expect(target).toMatchObject({
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: "host-1",
+        machineKey: "machine-1",
+      },
+    });
+    expect(pairedStore.save).toHaveBeenCalledWith(expect.objectContaining({
+      endpoints: [
+        "ws://192.168.1.20:8787/",
+        "ws://100.70.0.2:8787/",
+        "ws://studio.local:8787/",
+        "wss://relay.example/connect/machine-1",
+      ],
+    }));
+  });
+
+  it("stores structured connect errors with bounded detail and legacy text", async () => {
+    const remote = target("disk-full", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const error = new RemoteRuntimeConnectError({
+      kind: "disk_full",
+      message: "The remote machine is out of disk space. Free up space and try again.",
+      detail: `tar: No space left on device\n${"x".repeat(6_000)}TAIL`,
+      freeBytes: 1024,
+      requiredBytes: 2048,
+    });
+    const pool = {
+      connect: vi.fn(async () => {
+        throw error;
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toBe(error);
+
+    const status = service.snapshot().connections[0]!;
+    expect(status.lastError).toBe(error.message);
+    expect(status.lastErrorInfo).toMatchObject({
+      kind: "disk_full",
+      message: error.message,
+      freeBytes: 1024,
+      requiredBytes: 2048,
+    });
+    expect(status.lastErrorInfo?.detail?.length).toBeLessThanOrEqual(4_000);
+    expect(status.lastErrorInfo?.detail).toContain("truncated");
+    expect(status.lastErrorInfo?.detail).toContain("TAIL");
+  });
+
+  it("publishes the transport route and connect latency in connection status", async () => {
+    const remote = target("route-status", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => ({
+        ...connectResult(remote),
+        route: {
+          kind: "tailnet" as const,
+          endpoint: "ws://100.70.0.2:8787/",
+          latencyMs: 12,
+        },
+      })),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(remote.id, { explicit: true });
+
+    expect(service.snapshot().connections[0]?.route).toEqual({
+      kind: "tailnet",
+      endpoint: "ws://100.70.0.2:8787/",
+      latencyMs: 12,
+    });
+  });
+
+  it("caps legacy connection error text at 500 characters", async () => {
+    const remote = target("verbose-error", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => {
+        throw new Error("x".repeat(1_000));
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toThrow();
+    expect(service.snapshot().connections[0]?.lastError?.length).toBe(500);
+  });
+
+  it("exposes paired fallback SSH trust only after connect fails and clears it after trust", async () => {
+    const remote: RemoteRuntimeTarget = {
+      ...target("paired-trust", null),
+      transport: "paired",
+      pairedMachine: { hostIdentity: "host-1", machineKey: "machine-1" },
+      routes: [{
+        hostname: "studio.local",
+        port: 22,
+        source: "bonjour",
+        lastSucceededAt: null,
+      }],
+    };
+    const trustStatus = {
+      state: "needs_trust" as const,
+      targetId: remote.id,
+      host: "studio.local",
+      port: 22,
+      route: remote.routes![0]!,
+      keyType: "ssh-ed25519",
+      fingerprintSha256: "SHA256:paired-fallback",
+      knownHostsPath: "/home/test/.ssh/known_hosts",
+    };
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => {
+        throw new PairedRuntimeSshTrustRequiredError(trustStatus);
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const credentials = { hostIdentity: { deviceId: "host-1" } };
+    const pairedStore = {
+      get: vi.fn(() => credentials),
+      getForReference: vi.fn(() => credentials),
+    };
+    trustSshHostKeyForTargetMock.mockResolvedValue({
+      trusted: true,
+      identity: trustStatus,
+    });
+    const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
+
+    await expect(service.getSshHostKeyTrust(remote.id)).resolves.toEqual({ state: "trusted" });
+    expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
+
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toBeInstanceOf(
+      PairedRuntimeSshTrustRequiredError,
+    );
+    await expect(service.getSshHostKeyTrust(remote.id)).resolves.toEqual(trustStatus);
+
+    await service.trustSshHostKey(remote.id, trustStatus.fingerprintSha256);
+    expect(trustSshHostKeyForTargetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostname: "studio.local",
+        routes: [trustStatus.route],
+      }),
+      trustStatus.fingerprintSha256,
+    );
+    await expect(service.getSshHostKeyTrust(remote.id)).resolves.toEqual({ state: "trusted" });
+  });
+
+  it("forgets paired credentials when removing a paired target", () => {
+    const remote: RemoteRuntimeTarget = {
+      ...target("paired-remove", null),
+      transport: "paired",
+      pairedMachine: { hostIdentity: "host-1", machineKey: "machine-1" },
+    };
+    const credentials = { hostIdentity: { deviceId: "host-1" } };
+    const registry = {
+      list: vi.fn(() => []),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+      remove: vi.fn(() => true),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      getForReference: vi.fn(() => credentials),
+      remove: vi.fn(() => true),
+    };
+    const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
+
+    expect(service.removeTarget(remote.id)).toBe(true);
+    expect(pairedStore.getForReference).toHaveBeenCalledWith(remote.pairedMachine);
+    expect(pairedStore.remove).toHaveBeenCalledWith("host-1");
+  });
+
   it("only autoconnects targets that have connected successfully before", async () => {
     const neverConnected = target("never-connected", null);
     const previouslyConnected = target("previously-connected", 1_700_000_000);

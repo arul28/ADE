@@ -12,6 +12,7 @@ import {
   buildSshConfigCandidates,
   buildSshRouteCandidates,
   buildSshUsernameCandidates,
+  connectSshWithRoute,
   execSsh,
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
@@ -184,6 +185,103 @@ describe("buildSshConfig", () => {
 
     expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
     expect(configs.every((config) => config.host === "203.0.113.10" && config.port === 22)).toBe(true);
+  });
+
+  it("reports the users and resolved identity tried on final authentication failure", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    const keyPath = path.join(homeDir, "id_remote");
+    fs.writeFileSync(keyPath, "PRIVATE KEY", "utf8");
+    const authError = Object.assign(
+      new Error("All configured authentication methods failed"),
+      { level: "client-authentication" },
+    );
+
+    await expect(connectSshWithRoute({
+      ...target,
+      sshUser: null,
+      sshKeyPath: keyPath,
+    }, {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      knownHostsPath: null,
+      connect: async () => {
+        throw authError;
+      },
+    })).rejects.toMatchObject({
+      info: {
+        kind: "ssh_auth",
+        detail: "All configured authentication methods failed",
+      },
+    });
+
+    let message = "";
+    try {
+      await connectSshWithRoute({
+        ...target,
+        sshUser: null,
+        sshKeyPath: keyPath,
+      }, {
+        env: {},
+        homeDir,
+        sshConfigPath: null,
+        knownHostsPath: null,
+        connect: async () => {
+          throw authError;
+        },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    for (const username of new Set([os.userInfo().username, "admin"])) {
+      expect(message).toContain(`"${username}"`);
+    }
+    expect(message).toContain(`key ${keyPath}`);
+  });
+
+  it("reports only configs that actually failed SSH authentication", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-config-"));
+    const configPath = path.join(dir, "config");
+    fs.writeFileSync(configPath, [
+      "Host unavailable-route",
+      "  User transport-user",
+      "Host auth-route",
+      "  User auth-user",
+    ].join("\n"), "utf8");
+    const authError = Object.assign(
+      new Error("All configured authentication methods failed"),
+      { level: "client-authentication" },
+    );
+
+    let message = "";
+    try {
+      await connectSshWithRoute({
+        ...target,
+        hostname: "unavailable-route",
+        sshUser: null,
+        routes: [{
+          hostname: "auth-route",
+          port: 22,
+          source: "manual",
+          lastSucceededAt: null,
+        }],
+      }, {
+        env: {},
+        sshConfigPath: configPath,
+        knownHostsPath: null,
+        connect: async (config) => {
+          if (config.host === "unavailable-route") {
+            throw Object.assign(new Error("Connection refused"), { code: "ECONNREFUSED" });
+          }
+          throw authError;
+        },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain('"auth-user"');
+    expect(message).not.toContain("transport-user");
   });
 
   it("tries saved route fallbacks and prioritizes the last successful route", () => {
@@ -429,6 +527,47 @@ describe("buildSshConfig", () => {
       homeDir,
       sshConfigPath: null,
     }))(key)).toBe(true);
+  });
+
+  it("omits discovery display labels when recording trusted route hostnames", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    const key = Buffer.from("remote host key");
+    const discoveredTarget: RemoteRuntimeTarget = {
+      ...target,
+      hostname: "MacBook Pro (97)",
+      routes: [
+        {
+          hostname: "100.117.237.95",
+          port: 22,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+        {
+          hostname: "macbook-pro-97.tail.example.test",
+          port: 22,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+      ],
+    };
+
+    await trustSshHostKeyForTarget(discoveredTarget, "SHA256:test-key", {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      scanHostKey: async () => ({
+        ...scannedHostKey({ homeDir, key }),
+        targetId: discoveredTarget.id,
+        host: "100.117.237.95",
+        route: discoveredTarget.routes![0]!,
+      }),
+    });
+
+    const knownHosts = fs.readFileSync(path.join(homeDir, ".ssh", "known_hosts"), "utf8");
+    expect(knownHosts).toContain(
+      `100.117.237.95,macbook-pro-97.tail.example.test ssh-ed25519 ${key.toString("base64")}`,
+    );
+    expect(knownHosts).not.toContain("MacBook Pro (97)");
   });
 
   it("refuses to overwrite a different known SSH host key", async () => {

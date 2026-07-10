@@ -50,6 +50,7 @@ export function buildPairingQrPayload(args: {
   connectInfo: SyncPairingConnectInfo;
   relayUrl?: string | null;
   claimToken?: string | null;
+  runtimeHostGrant?: string | null;
 }): SyncPairingQrPayload {
   return {
     version: PAIRING_QR_PAYLOAD_VERSION,
@@ -58,6 +59,7 @@ export function buildPairingQrPayload(args: {
     addressCandidates: args.connectInfo.addressCandidates,
     ...(args.relayUrl ? { relayUrl: args.relayUrl } : {}),
     ...(args.claimToken ? { claimToken: args.claimToken } : {}),
+    ...(args.runtimeHostGrant ? { runtimeHostGrant: args.runtimeHostGrant } : {}),
   };
 }
 
@@ -155,6 +157,7 @@ export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
 
   const relayUrl = readString(parsed, "relayUrl");
   const claimToken = readString(parsed, "claimToken");
+  const runtimeHostGrant = readString(parsed, "runtimeHostGrant");
   return {
     version: PAIRING_QR_PAYLOAD_VERSION,
     hostIdentity,
@@ -162,6 +165,7 @@ export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
     addressCandidates: parseAddressCandidates(parsed.addressCandidates),
     ...(relayUrl && /^wss:\/\//i.test(relayUrl) ? { relayUrl } : {}),
     ...(claimToken ? { claimToken } : {}),
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   };
 }
 

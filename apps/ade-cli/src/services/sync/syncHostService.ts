@@ -54,10 +54,10 @@ import type {
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
-  SyncHelloOkPayload,
   SyncHelloPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
+  PairedRuntimeHelloOkPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
   SyncProjectOpenRequestPayload,
@@ -115,9 +115,13 @@ import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJson
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createSyncPairedChannelService,
+  isPairedRuntimeEnvelopeType,
+} from "./syncPairedChannelService";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
@@ -180,6 +184,23 @@ const MAX_INBOUND_CHANGESET_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES * 40;
 
 function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
+}
+
+export function isRuntimeHostPairingRecord(
+  record: SyncPairingRecord | null | undefined,
+): boolean {
+  return record?.runtimeHostGranted === true;
+}
+
+export function isRuntimeOnlySyncPeer(args: {
+  authKind: "bootstrap" | "paired" | null;
+  pairingRecord: SyncPairingRecord | null;
+  metadata: SyncPeerMetadata | null;
+}): boolean {
+  return args.authKind === "paired"
+    && isRuntimeHostPairingRecord(args.pairingRecord)
+    && Array.isArray(args.metadata?.capabilities)
+    && args.metadata.capabilities.includes(SYNC_RUNTIME_ONLY_CAPABILITY);
 }
 
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -906,7 +927,15 @@ export function buildSyncHostHelloOkPayload(args: {
   compressionThresholdBytes?: number;
   maxProjectCatalogEnvelopeBytes?: number;
   cloudRelayWssUrl?: string | null;
-}): SyncHelloOkPayload {
+  /**
+   * Whether this peer is authorized to use the paired runtime RPC channel and
+   * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
+   * false so non-desktop paired devices (phones/browsers) never see the
+   * feature advertised as available.
+   */
+  runtimeChannelEnabled?: boolean;
+}): PairedRuntimeHelloOkPayload {
+  const runtimeChannelEnabled = args.runtimeChannelEnabled === true;
   const actions = [
     ...args.remoteCommandDescriptors,
     ...args.localCommandDescriptors,
@@ -916,7 +945,7 @@ export function buildSyncHostHelloOkPayload(args: {
     ...args.localCommandDescriptors.map((entry) => entry.action),
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
-  const payload: SyncHelloOkPayload = {
+  const payload: PairedRuntimeHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
     serverDbVersion: args.serverDbVersion,
@@ -964,6 +993,8 @@ export function buildSyncHostHelloOkPayload(args: {
         requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
         missingActions: mobileCompatibility.missingActions,
       },
+      rpcChannel: runtimeChannelEnabled,
+      portForward: runtimeChannelEnabled,
     },
   };
   const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
@@ -1056,6 +1087,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
     return null;
   }
   const dpopPublicKey = toOptionalString(value?.dpopPublicKey);
+  const runtimeHostGrant = toOptionalString(value?.runtimeHostGrant);
   return {
     code,
     peer: {
@@ -1067,6 +1099,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       dbVersion: Number(peer.dbVersion ?? 0),
     },
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   };
 }
 
@@ -1467,6 +1500,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       }
       : undefined,
+    issueRuntimeHostPairingGrant: () => pairingStore.issueRuntimeHostGrant(),
     isCloudRelayEnabled: () => Boolean(args.getCloudRelayWssUrl?.()),
     logger: args.logger,
   });
@@ -2174,6 +2208,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const sessionId of peer.subscribedSessionIds) {
         restoreDesktopTerminalSizeIfUnwatched(sessionId);
       }
+      pairedChannelService.closePeer(peer.ws, "Sync socket closed.", false);
       args.onStateChanged?.();
       broadcastBrainStatus();
     });
@@ -2888,6 +2923,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && Date.now() - peer.backpressuredSinceMs >= backpressureTimeoutMs;
   }
 
+  const pairedChannelService = createSyncPairedChannelService<WebSocket>({
+    logger: args.logger,
+    getBufferedAmount: (ws) => ws.bufferedAmount,
+    send: (ws, type, payload) => {
+      const peer = peerForSocket(ws);
+      return peer ? sendRequired(peer, type, payload) : false;
+    },
+  });
+
   function shouldDeferBackgroundChangesForChat(peer: PeerState): boolean {
     return shouldDeferSyncHostBackgroundChangesForChat({
       subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
@@ -2962,6 +3006,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function peerSupportsChangesetAck(peer: PeerState): boolean {
     return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
+  }
+
+  function isRuntimeOnlyPairedHost(peer: PeerState): boolean {
+    return isRuntimeOnlySyncPeer(peer);
   }
 
   function sendNextChangesetBatch(
@@ -3679,6 +3727,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const nowMs = Date.now();
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
+      // A paired desktop runtime connection shares this authenticated socket
+      // only for rpc/fwd envelopes. The authoritative pairing record remains
+      // the gate so a phone/browser cannot suppress its normal CRDT stream by
+      // spoofing the hello capability.
+      if (isRuntimeOnlyPairedHost(peer)) continue;
       if (isPeerBackpressured(peer)) continue;
       if (peer.pendingChangesetBatch) {
         if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
@@ -4380,6 +4433,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code, {
             dpopPublicKey: pairing.dpopPublicKey ?? null,
+            runtimeHostGrant: pairing.runtimeHostGrant ?? null,
           });
           clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
@@ -4573,10 +4627,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         compressionThresholdBytes,
         maxProjectCatalogEnvelopeBytes,
         cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+        // Runtime RPC channel + port-forward are desktop-runtime-host only,
+        // even after successful pairing (phones/browsers stay on the mobile
+        // command allowlist).
+        runtimeChannelEnabled:
+          auth.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
       broadcastBrainStatus();
+      return;
+    }
+
+    if (isPairedRuntimeEnvelopeType(envelope.type)) {
+      await pairedChannelService.handleEnvelope(
+        peer.ws,
+        envelope.type,
+        envelope.payload,
+        peer.authKind === "paired",
+        // Gate the runtime RPC channel + port-forward to desktop runtime-host
+        // peers; paired phones/browsers get the channel closed with a clear
+        // reason instead of reaching the full runtime action registry.
+        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
+      );
       return;
     }
 
@@ -5219,6 +5292,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         revokedConnectedPeer = true;
         const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? deviceId;
         const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");
+        pairedChannelService.closePeer(peer.ws, "Pairing revoked.", true);
         peer.authenticated = false;
         peer.metadata = null;
         peer.authKind = null;
@@ -5359,6 +5433,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         detachSharedListener = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
+          pairedChannelService.closePeer(peer.ws, "Sync host changed.", true);
           clearPeerAuthTimeout(peer);
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
@@ -5413,6 +5488,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await new Promise<void>((resolve) => {
           const finish = () => resolve();
           for (const peer of peers) {
+            pairedChannelService.closePeer(peer.ws, "Sync host stopped.", false);
             clearPeerAuthTimeout(peer);
             try {
               peer.ws.close();
@@ -5431,6 +5507,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
         });
       }
+      pairedChannelService.dispose();
       if (bonjourAnnouncement) {
         try {
           bonjourAnnouncement.stop?.();

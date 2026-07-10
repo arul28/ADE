@@ -10,6 +10,7 @@ import type {
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types/remoteRuntime";
+import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
 
@@ -42,6 +43,10 @@ export type BuildSshConfigOptions = {
   knownHostsPath?: string | null;
   homeDir?: string;
   usernameOverride?: string;
+};
+
+export type ConnectSshWithRouteOptions = BuildSshConfigOptions & {
+  connect?: (config: ConnectConfig) => Promise<Client>;
 };
 
 export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
@@ -199,7 +204,11 @@ function knownHostCandidates(hostAliases: string[], port: number): string[] {
 
 function knownHostWritePattern(host: string, port: number): string | null {
   const normalized = normalizeKnownHostName(host);
-  if (!normalized) return null;
+  // Discovery names are presentation labels and can contain spaces (for
+  // example, "MacBook Pro (97)"). A known_hosts host field is a
+  // comma-delimited token, so including one of those labels makes the whole
+  // line unparsable and prevents the explicitly trusted route from matching.
+  if (!normalized || /[\s,#]/.test(normalized)) return null;
   if (port === 22) return normalized;
   return normalized.startsWith("[") ? normalized : `[${normalized}]:${port}`;
 }
@@ -946,13 +955,16 @@ function buildSshConnectionCandidates(
 
 export async function connectSshWithRoute(
   target: RemoteRuntimeTarget,
+  options: ConnectSshWithRouteOptions = {},
 ): Promise<ConnectedSshSession> {
-  const configs = buildSshConnectionCandidates(target);
+  const { connect = connectSshWithConfig, ...buildOptions } = options;
+  const configs = buildSshConnectionCandidates(target, buildOptions);
   let lastError: unknown = null;
+  const authFailedConfigs: typeof configs = [];
   for (let index = 0; index < configs.length; index += 1) {
     const candidate = configs[index]!;
     try {
-      const client = await connectSshWithConfig(candidate.config);
+      const client = await connect(candidate.config);
       return {
         client,
         route: candidate.route,
@@ -961,6 +973,9 @@ export async function connectSshWithRoute(
       };
     } catch (error) {
       lastError = error;
+      if (isSshAuthenticationFailure(error)) {
+        authFailedConfigs.push(candidate);
+      }
       if (index >= configs.length - 1) break;
       if (!isSshAuthenticationFailure(error)) {
         while (
@@ -971,6 +986,32 @@ export async function connectSshWithRoute(
         }
       }
     }
+  }
+  if (isSshAuthenticationFailure(lastError)) {
+    const users = uniqueStrings(
+      authFailedConfigs.map((candidate) => candidate.openSshConfig.username),
+    );
+    const identities = uniqueStrings(
+      authFailedConfigs.flatMap((candidate) => {
+        const methods: string[] = [];
+        if (candidate.openSshConfig.identityFile) {
+          methods.push(`key ${candidate.openSshConfig.identityFile}`);
+        }
+        if (candidate.config.agent) methods.push("ssh-agent");
+        if (methods.length === 0) methods.push("default keys");
+        return methods;
+      }),
+    );
+    const detail = lastError instanceof Error
+      ? lastError.message
+      : String(lastError ?? "SSH authentication failed.");
+    throw new RemoteRuntimeConnectError({
+      kind: "ssh_auth",
+      message:
+        `SSH authentication failed for user(s) ${users.map((user) => `"${user}"`).join(", ")} ` +
+        `using ${identities.join(" and ")}. Check the SSH user and that the key is authorized on the remote machine.`,
+      detail,
+    }, lastError);
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "SSH connection failed."));
 }

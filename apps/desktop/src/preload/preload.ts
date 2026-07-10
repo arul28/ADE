@@ -610,9 +610,14 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeDoctorResult,
   RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeLocalPairingInfo,
+  RemoteRuntimePairWithMachineArgs,
+  RemoteRuntimePairWithMachineResult,
+  RemoteRuntimeParsedPairingInput,
   RemoteRuntimePortForward,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeSshHostKeyTrustStatus,
@@ -3471,6 +3476,18 @@ contextBridge.exposeInMainWorld("ade", {
     listDiscoveredMachines: async (): Promise<
       RemoteRuntimeDiscoveryResult
     > => ipcRenderer.invoke(IPC.remoteRuntimeListDiscoveredMachines),
+    parsePairingInput: async (
+      text: string,
+    ): Promise<RemoteRuntimeParsedPairingInput> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeParsePairingInput, { text }),
+    pairWithMachine: async (
+      args: RemoteRuntimePairWithMachineArgs,
+    ): Promise<RemoteRuntimePairWithMachineResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimePairWithMachine, args),
+    getLocalPairingInfo: async (): Promise<RemoteRuntimeLocalPairingInfo> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetLocalPairingInfo),
+    runDoctor: async (id: string): Promise<RemoteRuntimeDoctorResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeRunDoctor, { id }),
     saveTarget: async (
       input: RemoteRuntimeTargetInput,
     ): Promise<RemoteRuntimeTarget> =>

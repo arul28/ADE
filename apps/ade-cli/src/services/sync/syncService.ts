@@ -625,6 +625,7 @@ export function createSyncService(args: SyncServiceArgs) {
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     syncPinStore: pinStore,
     getPairingConnectInfo: buildCurrentPairingConnectInfo,
+    issueRuntimeHostPairingGrant: () => pairingStore.issueRuntimeHostGrant(),
     isCloudRelayEnabled: () => cloudRelayStore.isEnabled(),
     logger: args.logger,
   });

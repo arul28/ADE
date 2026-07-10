@@ -355,6 +355,8 @@ type SyncRemoteCommandServiceArgs = {
    * including direct address candidates and the optional relay candidate.
    */
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
+  /** Issues a short-lived one-time grant for the desktop runtime channels. */
+  issueRuntimeHostPairingGrant?: () => string;
   /** Effective relay kill-switch state for the machine-level cloud tunnel. */
   isCloudRelayEnabled?: () => boolean;
   logger: Logger;
@@ -3835,6 +3837,41 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
         candidate.kind === "relay" && candidate.host.trim().length > 0);
       return {
         pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+        code: code ?? null,
+        pinConfigured,
+        machineName: connectInfo.hostIdentity.name,
+        relayEnabled: args.isCloudRelayEnabled?.() ?? hasRelayCandidate,
+        hasRelayCandidate,
+      };
+    },
+    "runtime",
+  );
+  register(
+    "sync.getDesktopPairingInfo",
+    // The desktop calls this through its local runtime connection. Paired
+    // viewers must not mint grants for the privileged runtime channels.
+    { viewerAllowed: false },
+    async (payload): Promise<SyncWebPairingInfo> => {
+      parseGetWebPairingInfoArgs(payload);
+      const syncPinStore = requireService(args.syncPinStore, "Sync PIN store is not available.");
+      const getPairingConnectInfo = requireService(
+        args.getPairingConnectInfo,
+        "Sync pairing connect info is not available.",
+      );
+      const issueGrant = requireService(
+        args.issueRuntimeHostPairingGrant,
+        "Desktop runtime pairing grants are not available.",
+      );
+      const connectInfo = requireService(getPairingConnectInfo(), "Sync pairing connect info is not available.");
+      const pinConfigured = syncPinStore.hasPin();
+      const code = pinConfigured ? syncPinStore.getPin() : null;
+      const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
+        candidate.kind === "relay" && candidate.host.trim().length > 0);
+      return {
+        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({
+          connectInfo,
+          runtimeHostGrant: issueGrant(),
+        })),
         code: code ?? null,
         pinConfigured,
         machineName: connectInfo.hostIdentity.name,

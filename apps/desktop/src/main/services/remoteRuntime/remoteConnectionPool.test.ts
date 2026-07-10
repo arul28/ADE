@@ -9,7 +9,9 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 
 const bootstrapRemoteRuntimeMock = vi.hoisted(() => vi.fn());
+const bootstrapPairedRuntimeMock = vi.hoisted(() => vi.fn());
 const ensureRemoteProjectMock = vi.hoisted(() => vi.fn());
+const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   app: {
@@ -22,7 +24,19 @@ vi.mock("./remoteBootstrap", () => ({
   ensureRemoteProject: ensureRemoteProjectMock,
 }));
 
+vi.mock("./pairedRuntimeBootstrap", () => ({
+  bootstrapPairedRuntime: bootstrapPairedRuntimeMock,
+}));
+
+vi.mock("./sshTransport", () => ({
+  getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
+}));
+
 import { RemoteConnectionPool } from "./remoteConnectionPool";
+import {
+  PairedRuntimeCompatibilityError,
+  PairedRuntimeTransportUnavailableError,
+} from "./pairedRuntimeErrors";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -55,6 +69,23 @@ const target: RemoteRuntimeTarget = {
   lastSeenArch: null,
   runtimeBinaryVersion: null,
   lastConnectedAt: null,
+};
+
+const pairedTarget: RemoteRuntimeTarget = {
+  ...target,
+  id: "paired-target-1",
+  transport: "paired",
+  pairedMachine: {
+    hostIdentity: "host-1",
+    machineKey: "machine-1",
+  },
+  sshUser: null,
+  routes: [{
+    hostname: "studio.local",
+    port: 22,
+    source: "bonjour",
+    lastSucceededAt: null,
+  }],
 };
 
 function connectResult(version: string): RemoteRuntimeConnectResult {
@@ -192,7 +223,264 @@ function closeServer(server: net.Server): Promise<void> {
 describe("RemoteConnectionPool", () => {
   beforeEach(() => {
     bootstrapRemoteRuntimeMock.mockReset();
+    bootstrapPairedRuntimeMock.mockReset();
     ensureRemoteProjectMock.mockReset();
+    getSshHostKeyTrustForTargetMock.mockReset();
+    getSshHostKeyTrustForTargetMock.mockResolvedValue({ state: "trusted" });
+  });
+
+  it("uses and disposes a port-forward client on the paired transport connection", async () => {
+    const client = createClient();
+    const ensureForward = vi.fn(async () => ({
+      remoteHost: "127.0.0.1",
+      remotePort: 4173,
+      localHost: "127.0.0.1" as const,
+      localPort: 43111,
+      localUrl: "http://127.0.0.1:43111",
+      createdAt: 10,
+      lastUsedAt: 11,
+    }));
+    const dispose = vi.fn();
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client,
+      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      portForwardClient: { ensureForward, dispose },
+      result: {
+        ...connectResult("1.0.0"),
+        target: pairedTarget,
+        route: {
+          kind: "lan",
+          endpoint: "ws://studio.local:8787/",
+          latencyMs: 2,
+        },
+      },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await pool.connect(pairedTarget);
+    await expect(pool.ensureLocalPortForward(pairedTarget.id, {
+      remotePort: 4173,
+      label: "Preview",
+    })).resolves.toEqual({
+      targetId: pairedTarget.id,
+      remoteHost: "127.0.0.1",
+      remotePort: 4173,
+      localHost: "127.0.0.1",
+      localPort: 43111,
+      localUrl: "http://127.0.0.1:43111",
+      label: "Preview",
+      createdAt: 10,
+      lastUsedAt: 11,
+    });
+
+    await pool.disconnect(pairedTarget.id);
+    expect(ensureForward).toHaveBeenCalledWith("127.0.0.1", 4173);
+    expect(dispose).toHaveBeenCalledWith(false);
+  });
+
+  it("closes a paired RPC transport exactly once when client failure evicts it", async () => {
+    const client = createClient();
+    const dispose = vi.fn();
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client,
+      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      portForwardClient: { ensureForward: vi.fn(), dispose },
+      result: {
+        ...connectResult("1.0.0"),
+        target: pairedTarget,
+        route: {
+          kind: "lan",
+          endpoint: "ws://studio.local:8787/",
+          latencyMs: 2,
+        },
+      },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const onEvicted = vi.fn();
+    pool.onEntryEvicted(onEvicted);
+    await pool.connect(pairedTarget);
+
+    client.emitDisconnect(new Error("Remote ADE service timed out waiting for method projects.list (5000ms)."));
+    await Promise.resolve();
+
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledWith(false);
+    expect(onEvicted).toHaveBeenCalledTimes(1);
+
+    await pool.disconnect(pairedTarget.id);
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to SSH when the paired host lacks rpcChannel support", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError(
+        "The paired machine does not advertise runtime RPC support.",
+      ),
+    );
+    const client = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedTarget },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      target: { id: pairedTarget.id },
+      version: "1.0.0",
+    });
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-throws a paired compatibility error when the target has no SSH routes", async () => {
+    const pairedWithoutSshRoutes = { ...pairedTarget, routes: [] };
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeCompatibilityError(
+        "The paired machine runs an older ADE runtime.",
+      ),
+    );
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedWithoutSshRoutes)).rejects.toBeInstanceOf(
+      PairedRuntimeCompatibilityError,
+    );
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("uses preserved paired-target SSH credentials during compatibility fallback", async () => {
+    const pairedWithSshRoutes: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "paired-ssh-target-1",
+      sshUser: "fallback-user",
+      port: 2201,
+      sshKeyPath: "/keys/fallback_ed25519",
+      routes: [
+        {
+          hostname: "studio.local",
+          port: 2201,
+          source: "manual",
+          lastSucceededAt: null,
+        },
+      ],
+    };
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeCompatibilityError(
+        "The paired machine runs an older ADE runtime.",
+      ),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedWithSshRoutes },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedWithSshRoutes)).resolves.toMatchObject({
+      target: { id: pairedWithSshRoutes.id },
+    });
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({
+          id: pairedWithSshRoutes.id,
+          hostname: "studio.local",
+          sshUser: "fallback-user",
+          port: 2201,
+          sshKeyPath: "/keys/fallback_ed25519",
+        }),
+      }),
+    );
+  });
+
+  it("falls back to SSH when every paired WebSocket dial fails", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError(
+        "Failed to connect to sync endpoint: ECONNREFUSED.",
+      ),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedTarget },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      target: { id: pairedTarget.id },
+    });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({
+          id: pairedTarget.id,
+          hostname: "studio.local",
+        }),
+      }),
+    );
+  });
+
+  it("surfaces SSH trust required only after the paired route fails", async () => {
+    const trustStatus = {
+      state: "needs_trust" as const,
+      targetId: pairedTarget.id,
+      host: "studio.local",
+      port: 22,
+      route: pairedTarget.routes![0]!,
+      keyType: "ssh-ed25519",
+      fingerprintSha256: "SHA256:paired-fallback",
+      knownHostsPath: "/home/test/.ssh/known_hosts",
+    };
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError("Paired route is offline."),
+    );
+    getSshHostKeyTrustForTargetMock.mockResolvedValueOnce(trustStatus);
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).rejects.toMatchObject({
+      name: "PairedRuntimeSshTrustRequiredError",
+      trustStatus,
+    });
+
+    expect(getSshHostKeyTrustForTargetMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a relay-only paired target as SSH-capable", async () => {
+    const relayOnlyTarget: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "relay-only-target",
+      hostname: "relay.example.test",
+      routes: [{
+        hostname: "relay.example.test",
+        port: null,
+        source: "manual",
+        lastSucceededAt: null,
+      }],
+    };
+    const pairedError = new PairedRuntimeTransportUnavailableError(
+      "Relay route is offline.",
+    );
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(pairedError);
+    const pairedStore = {
+      getForReference: vi.fn(() => ({
+        endpoints: ["wss://relay.example.test/connect/machine-1"],
+        relayUrl: "wss://relay.example.test/connect/machine-1",
+      })),
+    };
+
+    const pool = new RemoteConnectionPool(
+      {} as RemoteTargetRegistry,
+      "1.0.0",
+      pairedStore as any,
+    );
+    await expect(pool.connect(relayOnlyTarget)).rejects.toBe(pairedError);
+
+    expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
   });
 
   it("evicts cached entries after the RPC client disconnects", async () => {
@@ -408,12 +696,14 @@ describe("RemoteConnectionPool", () => {
         pool as unknown as {
           entries: Map<string, Promise<{
             client: FakeRuntimeRpcClient;
+            transport: "ssh";
             ssh: FakeSshClient;
             result: RemoteRuntimeConnectResult;
           }>>;
         }
       ).entries.set(target.id, Promise.resolve({
         client: secondClient,
+        transport: "ssh",
         ssh: secondSsh,
         result: connectResult("1.0.1"),
       }));

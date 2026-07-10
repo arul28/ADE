@@ -451,6 +451,42 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("ignores unknown rpc/fwd envelopes without disconnecting the browser client", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOk(),
+        });
+      }
+    });
+    const client = new AdeSyncClient({
+      storage,
+      socketFactory: script.factory,
+      document: null,
+    });
+
+    await client.connect(environment.envId);
+    const socket = script.sockets[0]!;
+    socket.serverSend({
+      type: "rpc_open",
+      payload: { channelId: "desktop-only-rpc" },
+    });
+    socket.serverSend({
+      type: "fwd_data",
+      payload: { forwardId: "desktop-only-forward", data: "YQ==" },
+    });
+    await flush();
+
+    expect(client.getStatus().state).toBe("connected");
+    expect(socket.readyState).toBe(1);
+    expect(socket.sent.map((envelope) => envelope.type)).toEqual(["hello"]);
+    client.dispose();
+  });
+
   it("drops stored pairing only for attributed auth failures", async () => {
     const attributedStorage = new MemoryStorage();
     const attributedEnv = await makeEnvironment(attributedStorage);

@@ -365,6 +365,60 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("dispatches desktop pairing info through the daemon's trusted local sync surface", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const pairingInfo = {
+      pairingUrl: "https://app.ade-app.dev/pair#desktop-grant",
+      code: "123456",
+      pinConfigured: true,
+      machineName: "Mac Studio",
+      relayEnabled: true,
+      hasRelayCandidate: true,
+    };
+    const executeRemoteCommand = vi.fn(async () => pairingInfo);
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService: { executeRemoteCommand } },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getDesktopPairingInfo",
+      params: {},
+    })).resolves.toEqual(pairingInfo);
+    expect(executeRemoteCommand).toHaveBeenCalledWith({
+      commandId: expect.stringMatching(/^local-runtime-/),
+      action: "sync.getDesktopPairingInfo",
+      args: {},
+    });
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+
+    handler.dispose();
+  });
+
   it("does not switch the active sync host for read-only sync polls with a projectId", async () => {
     const { root, projectRoot, registry } = createRegistry();
     const active = registry.add(projectRoot);

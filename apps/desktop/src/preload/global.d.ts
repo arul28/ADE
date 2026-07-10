@@ -596,7 +596,12 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeDoctorResult,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeLocalPairingInfo,
+  RemoteRuntimePairWithMachineArgs,
+  RemoteRuntimePairWithMachineResult,
+  RemoteRuntimeParsedPairingInput,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -741,6 +746,14 @@ declare global {
           cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
         ) => () => void;
         listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveryResult>;
+        parsePairingInput: (
+          text: string,
+        ) => Promise<RemoteRuntimeParsedPairingInput>;
+        pairWithMachine: (
+          args: RemoteRuntimePairWithMachineArgs,
+        ) => Promise<RemoteRuntimePairWithMachineResult>;
+        getLocalPairingInfo: () => Promise<RemoteRuntimeLocalPairingInfo>;
+        runDoctor: (id: string) => Promise<RemoteRuntimeDoctorResult>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;

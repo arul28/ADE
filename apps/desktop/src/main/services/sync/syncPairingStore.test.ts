@@ -83,6 +83,36 @@ describe("syncPairingStore", () => {
       expect(record.secretHash).toMatch(/^[0-9a-f]{64}$/);
     });
 
+    it("grants runtime hosting only to a desktop with a fresh one-time server grant", () => {
+      const { store, pinStore } = makeHarness("ade-pairing-runtime-grant-");
+      pinStore.setPin("424242");
+      const desktopPeer = {
+        ...samplePeer,
+        platform: "macOS" as const,
+        deviceType: "desktop" as const,
+      };
+
+      const ungranted = store.pairPeer(desktopPeer, "424242");
+      expect(store.getPairingRecord(ungranted.deviceId)?.runtimeHostGranted).toBe(false);
+
+      const copiedRuntimeHostGrant = store.issueRuntimeHostGrant();
+      const nonDesktop = store.pairPeer(samplePeer, "424242", {
+        runtimeHostGrant: copiedRuntimeHostGrant,
+      });
+      expect(store.getPairingRecord(nonDesktop.deviceId)?.runtimeHostGranted).toBe(false);
+
+      const runtimeHostGrant = store.issueRuntimeHostGrant();
+      const granted = store.pairPeer(
+        { ...desktopPeer, deviceId: "genuine-desktop" },
+        "424242",
+        { runtimeHostGrant },
+      );
+      expect(store.getPairingRecord(granted.deviceId)?.runtimeHostGranted).toBe(true);
+
+      store.pairPeer({ ...desktopPeer, deviceId: "replay" }, "424242", { runtimeHostGrant });
+      expect(store.getPairingRecord("replay")?.runtimeHostGranted).toBe(false);
+    });
+
     it("produces a distinct secret each time even for the same device id", () => {
       const { store, pinStore } = makeHarness("ade-pairing-unique-");
       pinStore.setPin("424242");

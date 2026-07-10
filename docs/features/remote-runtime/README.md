@@ -1,22 +1,34 @@
 # Remote Runtime
 
-The desktop app connects to an ADE runtime (`ade serve`) running on a remote machine over SSH. The remote project lives on that machine; lanes, PTYs, git, agent chat, and PR actions all run there. The local desktop is the controller — it spawns no project services of its own for a remote binding.
+The desktop app connects to an ADE runtime (`ade serve`) running on another
+machine. The remote project lives on that machine; lanes, PTYs, git, agent
+chat, and PR actions all run there. The local desktop is the controller — it
+spawns no project services of its own for a remote binding.
 
-The wire transport is the same JSON-RPC the local machine runtime answers. The remote-runtime layer just wraps it in an SSH `exec` channel running `ade rpc --stdio`.
+The recommended transport is **paired**: pair the two ADE desktops with a PIN
+and device-bound DPoP credentials, then carry the full runtime JSON-RPC over
+the machine sync WebSocket. ADE tries direct LAN routes, then tailnet routes,
+then the configured cloud relay. **SSH** remains the Advanced path and a
+fallback for paired targets that retain usable SSH routes and credentials. It
+runs the same JSON-RPC over an SSH `exec` channel using `ade rpc --stdio` and
+can upload or start the remote runtime when needed. The relay is not an
+end-to-end encrypted tunnel; see the trust boundary in
+[Internal architecture](internal-architecture.md).
 
 ## Source file map
 
-- `apps/desktop/src/main/services/remoteRuntime/` — SSH transport (multi-route
-  fallback, bounded connect/exec timeouts, normalized handshake errors),
-  runtime bootstrap, target registry (saved routes + per-route
-  `lastSucceededAt` plus manual-disconnect state), runtime RPC client
-  (timeouts treated as fatal), remote connection pool (eviction listeners,
-  retryable read-only actions and selected retryable sync reads, local TCP
-  forwards for remote preview URLs, optional-action fallbacks, event-stream
-  gap/epoch propagation), remote
-  connection service (`powerMonitor`-driven `probeSavedConnections`, explicit
-  connect vs implicit reconnect policy), `runtimeDiscovery.ts` (Bonjour +
-  Tailscale with `discoverLanRuntimes` returning `{ machines, diagnostics }`).
+- `apps/desktop/src/main/services/remoteRuntime/` — paired transport
+  (`syncRuntimeTransport.ts`), loopback preview forwarding
+  (`syncPortForwardClient.ts`), paired credential and endpoint history
+  (`syncPairedMachineStore.ts`), LAN → tailnet → relay ordering
+  (`pairedRuntimeRoutes.ts`), paired bootstrap and connection diagnostics;
+  plus the Advanced SSH transport (multi-route fallback, bounded connect/exec
+  timeouts, strict host-key verification, normalized handshake errors) and
+  runtime upload/bootstrap. The folder also owns the target registry, runtime
+  RPC client, remote connection pool (paired-first with eligible SSH fallback,
+  eviction listeners, retryable reads, preview forwards, optional-action
+  fallbacks, event-stream gap/epoch propagation), connection service, and
+  Bonjour + Tailscale discovery.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
   action/sync/event dispatch, local-runtime project action/sync/event routing,
@@ -34,14 +46,11 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
   install/health state, and applies short per-call timeouts for project
   registration, file actions, and event polling so renderer IPC calls do not
   wait for the desktop handler timeout.
-- `apps/desktop/src/renderer/components/remoteTargets/` — remote machine form
-  (carries `routes` through saves), target list (Tailscale-preferred primary
-  route, "+ N routes" fallback hint, Tailscale/Bonjour discovery diagnostics
-  warning, and a yellow `Warning` strip for the
-  `compatibilityWarnings` the bootstrap returns for the selected
-  connection — version skew, channel mismatch, missing project
-  capabilities, runtime-home fallbacks), project picker, dirty-local-work
-  warning.
+- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
+  connected / available / unavailable sections, Pair and SSH entry paths,
+  share-this-machine and connection-doctor cards, saved/discovered machine
+  rows, route and latency status, SSH host-key trust, structured connection
+  errors, project picker, and the dirty-local-work warning.
 - `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
@@ -88,17 +97,54 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
 
 ## User model
 
-A **remote target** is a machine reachable by SSH. A **remote project** is a path on that machine that has been registered with that machine's ADE runtime (via `projects.add`). Opening a remote project does not copy local files or move a local lane; ADE controls the remote runtime and expects normal git workflow to move code between local and remote clones.
+A **remote target** is another ADE machine reachable through a paired sync
+route, SSH, or both. A paired target stores the machine identity and paired
+credentials separately from the saved target; the target may also retain SSH
+user, port, key, and route information for fallback. A **remote project** is a
+path on that machine that has been registered with its ADE runtime (via
+`projects.add`). Opening a remote project does not copy local files or move a
+local lane; ADE controls the remote runtime and expects normal git workflow to
+move code between local and remote clones.
 
 When opening a remote project, ADE checks local projects with the same git origin. If a matching local copy has uncommitted changes, ADE shows a confirmation dialog (`RemoteProjectOpenDialog`) before switching so the user can push, stash, or keep the divergent local work intentionally.
 
 ## Connect flow
 
-1. Add a machine from the remote machines panel or command palette. Discovered machines (LAN + Tailscale) prefill the form with the Tailscale FQDN as the primary host plus every other reachable route (LAN address, mDNS host, alt IPs) on the saved target so reconnects can fall back automatically.
-2. Enter a display name, hostname, SSH user, port, and optionally a private key path. If no key path is provided, ADE uses the user's local ssh-agent when `SSH_AUTH_SOCK` is available and reads matching `HostName` / `IdentityFile` entries from `~/.ssh/config`.
-3. Connect. If the machine's SSH host key has not been trusted on this Mac before, the Remote pane shows the key fingerprint and records the user's explicit "Trust & connect" decision in `known_hosts`; users should not need to run `ssh <host>` manually. ADE then opens an SSH session with a bounded handshake timeout, detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
-4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing, stale, or hash-mismatched, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade` (or the matching channel home), uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, uploads the PTY host worker used by remote terminals, uploads bundled ADE agent skills to `<ADE_HOME>/agent-skills`, and verifies `~/.ade/bin/ade --version`. Uploads prefer SFTP and fall back to bounded SSH chunk uploads / OpenSSH when needed. The skills upload is content-hashed and skipped when the remote `<ADE_HOME>/agent-skills.sha256` marker is current, so remote `ade skill` and agent launches see the same version-locked ADE skills as the desktop bundle. If the desktop has no bundled binary for that arch, bootstrap probes the alternate channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) for a working `ade` and uses whichever already serves a compatible RPC; the chosen home is recorded as a `compatibilityWarnings` entry so the UI explains why a non-default home was used.
-5. Pick an existing remote project or register a new remote path; the desktop
+1. Open the Machines panel. ADE combines Bonjour and Tailscale discovery,
+   removes this machine's own Bonjour advertisement, and merges routes that
+   identify the same machine. Discovered paired-capable ADE desktops appear in
+   Available; offline or unsupported machines remain visible in Unavailable.
+2. Use **Pair** for the normal flow. Paste or scan the machine's pairing link or
+   code, enter its six-digit PIN, and let ADE save the machine identity, DPoP
+   key, and advertised direct/relay endpoints. A discovered machine with an
+   existing pairing is upgraded to a paired target automatically.
+3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
+   recently successful endpoint within each class. After authenticated
+   `hello_ok`, it requires `features.rpcChannel === true`, opens the runtime
+   JSON-RPC channel, and uses the paired port-forward channel for remote preview
+   URLs. The connected status reports the winning route and latency. A relay
+   route is a trusted-operator plaintext-readable path, not a confidential
+   channel.
+4. If paired dialing fails, or the remote runtime does not support the paired
+   RPC channel, ADE silently falls back to SSH only when that paired target has
+   usable SSH routes and credentials. SSH host-key trust is requested only
+   after fallback is actually needed; it is never pre-trusted or prompted
+   before the paired attempt.
+5. Use **SSH** under Advanced to configure or connect directly: enter a display
+   name, hostname, SSH user, port, and optional private key path. With no key
+   path, ADE uses the local ssh-agent when `SSH_AUTH_SOCK` is available and
+   matching `HostName` / `IdentityFile` entries from `~/.ssh/config`. An unknown
+   host key is shown with its fingerprint and requires explicit **Trust &
+   connect** approval before it is recorded in `known_hosts`.
+6. On an SSH connection, ADE detects the remote platform with `uname -sm` and
+   starts `ade rpc --stdio`. If the bundled runtime is present locally and the
+   remote binary is missing, stale, or hash-mismatched, ADE uploads the binary,
+   native dependencies, PTY worker, and bundled agent skills into the matching
+   ADE channel home, then verifies the runtime. Uploads prefer SFTP and fall
+   back to bounded SSH chunk uploads / OpenSSH. Without a bundled binary, ADE
+   probes alternate channel homes for a compatible installed runtime and
+   reports the selected fallback as a compatibility warning.
+7. Pick an existing remote project or register a new remote path; the desktop
    calls `projects.add { rootPath }` against the remote runtime to bind it.
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.

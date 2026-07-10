@@ -50,6 +50,11 @@ export const IPC = {
   remoteRuntimeListTargets: "ade.remoteRuntime.listTargets",
   remoteRuntimeListDiscoveredMachines:
     "ade.remoteRuntime.listDiscoveredMachines",
+  remoteRuntimeParsePairingInput: "ade.remoteRuntime.parsePairingInput",
+  remoteRuntimePairWithMachine: "ade.remoteRuntime.pairWithMachine",
+  remoteRuntimeGetLocalPairingInfo:
+    "ade.remoteRuntime.getLocalPairingInfo",
+  remoteRuntimeRunDoctor: "ade.remoteRuntime.runDoctor",
   remoteRuntimeGetConnectionSnapshot: "ade.remoteRuntime.getConnectionSnapshot",
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",

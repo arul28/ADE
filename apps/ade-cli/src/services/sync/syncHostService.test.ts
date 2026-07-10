@@ -26,6 +26,8 @@ import {
   compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
+  isRuntimeOnlySyncPeer,
+  isRuntimeHostPairingRecord,
   planChatEventResume,
   recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
@@ -34,8 +36,9 @@ import {
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener } from "./sharedSyncListener";
+import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
-import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
@@ -225,6 +228,10 @@ describe("buildSyncHostHelloOkPayload", () => {
     expect(payload.features.fileAccess).toBe(true);
     expect(payload.features.terminalStreaming).toBe(true);
     expect(payload.features.chatStreaming).toEqual({ enabled: true });
+    // Phone peer without runtimeChannelEnabled: runtime channel + port-forward
+    // must NOT be advertised as available.
+    expect(payload.features.rpcChannel).toBe(false);
+    expect(payload.features.portForward).toBe(false);
     expect(payload.features.commandRouting).toEqual({
       mode: "allowlisted",
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
@@ -240,6 +247,94 @@ describe("buildSyncHostHelloOkPayload", () => {
     });
     // No relay URL supplied → field omitted for backward-compatible payloads.
     expect("cloudRelayWssUrl" in payload).toBe(false);
+  });
+
+  it("advertises the runtime RPC channel + port-forward only when the peer is an authorized desktop host", () => {
+    const desktop = {
+      deviceId: "mac-studio-1",
+      deviceName: "Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "desktop-site-1",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const base = {
+      brain: desktop,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    const enabled = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: desktop,
+      runtimeChannelEnabled: true,
+    });
+    expect(enabled.features.rpcChannel).toBe(true);
+    expect(enabled.features.portForward).toBe(true);
+
+    const disabled = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: desktop,
+      runtimeChannelEnabled: false,
+    });
+    expect(disabled.features.rpcChannel).toBe(false);
+    expect(disabled.features.portForward).toBe(false);
+  });
+
+  it("derives runtime-channel authorization from the pairing record, not spoofed hello metadata", () => {
+    const spoofedDesktopHello = {
+      deviceId: "paired-mobile-1",
+      deviceName: "Spoofed desktop",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "paired-mobile-site-1",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const record = (runtimeHostGranted: boolean): SyncPairingRecord => ({
+      secretHash: "hash",
+      createdAt: "2026-07-10T00:00:00.000Z",
+      lastUsedAt: null,
+      peerName: "Paired peer",
+      peerPlatform: "macOS",
+      peerDeviceType: "desktop",
+      runtimeHostGranted,
+    });
+    const base = {
+      peer: spoofedDesktopHello,
+      brain: spoofedDesktopHello,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    const ungranted = buildSyncHostHelloOkPayload({
+      ...base,
+      runtimeChannelEnabled: isRuntimeHostPairingRecord(record(false)),
+    });
+    expect(ungranted.features.rpcChannel).toBe(false);
+    expect(ungranted.features.portForward).toBe(false);
+
+    const genuineDesktop = buildSyncHostHelloOkPayload({
+      ...base,
+      runtimeChannelEnabled: isRuntimeHostPairingRecord(record(true)),
+    });
+    expect(genuineDesktop.features.rpcChannel).toBe(true);
+    expect(genuineDesktop.features.portForward).toBe(true);
   });
 
   it("advertises the cloud relay connect URL so already-paired phones learn the off-LAN route", () => {
@@ -297,6 +392,51 @@ describe("buildSyncHostHelloOkPayload", () => {
     // routes"; null means "kill-switch off, clear them".
     expect("cloudRelayWssUrl" in payload).toBe(true);
     expect(payload.cloudRelayWssUrl).toBeNull();
+  });
+});
+
+describe("runtime-only paired host changesets", () => {
+  const metadata = {
+    deviceId: "desktop-runtime-1",
+    deviceName: "Desktop runtime",
+    platform: "macOS",
+    deviceType: "desktop",
+    siteId: "desktop-runtime-site-1",
+    dbVersion: 0,
+    capabilities: [SYNC_RUNTIME_ONLY_CAPABILITY],
+  } satisfies SyncPeerMetadata;
+  const pairingRecord = (runtimeHostGranted: boolean): SyncPairingRecord => ({
+    secretHash: "hash",
+    createdAt: "2026-07-10T00:00:00.000Z",
+    lastUsedAt: null,
+    peerName: "Paired peer",
+    peerPlatform: "macOS",
+    peerDeviceType: "desktop",
+    runtimeHostGranted,
+  });
+
+  it("suppresses CRDT only for an authenticated runtime-host grant", () => {
+    expect(isRuntimeOnlySyncPeer({
+      authKind: "paired",
+      pairingRecord: pairingRecord(true),
+      metadata,
+    })).toBe(true);
+
+    expect(isRuntimeOnlySyncPeer({
+      authKind: "paired",
+      pairingRecord: pairingRecord(false),
+      metadata,
+    })).toBe(false);
+    expect(isRuntimeOnlySyncPeer({
+      authKind: "bootstrap",
+      pairingRecord: pairingRecord(true),
+      metadata,
+    })).toBe(false);
+    expect(isRuntimeOnlySyncPeer({
+      authKind: "paired",
+      pairingRecord: pairingRecord(true),
+      metadata: { ...metadata, capabilities: [] },
+    })).toBe(false);
   });
 });
 
@@ -680,6 +820,58 @@ describe("brain project actions fallback handler", () => {
     }
   });
 
+  it("refuses rpc/fwd when a PIN-authorized brain pairing request merely claims desktop", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    const pairing = createSpoofedDesktopPairing(secretsDir);
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterialProvider: () => null,
+      }),
+      pairingSecretsPath: pairing.pairingSecretsPath,
+      pinPath: pairing.pinPath,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => {
+      handler({
+        ws,
+        remoteAddress: request.socket.remoteAddress ?? null,
+        remotePort: request.socket.remotePort ?? null,
+      });
+    });
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const address = server.address();
+      expect(typeof address).toBe("object");
+      const port = typeof address === "object" && address ? address.port : 0;
+      expect(port).toBeGreaterThan(0);
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendSpoofedPairedHello(client, pairing.helloPeer, pairing.secret);
+      await expectSpoofedRuntimeChannelRefused(client, envelopes);
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("rate-limits failed PIN pairing attempts before a project host owns the listener", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
@@ -807,6 +999,87 @@ function createTempProjectRoot(): { projectRoot: string; cleanup: () => void } {
   };
 }
 
+function createSpoofedDesktopPairing(secretsDir: string) {
+  fs.mkdirSync(secretsDir, { recursive: true });
+  const pinPath = path.join(secretsDir, "sync-pin.json");
+  const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+  const pinStore = createSyncPinStore({ filePath: pinPath });
+  pinStore.setPin("428193");
+  const recordedPeer = {
+    deviceId: "spoofed-mobile-1",
+    deviceName: "Self-claimed desktop",
+    platform: "macOS",
+    deviceType: "desktop",
+    siteId: "spoofed-mobile-site-1",
+    dbVersion: 0,
+  } satisfies SyncPeerMetadata;
+  const { secret } = createSyncPairingStore({
+    filePath: pairingSecretsPath,
+    pinStore,
+  }).pairPeer(recordedPeer, "428193");
+  return {
+    pairingSecretsPath,
+    pinPath,
+    pinStore,
+    secret,
+    helloPeer: {
+      ...recordedPeer,
+      deviceName: "Self-claimed desktop",
+    } satisfies SyncPeerMetadata,
+  };
+}
+
+function sendSpoofedPairedHello(
+  client: WebSocket,
+  peer: SyncPeerMetadata,
+  secret: string,
+): void {
+  client.send(encodeSyncEnvelope({
+    type: "hello",
+    requestId: "spoofed-hello",
+    payload: {
+      peer,
+      auth: { kind: "paired", deviceId: peer.deviceId, secret },
+    },
+  }));
+}
+
+async function expectSpoofedRuntimeChannelRefused(
+  client: WebSocket,
+  envelopes: ParsedSyncEnvelope[],
+): Promise<void> {
+  const hello = await waitForEnvelope(envelopes, "hello_ok", "spoofed-hello");
+  expect(hello.payload).toMatchObject({
+    features: { rpcChannel: false, portForward: false },
+  });
+  client.send(encodeSyncEnvelope({
+    type: "rpc_open",
+    payload: { channelId: "spoofed-rpc" },
+  }));
+  client.send(encodeSyncEnvelope({
+    type: "fwd_open",
+    payload: { forwardId: "spoofed-forward", host: "127.0.0.1", port: 4173 },
+  }));
+  const rpcClose = await waitForValue(
+    () => envelopes.find((envelope) =>
+      envelope.type === "rpc_close"
+      && (envelope.payload as { channelId?: unknown }).channelId === "spoofed-rpc"),
+    "spoofed rpc_close",
+  );
+  const forwardClose = await waitForValue(
+    () => envelopes.find((envelope) =>
+      envelope.type === "fwd_close"
+      && (envelope.payload as { forwardId?: unknown }).forwardId === "spoofed-forward"),
+    "spoofed fwd_close",
+  );
+  expect(rpcClose.payload).toMatchObject({
+    reason: "Runtime channel is only available to desktop clients.",
+  });
+  expect(forwardClose.payload).toMatchObject({
+    reason: "Runtime channel is only available to desktop clients.",
+  });
+}
+
 function createDiscoveryProject(overrides: Partial<SyncMobileProjectSummary>): SyncMobileProjectSummary {
   return {
     id: "project-1",
@@ -907,6 +1180,120 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
     },
   };
 }
+
+describe("paired runtime host authorization", () => {
+  it("refuses rpc/fwd when a PIN-authorized project-host pairing request merely claims desktop", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const pairing = createSpoofedDesktopPairing(path.join(projectRoot, ".ade", "secrets"));
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      discoveryEnabled: false,
+      pinStore: pairing.pinStore,
+      pairingSecretsPath: pairing.pairingSecretsPath,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      expect(port).toBeGreaterThan(0);
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendSpoofedPairedHello(client, pairing.helloPeer, pairing.secret);
+      await expectSpoofedRuntimeChannelRefused(client, envelopes);
+    } finally {
+      client?.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it.each([
+    ["project", "project-1"],
+    ["brain", null],
+  ] as const)("does not send CRDT changesets to a genuine runtime-only %s host peer", async (_mode, projectId) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    pinStore.setPin("428193");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const runtimePeer = {
+      deviceId: `runtime-only-${_mode}`,
+      deviceName: `Runtime-only ${_mode}`,
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: `runtime-only-${_mode}-site`,
+      dbVersion: 0,
+      capabilities: [SYNC_RUNTIME_ONLY_CAPABILITY],
+    } satisfies SyncPeerMetadata;
+    const runtimeHostGrant = pairingStore.issueRuntimeHostGrant();
+    const { secret } = pairingStore.pairPeer(runtimePeer, "428193", { runtimeHostGrant });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const exportChangesSince = vi.fn(() => [makeChange(1, 0)]);
+    const host = createSyncHostService({
+      ...baseArgs,
+      projectId,
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      pinStore,
+      pairingSecretsPath,
+      db: {
+        sync: {
+          getSiteId: () => "runtime-host-site",
+          getDbVersion: () => 1,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        payload: {
+          peer: runtimePeer,
+          auth: { kind: "paired", deviceId: runtimePeer.deviceId, secret },
+        },
+      }));
+
+      const hello = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "hello_ok"),
+        `${_mode} runtime-only hello_ok`,
+      );
+      expect(hello.payload).toMatchObject({
+        features: { rpcChannel: true, portForward: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(exportChangesSince).not.toHaveBeenCalled();
+    } finally {
+      client?.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
 
 describe("createSyncHostService LAN discovery", () => {
   let originalPlatform: PropertyDescriptor | undefined;

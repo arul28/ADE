@@ -15,6 +15,7 @@ import type {
   ExternalSessionSummary,
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
+import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -67,6 +68,11 @@ export type SyncPeerMetadata = {
    * back to `dbVersion` for older clients.
    */
   dbVersionBySite?: Record<string, number>;
+  /**
+   * Additive hello capabilities. `runtimeOnly` means the client consumes only
+   * rpc/fwd envelopes; hosts honor it only for an authenticated pairing record
+   * carrying the server-issued runtime-host grant.
+   */
   capabilities?: string[];
   appVersion?: string;
   appBuild?: string;
@@ -598,6 +604,8 @@ export type SyncPairingQrPayload = {
   relayUrl?: string | null;
   /** Reserved for off-LAN pairing claims once the relay pairing flow ships. */
   claimToken?: string | null;
+  /** One-time host-issued authorization for desktop runtime RPC/forwarding. */
+  runtimeHostGrant?: string | null;
 };
 
 export type SyncPairingRequestPayload = {
@@ -608,6 +616,12 @@ export type SyncPairingRequestPayload = {
    * Stored with the pairing record so later hellos must prove possession.
    */
   dpopPublicKey?: string | null;
+  /**
+   * Short-lived, one-time server grant from a desktop-specific pairing link.
+   * A PIN and client-asserted desktop metadata alone never authorize runtime
+   * RPC or port forwarding.
+   */
+  runtimeHostGrant?: string | null;
 };
 
 export type SyncPairingResultPayload = {
@@ -1175,6 +1189,7 @@ export type SyncRemoteCommandAction =
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
   | "sync.getWebPairingInfo"
+  | "sync.getDesktopPairingInfo"
   | "modelPicker.getFavorites"
   | "modelPicker.setFavorites"
   | "modelPicker.toggleFavorite"
@@ -1351,4 +1366,5 @@ export type SyncEnvelope =
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope
-  | SyncEnvelopeChunkEnvelope;
+  | SyncEnvelopeChunkEnvelope
+  | PairedRuntimeSyncEnvelope;

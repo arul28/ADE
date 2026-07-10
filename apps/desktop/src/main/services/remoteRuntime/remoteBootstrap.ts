@@ -13,6 +13,7 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
 } from "../../../shared/types/remoteRuntime";
+import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import { connectSshWithRoute, execSsh, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
@@ -34,7 +35,12 @@ export function normalizeRemoteArch(raw: string): { platform: string; arch: stri
       ? "x64"
       : null;
   if (!platform || !arch) {
-    throw new Error(`Unsupported remote ADE service platform: ${raw.trim() || "unknown"}. Supported targets are macOS/Linux on arm64 or x64.`);
+    const detectedPlatform = raw.trim() || "unknown";
+    throw new RemoteRuntimeConnectError({
+      kind: "unsupported_os",
+      message: `Unsupported remote ADE service platform: ${detectedPlatform}. Supported targets are macOS/Linux on arm64 or x64.`,
+      detail: detectedPlatform,
+    });
   }
   return { platform, arch, label: `${platform}-${arch}` };
 }
@@ -657,6 +663,138 @@ async function readRemoteRuntimeSupportStatus(args: {
   };
 }
 
+type RemoteInstallDiskSpace = {
+  freeBytes: number;
+  requiredBytes: number;
+};
+
+const REMOTE_INSTALL_MARGIN_BYTES = 64 * 1024 * 1024;
+
+function formatInstallMegabytes(bytes: number): string {
+  return `${Math.max(0, Math.round(bytes / (1024 * 1024)))} MB`;
+}
+
+function diskFullConnectError(args: {
+  detail: string;
+  diskSpace?: RemoteInstallDiskSpace | null;
+  cause?: unknown;
+}): RemoteRuntimeConnectError {
+  const space = args.diskSpace;
+  const message = space
+    ? `The remote machine is out of disk space (${formatInstallMegabytes(space.freeBytes)} free; ADE needs about ${formatInstallMegabytes(space.requiredBytes)} to install its runtime). Free up space and try again.`
+    : "The remote machine is out of disk space. Free up space and try again.";
+  return new RemoteRuntimeConnectError({
+    kind: "disk_full",
+    message,
+    detail: args.detail,
+    ...(space
+      ? { freeBytes: space.freeBytes, requiredBytes: space.requiredBytes }
+      : {}),
+  }, args.cause);
+}
+
+function isDiskFullError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current != null && depth < 5; depth += 1) {
+    if (typeof current === "object") {
+      const record = current as {
+        code?: unknown;
+        message?: unknown;
+        cause?: unknown;
+      };
+      if (record.code === "ENOSPC") return true;
+      if (
+        typeof record.message === "string" &&
+        /\bENOSPC\b|No space left on device/i.test(record.message)
+      ) {
+        return true;
+      }
+      current = record.cause;
+      continue;
+    }
+    if (/\bENOSPC\b|No space left on device/i.test(String(current))) {
+      return true;
+    }
+    break;
+  }
+  return false;
+}
+
+function normalizeBootstrapConnectError(
+  error: unknown,
+  diskSpace: RemoteInstallDiskSpace | null,
+): unknown {
+  if (error instanceof RemoteRuntimeConnectError) return error;
+  if (!isDiskFullError(error)) return error;
+  return diskFullConnectError({
+    detail: error instanceof Error ? error.message : String(error),
+    diskSpace,
+    cause: error,
+  });
+}
+
+function parseAvailableDiskKilobytes(stdout: string): number | null {
+  const lines = stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const fields = lines[index]!.split(/\s+/u);
+    if (fields.length < 6) continue;
+    const availableKb = Number.parseInt(fields[3]!, 10);
+    if (Number.isSafeInteger(availableKb) && availableKb >= 0) {
+      return availableKb;
+    }
+  }
+  return null;
+}
+
+async function preflightRemoteInstallDiskSpace(args: {
+  client: Client;
+  layout: RemoteRuntimeLayout;
+  binaryBytes: number;
+  nativeArchiveBytes: number;
+}): Promise<RemoteInstallDiskSpace | null> {
+  const requiredBytes =
+    args.binaryBytes + args.nativeArchiveBytes * 3 + REMOTE_INSTALL_MARGIN_BYTES;
+  try {
+    const result = await execSsh(
+      args.client,
+      `mkdir -p ${args.layout.homeDirExpr} && df -kP ${args.layout.homeDirExpr}`,
+    );
+    if (result.code !== 0) {
+      console.warn("remote_runtime.disk_preflight_failed", {
+        detail: result.stderr.trim() || result.stdout.trim(),
+      });
+      return null;
+    }
+    const availableKb = parseAvailableDiskKilobytes(result.stdout);
+    if (availableKb == null) {
+      console.warn("remote_runtime.disk_preflight_unparsable", {
+        output: result.stdout.slice(0, 500),
+      });
+      return null;
+    }
+    const diskSpace = {
+      freeBytes: availableKb * 1024,
+      requiredBytes,
+    };
+    if (diskSpace.freeBytes < diskSpace.requiredBytes) {
+      throw diskFullConnectError({
+        detail: `Remote disk preflight reported ${diskSpace.freeBytes} bytes free and ${diskSpace.requiredBytes} bytes required.`,
+        diskSpace,
+      });
+    }
+    return diskSpace;
+  } catch (error) {
+    if (error instanceof RemoteRuntimeConnectError) throw error;
+    console.warn("remote_runtime.disk_preflight_failed", {
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 const REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS = 45_000;
 const REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS = Math.ceil(
@@ -1089,6 +1227,11 @@ async function uploadNativeDepsBundle(
   );
   try {
     await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    throw error;
+  }
+  try {
     const extract = await execSsh(
       client,
       [
@@ -1105,7 +1248,11 @@ async function uploadNativeDepsBundle(
       throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
     }
   } catch (error) {
-    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    await execSsh(
+      client,
+      `rm -f ${tempExpr} ${remoteArchiveExpr}; rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
+      { timeoutMs: 30_000 },
+    ).catch(() => undefined);
     throw error;
   }
 }
@@ -1330,6 +1477,7 @@ export async function bootstrapRemoteRuntime(args: {
     openSshConfig,
   } = await connectSshWithRoute(args.target);
   const uploadConnectionConfig = openSshConfig ?? connectedConfig;
+  let installDiskSpace: RemoteInstallDiskSpace | null = null;
   try {
     const uname = await execSsh(ssh, "uname -sm");
     if (uname.code !== 0) {
@@ -1404,6 +1552,32 @@ export async function bootstrapRemoteRuntime(args: {
       remoteBinaryMatchesLocal,
     }));
 
+    const supportStatus = await readRemoteRuntimeSupportStatus({
+      client: ssh,
+      layout,
+      archLabel: arch.label,
+      appVersion: args.appVersion,
+      checkNativeDeps: Boolean(nativeDepsBundle),
+      checkPtyHostWorker: Boolean(localPtyHostWorkerSha256),
+      localPtyHostWorkerSha256,
+    });
+    const shouldUploadNativeDeps = Boolean(
+      nativeDepsBundle &&
+      (shouldUploadRuntime || !supportStatus.nativeDepsReady),
+    );
+    if (shouldUploadRuntime || shouldUploadNativeDeps) {
+      installDiskSpace = await preflightRemoteInstallDiskSpace({
+        client: ssh,
+        layout,
+        binaryBytes:
+          shouldUploadRuntime && localBinary ? fileSizeBytes(localBinary) : 0,
+        nativeArchiveBytes:
+          shouldUploadNativeDeps && nativeDepsBundle
+            ? fileSizeBytes(nativeDepsBundle)
+            : 0,
+      });
+    }
+
     const uploadBundledRuntime = async (): Promise<void> => {
       if (!localBinary || !localBinarySha256) return;
       await uploadRuntimeBinary(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, localBinary, args.appVersion, localBinarySha256);
@@ -1415,16 +1589,6 @@ export async function bootstrapRemoteRuntime(args: {
     if (shouldUploadRuntime) {
       await uploadBundledRuntime();
     }
-
-    const supportStatus = await readRemoteRuntimeSupportStatus({
-      client: ssh,
-      layout,
-      archLabel: arch.label,
-      appVersion: args.appVersion,
-      checkNativeDeps: Boolean(nativeDepsBundle) && !runtimeUploaded,
-      checkPtyHostWorker: Boolean(localPtyHostWorkerSha256) && !runtimeUploaded,
-      localPtyHostWorkerSha256,
-    });
 
     const ensureNativeDepsReady = async (forceUpload: boolean): Promise<boolean> => {
       if (!nativeDepsBundle) return false;
@@ -1605,6 +1769,16 @@ export async function bootstrapRemoteRuntime(args: {
         target: updated,
         arch: arch.label,
         version: initializeInfo.version ?? runtimeVersion,
+        route: {
+          kind: "ssh",
+          endpoint: (() => {
+            const host = connectedRoute.hostname.includes(":")
+              && !connectedRoute.hostname.startsWith("[")
+              ? `[${connectedRoute.hostname}]`
+              : connectedRoute.hostname;
+            return `${host}:${connectedRoute.port ?? args.target.port ?? 22}`;
+          })(),
+        },
         capabilities: initializeInfo.capabilities,
         compatibilityWarnings,
         projects,
@@ -1612,7 +1786,7 @@ export async function bootstrapRemoteRuntime(args: {
     };
   } catch (error) {
     ssh.end();
-    throw error;
+    throw normalizeBootstrapConnectError(error, installDiskSpace);
   }
 }
 

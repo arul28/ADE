@@ -585,6 +585,13 @@ Implemented envelope types on iOS:
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
+Protocol version 1 is additive. The phone decodes the common envelope and its
+string `type`, then ignores types it does not implement. In particular,
+desktop-only `rpc_*` and `fwd_*` envelopes do not fail or disconnect an iOS
+client. `hello_ok.features` is also read additively: missing flags resolve to
+unsupported/limited behavior, so an older host or a newer host advertising
+desktop-only flags does not break the mobile handshake.
+
 Gzip decompression uses the system `zlib` module. `unwrapSyncCommandResponse`
 turns a raw response dict into either the `result` value or throws an
 `NSError` with `ADEErrorCode` when `ok: false`.

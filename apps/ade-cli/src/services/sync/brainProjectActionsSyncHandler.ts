@@ -32,8 +32,12 @@ import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
-import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createSyncPairedChannelService,
+  isPairedRuntimeEnvelopeType,
+} from "./syncPairedChannelService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
@@ -46,6 +50,7 @@ import {
 import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
+  isRuntimeHostPairingRecord,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -71,9 +76,11 @@ type BrainProjectActionsSyncHandlerArgs = {
 type BrainPeerState = {
   ws: WebSocket;
   authenticated: boolean;
+  authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
   personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
+  pairingRecord: SyncPairingRecord | null;
 };
 
 const WS_OPEN = 1;
@@ -222,7 +229,13 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
   const code = optionalString(record.code);
   const peer = normalizePeerMetadata(record.peer);
   const dpopPublicKey = optionalString(record.dpopPublicKey);
-  return code && peer ? { code, peer, ...(dpopPublicKey ? { dpopPublicKey } : {}) } : null;
+  const runtimeHostGrant = optionalString(record.runtimeHostGrant);
+  return code && peer ? {
+    code,
+    peer,
+    ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
+  } : null;
 }
 
 function send(
@@ -230,14 +243,19 @@ function send(
   type: SyncEnvelope["type"],
   payload: unknown,
   requestId?: string | null,
-): void {
-  if (ws.readyState !== WS_OPEN) return;
-  ws.send(encodeSyncEnvelope({
-    type,
-    requestId,
-    payload,
-    compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
-  }));
+): boolean {
+  if (ws.readyState !== WS_OPEN) return false;
+  try {
+    ws.send(encodeSyncEnvelope({
+      type,
+      requestId,
+      payload,
+      compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sendProjectCatalog(
@@ -416,6 +434,11 @@ export function createBrainProjectActionsSyncHandler(
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? 1_500));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? BRAIN_SYNC_AUTH_TIMEOUT_MS));
   const pairFailures = createPairFailureTracker();
+  const pairedChannelService = createSyncPairedChannelService<WebSocket>({
+    logger: args.logger,
+    getBufferedAmount: (ws) => ws.bufferedAmount,
+    send: (ws, type, payload) => send(ws, type, payload),
+  });
 
   const brainMetadata = (): SyncPeerMetadata => ({
     deviceId: localDeviceId,
@@ -451,6 +474,17 @@ export function createBrainProjectActionsSyncHandler(
   };
 
   const handleAuthenticatedEnvelope = async (peer: BrainPeerState, envelope: ReturnType<typeof parseSyncEnvelope>): Promise<void> => {
+    if (isPairedRuntimeEnvelopeType(envelope.type)) {
+      await pairedChannelService.handleEnvelope(
+        peer.ws,
+        envelope.type,
+        envelope.payload,
+        peer.authKind === "paired",
+        // Runtime RPC channel + port-forward are desktop-runtime-host only.
+        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
+      );
+      return;
+    }
     switch (envelope.type) {
       case "project_catalog_request": {
         sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger), envelope.requestId);
@@ -724,9 +758,11 @@ export function createBrainProjectActionsSyncHandler(
     const peer: BrainPeerState = {
       ws,
       authenticated: false,
+      authKind: null,
       authTimeout: null,
       metadata: null,
       personalChatSubscriptions: new Map(),
+      pairingRecord: null,
     };
     let personalChatPumpRunning = false;
     const personalChatPump = setInterval(() => {
@@ -809,6 +845,7 @@ export function createBrainProjectActionsSyncHandler(
             try {
               const paired = pairingStore.pairPeer(payload.peer, payload.code, {
                 dpopPublicKey: payload.dpopPublicKey ?? null,
+                runtimeHostGrant: payload.runtimeHostGrant ?? null,
               });
               pairFailures.clearAfterSuccess(remoteAddress ?? null);
               send(ws, "pairing_result", { ok: true, deviceId: paired.deviceId, secret: paired.secret }, envelope.requestId);
@@ -862,14 +899,15 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           const auth = hello.auth;
+          let authenticatedPairingRecord: SyncPairingRecord | null = null;
           const authFailed = (() => {
             if (auth?.kind === "paired") {
               if (auth.deviceId !== hello.peer.deviceId) return true;
               if (!pairingStore.authenticate(auth.deviceId, auth.secret)) return true;
-              const record = pairingStore.getPairingRecord(auth.deviceId);
-              if (!record) return true;
+              authenticatedPairingRecord = pairingStore.getPairingRecord(auth.deviceId);
+              if (!authenticatedPairingRecord) return true;
               const dpopFailure = evaluatePairedHelloDpop({
-                storedPublicKey: record.dpopPublicKey,
+                storedPublicKey: authenticatedPairingRecord.dpopPublicKey,
                 deviceId: auth.deviceId,
                 secret: auth.secret,
                 proof: auth.dpop ?? null,
@@ -920,8 +958,10 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
+          peer.authKind = auth?.kind ?? null;
           clearAuthTimeout();
           peer.metadata = hello.peer;
+          peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
@@ -940,6 +980,10 @@ export function createBrainProjectActionsSyncHandler(
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+            // Advertise the runtime RPC channel + port-forward only to paired
+            // desktop runtime-hosts (phones/browsers stay on the allowlist).
+            runtimeChannelEnabled:
+              auth?.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
           }), envelope.requestId);
           return;
         }
@@ -962,6 +1006,7 @@ export function createBrainProjectActionsSyncHandler(
       clearAuthTimeout();
       clearInterval(personalChatPump);
       peer.personalChatSubscriptions.clear();
+      pairedChannelService.closePeer(ws, "Sync socket closed.", false);
     });
   };
 }

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
+import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
@@ -32,6 +33,7 @@ function createService(options?: {
   db?: Record<string, unknown>;
   syncPinStore?: Record<string, unknown>;
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
+  issueRuntimeHostPairingGrant?: () => string;
   isCloudRelayEnabled?: () => boolean;
   usageTrackingService?: Record<string, unknown>;
   personalChatScope?: {
@@ -80,6 +82,9 @@ function createService(options?: {
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
+    ...(options?.issueRuntimeHostPairingGrant
+      ? { issueRuntimeHostPairingGrant: options.issueRuntimeHostPairingGrant }
+      : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
@@ -224,6 +229,31 @@ describe("createSyncRemoteCommandService", () => {
       relayEnabled: false,
       hasRelayCandidate: false,
     });
+  });
+
+  it("issues a desktop-only server grant in sync.getDesktopPairingInfo", async () => {
+    const issueRuntimeHostPairingGrant = vi.fn(() => "runtime-grant-1");
+    const { service } = createService({
+      syncPinStore: {
+        getPin: vi.fn(() => "428193"),
+        hasPin: vi.fn(() => true),
+      },
+      getPairingConnectInfo: () => makePairingConnectInfo(),
+      issueRuntimeHostPairingGrant,
+    });
+
+    expect(service.getDescriptor("sync.getDesktopPairingInfo")).toEqual({
+      action: "sync.getDesktopPairingInfo",
+      scope: "runtime",
+      policy: { viewerAllowed: false },
+    });
+    const result = await service.execute(
+      makePayload("sync.getDesktopPairingInfo"),
+    ) as SyncWebPairingInfo;
+
+    expect(result.pairingUrl).toContain("https://app.ade-app.dev/pair#");
+    expect(issueRuntimeHostPairingGrant).toHaveBeenCalledTimes(1);
+    expect(parsePairingQrText(result.pairingUrl)?.runtimeHostGrant).toBe("runtime-grant-1");
   });
 
   it("returns configured hidden web pairing info when only the PIN hash is available", async () => {
