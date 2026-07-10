@@ -23,23 +23,31 @@ import { isRetryableRemoteAction } from "./retryableRemoteActions";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
-import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
+import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
+import { getSshHostKeyTrustForTarget } from "./sshTransport";
 
-type PoolEntry = {
+type PoolEntryBase = {
   client: RuntimeRpcClient;
-  transport: "ssh" | "paired";
-  ssh?: Client;
-  pairedTransport?: SyncRuntimeTransport;
-  pairedPortForwardClient?: SyncPortForwardClient;
   result: RemoteRuntimeConnectResult;
   dispose?: (closeClient: boolean, notify?: boolean) => void | Promise<void>;
 };
+
+type PoolEntry =
+  | (PoolEntryBase & {
+      transport: "ssh";
+      ssh: Client;
+    })
+  | (PoolEntryBase & {
+      transport: "paired";
+      pairedPortForwardClient: SyncPortForwardClient;
+    });
 
 type LocalPortForwardEntry = RemoteRuntimePortForward & {
   server: net.Server;
@@ -51,14 +59,16 @@ function closePoolEntryResources(
   forceSshDestroy = false,
 ): void {
   try {
-    entry.pairedPortForwardClient?.dispose(false);
+    if (entry.transport === "paired") {
+      entry.pairedPortForwardClient.dispose(false);
+    }
   } catch {}
   if (closeClient) {
     try {
       entry.client.close();
     } catch {}
   }
-  if (entry.ssh) {
+  if (entry.transport === "ssh") {
     try {
       entry.ssh.end();
     } catch {}
@@ -163,14 +173,35 @@ function portForwardKey(targetId: string, remoteHost: string, remotePort: number
   return `${targetId}\0${remoteHost}\0${remotePort}`;
 }
 
-/**
- * Whether the target carries SSH connection details we can fall back to when a
- * paired bootstrap fails. Paired targets created through the registry force
- * `sshUser` to null, so their only SSH signal is discovered `routes`; older or
- * dual records may still carry an explicit `sshUser`.
- */
-function targetHasUsableSshRoutes(target: RemoteRuntimeTarget): boolean {
-  return Boolean(target.sshUser?.trim()) || (target.routes?.length ?? 0) > 0;
+/** Builds an SSH-only view of a paired target from explicit, non-relay routes. */
+function pairedSshFallbackTarget(
+  target: RemoteRuntimeTarget,
+  pairedStore: DesktopPairedMachineStore,
+): RemoteRuntimeTarget | null {
+  const credentials = target.pairedMachine
+    ? pairedStore.getForReference(target.pairedMachine)
+    : null;
+  const relayHosts = new Set<string>();
+  for (const endpoint of credentials?.endpoints ?? []) {
+    try {
+      if (classifyPairedRuntimeEndpoint(endpoint, credentials?.relayUrl) === "relay") {
+        relayHosts.add(new URL(endpoint).hostname.toLowerCase());
+      }
+    } catch {
+      // Invalid endpoints are already ignored by the paired-machine store.
+    }
+  }
+  const routes = (target.routes ?? []).filter(
+    (route) => !relayHosts.has(route.hostname.trim().toLowerCase()),
+  );
+  const primary = routes[0];
+  if (!primary) return null;
+  return {
+    ...target,
+    hostname: primary.hostname,
+    port: primary.port ?? target.port,
+    routes,
+  };
 }
 
 function destroyAcceptedSocket(socket: net.Socket, error: Error): void {
@@ -359,6 +390,7 @@ export class RemoteConnectionPool {
   }
 
   private async bootstrapTarget(target: RemoteRuntimeTarget): Promise<PoolEntry> {
+    let sshTarget = target;
     if (target.transport === "paired") {
       try {
         const paired = await bootstrapPairedRuntime({
@@ -370,30 +402,30 @@ export class RemoteConnectionPool {
         return {
           client: paired.client,
           transport: "paired",
-          pairedTransport: paired.transport,
           pairedPortForwardClient: paired.portForwardClient,
           result: paired.result,
         };
       } catch (error) {
-        // Transport-unavailable (host doesn't advertise the runtime channel, or
-        // every WebSocket dial failed) always falls through to SSH. A
-        // compatibility failure (the remote runtime is too old for the paired
-        // protocol) only falls back when the target also carries usable SSH
-        // routes — otherwise there is nothing to fall back to and the clear
-        // compatibility error must reach the caller instead of a confusing SSH
-        // failure.
-        const canFallBackToSsh =
+        // Paired transport and compatibility failures fall through only when
+        // discovery or the user supplied an explicit non-relay SSH route.
+        const fallbackTarget = pairedSshFallbackTarget(target, this.pairedStore);
+        const canFallBackToSsh = fallbackTarget != null && (
           error instanceof PairedRuntimeTransportUnavailableError
-          || (error instanceof PairedRuntimeCompatibilityError
-            && targetHasUsableSshRoutes(target));
+          || error instanceof PairedRuntimeCompatibilityError
+        );
         if (!canFallBackToSsh) {
           throw error;
+        }
+        sshTarget = fallbackTarget;
+        const trustStatus = await getSshHostKeyTrustForTarget(sshTarget);
+        if (trustStatus.state !== "trusted") {
+          throw new PairedRuntimeSshTrustRequiredError(trustStatus);
         }
       }
     }
 
     const ssh = await bootstrapRemoteRuntime({
-      target,
+      target: sshTarget,
       registry: this.registry,
       resourcesPath: process.resourcesPath ?? app.getAppPath(),
       appVersion: this.appVersion,
@@ -541,7 +573,7 @@ export class RemoteConnectionPool {
           );
           return;
         }
-        if (!activeEntry.ssh) {
+        if (activeEntry.transport !== "ssh") {
           destroyAcceptedSocket(socket, new Error("The active SSH transport is unavailable."));
           return;
         }
@@ -1040,8 +1072,10 @@ export class RemoteConnectionPool {
     };
 
     entry.client.onDisconnect((error) => evict(false, true, error));
-    entry.ssh?.once("close", () => evict(true));
-    entry.ssh?.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
+    if (entry.transport === "ssh") {
+      entry.ssh.once("close", () => evict(true));
+      entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
+    }
     entry.dispose = evict;
   }
 

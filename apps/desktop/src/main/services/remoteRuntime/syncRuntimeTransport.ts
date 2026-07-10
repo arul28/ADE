@@ -20,9 +20,12 @@ import {
 } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import {
   createSyncEnvelopeChunkAssembler,
+  decodeStrictBase64,
   encodeSyncEnvelope,
+  normalizeChannelId,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
+  RPC_DATA_CHUNK_BYTES,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   wsDataToText,
   type ParsedSyncEnvelope,
@@ -31,8 +34,6 @@ import type { RuntimeRpcTransport } from "./runtimeRpcClient";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
-const RPC_DATA_CHUNK_BYTES = 256 * 1024;
-const MAX_CHANNEL_ID_CHARS = 128;
 
 export type SyncEnvelopeConnection = {
   readonly endpoint: string;
@@ -115,21 +116,9 @@ function websocketCloseReason(value: string): string {
   return reason;
 }
 
-function strictBase64Bytes(value: unknown): Buffer | null {
-  if (typeof value !== "string") return null;
-  if (value === "") return Buffer.alloc(0);
-  if (value.length % 4 !== 0 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(value)) {
-    return null;
-  }
-  return Buffer.from(value, "base64");
-}
-
 function channelId(value: string | undefined): string {
   const normalized = value?.trim() || randomUUID();
-  if (
-    normalized.length > MAX_CHANNEL_ID_CHARS
-    || !/^[a-zA-Z0-9._:-]+$/.test(normalized)
-  ) {
+  if (!normalizeChannelId(normalized)) {
     throw new Error("Sync runtime channelId is invalid.");
   }
   return normalized;
@@ -496,7 +485,7 @@ export async function openSyncRuntimeTransport(
       fail(new Error(reason), true);
       return;
     }
-    const bytes = strictBase64Bytes(payload.data);
+    const bytes = decodeStrictBase64(payload.data);
     if (!bytes) {
       fail(new Error("Runtime RPC channel received invalid base64 data."), false);
       connection.close(1003, "Invalid runtime RPC data.");

@@ -255,6 +255,14 @@ export class DesktopPairedMachineStore {
     ) ?? null;
   }
 
+  getForReference(ref: {
+    hostIdentity: string;
+    machineKey?: string | null;
+  }): DesktopPairedMachineCredentials | null {
+    return this.get(ref.hostIdentity)
+      ?? (ref.machineKey ? this.get(ref.machineKey) : null);
+  }
+
   save(credentials: DesktopPairedMachineCredentials): DesktopPairedMachineCredentials {
     const machine = coerceMachine(credentials);
     if (!machine) throw new Error("Desktop paired machine credentials are invalid.");

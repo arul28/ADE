@@ -204,7 +204,11 @@ function knownHostCandidates(hostAliases: string[], port: number): string[] {
 
 function knownHostWritePattern(host: string, port: number): string | null {
   const normalized = normalizeKnownHostName(host);
-  if (!normalized) return null;
+  // Discovery names are presentation labels and can contain spaces (for
+  // example, "MacBook Pro (97)"). A known_hosts host field is a
+  // comma-delimited token, so including one of those labels makes the whole
+  // line unparsable and prevents the explicitly trusted route from matching.
+  if (!normalized || /[\s,#]/.test(normalized)) return null;
   if (port === 22) return normalized;
   return normalized.startsWith("[") ? normalized : `[${normalized}]:${port}`;
 }

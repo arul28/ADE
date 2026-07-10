@@ -36,6 +36,7 @@ export function normalizeRemoteTargetRoutes(args: {
   hostname: string;
   port: number | null | undefined;
   routes?: unknown;
+  includePrimary?: boolean;
 }): RemoteRuntimeTargetRoute[] {
   const primaryHostname = args.hostname.trim();
   if (!primaryHostname) return [];
@@ -91,15 +92,17 @@ export function normalizeRemoteTargetRoutes(args: {
     });
   };
 
-  addRoute(
-    {
-      hostname: primaryHostname,
-      port: primaryPort,
-      source: "manual",
-      lastSucceededAt: null,
-    },
-    "manual",
-  );
+  if (args.includePrimary !== false) {
+    addRoute(
+      {
+        hostname: primaryHostname,
+        port: primaryPort,
+        source: "manual",
+        lastSucceededAt: null,
+      },
+      "manual",
+    );
+  }
   if (Array.isArray(args.routes)) {
     for (const route of args.routes) addRoute(route, "manual");
   }
@@ -169,6 +172,9 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
       hostname,
       port: typeof record.port === "number" ? record.port : null,
       routes: record.routes,
+      includePrimary:
+        transport !== "paired"
+        || (Array.isArray(record.routes) && record.routes.length > 0),
     }),
     lastSeenArch: typeof record.lastSeenArch === "string" && record.lastSeenArch.trim() ? record.lastSeenArch.trim() : null,
     runtimeBinaryVersion: typeof record.runtimeBinaryVersion === "string" && record.runtimeBinaryVersion.trim() ? record.runtimeBinaryVersion.trim() : null,
@@ -192,7 +198,7 @@ export class RemoteTargetRegistry {
     const hostname = input.hostname.trim();
     const transport = input.transport === "paired" ? "paired" : "ssh";
     const pairedMachine = normalizePairedMachineReference(input.pairedMachine);
-    const sshUser = transport === "paired" ? null : input.sshUser?.trim() || null;
+    const sshUser = input.sshUser?.trim() || null;
     if (!hostname) throw new Error("Remote hostname is required.");
     if (transport === "paired" && !pairedMachine) {
       throw new Error("Paired remote targets require a paired-machine reference.");
@@ -208,11 +214,14 @@ export class RemoteTargetRegistry {
       pairedMachine: transport === "paired" ? pairedMachine : null,
       sshUser,
       port: normalizePort(input.port),
-      sshKeyPath: transport === "paired" ? null : input.sshKeyPath?.trim() || null,
+      sshKeyPath: input.sshKeyPath?.trim() || null,
       routes: normalizeRemoteTargetRoutes({
         hostname,
         port: input.port,
         routes: input.routes,
+        includePrimary:
+          transport !== "paired"
+          || (Array.isArray(input.routes) && input.routes.length > 0),
       }),
       lastSeenArch: existing?.lastSeenArch ?? null,
       runtimeBinaryVersion: existing?.runtimeBinaryVersion ?? null,

@@ -6,12 +6,25 @@ import {
   createSyncPairedChannelService,
   type SyncRuntimeRpcHandler,
 } from "./syncPairedChannelService";
+import { isRuntimeHostPairingRecord } from "./syncHostService";
+import type { SyncPairingRecord } from "./syncPairingStore";
 
 type Peer = { id: string };
 type SentEnvelope = {
   type: PairedRuntimeSyncEnvelope["type"];
   payload: Record<string, unknown>;
 };
+
+function pairingRecord(peerDeviceType: string): SyncPairingRecord {
+  return {
+    secretHash: "hash",
+    createdAt: "2026-07-10T00:00:00.000Z",
+    lastUsedAt: null,
+    peerName: "Paired peer",
+    peerPlatform: "macOS",
+    peerDeviceType,
+  };
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -312,37 +325,58 @@ describe("createSyncPairedChannelService", () => {
     service.dispose();
   });
 
-  it("rejects runtime and forward opens from a paired but non-desktop peer", async () => {
-    const createRpcHandler = vi.fn();
-    const connectForward = vi.fn(() => new FakeForwardSocket());
-    const { service, sent, peer } = createHarness({ createRpcHandler, connectForward });
+  it("rejects runtime and forward opens when phone/browser pairing records claim desktop in hello metadata", async () => {
+    const spoofedHelloMetadata = { deviceType: "desktop" };
+    expect(spoofedHelloMetadata.deviceType).toBe("desktop");
+    for (const peerDeviceType of ["phone", "browser"]) {
+      const createRpcHandler = vi.fn();
+      const connectForward = vi.fn(() => new FakeForwardSocket());
+      const { service, sent, peer } = createHarness({ createRpcHandler, connectForward });
+      const authorizedForRuntimeHost = isRuntimeHostPairingRecord(pairingRecord(peerDeviceType));
+      await service.handleEnvelope(peer, "rpc_open", { channelId: `rpc-${peerDeviceType}` }, true, authorizedForRuntimeHost);
+      await service.handleEnvelope(peer, "fwd_open", {
+        forwardId: `fwd-${peerDeviceType}`,
+        host: "127.0.0.1",
+        port: 4173,
+      }, true, authorizedForRuntimeHost);
 
-    // authenticatedWithPairing = true, authorizedForRuntimeHost = false
-    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-phone" }, true, false);
+      expect(createRpcHandler).not.toHaveBeenCalled();
+      expect(connectForward).not.toHaveBeenCalled();
+      expect(sent).toEqual([
+        {
+          type: "rpc_close",
+          payload: {
+            channelId: `rpc-${peerDeviceType}`,
+            reason: "Runtime channel is only available to desktop clients.",
+          },
+        },
+        {
+          type: "fwd_close",
+          payload: {
+            forwardId: `fwd-${peerDeviceType}`,
+            reason: "Runtime channel is only available to desktop clients.",
+          },
+        },
+      ]);
+      service.dispose();
+    }
+  });
+
+  it("allows runtime and forward opens for a genuine desktop pairing record", async () => {
+    const createRpcHandler = vi.fn(() => (async () => null) as SyncRuntimeRpcHandler);
+    const connectForward = vi.fn(() => new FakeForwardSocket());
+    const { service, peer } = createHarness({ createRpcHandler, connectForward });
+    const authorizedForRuntimeHost = isRuntimeHostPairingRecord(pairingRecord("desktop"));
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-desktop" }, true, authorizedForRuntimeHost);
     await service.handleEnvelope(peer, "fwd_open", {
-      forwardId: "fwd-phone",
+      forwardId: "fwd-desktop",
       host: "127.0.0.1",
       port: 4173,
-    }, true, false);
+    }, true, authorizedForRuntimeHost);
 
-    expect(createRpcHandler).not.toHaveBeenCalled();
-    expect(connectForward).not.toHaveBeenCalled();
-    expect(sent).toEqual([
-      {
-        type: "rpc_close",
-        payload: {
-          channelId: "rpc-phone",
-          reason: "Runtime channel is only available to desktop clients.",
-        },
-      },
-      {
-        type: "fwd_close",
-        payload: {
-          forwardId: "fwd-phone",
-          reason: "Runtime channel is only available to desktop clients.",
-        },
-      },
-    ]);
+    expect(createRpcHandler).toHaveBeenCalledTimes(1);
+    expect(connectForward).toHaveBeenCalledTimes(1);
     service.dispose();
   });
 

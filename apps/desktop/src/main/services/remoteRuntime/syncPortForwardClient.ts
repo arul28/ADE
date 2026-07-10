@@ -1,13 +1,16 @@
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import type { PairedRuntimePortForward } from "../../../shared/types/pairedRuntime";
+import {
+  BACKPRESSURE_POLL_MS,
+  decodeStrictBase64,
+  FORWARD_DATA_CHUNK_BYTES,
+  PEER_BACKPRESSURE_BYTES,
+} from "../sync/syncProtocol";
 import type { AuthenticatedSyncConnection } from "./syncRuntimeTransport";
 
 const LOCAL_FORWARD_HOST = "127.0.0.1" as const;
-const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
 const MAX_PENDING_BYTES = 4 * 1024 * 1024;
-const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
-const BACKPRESSURE_POLL_MS = 25;
 
 type ActiveSocket = {
   socket: net.Socket;
@@ -54,15 +57,6 @@ function snapshot(entry: ForwardEntry): PairedRuntimePortForward {
   };
 }
 
-function strictBase64Bytes(value: unknown): Buffer | null {
-  if (typeof value !== "string") return null;
-  if (value === "") return Buffer.alloc(0);
-  if (value.length % 4 !== 0 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(value)) {
-    return null;
-  }
-  return Buffer.from(value, "base64");
-}
-
 export class SyncPortForwardClient {
   private readonly forwards = new Map<string, Promise<ForwardEntry>>();
   private readonly sockets = new Map<string, ActiveSocket>();
@@ -93,7 +87,7 @@ export class SyncPortForwardClient {
         this.closeActiveSocket(active, false);
         return;
       }
-      const bytes = strictBase64Bytes(payload.data);
+      const bytes = decodeStrictBase64(payload.data);
       if (!bytes) {
         this.closeActiveSocket(active, true, "Forward received invalid base64 data.");
         return;

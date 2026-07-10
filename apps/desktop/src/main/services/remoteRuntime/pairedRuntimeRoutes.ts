@@ -1,9 +1,6 @@
-import type {
-  DesktopPairedMachineEndpointState,
-} from "../../../shared/types/pairedRuntime";
-import type {
-  RemoteRuntimeRouteKind,
-} from "../../../shared/types/remoteRuntime";
+import type { DesktopPairedMachineEndpointState } from "../../../shared/types/pairedRuntime";
+import type { RemoteRuntimeRouteKind } from "../../../shared/types/remoteRuntime";
+import { isTailnetHostname } from "../../../shared/tailnet";
 import { normalizeSyncEndpoint } from "./syncRuntimeTransport";
 
 export type PairedRuntimeEndpointCandidate = {
@@ -12,26 +9,15 @@ export type PairedRuntimeEndpointCandidate = {
   lastSucceededAt: number | null;
 };
 
-function normalizedEndpointOrNull(value: string | null | undefined): string | null {
+function normalizedEndpointOrNull(
+  value: string | null | undefined,
+): string | null {
   if (!value?.trim()) return null;
   try {
     return normalizeSyncEndpoint(value);
   } catch {
     return null;
   }
-}
-
-function normalizedHostname(value: string): string {
-  return value.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-}
-
-export function isTailnetHostname(value: string): boolean {
-  const host = normalizedHostname(value);
-  if (host.endsWith(".ts.net")) return true;
-  const match = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (!match) return false;
-  const second = Number.parseInt(match[1] ?? "", 10);
-  return second >= 64 && second <= 127;
 }
 
 export function classifyPairedRuntimeEndpoint(
@@ -58,7 +44,8 @@ export function syncEndpointForHost(hostValue: string, port: number): string {
   if (/^wss?:\/\//i.test(host) || /^https?:\/\//i.test(host)) {
     return normalizeSyncEndpoint(host);
   }
-  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const urlHost =
+    host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   return normalizeSyncEndpoint(`ws://${urlHost}:${port}`);
 }
 
@@ -72,7 +59,11 @@ export function buildPairedEndpointCandidates(args: {
   const successByEndpoint = new Map<string, number>();
   for (const state of args.endpointStates ?? []) {
     const endpoint = normalizedEndpointOrNull(state.endpoint);
-    if (!endpoint || state.lastSucceededAt == null || !Number.isFinite(state.lastSucceededAt)) {
+    if (
+      !endpoint ||
+      state.lastSucceededAt == null ||
+      !Number.isFinite(state.lastSucceededAt)
+    ) {
       continue;
     }
     successByEndpoint.set(
@@ -86,7 +77,8 @@ export function buildPairedEndpointCandidates(args: {
     ...(args.additionalEndpoints ?? []),
     ...(relayUrl ? [relayUrl] : []),
   ];
-  const candidates: Array<PairedRuntimeEndpointCandidate & { order: number }> = [];
+  const candidates: Array<PairedRuntimeEndpointCandidate & { order: number }> =
+    [];
   const seen = new Set<string>();
   for (const value of values) {
     const endpoint = normalizedEndpointOrNull(value);
@@ -106,10 +98,11 @@ export function buildPairedEndpointCandidates(args: {
     relay: 2,
   };
   return candidates
-    .sort((left, right) =>
-      rank[left.kind] - rank[right.kind]
-      || (right.lastSucceededAt ?? 0) - (left.lastSucceededAt ?? 0)
-      || left.order - right.order)
+    .sort(
+      (left, right) =>
+        rank[left.kind] - rank[right.kind] ||
+        (right.lastSucceededAt ?? 0) - (left.lastSucceededAt ?? 0) ||
+        left.order - right.order,
+    )
     .map(({ order: _order, ...candidate }) => candidate);
 }
-

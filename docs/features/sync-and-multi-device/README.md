@@ -482,8 +482,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   cloud relay is enabled it keeps an outbound WebSocket registered with
   the relay worker (HMAC-signed host/pipe upgrades, exponential backoff
   with jitter capped at 60 s) so phones off the LAN/tailnet can dial the
-  machine through the relay; the normal ADE sync hello/pairing then runs
-  end-to-end over the piped connection.
+  machine through the relay; the normal ADE sync hello/pairing then runs inside
+  that pipe. TLS terminates at the relay, so the relay can inspect the handshake
+  and subsequent sync traffic.
 
 Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
 Live Activity pipeline (`pushPublisherService.ts`,
@@ -796,6 +797,8 @@ Envelopes are JSON with fields:
         "project_catalog_chunk" |
         "project_switch_request" | "project_switch_result" |
         "command" | "command_ack" | "command_result" |
+        "rpc_open" | "rpc_data" | "rpc_close" |
+        "fwd_open" | "fwd_data" | "fwd_close" |
         "envelope_chunk",
   projectId?: string | null, // present on project-scoped envelopes
   requestId: string | null,
@@ -805,6 +808,15 @@ Envelopes are JSON with fields:
   uncompressedBytes?: number, // gzip only
 }
 ```
+
+Envelope types and `hello_ok.features` keys are additive within protocol
+version 1. Receivers decode the common envelope first and dispatch only the
+types they implement; an otherwise valid unknown type is ignored rather than
+closing the connection. This is how iOS and hosted-web clients safely coexist
+with the desktop-only `rpc_*` and `fwd_*` extensions. The paired desktop treats
+missing `features.rpcChannel` or `features.portForward` exactly like `false` and
+does not attempt that channel, while legacy phone/browser clients continue on
+their existing mobile command surface when those keys are absent or present.
 
 Payloads above `DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES` (4 KB) are
 gzipped and base64-encoded. `parseSyncEnvelope` caps gzip inflate at
@@ -881,6 +893,7 @@ payload.
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
+| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`. The host advertises both channels only to a paired peer whose stored pairing record identifies it as a desktop runtime host | ADE desktop remote machines |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
@@ -998,9 +1011,10 @@ feature is merged or because a deliberately isolated-port host is running.
   Phones prefer direct routes when they are currently usable; when an
   iPhone has no Tailscale tunnel and holds a saved relay URL, reconnect
   dials the relay ahead of stale saved LAN/Tailscale sweeps. The relay
-  only pipes bytes: the normal ADE hello / PIN / paired-secret / DPoP
-  handshake still runs end-to-end, so the relay never sees pairing
-  credentials in the clear.
+  pipes WebSocket bytes after terminating TLS. The normal ADE hello / PIN /
+  paired-secret / DPoP handshake still runs inside that pipe, but it is not
+  end-to-end encrypted: the relay can read paired secrets and runtime/sync
+  payloads. Treat the relay operator as trusted for confidentiality.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
   upgrades are HMAC-signed with a per-machine secret. Operators who
   never want traffic relayed flip the single "ADE relay" control in

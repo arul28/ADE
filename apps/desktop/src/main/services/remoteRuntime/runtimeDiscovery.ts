@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { Bonjour } from "bonjour-service";
 import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { isTailnetHostname } from "../../../shared/tailnet";
 import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
@@ -23,7 +24,9 @@ const execFileAsync = promisify(execFile);
 
 type BonjourClient = InstanceType<typeof Bonjour>;
 type Browser = ReturnType<BonjourClient["find"]>;
-type BonjourService = Parameters<NonNullable<Parameters<BonjourClient["find"]>[1]>>[0];
+type BonjourService = Parameters<
+  NonNullable<Parameters<BonjourClient["find"]>[1]>
+>[0];
 type BonjourServiceLike = Partial<BonjourService> & {
   rawTxt?: unknown;
 };
@@ -98,15 +101,6 @@ function isLoopbackRoute(host: string): boolean {
   );
 }
 
-function isTailscaleRoute(host: string): boolean {
-  const lower = host.toLowerCase().replace(/\.$/, "");
-  if (lower.endsWith(".ts.net")) return true;
-  const match = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(lower);
-  if (!match) return false;
-  const second = Number.parseInt(match[1] ?? "", 10);
-  return second >= 64 && second <= 127;
-}
-
 function normalizeTailscaleDnsName(value: unknown): string | null {
   const text = trimmed(value);
   if (!text) return null;
@@ -156,7 +150,7 @@ export function discoveredRuntimeFromBonjourService(
   const announcedAddresses = splitCsv(txt.addresses);
   const tailscaleAddress = firstNonEmpty(
     [txt.tailscaleIp, txt.tailscaleDnsName].filter((value): value is string =>
-      Boolean(value && isTailscaleRoute(value)),
+      Boolean(value && isTailnetHostname(value)),
     ),
   );
   const addresses = orderAddresses(
@@ -169,7 +163,7 @@ export function discoveredRuntimeFromBonjourService(
   );
   const primaryRoute = firstNonEmpty([
     addresses.find(
-      (address) => !isLoopbackRoute(address) && !isTailscaleRoute(address),
+      (address) => !isLoopbackRoute(address) && !isTailnetHostname(address),
     ),
     tailscaleAddress,
     addresses.find((address) => !isLoopbackRoute(address)),
@@ -221,7 +215,8 @@ export function discoveredRuntimesFromTailscaleStatus(
     if (!isSshCapableTailscalePeer(peer.OS)) continue;
     const tailscaleIps = Array.isArray(peer.TailscaleIPs)
       ? peer.TailscaleIPs.map((entry) => trimmed(entry)).filter(
-          (entry): entry is string => Boolean(entry && isTailscaleRoute(entry)),
+          (entry): entry is string =>
+            Boolean(entry && isTailnetHostname(entry)),
         )
       : [];
     const dnsName = normalizeTailscaleDnsName(peer.DNSName);
@@ -308,7 +303,8 @@ export function dropSelfDiscoveredMachines(
   const self = localDeviceId?.trim();
   if (!self) return machines;
   return machines.filter(
-    (machine) => !(machine.hostIdentity && machine.hostIdentity.trim() === self),
+    (machine) =>
+      !(machine.hostIdentity && machine.hostIdentity.trim() === self),
   );
 }
 
@@ -337,7 +333,10 @@ export function mergeCrossSourceDiscoveredMachines(
       addresses: [...machine.addresses],
     };
     merged.push(clone);
-    bonjourHostSets.push({ machine: clone, hosts: discoveredMachineHostSet(clone) });
+    bonjourHostSets.push({
+      machine: clone,
+      hosts: discoveredMachineHostSet(clone),
+    });
   }
 
   for (const machine of machines) {
@@ -382,9 +381,7 @@ function readLocalSyncDeviceId(): string | null {
   }
 }
 
-async function discoverTailscalePeers(
-  timeoutMs = 1_200,
-): Promise<{
+async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
   machines: RemoteRuntimeDiscoveredMachine[];
   diagnostics: RemoteRuntimeDiscoveryDiagnostic[];
 }> {
@@ -411,8 +408,7 @@ async function discoverTailscalePeers(
     };
     const message = error instanceof Error ? error.message : String(error);
     const timedOut =
-      nodeError.killed === true ||
-      /timed out|timeout|ETIMEDOUT/i.test(message);
+      nodeError.killed === true || /timed out|timeout|ETIMEDOUT/i.test(message);
     const notFound =
       nodeError.code === "ENOENT" ||
       /ENOENT|not found|no such file/i.test(message);

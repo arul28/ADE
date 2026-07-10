@@ -13,13 +13,16 @@ import {
   type JsonRpcHandler,
   type JsonRpcTransport,
 } from "../../jsonrpc";
+import {
+  BACKPRESSURE_POLL_MS,
+  decodeStrictBase64,
+  FORWARD_DATA_CHUNK_BYTES,
+  normalizeChannelId,
+  PEER_BACKPRESSURE_BYTES,
+  RPC_DATA_CHUNK_BYTES,
+} from "./syncProtocol";
 
-const DEFAULT_PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_FORWARD_PENDING_BYTES = 4 * 1024 * 1024;
-const DEFAULT_BACKPRESSURE_POLL_MS = 25;
-const RPC_DATA_CHUNK_BYTES = 256 * 1024;
-const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
-const MAX_CHANNEL_ID_CHARS = 128;
 const MAX_CLOSE_REASON_CHARS = 300;
 // Per-peer resource caps. Each RPC channel spins a full JSON-RPC handler with
 // its own (up to 64 MiB) line buffer, and each forward holds a live loopback
@@ -120,31 +123,11 @@ export type SyncPairedChannelServiceArgs<TPeer extends object> = {
   connectForward?: (options: net.NetConnectOpts) => net.Socket;
 };
 
-function normalizedId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const id = value.trim();
-  if (!id || id.length > MAX_CHANNEL_ID_CHARS) return null;
-  return /^[a-zA-Z0-9._:-]+$/.test(id) ? id : null;
-}
-
 function closeReason(value: unknown, fallback: string): string {
   const reason = typeof value === "string" && value.trim()
     ? value.trim()
     : fallback;
   return reason.slice(0, MAX_CLOSE_REASON_CHARS);
-}
-
-function decodeBase64(value: unknown): Buffer | null {
-  if (typeof value !== "string") return null;
-  if (value.length === 0) return Buffer.alloc(0);
-  if (value.length % 4 !== 0 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(value)) {
-    return null;
-  }
-  try {
-    return Buffer.from(value, "base64");
-  } catch {
-    return null;
-  }
 }
 
 function allowedForwardHost(value: unknown): "127.0.0.1" | null {
@@ -163,7 +146,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 ) {
   const peerBackpressureBytes = Math.max(
     1,
-    Math.floor(args.peerBackpressureBytes ?? DEFAULT_PEER_BACKPRESSURE_BYTES),
+    Math.floor(args.peerBackpressureBytes ?? PEER_BACKPRESSURE_BYTES),
   );
   const forwardPendingBytes = Math.max(
     1,
@@ -171,7 +154,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
   );
   const backpressurePollMs = Math.max(
     1,
-    Math.floor(args.backpressurePollMs ?? DEFAULT_BACKPRESSURE_POLL_MS),
+    Math.floor(args.backpressurePollMs ?? BACKPRESSURE_POLL_MS),
   );
   const peers = new Map<TPeer, PeerChannels>();
 
@@ -348,7 +331,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
   };
 
   const openRpc = (peer: TPeer, payload: PairedRuntimeRpcOpenPayload): void => {
-    const channelId = normalizedId(payload.channelId);
+    const channelId = normalizeChannelId(payload.channelId);
     if (!channelId) return;
     const existingRpc = peers.get(peer)?.rpc;
     if (
@@ -439,7 +422,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
     peer: TPeer,
     payload: PairedRuntimeForwardOpenPayload,
   ): void => {
-    const forwardId = normalizedId(payload.forwardId);
+    const forwardId = normalizeChannelId(payload.forwardId);
     if (!forwardId) return;
     const existingForwards = peers.get(peer)?.forwards;
     if (
@@ -553,7 +536,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
         ? payload as Record<string, unknown>
         : {};
       const idKey = type.startsWith("rpc_") ? "channelId" : "forwardId";
-      const id = normalizedId(value[idKey]);
+      const id = normalizeChannelId(value[idKey]);
       if (!id) return true;
       if (!authenticatedWithPairing) {
         if (type.startsWith("rpc_")) {
@@ -577,7 +560,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
           openRpc(peer, { channelId: id });
           break;
         case "rpc_data": {
-          const bytes = decodeBase64(value.data);
+          const bytes = decodeStrictBase64(value.data);
           const channel = peers.get(peer)?.rpc.get(id);
           if (!bytes || !channel) {
             if (!channel) sendRpcClose(peer, id, "RPC channel is not open.");
@@ -602,7 +585,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
           });
           break;
         case "fwd_data": {
-          const bytes = decodeBase64(value.data);
+          const bytes = decodeStrictBase64(value.data);
           if (!bytes) {
             closeForward(peer, id, "Forward data was not valid base64.", true);
             break;

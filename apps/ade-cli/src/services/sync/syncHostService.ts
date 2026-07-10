@@ -186,16 +186,10 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
 }
 
-/**
- * Whether the peer's advertised device type is a desktop ADE runtime-host.
- * The paired runtime RPC channel and loopback port-forwarding expose the full
- * (~44 domain) runtime action registry, well beyond the mobile allowlist, so
- * they are additionally gated to desktop clients on top of successful pairing.
- */
-export function isRuntimeHostDeviceType(
-  metadata: SyncPeerMetadata | null | undefined,
+export function isRuntimeHostPairingRecord(
+  record: SyncPairingRecord | null | undefined,
 ): boolean {
-  return metadata?.deviceType === "desktop";
+  return record?.peerDeviceType === "desktop";
 }
 
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -4613,7 +4607,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
         runtimeChannelEnabled:
-          auth.kind === "paired" && isRuntimeHostDeviceType(hello.peer),
+          auth.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
@@ -4630,7 +4624,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Gate the runtime RPC channel + port-forward to desktop runtime-host
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
-        peer.authKind === "paired" && isRuntimeHostDeviceType(peer.metadata),
+        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
       return;
     }

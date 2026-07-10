@@ -1,21 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
-import {
-  CaretDown,
-  CaretUp,
-  CheckCircle,
-  DesktopTower,
-  PlugsConnected,
-  ShareNetwork,
-  Trash,
-  Warning,
-} from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { DesktopTower, ShareNetwork, Warning } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
 import {
   COLORS,
@@ -37,24 +21,22 @@ import {
   RemoteTargetForm,
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
-import { RemoteErrorCard } from "./RemoteErrorCard";
-import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ShareMachineCard } from "./ShareMachineCard";
 import { PairMachineForm } from "./PairMachineForm";
 import {
   assignMachineSections,
-  connectionStateLabel,
-  discoveredMachineSummary,
-  discoveredRoute,
   discoveredTargetInput,
-  formatLastSeen,
   formatRemoteTargetError,
-  formatRouteChip,
-  selectMachineErrorCard,
-  targetConnectionLabel,
   type MachineSection,
-  type SavedMachineRow,
 } from "./remoteMachineModel";
+import { SavedMachineRow } from "./SavedMachineRow";
+import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
+import {
+  helperTextStyle,
+  inlineDetailStyle,
+  panelStyle,
+  sectionHeaderStyle,
+} from "./remoteTargetListStyles";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -72,69 +54,11 @@ type ConnectTargetOptions = {
 
 type AddMode = { tab: "pair" | "ssh" };
 
-const panelStyle: CSSProperties = {
-  display: "grid",
-  gap: 12,
-};
-
-const machineRowStyle: CSSProperties = {
-  display: "grid",
-  gap: 8,
-  padding: "12px 14px",
-  borderRadius: 8,
-  border: `1px solid ${COLORS.border}`,
-  background: "rgba(255,255,255,0.02)",
-};
-
-const inlineDetailStyle: CSSProperties = {
-  display: "grid",
-  gap: 12,
-  marginTop: -4,
-  padding: 12,
-  borderRadius: 8,
-  border: `1px solid ${COLORS.border}`,
-  background: "rgba(0,0,0,0.16)",
-};
-
-const helperTextStyle: CSSProperties = {
-  color: COLORS.textMuted,
-  fontFamily: SANS_FONT,
-  fontSize: 12,
-  lineHeight: 1.45,
-};
-
-const sectionHeaderStyle: CSSProperties = {
-  color: COLORS.textMuted,
-  fontFamily: SANS_FONT,
-  fontSize: 10.5,
-  fontWeight: 600,
-  letterSpacing: "0.08em",
-};
-
-const nameStyle: CSSProperties = {
-  color: COLORS.textPrimary,
-  fontFamily: MONO_FONT,
-  fontSize: 13,
-  fontWeight: 700,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-
-const subTextStyle: CSSProperties = {
-  color: COLORS.textMuted,
-  fontFamily: MONO_FONT,
-  fontSize: 12,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-
 function targetFormPrefill(
   target: RemoteRuntimeTarget,
 ): RemoteTargetFormPrefill {
   return {
-    key: `target:${target.id}:${target.lastConnectedAt ?? "never"}:${target.sshUser ?? ""}:${target.port ?? ""}:${target.sshKeyPath ?? ""}`,
+    key: `target:${target.id}:${target.lastConnectedAt ?? "never"}:${target.transport ?? "ssh"}:${target.pairedMachine?.hostIdentity ?? ""}:${target.pairedMachine?.machineKey ?? ""}:${target.sshUser ?? ""}:${target.port ?? ""}:${target.sshKeyPath ?? ""}`,
     targetId: target.id,
     name: target.name,
     hostname: target.hostname,
@@ -142,6 +66,8 @@ function targetFormPrefill(
     port: target.port,
     sshKeyPath: target.sshKeyPath,
     routes: target.routes ?? null,
+    transport: target.transport,
+    pairedMachine: target.pairedMachine,
   };
 }
 
@@ -249,7 +175,7 @@ export function RemoteTargetList({
   }, []);
 
   useEffect(() => {
-    const status = selectedId ? statusById.get(selectedId) ?? null : null;
+    const status = selectedId ? (statusById.get(selectedId) ?? null) : null;
     if (!status) return;
     if (status.state !== "connected") {
       setConnected((current) =>
@@ -294,7 +220,8 @@ export function RemoteTargetList({
     void (async () => {
       try {
         const info = await window.ade.remoteRuntime.getLocalPairingInfo();
-        if (!cancelled && info.machineName) setLocalMachineName(info.machineName);
+        if (!cancelled && info.machineName)
+          setLocalMachineName(info.machineName);
       } catch {
         // Pairing info is optional; the pair form still works with a typed name.
       }
@@ -372,42 +299,26 @@ export function RemoteTargetList({
             connectedAt: target.lastConnectedAt,
           }));
           const existing = current?.connections ?? fallbackConnections;
+          const connectedEntry: RemoteRuntimeConnectionStatus = {
+            target: result.target,
+            state: "connected",
+            arch: result.arch,
+            version: result.version,
+            route: result.route,
+            capabilities: result.capabilities,
+            compatibilityWarnings: result.compatibilityWarnings,
+            projects: result.projects,
+            lastError: null,
+            lastAttemptedAt: Date.now(),
+            connectedAt: result.target.lastConnectedAt ?? Date.now(),
+          };
           const connections = existing.some(
             (entry) => entry.target.id === result.target.id,
           )
             ? existing.map((entry) =>
-                entry.target.id === result.target.id
-                  ? {
-                      target: result.target,
-                      state: "connected" as const,
-                      arch: result.arch,
-                      version: result.version,
-                      route: result.route,
-                      capabilities: result.capabilities,
-                      compatibilityWarnings: result.compatibilityWarnings,
-                      projects: result.projects,
-                      lastError: null,
-                      lastAttemptedAt: Date.now(),
-                      connectedAt: result.target.lastConnectedAt ?? Date.now(),
-                    }
-                  : entry,
+                entry.target.id === result.target.id ? connectedEntry : entry,
               )
-            : [
-                ...existing,
-                {
-                  target: result.target,
-                  state: "connected" as const,
-                  arch: result.arch,
-                  version: result.version,
-                  route: result.route,
-                  capabilities: result.capabilities,
-                  compatibilityWarnings: result.compatibilityWarnings,
-                  projects: result.projects,
-                  lastError: null,
-                  lastAttemptedAt: Date.now(),
-                  connectedAt: result.target.lastConnectedAt ?? Date.now(),
-                },
-              ];
+            : [...existing, connectedEntry];
           return {
             connections,
             connectedCount: connections.filter(
@@ -423,7 +334,13 @@ export function RemoteTargetList({
         onConnected?.(result);
         return true;
       } catch (err) {
-        setError(formatRemoteTargetError(err));
+        let trustRequired = false;
+        try {
+          trustRequired = !(await ensureHostKeyTrust(targetId));
+        } catch {
+          // Preserve the connect failure when a follow-up trust probe also fails.
+        }
+        if (!trustRequired) setError(formatRemoteTargetError(err));
         return false;
       } finally {
         setBusyId(null);
@@ -519,47 +436,50 @@ export function RemoteTargetList({
     [connectTarget, loadTargets],
   );
 
-  const disconnectTarget = useCallback(async (targetId: string) => {
-    const target = targets.find((entry) => entry.id === targetId) ?? null;
-    if (target && onDisconnectRequested) {
-      const shouldDisconnect = await onDisconnectRequested(target);
-      if (!shouldDisconnect) return;
-    }
-    setBusyId(targetId);
-    setSelectedId(targetId);
-    try {
-      await window.ade.remoteRuntime.disconnect(targetId, { manual: true });
-      setConnected((current) =>
-        current?.target.id === targetId ? null : current,
-      );
-      setConnectionSnapshot((current) => {
-        if (!current) return current;
-        const connections = current.connections.map((entry) =>
-          entry.target.id === targetId
-            ? {
-                ...entry,
-                state: "idle" as const,
-                lastError: null,
-                connectedAt: null,
-              }
-            : entry,
+  const disconnectTarget = useCallback(
+    async (targetId: string) => {
+      const target = targets.find((entry) => entry.id === targetId) ?? null;
+      if (target && onDisconnectRequested) {
+        const shouldDisconnect = await onDisconnectRequested(target);
+        if (!shouldDisconnect) return;
+      }
+      setBusyId(targetId);
+      setSelectedId(targetId);
+      try {
+        await window.ade.remoteRuntime.disconnect(targetId, { manual: true });
+        setConnected((current) =>
+          current?.target.id === targetId ? null : current,
         );
-        return {
-          connections,
-          connectedCount: connections.filter(
-            (entry) => entry.state === "connected",
-          ).length,
-          updatedAt: Date.now(),
-        };
-      });
-      setError(null);
-      setHostKeyTrust(null);
-    } catch (err) {
-      setError(formatRemoteTargetError(err));
-    } finally {
-      setBusyId(null);
-    }
-  }, [onDisconnectRequested, targets]);
+        setConnectionSnapshot((current) => {
+          if (!current) return current;
+          const connections = current.connections.map((entry) =>
+            entry.target.id === targetId
+              ? {
+                  ...entry,
+                  state: "idle" as const,
+                  lastError: null,
+                  connectedAt: null,
+                }
+              : entry,
+          );
+          return {
+            connections,
+            connectedCount: connections.filter(
+              (entry) => entry.state === "connected",
+            ).length,
+            updatedAt: Date.now(),
+          };
+        });
+        setError(null);
+        setHostKeyTrust(null);
+      } catch (err) {
+        setError(formatRemoteTargetError(err));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [onDisconnectRequested, targets],
+  );
 
   const removeTarget = useCallback(
     async (targetId: string) => {
@@ -598,378 +518,50 @@ export function RemoteTargetList({
     sections.available.length +
     sections.unavailable.length;
 
-  function renderSavedRow(
-    row: SavedMachineRow,
-    section: MachineSection,
-  ): ReactNode {
-    const { target, status } = row;
-    const targetSelected = selectedId === target.id;
-    const targetConnecting =
-      busyId === target.id || status?.state === "connecting";
-    const version =
-      status?.version ??
-      (connected?.target.id === target.id ? connected.version : null) ??
-      target.runtimeBinaryVersion ??
-      null;
-    const arch =
-      status?.arch ??
-      (connected?.target.id === target.id ? connected.arch : null) ??
-      target.lastSeenArch ??
-      null;
-    const route =
-      status?.route ??
-      (connected?.target.id === target.id ? connected.route : undefined);
-    const routeChip = row.connected ? formatRouteChip(route) : null;
-    const statusLabel = connectionStateLabel(
-      status ?? null,
-      connected?.target.id === target.id,
-    );
-    const warnings = targetSelected
-      ? status?.compatibilityWarnings ??
-        (connected?.target.id === target.id
-          ? connected.compatibilityWarnings
-          : []) ??
-        []
-      : status?.compatibilityWarnings ?? [];
-    const errorCard = selectMachineErrorCard({
-      errorInfo: status?.state === "error" ? status.lastErrorInfo : null,
-      rawError: status?.state === "error" ? status.lastError : null,
-      overrideMessage: targetSelected ? error : null,
-    });
-    const formOpen = formPrefill?.targetId === target.id;
-    const testOpen = testingId === target.id;
-
-    return (
-      <div key={target.id} style={{ display: "grid", gap: 8 }}>
-        <div
-          style={{
-            ...machineRowStyle,
-            opacity: section === "unavailable" ? 0.62 : 1,
-            borderColor: targetSelected ? COLORS.accent : COLORS.border,
-          }}
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0,1fr) auto",
-              gap: 12,
-              alignItems: "start",
-            }}
-          >
-            <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <span style={nameStyle}>{target.name}</span>
-                {row.connected ? (
-                  <CheckCircle size={15} weight="fill" color={COLORS.success} />
-                ) : null}
-                {routeChip ? (
-                  <span
-                    style={{
-                      color: COLORS.textMuted,
-                      fontFamily: SANS_FONT,
-                      fontSize: 11,
-                      whiteSpace: "nowrap",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {routeChip}
-                  </span>
-                ) : null}
-              </div>
-              <div style={subTextStyle}>{targetConnectionLabel(target)}</div>
-              <div style={helperTextStyle}>
-                {section === "unavailable" && row.unavailableReason ? (
-                  <span>{row.unavailableReason}</span>
-                ) : (
-                  <>
-                    <span>{statusLabel}</span>
-                    {version || arch ? (
-                      <span>{` · ADE ${version ?? "unknown"} on ${arch ?? "unknown"}`}</span>
-                    ) : null}
-                    <span>{` · ${formatLastSeen(target.lastConnectedAt)}`}</span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {row.connected ? (
-                <button
-                  type="button"
-                  disabled={busyId != null}
-                  onClick={() => void disconnectTarget(target.id)}
-                  style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                >
-                  Disconnect
-                </button>
-              ) : section !== "unavailable" ? (
-                <>
-                  <button
-                    type="button"
-                    disabled={busyId != null}
-                    onClick={() => void connectTarget(target.id)}
-                    style={primaryButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                  >
-                    <PlugsConnected size={14} weight="bold" />
-                    {targetConnecting ? "Connecting…" : "Connect"}
-                  </button>
-                  <button
-                    type="button"
-                    aria-controls={`remote-target-test-${target.id}`}
-                    aria-expanded={testOpen}
-                    disabled={busyId != null}
-                    onClick={() => toggleTest(target.id)}
-                    style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                  >
-                    Test
-                  </button>
-                </>
-              ) : null}
-              {section !== "unavailable" ? (
-                <button
-                  type="button"
-                  aria-controls={`remote-target-edit-${target.id}`}
-                  aria-expanded={formOpen}
-                  disabled={busyId != null}
-                  onClick={() => toggleEditForm(target)}
-                  style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                >
-                  Edit
-                  {formOpen ? (
-                    <CaretUp size={12} weight="bold" />
-                  ) : (
-                    <CaretDown size={12} weight="bold" />
-                  )}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                aria-label={`Remove ${target.name}`}
-                disabled={busyId != null}
-                onClick={() => void removeTarget(target.id)}
-                style={outlineButton({ height: 30, padding: "0 9px", fontSize: 11 })}
-              >
-                <Trash size={14} />
-              </button>
-            </div>
-          </div>
-
-          {errorCard ? (
-            <RemoteErrorCard
-              card={errorCard}
-              onRetry={
-                busyId == null ? () => void connectTarget(target.id) : undefined
-              }
-              retrying={busyId === target.id}
-            />
-          ) : null}
-
-          {warnings.length > 0 ? (
-            <div
-              style={{
-                display: "grid",
-                gap: 4,
-                color: COLORS.warning,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-              }}
-            >
-              {warnings.map((warning) => (
-                <div key={warning} style={{ display: "flex", gap: 6 }}>
-                  <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-                  <span>{warning}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {targetSelected && selectedHostKeyTrust ? (
-            <div
-              style={{
-                display: "grid",
-                gap: 10,
-                borderRadius: 8,
-                border: `1px solid ${
-                  selectedHostKeyTrust.state === "changed"
-                    ? COLORS.danger
-                    : COLORS.warning
-                }`,
-                background:
-                  selectedHostKeyTrust.state === "changed"
-                    ? `color-mix(in srgb, ${COLORS.danger} 10%, transparent)`
-                    : `color-mix(in srgb, ${COLORS.warning} 10%, transparent)`,
-                padding: "10px 12px",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  color:
-                    selectedHostKeyTrust.state === "changed"
-                      ? COLORS.danger
-                      : COLORS.warning,
-                  fontFamily: SANS_FONT,
-                  fontSize: 12,
-                  fontWeight: 700,
-                }}
-              >
-                <Warning size={15} weight="fill" />
-                {selectedHostKeyTrust.state === "changed"
-                  ? "Machine identity changed"
-                  : "Trust this machine"}
-              </div>
-              <div style={helperTextStyle}>
-                {selectedHostKeyTrust.state === "changed"
-                  ? `ADE found a different SSH identity for ${selectedHostKeyTrust.host}:${selectedHostKeyTrust.port}. Review ${selectedHostKeyTrust.knownHostsPath ?? "known_hosts"} before connecting.`
-                  : `ADE found a new SSH identity for ${selectedHostKeyTrust.host}:${selectedHostKeyTrust.port}. Trust it once to connect.`}
-              </div>
-              <div
-                style={{
-                  color: COLORS.textPrimary,
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  overflowWrap: "anywhere",
-                }}
-              >
-                {selectedHostKeyTrust.fingerprintSha256}
-              </div>
-              {selectedHostKeyTrust.state === "needs_trust" ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    type="button"
-                    disabled={trustingHostKey || busyId != null}
-                    onClick={() => void trustAndConnect()}
-                    style={{
-                      ...primaryButton({ height: 30, padding: "0 10px", fontSize: 11 }),
-                      opacity: trustingHostKey || busyId != null ? 0.65 : 1,
-                    }}
-                  >
-                    <CheckCircle size={15} weight="bold" />
-                    {trustingHostKey ? "Trusting…" : "Trust & connect"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={trustingHostKey}
-                    onClick={() => setHostKeyTrust(null)}
-                    style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        {testOpen ? (
-          <div id={`remote-target-test-${target.id}`}>
-            <ConnectionDoctorPanel machineId={target.id} />
-          </div>
-        ) : null}
-
-        {formOpen ? (
-          <div id={`remote-target-edit-${target.id}`} style={inlineDetailStyle}>
-            <div
-              style={{
-                color: COLORS.textPrimary,
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 700,
-              }}
-            >
-              Edit {target.name}
-            </div>
-            <RemoteTargetForm
-              busy={saving || busyId != null}
-              prefill={formPrefill}
-              submitLabel="Save and connect"
-              onSubmit={saveAndConnect}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  function renderDiscoveredRow(
-    machine: RemoteRuntimeDiscoveredMachine,
-    section: MachineSection,
-  ): ReactNode {
-    const route = discoveredRoute(machine);
-    const testOpen = testingId === machine.id;
-    const unavailable = section === "unavailable";
-    return (
-      <div key={machine.id} style={{ display: "grid", gap: 8 }}>
-        <div style={{ ...machineRowStyle, opacity: unavailable ? 0.62 : 1 }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0,1fr) auto",
-              gap: 12,
-              alignItems: "center",
-            }}
-          >
-            <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
-              <div style={nameStyle}>{machine.machineName}</div>
-              <div style={subTextStyle}>
-                {route ? `${route}:${machine.port}` : "No route advertised"}
-              </div>
-              <div style={helperTextStyle}>
-                {unavailable && machine.unsupportedReason
-                  ? machine.unsupportedReason
-                  : discoveredMachineSummary(machine)}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {!unavailable ? (
-                <>
-                  <button
-                    type="button"
-                    disabled={!route || busyId != null || saving}
-                    onClick={() => void connectDiscoveredMachine(machine)}
-                    style={{
-                      ...primaryButton({ height: 30, padding: "0 10px", fontSize: 11 }),
-                      opacity: route && busyId == null && !saving ? 1 : 0.55,
-                    }}
-                  >
-                    <PlugsConnected size={14} weight="bold" />
-                    {busyId === machine.id ? "Connecting…" : "Connect"}
-                  </button>
-                  <button
-                    type="button"
-                    aria-controls={`remote-discovered-test-${machine.id}`}
-                    aria-expanded={testOpen}
-                    disabled={busyId != null}
-                    onClick={() => toggleTest(machine.id)}
-                    style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-                  >
-                    Test
-                  </button>
-                </>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        {testOpen ? (
-          <div id={`remote-discovered-test-${machine.id}`}>
-            <ConnectionDoctorPanel machineId={machine.id} />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  function renderSection(section: MachineSection): ReactNode {
+  function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
     return (
       <div style={{ display: "grid", gap: 8 }}>
         <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
         {rows.map((row) =>
-          row.kind === "saved"
-            ? renderSavedRow(row, section)
-            : renderDiscoveredRow(row.machine, section),
+          row.kind === "saved" ? (
+            <SavedMachineRow
+              key={row.id}
+              row={row}
+              section={section}
+              selected={selectedId === row.target.id}
+              connected={connected}
+              busyId={busyId}
+              saving={saving}
+              formPrefill={formPrefill}
+              testOpen={testingId === row.target.id}
+              error={error}
+              hostKeyTrust={
+                selectedId === row.target.id ? selectedHostKeyTrust : null
+              }
+              trustingHostKey={trustingHostKey}
+              onConnect={(targetId) => void connectTarget(targetId)}
+              onDisconnect={(targetId) => void disconnectTarget(targetId)}
+              onToggleTest={toggleTest}
+              onToggleEdit={toggleEditForm}
+              onRemove={(targetId) => void removeTarget(targetId)}
+              onSaveAndConnect={saveAndConnect}
+              onTrustAndConnect={() => void trustAndConnect()}
+              onCancelHostKeyTrust={() => setHostKeyTrust(null)}
+            />
+          ) : (
+            <DiscoveredMachineRow
+              key={row.id}
+              machine={row.machine}
+              section={section}
+              busyId={busyId}
+              saving={saving}
+              testOpen={testingId === row.machine.id}
+              onConnect={(machine) => void connectDiscoveredMachine(machine)}
+              onToggleTest={toggleTest}
+            />
+          ),
         )}
       </div>
     );
@@ -1010,7 +602,11 @@ export function RemoteTargetList({
               type="button"
               onClick={toggleShare}
               aria-expanded={shareOpen}
-              style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
+              style={outlineButton({
+                height: 30,
+                padding: "0 10px",
+                fontSize: 11,
+              })}
             >
               <ShareNetwork size={14} weight="bold" />
               Share
@@ -1020,7 +616,11 @@ export function RemoteTargetList({
               disabled={loadingDiscovered}
               onClick={() => void loadDiscoveredMachines()}
               style={{
-                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 11 }),
+                ...outlineButton({
+                  height: 30,
+                  padding: "0 10px",
+                  fontSize: 11,
+                }),
                 opacity: loadingDiscovered ? 0.6 : 1,
               }}
             >
@@ -1030,7 +630,11 @@ export function RemoteTargetList({
               type="button"
               onClick={openAddMachine}
               aria-expanded={addMode != null}
-              style={primaryButton({ height: 30, padding: "0 12px", fontSize: 11 })}
+              style={primaryButton({
+                height: 30,
+                padding: "0 12px",
+                fontSize: 11,
+              })}
             >
               Add machine
             </button>
@@ -1041,7 +645,11 @@ export function RemoteTargetList({
 
         {addMode ? (
           <div style={inlineDetailStyle}>
-            <div style={{ display: "flex", gap: 4 }} role="tablist" aria-label="Add machine">
+            <div
+              style={{ display: "flex", gap: 4 }}
+              role="tablist"
+              aria-label="Add machine"
+            >
               {(["pair", "ssh"] as const).map((tab) => {
                 const active = activeTab === tab;
                 return (
@@ -1104,7 +712,13 @@ export function RemoteTargetList({
         ) : null}
 
         {loading ? (
-          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12 }}>
+          <div
+            style={{
+              color: COLORS.textMuted,
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+            }}
+          >
             Loading machines…
           </div>
         ) : null}
@@ -1121,7 +735,13 @@ export function RemoteTargetList({
           </div>
         ) : null}
         {loadingDiscovered ? (
-          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12 }}>
+          <div
+            style={{
+              color: COLORS.textMuted,
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+            }}
+          >
             Scanning nearby machines…
           </div>
         ) : null}

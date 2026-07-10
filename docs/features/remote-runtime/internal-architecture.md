@@ -110,13 +110,15 @@ pairing, the full runtime JSON-RPC rides the sync WebSocket as newline-delimited
 frames inside `rpc_*` envelopes, and loopback TCP previews ride `fwd_*`
 envelopes (host-side connect restricted to `127.0.0.1`). Both are gated to
 desktop runtime-host peers: the host only opens the RPC channel / port-forward
-for a peer that authenticated with `kind: "paired"` **and** advertised
-`deviceType: "desktop"`. Paired phones and browsers stay on the mobile command
-allowlist — a non-desktop paired peer that sends `rpc_open`/`fwd_open` gets the
-channel closed with "Runtime channel is only available to desktop clients", and
-`hello_ok` advertises `features.rpcChannel`/`features.portForward` as `false`
-for them. The host also caps concurrent channels per peer (32 RPC channels, 64
-forwards) so an authenticated peer cannot exhaust file descriptors or memory.
+for a peer that authenticated with `kind: "paired"` **and** whose authoritative
+stored pairing record has `peerDeviceType: "desktop"`. The device type claimed
+in `hello.peer` is metadata, not authorization: a paired phone or browser that
+reconnects while claiming `deviceType: "desktop"` still stays on the mobile
+command allowlist. If it sends `rpc_open`/`fwd_open`, the host closes the channel
+with "Runtime channel is only available to desktop clients", and `hello_ok`
+advertises `features.rpcChannel`/`features.portForward` as `false`. The host also
+caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
+authenticated peer cannot exhaust file descriptors or memory.
 
 **Relay trust boundary.** The sync WebSocket can reach the host over a direct
 LAN/tailnet route or through the cloud tunnel-relay. The relay is a plaintext
@@ -124,9 +126,11 @@ byte pipe: TLS terminates *at* the relay and there is no end-to-end encryption
 between the two ADE machines. Over a relay route the relay operator can read all
 runtime RPC payloads and the paired `secret` that transits in the `hello`.
 Direct LAN/tailnet routes do not transit the relay and are not exposed to it.
-DPoP proof-of-possession protects against host impersonation only when a stored
-enclave key exists for the target; without one, DPoP cannot be asserted. Treat
-relay routes as trusted-operator paths, not confidential channels.
+DPoP proves to the host that the connecting client possesses the private key
+registered for that paired device; it protects the host from replay with only a
+stolen paired secret. It does not authenticate the host to the client or prevent
+a relay operator from impersonating the host. Treat relay routes as
+trusted-operator paths, not confidential channels.
 
 ## Local runtime routing
 

@@ -47,6 +47,7 @@ import {
   syncEndpointsForDiscoveredRuntime,
 } from "./discoveredPairedRuntime";
 import { runRemoteRuntimeDoctor } from "./connectionDoctor";
+import { PairedRuntimeSshTrustRequiredError } from "./pairedRuntimeErrors";
 import {
   getSshHostKeyTrustForTarget,
   trustSshHostKeyForTarget,
@@ -160,6 +161,10 @@ export class RemoteConnectionService {
   private readonly automaticReconnectPausedTargetIds = new Set<string>();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
+  private readonly pairedFallbackSshTrustByTargetId = new Map<
+    string,
+    Extract<RemoteRuntimeSshHostKeyTrustStatus, { state: "needs_trust" | "changed" }>
+  >();
   private readonly listeners = new Set<
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
@@ -329,10 +334,7 @@ export class RemoteConnectionService {
         }
       : null);
     const credentials = target?.pairedMachine
-      ? this.pairedStore.get(target.pairedMachine.hostIdentity)
-        ?? (target.pairedMachine.machineKey
-          ? this.pairedStore.get(target.pairedMachine.machineKey)
-          : null)
+      ? this.pairedStore.getForReference(target.pairedMachine)
       : this.pairedStore.get(discoveredMachine?.hostIdentity ?? id);
     if (!target && !credentials) {
       throw new Error("Remote target or paired machine was not found.");
@@ -341,11 +343,19 @@ export class RemoteConnectionService {
   }
 
   removeTarget(targetId: string): boolean {
+    const target = this.registry.get(targetId);
+    const pairedCredentials = target?.transport === "paired" && target.pairedMachine
+      ? this.pairedStore.getForReference(target.pairedMachine)
+      : null;
     this.disconnect(targetId);
     this.manuallyDisconnectedTargetIds.delete(targetId);
     this.clearAutomaticReconnectBudget(targetId);
+    this.pairedFallbackSshTrustByTargetId.delete(targetId);
     this.statusById.delete(targetId);
     const removed = this.registry.remove(targetId);
+    if (removed && pairedCredentials) {
+      this.pairedStore.remove(pairedCredentials.hostIdentity.deviceId);
+    }
     this.emit();
     return removed;
   }
@@ -354,6 +364,8 @@ export class RemoteConnectionService {
     targetId: string,
   ): Promise<RemoteRuntimeSshHostKeyTrustStatus> {
     const target = this.requireTarget(targetId);
+    const pairedFallbackTrust = this.pairedFallbackSshTrustByTargetId.get(targetId);
+    if (pairedFallbackTrust) return pairedFallbackTrust;
     // Paired targets attempt authenticated WebSocket RPC first. Avoid asking
     // for SSH trust before that path is known to be unavailable.
     const pairedReference = target.pairedMachine;
@@ -375,10 +387,22 @@ export class RemoteConnectionService {
   ): Promise<RemoteRuntimeTrustSshHostKeyResult> {
     const fingerprint = fingerprintSha256.trim();
     if (!fingerprint) throw new Error("SSH host key fingerprint is required.");
-    return await trustSshHostKeyForTarget(
-      this.requireTarget(targetId),
+    const target = this.requireTarget(targetId);
+    const cached = this.pairedFallbackSshTrustByTargetId.get(targetId);
+    const trustTarget = cached
+      ? {
+          ...target,
+          hostname: cached.route.hostname,
+          port: cached.route.port ?? target.port,
+          routes: [cached.route],
+        }
+      : target;
+    const result = await trustSshHostKeyForTarget(
+      trustTarget,
       fingerprint,
     );
+    this.pairedFallbackSshTrustByTargetId.delete(targetId);
+    return result;
   }
 
   snapshot(): RemoteRuntimeConnectionSnapshot {
@@ -445,6 +469,7 @@ export class RemoteConnectionService {
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
+    this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
     if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
@@ -492,10 +517,14 @@ export class RemoteConnectionService {
         lastError: null,
       });
       this.clearAutomaticReconnectBudget(connectedResult.target.id);
+      this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         throw error;
+      }
+      if (error instanceof PairedRuntimeSshTrustRequiredError) {
+        this.pairedFallbackSshTrustByTargetId.set(target.id, error.trustStatus);
       }
       const lastError = explicit
         ? errorMessage(error)
@@ -817,6 +846,7 @@ export class RemoteConnectionService {
     this.stopAutoconnect();
     this.pool.dispose();
     this.latencyProbeTargetIds.clear();
+    this.pairedFallbackSshTrustByTargetId.clear();
     this.listeners.clear();
   }
 

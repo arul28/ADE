@@ -209,7 +209,8 @@ describe("RemoteTargetList", () => {
           runtimeVersion: null,
           os: "windows",
           connectable: false,
-          unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+          unsupportedReason:
+            "Windows machines can't run the ADE remote runtime yet.",
           projectIds: [],
           projectCount: null,
           lastSeenAt: 1234,
@@ -222,7 +223,9 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     await waitFor(() => expect(screen.getByText("Windows PC")).toBeTruthy());
-    expect(screen.getByText(/Windows machines can't run the ADE remote runtime yet/)).toBeTruthy();
+    expect(
+      screen.getByText(/Windows machines can't run the ADE remote runtime yet/),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
   });
 
@@ -374,9 +377,7 @@ describe("RemoteTargetList", () => {
     const onDisconnectRequested = vi.fn(async () => false);
     installAdeMock();
 
-    render(
-      <RemoteTargetList onDisconnectRequested={onDisconnectRequested} />,
-    );
+    render(<RemoteTargetList onDisconnectRequested={onDisconnectRequested} />);
 
     await waitFor(() =>
       expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
@@ -440,6 +441,83 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText("Edit Mac Studio")).toBeNull();
   });
 
+  it("keeps a paired target and creates one manual SSH route when its host changes", async () => {
+    const target = {
+      id: "target-paired",
+      name: "Paired Studio",
+      hostname: "studio.local",
+      transport: "paired" as const,
+      pairedMachine: {
+        hostIdentity: "host-device-1",
+        machineKey: "machine-key-1",
+      },
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: "/Users/admin/.ssh/id_ed25519",
+      routes: [
+        {
+          hostname: "studio.local",
+          port: null,
+          source: "bonjour" as const,
+          lastSucceededAt: null,
+        },
+      ],
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    const updatedTarget = {
+      ...target,
+      name: "Renamed Studio",
+      hostname: "100.75.20.64",
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.saveTarget.mockResolvedValue(updatedTarget);
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target: updatedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await screen.findByText("Paired Studio");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Renamed Studio" },
+    });
+    fireEvent.change(screen.getByLabelText("Host"), {
+      target: { value: "100.75.20.64" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save and connect" }));
+
+    await waitFor(() =>
+      expect(remoteRuntimeMock.saveTarget).toHaveBeenCalled(),
+    );
+    const savedInput = remoteRuntimeMock.saveTarget.mock.calls[0]?.[0];
+    expect(savedInput.transport).toBe("paired");
+    expect(savedInput.pairedMachine).toEqual(target.pairedMachine);
+    expect(savedInput.hostname).toBe("100.75.20.64");
+    expect(savedInput.routes).toEqual([
+      {
+        hostname: "100.75.20.64",
+        port: 22,
+        source: "manual",
+        lastSucceededAt: null,
+      },
+    ]);
+    expect(remoteRuntimeMock.removeTarget).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-paired"),
+    );
+  });
+
   it("shows an actionable message when the SSH host-key probe is reset", async () => {
     const target = {
       id: "target-1",
@@ -477,7 +555,9 @@ describe("RemoteTargetList", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(/SSH server closed the connection before ADE could finish the SSH handshake/),
+        screen.getByText(
+          /SSH server closed the connection before ADE could finish the SSH handshake/,
+        ),
       ).toBeTruthy(),
     );
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
@@ -570,6 +650,60 @@ describe("RemoteTargetList", () => {
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
     expect(screen.getByText("Connected")).toBeTruthy();
+  });
+
+  it("surfaces SSH trust when a paired connection falls back after connect starts", async () => {
+    const target = {
+      id: "target-paired",
+      name: "Paired Studio",
+      hostname: "studio.local",
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "host-device-1", machineKey: null },
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    const trustRequired = {
+      state: "needs_trust" as const,
+      targetId: target.id,
+      host: target.hostname,
+      port: 22,
+      route: {
+        hostname: target.hostname,
+        port: 22,
+        source: "manual" as const,
+        lastSucceededAt: null,
+      },
+      keyType: "ssh-ed25519",
+      fingerprintSha256: "SHA256:fallback",
+      knownHostsPath: "/Users/test/.ssh/known_hosts",
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.connect.mockRejectedValue(
+      new Error("SSH host key verification failed during paired fallback."),
+    );
+    installAdeMock();
+    remoteRuntimeMock.getSshHostKeyTrust
+      .mockResolvedValueOnce({ state: "trusted" })
+      .mockResolvedValueOnce(trustRequired);
+
+    render(<RemoteTargetList />);
+
+    await screen.findByText("Paired Studio");
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await screen.findByText("Trust this machine");
+    expect(screen.getByText("SHA256:fallback")).toBeTruthy();
+    expect(remoteRuntimeMock.connect).toHaveBeenCalledTimes(1);
+    expect(remoteRuntimeMock.getSshHostKeyTrust).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/SSH host-key verification failed/)).toBeNull();
   });
 
   it("hides discovered machines that are already saved as SSH targets", async () => {
@@ -817,7 +951,9 @@ describe("RemoteTargetList", () => {
       diagnostics: [],
     });
     remoteRuntimeMock.parsePairingInput
-      .mockRejectedValueOnce(new Error("That doesn't look like a pairing code."))
+      .mockRejectedValueOnce(
+        new Error("That doesn't look like a pairing code."),
+      )
       .mockResolvedValue({
         hostIdentity: {
           deviceId: "d1",
@@ -842,7 +978,9 @@ describe("RemoteTargetList", () => {
       runtimeBinaryVersion: null,
       lastConnectedAt: null,
     };
-    remoteRuntimeMock.pairWithMachine.mockResolvedValue({ targetId: "target-9" });
+    remoteRuntimeMock.pairWithMachine.mockResolvedValue({
+      targetId: "target-9",
+    });
     remoteRuntimeMock.connect.mockResolvedValue({
       target: savedTarget,
       arch: "darwin-arm64",
@@ -915,7 +1053,9 @@ describe("RemoteTargetList", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("Tailscale CLI was not found; only LAN discovery ran."),
+        screen.getByText(
+          "Tailscale CLI was not found; only LAN discovery ran.",
+        ),
       ).toBeTruthy(),
     );
     expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();

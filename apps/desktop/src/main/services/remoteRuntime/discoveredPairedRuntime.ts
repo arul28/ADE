@@ -5,9 +5,9 @@ import type {
 } from "../../../shared/types/remoteRuntime";
 import {
   classifyPairedRuntimeEndpoint,
-  isTailnetHostname,
   syncEndpointForHost,
 } from "./pairedRuntimeRoutes";
+import { isTailnetHostname } from "../../../shared/tailnet";
 
 function normalizedHost(value: string | null | undefined): string | null {
   const host = value?.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");

@@ -7,6 +7,11 @@ export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
+export const RPC_DATA_CHUNK_BYTES = 256 * 1024;
+export const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
+export const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+export const BACKPRESSURE_POLL_MS = 25;
+export const MAX_CHANNEL_ID_CHARS = 128;
 
 /** Hello capability a client declares when it can reassemble envelope_chunk frames. */
 export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
@@ -15,6 +20,21 @@ export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
 // kills the whole connection ("Message too long") past that. Keep every frame
 // comfortably under that even after the base64 + wrapper overhead of a chunk.
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
+
+export function decodeStrictBase64(value: unknown): Buffer | null {
+  if (typeof value !== "string") return null;
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    return null;
+  }
+  return Buffer.from(value, "base64");
+}
+
+export function normalizeChannelId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  if (!id || id.length > MAX_CHANNEL_ID_CHARS) return null;
+  return /^[A-Za-z0-9._:-]+$/.test(id) ? id : null;
+}
 
 export function mapPlatform(platform: NodeJS.Platform): SyncPeerPlatform {
   switch (platform) {

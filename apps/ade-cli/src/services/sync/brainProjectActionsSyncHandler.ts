@@ -32,7 +32,7 @@ import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
-import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
 import {
   createSyncPairedChannelService,
@@ -50,7 +50,7 @@ import {
 import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
-  isRuntimeHostDeviceType,
+  isRuntimeHostPairingRecord,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -80,6 +80,7 @@ type BrainPeerState = {
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
   personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
+  pairingRecord: SyncPairingRecord | null;
 };
 
 const WS_OPEN = 1;
@@ -474,7 +475,7 @@ export function createBrainProjectActionsSyncHandler(
         envelope.payload,
         peer.authKind === "paired",
         // Runtime RPC channel + port-forward are desktop-runtime-host only.
-        peer.authKind === "paired" && isRuntimeHostDeviceType(peer.metadata),
+        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
       return;
     }
@@ -755,6 +756,7 @@ export function createBrainProjectActionsSyncHandler(
       authTimeout: null,
       metadata: null,
       personalChatSubscriptions: new Map(),
+      pairingRecord: null,
     };
     let personalChatPumpRunning = false;
     const personalChatPump = setInterval(() => {
@@ -890,14 +892,15 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           const auth = hello.auth;
+          let authenticatedPairingRecord: SyncPairingRecord | null = null;
           const authFailed = (() => {
             if (auth?.kind === "paired") {
               if (auth.deviceId !== hello.peer.deviceId) return true;
               if (!pairingStore.authenticate(auth.deviceId, auth.secret)) return true;
-              const record = pairingStore.getPairingRecord(auth.deviceId);
-              if (!record) return true;
+              authenticatedPairingRecord = pairingStore.getPairingRecord(auth.deviceId);
+              if (!authenticatedPairingRecord) return true;
               const dpopFailure = evaluatePairedHelloDpop({
-                storedPublicKey: record.dpopPublicKey,
+                storedPublicKey: authenticatedPairingRecord.dpopPublicKey,
                 deviceId: auth.deviceId,
                 secret: auth.secret,
                 proof: auth.dpop ?? null,
@@ -951,6 +954,7 @@ export function createBrainProjectActionsSyncHandler(
           peer.authKind = auth?.kind ?? null;
           clearAuthTimeout();
           peer.metadata = hello.peer;
+          peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
@@ -972,7 +976,7 @@ export function createBrainProjectActionsSyncHandler(
             // Advertise the runtime RPC channel + port-forward only to paired
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
-              auth?.kind === "paired" && isRuntimeHostDeviceType(hello.peer),
+              auth?.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
           }), envelope.requestId);
           return;
         }

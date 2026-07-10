@@ -484,6 +484,47 @@ describe("buildSshConfig", () => {
     }))(key)).toBe(true);
   });
 
+  it("omits discovery display labels when recording trusted route hostnames", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    const key = Buffer.from("remote host key");
+    const discoveredTarget: RemoteRuntimeTarget = {
+      ...target,
+      hostname: "MacBook Pro (97)",
+      routes: [
+        {
+          hostname: "100.117.237.95",
+          port: 22,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+        {
+          hostname: "macbook-pro-97.tail.example.test",
+          port: 22,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+      ],
+    };
+
+    await trustSshHostKeyForTarget(discoveredTarget, "SHA256:test-key", {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      scanHostKey: async () => ({
+        ...scannedHostKey({ homeDir, key }),
+        targetId: discoveredTarget.id,
+        host: "100.117.237.95",
+        route: discoveredTarget.routes![0]!,
+      }),
+    });
+
+    const knownHosts = fs.readFileSync(path.join(homeDir, ".ssh", "known_hosts"), "utf8");
+    expect(knownHosts).toContain(
+      `100.117.237.95,macbook-pro-97.tail.example.test ssh-ed25519 ${key.toString("base64")}`,
+    );
+    expect(knownHosts).not.toContain("MacBook Pro (97)");
+  });
+
   it("refuses to overwrite a different known SSH host key", async () => {
     const knownKey = Buffer.from("known host key");
     const scannedKey = Buffer.from("new host key");

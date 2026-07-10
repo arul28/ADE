@@ -11,6 +11,7 @@ import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 const bootstrapRemoteRuntimeMock = vi.hoisted(() => vi.fn());
 const bootstrapPairedRuntimeMock = vi.hoisted(() => vi.fn());
 const ensureRemoteProjectMock = vi.hoisted(() => vi.fn());
+const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   app: {
@@ -25,6 +26,10 @@ vi.mock("./remoteBootstrap", () => ({
 
 vi.mock("./pairedRuntimeBootstrap", () => ({
   bootstrapPairedRuntime: bootstrapPairedRuntimeMock,
+}));
+
+vi.mock("./sshTransport", () => ({
+  getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
 }));
 
 import { RemoteConnectionPool } from "./remoteConnectionPool";
@@ -75,6 +80,12 @@ const pairedTarget: RemoteRuntimeTarget = {
     machineKey: "machine-1",
   },
   sshUser: null,
+  routes: [{
+    hostname: "studio.local",
+    port: 22,
+    source: "bonjour",
+    lastSucceededAt: null,
+  }],
 };
 
 function connectResult(version: string): RemoteRuntimeConnectResult {
@@ -214,6 +225,8 @@ describe("RemoteConnectionPool", () => {
     bootstrapRemoteRuntimeMock.mockReset();
     bootstrapPairedRuntimeMock.mockReset();
     ensureRemoteProjectMock.mockReset();
+    getSshHostKeyTrustForTargetMock.mockReset();
+    getSshHostKeyTrustForTargetMock.mockResolvedValue({ state: "trusted" });
   });
 
   it("uses and disposes a port-forward client on the paired transport connection", async () => {
@@ -288,6 +301,7 @@ describe("RemoteConnectionPool", () => {
   });
 
   it("re-throws a paired compatibility error when the target has no SSH routes", async () => {
+    const pairedWithoutSshRoutes = { ...pairedTarget, routes: [] };
     bootstrapPairedRuntimeMock.mockRejectedValueOnce(
       new PairedRuntimeCompatibilityError(
         "The paired machine runs an older ADE runtime.",
@@ -295,21 +309,24 @@ describe("RemoteConnectionPool", () => {
     );
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedTarget)).rejects.toBeInstanceOf(
+    await expect(pool.connect(pairedWithoutSshRoutes)).rejects.toBeInstanceOf(
       PairedRuntimeCompatibilityError,
     );
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to SSH on a paired compatibility error when the target has usable SSH routes", async () => {
+  it("uses preserved paired-target SSH credentials during compatibility fallback", async () => {
     const pairedWithSshRoutes: RemoteRuntimeTarget = {
       ...pairedTarget,
       id: "paired-ssh-target-1",
+      sshUser: "fallback-user",
+      port: 2201,
+      sshKeyPath: "/keys/fallback_ed25519",
       routes: [
         {
           hostname: "studio.local",
-          port: 22,
+          port: 2201,
           source: "manual",
           lastSucceededAt: null,
         },
@@ -332,7 +349,15 @@ describe("RemoteConnectionPool", () => {
     });
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ target: pairedWithSshRoutes }),
+      expect.objectContaining({
+        target: expect.objectContaining({
+          id: pairedWithSshRoutes.id,
+          hostname: "studio.local",
+          sshUser: "fallback-user",
+          port: 2201,
+          sshKeyPath: "/keys/fallback_ed25519",
+        }),
+      }),
     );
   });
 
@@ -353,8 +378,73 @@ describe("RemoteConnectionPool", () => {
       target: { id: pairedTarget.id },
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ target: pairedTarget }),
+      expect.objectContaining({
+        target: expect.objectContaining({
+          id: pairedTarget.id,
+          hostname: "studio.local",
+        }),
+      }),
     );
+  });
+
+  it("surfaces SSH trust required only after the paired route fails", async () => {
+    const trustStatus = {
+      state: "needs_trust" as const,
+      targetId: pairedTarget.id,
+      host: "studio.local",
+      port: 22,
+      route: pairedTarget.routes![0]!,
+      keyType: "ssh-ed25519",
+      fingerprintSha256: "SHA256:paired-fallback",
+      knownHostsPath: "/home/test/.ssh/known_hosts",
+    };
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError("Paired route is offline."),
+    );
+    getSshHostKeyTrustForTargetMock.mockResolvedValueOnce(trustStatus);
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).rejects.toMatchObject({
+      name: "PairedRuntimeSshTrustRequiredError",
+      trustStatus,
+    });
+
+    expect(getSshHostKeyTrustForTargetMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a relay-only paired target as SSH-capable", async () => {
+    const relayOnlyTarget: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "relay-only-target",
+      hostname: "relay.example.test",
+      routes: [{
+        hostname: "relay.example.test",
+        port: null,
+        source: "manual",
+        lastSucceededAt: null,
+      }],
+    };
+    const pairedError = new PairedRuntimeTransportUnavailableError(
+      "Relay route is offline.",
+    );
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(pairedError);
+    const pairedStore = {
+      getForReference: vi.fn(() => ({
+        endpoints: ["wss://relay.example.test/connect/machine-1"],
+        relayUrl: "wss://relay.example.test/connect/machine-1",
+      })),
+    };
+
+    const pool = new RemoteConnectionPool(
+      {} as RemoteTargetRegistry,
+      "1.0.0",
+      pairedStore as any,
+    );
+    await expect(pool.connect(relayOnlyTarget)).rejects.toBe(pairedError);
+
+    expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
   });
 
   it("evicts cached entries after the RPC client disconnects", async () => {
@@ -570,12 +660,14 @@ describe("RemoteConnectionPool", () => {
         pool as unknown as {
           entries: Map<string, Promise<{
             client: FakeRuntimeRpcClient;
+            transport: "ssh";
             ssh: FakeSshClient;
             result: RemoteRuntimeConnectResult;
           }>>;
         }
       ).entries.set(target.id, Promise.resolve({
         client: secondClient,
+        transport: "ssh",
         ssh: secondSsh,
         result: connectResult("1.0.1"),
       }));

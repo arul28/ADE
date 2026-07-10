@@ -9,21 +9,13 @@ import type {
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTargetRouteSource,
 } from "../../../shared/types";
+import { isTailnetHostname } from "../../../shared/tailnet";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
 // the panel). Kept in one module so the section model and the connect flow
 // agree on how a saved target and a discovered machine map to the same box.
 // ---------------------------------------------------------------------------
-
-export function isTailscaleRoute(hostname: string | null | undefined): boolean {
-  const normalized = hostname?.trim().toLowerCase().replace(/\.$/, "") ?? "";
-  if (normalized.endsWith(".ts.net")) return true;
-  const match = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(normalized);
-  if (!match) return false;
-  const second = Number.parseInt(match[1] ?? "", 10);
-  return second >= 64 && second <= 127;
-}
 
 function normalizeRouteHost(hostname: string | null | undefined): string {
   return hostname?.trim().toLowerCase().replace(/\.$/, "") ?? "";
@@ -49,7 +41,7 @@ function discoveredRouteSource(
   if (
     (machine.runtimeKind ?? "").startsWith("tailscale-peer") ||
     hostname === machine.tailscaleAddress ||
-    isTailscaleRoute(hostname)
+    isTailnetHostname(hostname)
   ) {
     return "tailscale";
   }
@@ -243,7 +235,11 @@ export function formatRemoteTargetError(error: unknown): string {
     return "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again.";
   }
 
-  if (/permission denied|all configured authentication methods failed/i.test(message)) {
+  if (
+    /permission denied|all configured authentication methods failed/i.test(
+      message,
+    )
+  ) {
     return "SSH authentication failed. Check the SSH user, key path, and that this key is allowed on the remote machine.";
   }
 
@@ -251,7 +247,11 @@ export function formatRemoteTargetError(error: unknown): string {
     return "SSH host-key verification failed. Check that this is the right machine, then update the saved SSH host key or trust the new key when ADE prompts.";
   }
 
-  if (/timed out.*handshake|handshake.*timed out|connect.*timed out/i.test(message)) {
+  if (
+    /timed out.*handshake|handshake.*timed out|connect.*timed out/i.test(
+      message,
+    )
+  ) {
     return "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled.";
   }
 
@@ -259,7 +259,11 @@ export function formatRemoteTargetError(error: unknown): string {
     return "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running.";
   }
 
-  if (/ENOTFOUND|could not resolve hostname|name or service not known/i.test(message)) {
+  if (
+    /ENOTFOUND|could not resolve hostname|name or service not known/i.test(
+      message,
+    )
+  ) {
     return "ADE could not resolve that host. Check the hostname, or use the Tailscale 100.x address from discovery.";
   }
 
@@ -406,9 +410,7 @@ export function assignMachineSections(args: {
 
   for (const machine of discoveredMachines) {
     if (claimedMachineIds.has(machine.id)) continue;
-    if (
-      targets.some((target) => machineMatchesSavedTarget(machine, target))
-    ) {
+    if (targets.some((target) => machineMatchesSavedTarget(machine, target))) {
       continue;
     }
     if (machine.connectable === false) {

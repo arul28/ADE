@@ -41,16 +41,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function credentialsForTarget(
-  target: RemoteRuntimeTarget,
-  store: DesktopPairedMachineStore,
-): DesktopPairedMachineCredentials | null {
-  const reference = target.pairedMachine;
-  if (!reference) return null;
-  return store.get(reference.hostIdentity)
-    ?? (reference.machineKey ? store.get(reference.machineKey) : null);
-}
-
 function pairedArch(
   target: RemoteRuntimeTarget,
   credentials: DesktopPairedMachineCredentials,
@@ -90,7 +80,9 @@ export async function bootstrapPairedRuntime(args: {
   appVersion: string;
   options?: PairedRuntimeBootstrapOptions;
 }): Promise<PairedRuntimeBootstrapResult> {
-  const credentials = credentialsForTarget(args.target, args.pairedStore);
+  const credentials = args.target.pairedMachine
+    ? args.pairedStore.getForReference(args.target.pairedMachine)
+    : null;
   if (!credentials) {
     throw new PairedRuntimeTransportUnavailableError(
       "The paired-machine credentials for this remote target were not found.",

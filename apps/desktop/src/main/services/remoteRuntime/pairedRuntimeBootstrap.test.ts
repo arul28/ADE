@@ -120,7 +120,7 @@ describe("bootstrapPairedRuntime", () => {
       update: vi.fn(() => updated),
     };
     const pairedStore = {
-      get: vi.fn(() => credentials),
+      getForReference: vi.fn(() => credentials),
       markEndpointSucceeded: vi.fn(() => credentials),
     };
 
@@ -133,6 +133,7 @@ describe("bootstrapPairedRuntime", () => {
     });
 
     expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", "1.0.0");
+    expect(pairedStore.getForReference).toHaveBeenCalledWith(target.pairedMachine);
     expect(result.result).toMatchObject({
       target: updated,
       arch: "darwin",
@@ -161,7 +162,7 @@ describe("bootstrapPairedRuntime", () => {
       target,
       registry: { update: vi.fn() } as any,
       pairedStore: {
-        get: vi.fn(() => credentials),
+        getForReference: vi.fn(() => credentials),
         markEndpointSucceeded: vi.fn(),
       } as any,
       appVersion: "1.0.0",
@@ -173,4 +174,3 @@ describe("bootstrapPairedRuntime", () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 });
-

@@ -101,7 +101,7 @@ describe("RemoteTargetRegistry", () => {
     });
   });
 
-  it("round-trips paired targets without SSH credentials", () => {
+  it("round-trips paired targets with SSH fallback credentials preserved", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
     process.env.ADE_HOME = adeHome;
 
@@ -114,8 +114,9 @@ describe("RemoteTargetRegistry", () => {
         hostIdentity: "host-device-1",
         machineKey: "relay-machine-1",
       },
-      sshUser: "ignored",
-      sshKeyPath: "/ignored/key",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: "/Users/admin/.ssh/id_ed25519",
       routes: [{
         hostname: "studio.local",
         port: null,
@@ -130,9 +131,30 @@ describe("RemoteTargetRegistry", () => {
         hostIdentity: "host-device-1",
         machineKey: "relay-machine-1",
       },
-      sshUser: null,
-      sshKeyPath: null,
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: "/Users/admin/.ssh/id_ed25519",
     });
     expect(new RemoteTargetRegistry().get(target.id)).toEqual(target);
+  });
+
+  it("does not synthesize an SSH route for a relay-only paired target", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
+    process.env.ADE_HOME = adeHome;
+
+    const registry = new RemoteTargetRegistry();
+    const target = registry.save({
+      name: "Relay-only Studio",
+      hostname: "relay.example.test",
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: "host-device-relay",
+        machineKey: "relay-machine-only",
+      },
+      routes: [],
+    });
+
+    expect(target.routes).toEqual([]);
+    expect(new RemoteTargetRegistry().get(target.id)?.routes).toEqual([]);
   });
 });

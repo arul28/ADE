@@ -1,13 +1,20 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
+  BACKPRESSURE_POLL_MS,
   createSyncEnvelopeChunkAssembler,
+  decodeStrictBase64,
   DEFAULT_SYNC_MAX_FRAME_BYTES,
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
+  FORWARD_DATA_CHUNK_BYTES,
+  MAX_CHANNEL_ID_CHARS,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
+  normalizeChannelId,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
+  PEER_BACKPRESSURE_BYTES,
+  RPC_DATA_CHUNK_BYTES,
 } from "./syncProtocol";
 
 // Deterministic xorshift PRNG — gzip cannot compress its output, so payloads
@@ -40,6 +47,29 @@ function reassemble(frames: string[], options: { shuffle?: boolean } = {}): unkn
   expect(reassembled).not.toBeNull();
   return parseSyncEnvelope(reassembled!);
 }
+
+describe("paired runtime wire framing", () => {
+  it("exports the canonical framing and backpressure constants", () => {
+    expect(RPC_DATA_CHUNK_BYTES).toBe(256 * 1024);
+    expect(FORWARD_DATA_CHUNK_BYTES).toBe(64 * 1024);
+    expect(PEER_BACKPRESSURE_BYTES).toBe(4 * 1024 * 1024);
+    expect(BACKPRESSURE_POLL_MS).toBe(25);
+    expect(MAX_CHANNEL_ID_CHARS).toBe(128);
+  });
+
+  it("strictly decodes base64 and normalizes channel ids", () => {
+    expect(decodeStrictBase64(Buffer.from("hello").toString("base64"))?.toString("utf8")).toBe("hello");
+    expect(decodeStrictBase64("")).toEqual(Buffer.alloc(0));
+    expect(decodeStrictBase64("abc")).toBeNull();
+    expect(decodeStrictBase64("ab=c")).toBeNull();
+    expect(decodeStrictBase64(null)).toBeNull();
+
+    expect(normalizeChannelId(" rpc:desktop-1 ")).toBe("rpc:desktop-1");
+    expect(normalizeChannelId("bad channel")).toBeNull();
+    expect(normalizeChannelId("x".repeat(MAX_CHANNEL_ID_CHARS + 1))).toBeNull();
+    expect(normalizeChannelId(null)).toBeNull();
+  });
+});
 
 describe("encodeSyncEnvelopeFrames", () => {
   it("returns a single frame when the envelope fits the budget", () => {
