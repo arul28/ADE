@@ -184,6 +184,23 @@ HMAC is invalid or `webhookTimestamp` is more than 60 seconds from the Worker
 clock. An unknown organization receives a successful acknowledgement without
 storage so Linear does not disable the webhook while setup is still converging.
 
+### Linear OAuth app deliveries (optional)
+
+An ADE Linear OAuth application signs every workspace's deliveries with one
+app-level signing secret instead of a per-organization secret. To accept
+those, store the app's signing secret on the Worker:
+
+```bash
+npx wrangler secret put LINEAR_APP_WEBHOOK_SECRET
+```
+
+App-signed deliveries are stored without prior `POST /linear/orgs/register`
+(the payload's `organizationId` scopes them), and per-organization workspace
+webhooks keep working alongside. When creating the OAuth app in Linear
+(Settings → API → OAuth applications), enable webhooks with the same ingest
+URL above; data-change webhook categories require the app to request the
+`admin` scope.
+
 ## GitHub App setup
 
 Create or edit a GitHub App. Use the user-facing name `ADE`:

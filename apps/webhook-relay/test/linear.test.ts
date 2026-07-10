@@ -389,6 +389,50 @@ describe("Linear webhook relay", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("accepts OAuth-app-signed deliveries without per-org registration", async () => {
+    const env = makeEnv();
+    (env as { LINEAR_APP_WEBHOOK_SECRET?: string }).LINEAR_APP_WEBHOOK_SECRET = "app-signing-secret";
+
+    // Unregistered organization, signed with the app secret: stored.
+    const appSigned = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { delivery: "app-delivery-1", secret: "app-signing-secret" }),
+      env,
+    );
+    expect(appSigned.status).toBe(200);
+    expect(await appSigned.json()).toEqual({ ok: true, duplicate: false, eventId: "app-delivery-1" });
+    expect(env.DB.events).toHaveLength(1);
+
+    // Unregistered organization, bad signature: probe-safe acknowledgement, not stored.
+    const badSignature = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { delivery: "app-delivery-2", secret: "wrong-secret" }),
+      env,
+    );
+    expect(badSignature.status).toBe(200);
+    expect(await badSignature.json()).toEqual({ ok: true });
+    expect(env.DB.events).toHaveLength(1);
+
+    // Registered organization keeps working with its own secret AND accepts
+    // app-signed deliveries (a workspace can have both webhook kinds).
+    stubLinearViewer({ "Bearer lin_oauth_app_mode": "org-1" });
+    await registerOrganization(env, { token: "Bearer lin_oauth_app_mode", secret: "org-secret" });
+    const orgSigned = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { delivery: "org-delivery-1", secret: "org-secret" }),
+      env,
+    );
+    const appSignedRegistered = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { delivery: "app-delivery-3", secret: "app-signing-secret" }),
+      env,
+    );
+    const rejected = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { delivery: "app-delivery-4", secret: "wrong-secret" }),
+      env,
+    );
+    expect(orgSigned.status).toBe(200);
+    expect(appSignedRegistered.status).toBe(200);
+    expect(rejected.status).toBe(401);
+    expect(env.DB.events).toHaveLength(3);
+  });
+
   it("drains a backlog larger than one page without skipping events", async () => {
     const env = makeEnv();
     stubLinearViewer({ "Bearer lin_oauth_drain": "org-1" });

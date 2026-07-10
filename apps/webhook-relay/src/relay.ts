@@ -7,6 +7,13 @@ export type RelayEnv = {
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_API_BASE_URL?: string;
   LINEAR_API_BASE_URL?: string;
+  /**
+   * Signing secret of the ADE Linear OAuth application. OAuth-app webhooks
+   * sign every workspace's deliveries with this one app-level secret (unlike
+   * workspace webhooks, which each carry a per-organization secret registered
+   * in D1). Optional until the ADE Linear app exists.
+   */
+  LINEAR_APP_WEBHOOK_SECRET?: string;
 };
 
 type GitHubEventRow = {
@@ -1602,15 +1609,26 @@ async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Res
     .prepare("select webhook_secret from linear_organizations where org_id = ? limit 1")
     .bind(organizationId)
     .first<LinearOrganizationRow>();
-  if (!organization) {
-    // Indistinguishable from an accepted delivery so unauthenticated callers
-    // cannot probe which organizations have registered ADE ingestion. Nothing
-    // is stored; the registration status endpoint is the debugging surface.
-    return json({ ok: true });
-  }
 
+  // Two legitimate signers: the per-organization secret registered by a
+  // workspace webhook, and the ADE Linear OAuth app's single app-level
+  // secret (Linear signs every workspace's app deliveries with it, so app
+  // deliveries need no prior per-org registration).
   const signature = request.headers.get("linear-signature")?.trim() ?? "";
-  if (!(await verifyLinearSignature(organization.webhook_secret, body, signature))) {
+  const appSecret = env.LINEAR_APP_WEBHOOK_SECRET?.trim() || null;
+  const signedByOrganization = organization
+    ? await verifyLinearSignature(organization.webhook_secret, body, signature)
+    : false;
+  const signedByApp = !signedByOrganization && appSecret
+    ? await verifyLinearSignature(appSecret, body, signature)
+    : false;
+  if (!signedByOrganization && !signedByApp) {
+    if (!organization) {
+      // Indistinguishable from an accepted delivery so unauthenticated callers
+      // cannot probe which organizations have registered ADE ingestion. Nothing
+      // is stored; the registration status endpoint is the debugging surface.
+      return json({ ok: true });
+    }
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });
   }
 
