@@ -158,7 +158,7 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
-import { WorkUsageActivityCarousel } from "../usage/UsageActivityCarousel";
+import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import {
@@ -11144,26 +11144,21 @@ export function AgentChatPane({
                       appPanelOpen ? "px-3" : "px-6 pb-24",
                     )}>
                       <div className={cn(
-                        "flex w-full flex-col items-center gap-4 text-center",
-                        appPanelOpen ? null : "max-w-[820px]",
+                        "flex w-full flex-col items-center gap-3 text-center",
+                        appPanelOpen ? null : "-mt-10 max-w-[820px]",
                       )}>
                         <motion.div
                           className={cn(
                             "relative flex w-full min-w-0 items-center justify-center",
-                            appPanelOpen ? "max-w-[360px]" : "max-w-[560px]",
+                            appPanelOpen ? "max-w-[360px]" : "max-w-[520px]",
                           )}
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          <div
-                            className="pointer-events-none absolute top-1/2 left-1/2 aspect-square h-full max-h-full max-w-full -translate-x-1/2 -translate-y-1/2 rounded-full"
-                            style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
-                          />
                           <img
                             src="./logo.png"
                             alt="ADE"
                             className="relative z-10 h-auto max-h-full w-full max-w-full object-contain"
-                            style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                           />
                         </motion.div>
 
@@ -11268,7 +11263,7 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <WorkUsageActivityCarousel />
+                            <WorkActivityModule />
                           </motion.div>
                         ) : null}
                       </div>

@@ -50,6 +50,10 @@ export interface TokenEntry {
   messageId: string;
   model: string;
   originator?: string;
+  projectPath?: string;
+  projectKey?: string;
+  adeOriginated?: boolean;
+  estimation?: "chars" | "mixed" | "distribution";
   inputTokens: number;
   billableInputTokens?: number;
   outputTokens: number;
@@ -61,6 +65,14 @@ export interface TokenEntry {
   webSearchRequests?: number;
   costOverrideUsd?: number;
   timestamp: number;
+}
+
+export function sanitizeClaudeProjectPath(value: string): string {
+  return value.replaceAll("/", "-").replaceAll("\\", "-").replaceAll(".", "-");
+}
+
+function isAdeWorktreePath(value: string): boolean {
+  return value.replace(/\\/g, "/").includes("/.ade/worktrees/");
 }
 
 export function optionalNumber(value: unknown): number | null {
@@ -273,6 +285,12 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
 
   for (const filePath of jsonlFiles) {
     try {
+      const resolvedFilePath = path.resolve(filePath);
+      const sourceProjectDir = projectDirs
+        .map((projectDir) => path.resolve(projectDir))
+        .filter((projectDir) => resolvedFilePath === projectDir || resolvedFilePath.startsWith(`${projectDir}${path.sep}`))
+        .sort((a, b) => b.length - a.length)[0];
+      const sourceProjectKey = sourceProjectDir ? path.basename(sourceProjectDir) : "";
       const firstTimestampByMessageId = new Map<string, number>();
       const lastEntryByMessageId = new Map<string, TokenEntry>();
       const messageOrder: string[] = [];
@@ -296,6 +314,7 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
 
         const model = typeof message.model === "string" ? message.model :
                       typeof record.model === "string" ? record.model : "unknown";
+        const projectPath = typeof record.cwd === "string" && record.cwd.trim() ? record.cwd : undefined;
         const cacheCreation = claudeCacheCreationTokens(usage);
         const webSearchRequests = isRecord(usage.server_tool_use)
           ? numberFromRecord(usage.server_tool_use, "web_search_requests")
@@ -309,6 +328,14 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
         lastEntryByMessageId.set(dedupeKey, {
           messageId: dedupeKey,
           model,
+          ...(projectPath ? { projectPath } : {}),
+          ...(sourceProjectKey ? { projectKey: sourceProjectKey } : {}),
+          // Claude does not persist ADE's launcher originator. ADE lane cwd is
+          // the strongest durable launch signal present in its JSONL ledger.
+          adeOriginated: Boolean(
+            (projectPath && isAdeWorktreePath(projectPath))
+            || sourceProjectKey.includes("--ade-worktrees-"),
+          ),
           inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
           outputTokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
           cachedTokens: typeof usage.cache_read_input_tokens === "number"
@@ -341,6 +368,7 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
 export async function scanCodexLogs(): Promise<TokenEntry[]> {
   const entries: TokenEntry[] = [];
   const seen = new Set<string>();
+  const seenForkReplayKeys = new Set<string>();
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const sessionsDir = path.join(codexHome, "sessions");
 
@@ -357,10 +385,11 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
 
   for (const filePath of jsonlFiles) {
     try {
-      if (!await isSupportedCodexUsageSession(filePath)) continue;
       let sessionId = path.basename(filePath, ".jsonl");
       let sessionModel = "codex";
       let sessionOriginator = "";
+      let sessionProjectPath = "";
+      let forkedFromId = "";
       let previousTotals: { input: number; cached: number; output: number; reasoning: number; total: number } | null = null;
 
       for await (const line of readJsonlLines(filePath)) {
@@ -386,6 +415,13 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           if (payloadSessionId) sessionId = payloadSessionId;
           if (typeof payload.model === "string" && payload.model.trim()) sessionModel = payload.model;
           if (typeof payload.originator === "string" && payload.originator.trim()) sessionOriginator = payload.originator;
+          if (typeof payload.cwd === "string" && payload.cwd.trim()) sessionProjectPath = payload.cwd;
+          const payloadForkedFromId = typeof payload.forkedFromId === "string"
+            ? payload.forkedFromId
+            : typeof payload.forked_from_id === "string"
+              ? payload.forked_from_id
+              : "";
+          if (payloadForkedFromId.trim()) forkedFromId = payloadForkedFromId;
           continue;
         }
 
@@ -430,6 +466,18 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
             };
           }
 
+          const replayInput = totalUsage ? numberFromRecord(totalUsage, "input_tokens") : rawInputTokens;
+          const replayCached = totalUsage
+            ? numberFromRecord(totalUsage, "cached_input_tokens", "cache_read_input_tokens")
+            : cachedTokens;
+          const replayOutput = totalUsage ? numberFromRecord(totalUsage, "output_tokens") : outputTokens;
+          const replayReasoning = totalUsage ? numberFromRecord(totalUsage, "reasoning_output_tokens") : reasoningTokens;
+          if (cumulativeTotal > 0) {
+            const replayKey = `${forkedFromId || sessionId}:${cumulativeTotal}:${replayInput}:${replayCached}:${replayOutput}:${replayReasoning}`;
+            if (seenForkReplayKeys.has(replayKey)) continue;
+            seenForkReplayKeys.add(replayKey);
+          }
+
           rawInputTokens = Math.max(0, rawInputTokens);
           cachedTokens = Math.max(0, cachedTokens);
           outputTokens = Math.max(0, outputTokens) + Math.max(0, reasoningTokens);
@@ -449,6 +497,8 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
             messageId: dedupeKey,
             model,
             originator: sessionOriginator,
+            ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
+            adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
             inputTokens,
             billableInputTokens,
             outputTokens,
@@ -492,6 +542,8 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           messageId: dedupeKey,
           model,
           originator: sessionOriginator,
+          ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
+          adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
           inputTokens: inputTokens || Math.floor(tokenCount * 0.4),
           outputTokens: outputTokens || Math.ceil(tokenCount * 0.6),
           cachedTokens: typeof record.cached_tokens === "number" ? record.cached_tokens : 0,
@@ -685,6 +737,7 @@ export async function scanDroidLogs(sessionsDir = defaultDroidSessionsDir()): Pr
           billableCachedTokens: isLast ? totalCacheRead - cacheReadPerCall * i : cacheReadPerCall,
           cacheWriteTokens: isLast ? totalCacheWrite - cacheWritePerCall * i : cacheWritePerCall,
           timestamp: call.timestamp,
+          estimation: "distribution",
         });
         if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
       }
@@ -787,6 +840,7 @@ export function parseCopilotEvents(raw: string, sourcePath: string): TokenEntry[
         cachedTokens: 0,
         cacheWriteTokens: 0,
         timestamp: timestampMsFromValue(record.timestamp),
+        estimation: numberFromRecord(data, "outputTokens") > 0 ? "mixed" : "chars",
       });
       pendingUserMessage = "";
     }
@@ -816,6 +870,7 @@ export function parseCopilotEvents(raw: string, sourcePath: string): TokenEntry[
       cachedTokens: 0,
       cacheWriteTokens: 0,
       timestamp: timestampMsFromValue(record.timestamp),
+      estimation: "mixed",
     });
     pendingUserMessage = "";
   }
@@ -1150,6 +1205,7 @@ export async function scanCursorLogs(dbPath = defaultCursorDbPath()): Promise<To
         cachedTokens: 0,
         cacheWriteTokens: 0,
         timestamp: timestampMsFromValue(createdAt),
+        estimation: "mixed",
       });
       if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
     }
@@ -1301,6 +1357,7 @@ export async function scanCursorAgentLogs(projectsDir = path.join(os.homedir(), 
           cachedTokens: 0,
           cacheWriteTokens: 0,
           timestamp: stat.mtimeMs,
+          estimation: "chars",
         });
         if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
       }
@@ -1310,25 +1367,6 @@ export async function scanCursorAgentLogs(projectsDir = path.join(os.homedir(), 
   }
 
   return entries;
-}
-
-async function isSupportedCodexUsageSession(filePath: string): Promise<boolean> {
-  let file: fs.promises.FileHandle | null = null;
-  try {
-    file = await fs.promises.open(filePath, "r");
-    const buffer = Buffer.alloc(1024 * 1024);
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-    const firstLine = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0]?.trim();
-    if (!firstLine) return false;
-    const entry = safeJsonParse<Record<string, unknown>>(firstLine, {});
-    if (entry.type !== "session_meta" || !isRecord(entry.payload)) return false;
-    const originator = normalizeUsageLabel(entry.payload.originator, "").toLowerCase();
-    return !originator.startsWith("ade");
-  } catch {
-    return false;
-  } finally {
-    await file?.close().catch(() => {});
-  }
 }
 
 export async function findRecentFiles(

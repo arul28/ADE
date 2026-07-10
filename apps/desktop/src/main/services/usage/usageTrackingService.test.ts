@@ -41,6 +41,10 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
   aggregateCosts,
+  localDayKey,
+  makeDailySkeleton,
+  dateIntersectsRange,
+  scanGithubPullRequestPages,
   calculatePacing,
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
@@ -354,10 +358,140 @@ describe("aggregateCosts", () => {
   });
 });
 
+describe("local daily aggregation", () => {
+  it("daily points carry output and cache split", () => {
+    const now = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const date = localDayKey(now);
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "codex",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokenBreakdownByPreset: {
+            today: {
+              [date]: {
+                "gpt-5.5": { input: 100, output: 40, cached: 25, cacheWrite: 5 },
+              },
+            },
+          },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "today" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === date)).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 40,
+      cachedTokens: 30,
+      totalTokens: 170,
+    });
+  });
+
+  it("legacy daily totals do not masquerade as input tokens", () => {
+    const now = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const date = localDayKey(now);
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "claude",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokensByPreset: { today: { [date]: 55 } },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "today" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === date)).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 55,
+    });
+  });
+
+  it("day keys are local-timezone stable across DST calendar fixtures", () => {
+    expect(localDayKey("2026-03-08")).toBe("2026-03-08");
+    const fixtures = [
+      {
+        timezone: "America/Los_Angeles",
+        start: new Date(2026, 2, 7, 12),
+        until: new Date(2026, 2, 10, 12),
+        expected: ["2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10"],
+      },
+      {
+        timezone: "Pacific/Auckland",
+        start: new Date(2026, 3, 3, 12),
+        until: new Date(2026, 3, 6, 12),
+        expected: ["2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06"],
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const range = {
+        preset: "7d" as const,
+        since: new Date(
+          fixture.start.getFullYear(),
+          fixture.start.getMonth(),
+          fixture.start.getDate(),
+        ).toISOString(),
+        until: fixture.until.toISOString(),
+      };
+      expect(makeDailySkeleton(range, fixture.until.getTime()).map((point) => point.date), fixture.timezone)
+        .toEqual(fixture.expected);
+      expect(dateIntersectsRange(fixture.expected[1]!, range), fixture.timezone).toBe(true);
+    }
+  });
+
+  it("extends the skeleton instead of dropping an observed local day", () => {
+    const now = new Date(2026, 4, 29, 12);
+    const oldDate = "2024-01-02";
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "claude",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokenBreakdownByPreset: {
+            all: { [oldDate]: { opus: { input: 1, output: 2, cached: 3 } } },
+          },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "all" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === oldDate)?.totalTokens).toBe(6);
+  });
+});
+
 // ── collectAdeUsageStats ─────────────────────────────────────────
 
 describe("collectAdeUsageStats", () => {
-  it("uses local runtime scans and GitHub activity without ADE database counting", () => {
+  it("keeps GitHub and local activity separate", () => {
     const nowMs = Date.parse("2026-05-29T12:00:00.000Z");
     const snapshot = {
       windows: [],
@@ -417,6 +551,32 @@ describe("collectAdeUsageStats", () => {
     const stats = collectAdeUsageStats({
       snapshot,
       githubStats,
+      databaseStats: {
+        summary: {
+          commitsCreated: 2,
+          pushOperations: 3,
+          prLandings: 1,
+          filesChanged: 4,
+          insertions: 120,
+          deletions: 20,
+        },
+        providers: [],
+        models: [],
+        agentProviders: [],
+        agentModels: [],
+        features: [],
+        lanes: [],
+        activities: [],
+        clients: [],
+        daily: [{
+          date: "2026-05-29",
+          commits: 2,
+          prs: 1,
+          insertions: 120,
+          deletions: 20,
+          filesChanged: 4,
+        }],
+      } as any,
       args: { preset: "7d" },
       nowMs,
     });
@@ -433,20 +593,53 @@ describe("collectAdeUsageStats", () => {
     expect(stats.summary.prsOpen).toBe(3);
     expect(stats.summary.prsMerged).toBe(6);
     expect(stats.summary.prsClosed).toBe(1);
-    expect(stats.summary.commitsCreated).toBe(9);
+    expect(stats.summary.commitsCreated).toBe(2);
     expect(stats.summary.prAdditions).toBe(9_106);
     expect(stats.summary.prDeletions).toBe(1_313);
     expect(stats.github.repo).toBe("arul28/ADE");
+    expect(stats.githubActivity).toMatchObject({ commits: 9, prsTracked: 7, prAdditions: 9_106 });
+    expect(stats.localActivity).toMatchObject({ commits: 2, prLandings: 1, insertions: 120 });
     expect(stats.providers.map((provider) => provider.provider)).toEqual(["codex"]);
     expect(stats.adeProviders).toEqual([]);
     expect(stats.agentProviders).toEqual([]);
     expect(stats.daily.find((point) => point.date === "2026-05-29")).toMatchObject({
-      commits: 9,
-      prs: 7,
-      insertions: 9_106,
-      deletions: 1_313,
-      filesChanged: 86,
+      commits: 2,
+      prs: 1,
+      insertions: 120,
+      deletions: 20,
+      filesChanged: 4,
+      githubCommits: 9,
+      githubPrs: 7,
+      githubAdditions: 9_106,
+      githubDeletions: 1_313,
     });
+  });
+});
+
+describe("GitHub activity scan", () => {
+  it("stops pull request pagination once a page crosses the range start", async () => {
+    const runCommand = vi.fn(async () => JSON.stringify({
+      nodes: [
+        { number: 3, createdAt: "2026-05-29T12:00:00.000Z", author: { login: "arul" } },
+        { number: 2, createdAt: "2026-05-20T12:00:00.000Z", author: { login: "arul" } },
+      ],
+      pageInfo: { hasNextPage: true, endCursor: "next-page" },
+    }));
+
+    const rows = await scanGithubPullRequestPages({
+      projectRoot: "/repo",
+      repoParts: { owner: "arul", name: "ADE" },
+      viewer: "arul",
+      range: {
+        preset: "7d",
+        since: "2026-05-23T00:00:00.000Z",
+        until: "2026-05-29T23:59:59.000Z",
+      },
+      runCommand,
+    });
+
+    expect(rows.map((row) => row.number)).toEqual([3, 2]);
+    expect(runCommand).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1297,8 +1490,8 @@ describe("createUsageTrackingService", () => {
 
     expect(firstLoading.freshness?.state).toBe("refreshing");
     expect(secondLoading.freshness?.state).toBe("refreshing");
-    expect(first.summary.commitsCreated).toBe(10);
-    expect(second.summary.commitsCreated).toBe(11);
+    expect(first.githubActivity?.commits).toBe(10);
+    expect(second.githubActivity?.commits).toBe(11);
     expect(scanGitHubStats).toHaveBeenCalledTimes(2);
 
     service.dispose();
@@ -1372,6 +1565,21 @@ describe("createUsageTrackingService", () => {
           timestamp: now,
         },
       ] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
     };
     const service = createUsageTrackingService({ logger, dependencies });
 
@@ -1383,6 +1591,148 @@ describe("createUsageTrackingService", () => {
       cached: 60,
     });
     expect(snapshot.adeCosts).toEqual([]);
+    expect(snapshot.costs.find((cost) => cost.provider === "codex")?.adeOriginatedTokensByPreset?.today).toBe(80);
+    const stats = await service.getAdeUsageStats({ preset: "today" });
+    expect(stats.providers.find((provider) => provider.provider === "codex")).toMatchObject({
+      adeOriginatedTokens: 80,
+      externalTokens: 160,
+    });
+
+    service.dispose();
+  });
+
+  it("project scope filters ledgers without rescanning and excludes unsupported totals", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(async () => [
+        {
+          messageId: "project",
+          model: "claude-opus-4-6",
+          projectPath: "/repo/.ade/worktrees/lane-a",
+          adeOriginated: true,
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedTokens: 0,
+          timestamp: now,
+        },
+        {
+          messageId: "other",
+          model: "claude-opus-4-6",
+          projectPath: "/other/repo",
+          inputTokens: 20,
+          outputTokens: 10,
+          cachedTokens: 0,
+          timestamp: now,
+        },
+      ] as any),
+      scanCursorLogs: vi.fn(async () => [{
+        messageId: "cursor-machine-only",
+        model: "cursor-auto",
+        inputTokens: 30,
+        outputTokens: 10,
+        cachedTokens: 0,
+        timestamp: now,
+      }] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies, projectRoot: "/repo" });
+    await service.forceRefresh();
+
+    const machine = await service.getAdeUsageStats({ preset: "today", scope: "machine" });
+    const project = await service.getAdeUsageStats({ preset: "today", scope: "project" });
+
+    expect(machine.scope).toBe("machine");
+    expect(machine.summary.observedProviderTokens).toBe(85);
+    expect(machine.providers.find((provider) => provider.provider === "claude")).toMatchObject({
+      totalTokens: 45,
+      adeOriginatedTokens: 15,
+      externalTokens: 30,
+      scopeSupported: true,
+    });
+    expect(project.scope).toBe("project");
+    expect(project.summary.observedProviderTokens).toBe(15);
+    expect(project.providers.find((provider) => provider.provider === "claude")).toMatchObject({
+      totalTokens: 15,
+      adeOriginatedTokens: 15,
+      externalTokens: 0,
+      scopeSupported: true,
+    });
+    expect(project.providers.find((provider) => provider.provider === "cursor")).toMatchObject({
+      totalTokens: 0,
+      scopeSupported: false,
+      estimation: "mixed",
+    });
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+    expect(dependencies.scanCursorLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
+  it("sets estimation flags on provider snapshots and summaries", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const tokenEntry = (messageId: string, model: string, estimation?: "chars" | "mixed" | "distribution") => ({
+      messageId,
+      model,
+      inputTokens: 8,
+      outputTokens: 2,
+      cachedTokens: 0,
+      timestamp: now,
+      ...(estimation ? { estimation } : {}),
+    });
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(async () => [tokenEntry("claude", "claude-opus-4-6")] as any),
+      scanCursorLogs: vi.fn(async () => [tokenEntry("cursor", "cursor-auto")] as any),
+      scanCursorAgentLogs: vi.fn(async () => [tokenEntry("cursor-agent", "cursor-agent-auto", "chars")] as any),
+      scanDroidLogs: vi.fn(async () => [tokenEntry("droid", "droid-auto", "distribution")] as any),
+      scanCopilotLogs: vi.fn(async () => [tokenEntry("copilot", "copilot-auto", "chars")] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+    const snapshot = await service.forceRefresh();
+    const snapshotFlags = Object.fromEntries(snapshot.costs.map((cost) => [cost.provider, cost.estimation]));
+    expect(snapshotFlags).toMatchObject({
+      cursor: "mixed",
+      "cursor-agent": "chars",
+      droid: "distribution",
+      copilot: "chars",
+    });
+    expect(snapshotFlags.claude).toBeUndefined();
+
+    const stats = await service.getAdeUsageStats({ preset: "today" });
+    const summaryFlags = Object.fromEntries(stats.providers.map((provider) => [provider.provider, provider.estimation]));
+    expect(summaryFlags).toMatchObject(snapshotFlags);
 
     service.dispose();
   });
@@ -1515,6 +1865,100 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("deduplicates Claude message ids across files", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const assistant = (timestamp: string) => JSON.stringify({
+        type: "assistant",
+        timestamp,
+        cwd: "/repo",
+        message: {
+          id: "msg-shared",
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 10, output_tokens: 2 },
+        },
+      });
+      fs.writeFileSync(path.join(projectDir, "session-a.jsonl"), `${assistant("2026-05-29T12:00:00.000Z")}\n`);
+      fs.writeFileSync(path.join(projectDir, "session-b.jsonl"), `${assistant("2026-05-29T12:01:00.000Z")}\n`);
+
+      const entries = await scanClaudeLogs([projectDir]);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.messageId).toBe("msg-shared");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the last Claude streaming partial at the first timestamp", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const firstTimestamp = "2026-05-29T12:00:00.000Z";
+      fs.writeFileSync(
+        path.join(projectDir, "session.jsonl"),
+        [
+          JSON.stringify({
+            type: "assistant",
+            timestamp: firstTimestamp,
+            cwd: "/repo",
+            message: { id: "msg-stream", model: "claude-opus-4-6", usage: { input_tokens: 10, output_tokens: 2 } },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            timestamp: "2026-05-29T12:00:03.000Z",
+            cwd: "/repo",
+            message: { id: "msg-stream", model: "claude-opus-4-6", usage: { input_tokens: 25, output_tokens: 8 } },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanClaudeLogs([projectDir]);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ inputTokens: 25, outputTokens: 8 });
+      expect(entries[0]?.timestamp).toBe(Date.parse(firstTimestamp));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes Claude sessions launched from ADE worktrees", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo--ade-worktrees-lane");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      fs.writeFileSync(
+        path.join(projectDir, "session.jsonl"),
+        `${JSON.stringify({
+          type: "assistant",
+          timestamp: new Date().toISOString(),
+          cwd: "/repo/.ade/worktrees/lane",
+          message: {
+            id: "msg-ade",
+            model: "claude-opus-4-6",
+            usage: { input_tokens: 10, output_tokens: 2 },
+          },
+        })}\n`,
+      );
+
+      const entries = await scanClaudeLogs([projectDir]);
+      const cost = aggregateCosts(entries, "claude");
+
+      expect(entries[0]).toMatchObject({
+        projectPath: "/repo/.ade/worktrees/lane",
+        adeOriginated: true,
+      });
+      expect(cost.adeOriginatedTokensByPreset?.today).toBe(12);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("scanCodexLogs", () => {
@@ -1591,7 +2035,7 @@ describe("scanCodexLogs", () => {
     }
   });
 
-  it("counts Codex-owned session files while skipping ADE-originated launcher files", async () => {
+  it("includes Codex ADE sessions and attributes their origin", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     try {
@@ -1629,14 +2073,79 @@ describe("scanCodexLogs", () => {
 
       const entries = await scanCodexLogs();
 
-      expect(entries).toHaveLength(2);
-      expect(entries.map((entry) => entry.originator).sort()).toEqual(["Codex Desktop", "codex_cli_rs"]);
+      expect(entries).toHaveLength(4);
+      expect(entries.filter((entry) => entry.adeOriginated)).toHaveLength(2);
+      expect(entries.map((entry) => entry.originator).sort()).toEqual([
+        "Codex Desktop",
+        "ade",
+        "ade_desktop",
+        "codex_cli_rs",
+      ]);
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;
       } else {
         process.env.CODEX_HOME = originalCodexHome;
       }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores Codex fork replay while preserving genuine cumulative deltas", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const usageEvent = (timestamp: string, totalInput: number, totalOutput: number, lastInput: number, lastOutput: number) => JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: totalInput,
+              output_tokens: totalOutput,
+              total_tokens: totalInput + totalOutput,
+            },
+            last_token_usage: {
+              input_tokens: lastInput,
+              output_tokens: lastOutput,
+              total_tokens: lastInput + lastOutput,
+            },
+          },
+        },
+      });
+      fs.writeFileSync(
+        path.join(sessionDir, "parent.jsonl"),
+        [
+          JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: "/repo", originator: "codex_cli_rs" } }),
+          usageEvent("2026-05-29T12:00:00.000Z", 10, 2, 10, 2),
+          "",
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(sessionDir, "fork.jsonl"),
+        [
+          JSON.stringify({
+            type: "session_meta",
+            payload: { id: "fork", forked_from_id: "parent", cwd: "/repo", originator: "codex_cli_rs" },
+          }),
+          usageEvent("2026-05-29T12:01:00.000Z", 10, 2, 10, 2),
+          usageEvent("2026-05-29T12:02:00.000Z", 15, 2, 5, 0),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanCodexLogs();
+
+      expect(entries).toHaveLength(2);
+      expect(entries.reduce((sum, entry) => sum + entry.inputTokens, 0)).toBe(15);
+      expect(entries.reduce((sum, entry) => sum + entry.outputTokens, 0)).toBe(2);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -2414,6 +2923,104 @@ describe("ADE database usage aggregation", () => {
     );
     return db;
   }
+
+  const createDatabaseServiceDependencies = () => ({
+    pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+    pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+    scanClaudeLogs: vi.fn(async () => [] as never[]),
+    scanCodexLogs: vi.fn(async () => [] as never[]),
+    scanCursorLogs: vi.fn(async () => [] as never[]),
+    scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+    scanOpenClawLogs: vi.fn(async () => [] as never[]),
+    scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+    scanDroidLogs: vi.fn(async () => [] as never[]),
+    scanCopilotLogs: vi.fn(async () => [] as never[]),
+    scanGeminiLogs: vi.fn(async () => [] as never[]),
+    scanGitHubStats: vi.fn(async () => ({
+      repo: null,
+      available: false,
+      fetchedAt: null,
+      error: null,
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    })),
+  });
+
+  it("prod context wires db aggregates into the usage service", async () => {
+    const db = await createStatsDb();
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      ["op-prod", "project-1", "lane-1", "git_commit", "2026-07-08T12:00:00.000Z", "2026-07-08T12:00:01.000Z", "succeeded"],
+    );
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      db,
+      projectRoot: "/repo",
+      dependencies: createDatabaseServiceDependencies(),
+    });
+
+    const stats = await service.getAdeUsageStats({
+      preset: "all",
+      until: "2026-07-09T00:00:00.000Z",
+    });
+
+    expect(stats.localActivity?.commits).toBe(1);
+    expect(stats.summary.commitsCreated).toBe(1);
+    expect(stats.daily.find((point) => point.date === "2026-07-08")?.commits).toBe(1);
+    service.dispose();
+  });
+
+  it("without db yields null database stats and zero local aggregates", async () => {
+    const range = { since: "2026-07-08T00:00:00.000Z", until: "2026-07-09T00:00:00.000Z" };
+    expect(collectAdeDatabaseUsageStats(undefined, range)).toBeNull();
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      dependencies: createDatabaseServiceDependencies(),
+    });
+
+    const stats = await service.getAdeUsageStats({ preset: "all", ...range });
+
+    expect(stats.localActivity).toMatchObject({
+      commits: 0,
+      pushOperations: 0,
+      prLandings: 0,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+    service.dispose();
+  });
+
+  it("buckets database timestamps by the local calendar day", async () => {
+    const db = await createStatsDb();
+    const localInstant = new Date(2026, 0, 15, 0, 30, 0, 0);
+    const expectedDay = localDayKey(localInstant);
+    db.run(
+      `insert into ai_usage_log(id, timestamp, feature, provider, model, input_tokens, output_tokens, duration_ms, success)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["ai-local-day", localInstant.toISOString(), "chat", "claude", "opus", 4, 2, 10, 1],
+    );
+
+    const stats = collectAdeDatabaseUsageStats(db, {
+      since: new Date(2026, 0, 15, 0, 0, 0, 0).toISOString(),
+      until: new Date(2026, 0, 15, 23, 59, 59, 999).toISOString(),
+    });
+
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: expectedDay,
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+    }));
+  });
 
   it("combines successful ADE operations, sessions, tokens, and client activity without double-counting", async () => {
     const db = await createStatsDb();
