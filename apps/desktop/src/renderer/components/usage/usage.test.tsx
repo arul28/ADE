@@ -630,6 +630,8 @@ describe("usage components", () => {
       rerender(<ActivityModule stats={githubOnly} preset="7d" onPresetChange={vi.fn()} />);
 
       expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
+      const activityCell = screen.getByRole("img", { name: "Daily activity heatmap" }).querySelector("span");
+      expect((activityCell as HTMLElement).style.background).not.toContain("var(--color-fg) 7%");
       fireEvent.click(screen.getByRole("tab", { name: "Code" }));
       expect(screen.getByRole("img", { name: "Code changes by day, additions and deletions" })).toBeTruthy();
       expect(screen.getByText("GitHub")).toBeTruthy();

@@ -127,13 +127,29 @@ function formatDay(date: string): string {
 }
 
 function dayValue(point: AdeUsageDailyPoint): number {
-  return point.totalTokens + point.sessions * 4_000 + (point.interactions ?? 0) * 1_500;
+  return (
+    point.totalTokens +
+    point.sessions * 4_000 +
+    (point.interactions ?? 0) * 1_500 +
+    point.commits * 4_000 +
+    point.prs * 8_000 +
+    point.filesChanged * 500 +
+    point.insertions +
+    point.deletions +
+    (point.githubCommits ?? 0) * 4_000 +
+    (point.githubPrs ?? 0) * 8_000 +
+    (point.githubAdditions ?? 0) +
+    (point.githubDeletions ?? 0)
+  );
 }
 
 function dayHasActivity(point: AdeUsageDailyPoint): boolean {
   return (
     point.totalTokens > 0 ||
     point.sessions > 0 ||
+    point.commits > 0 ||
+    point.prs > 0 ||
+    point.filesChanged > 0 ||
     point.insertions > 0 ||
     point.deletions > 0 ||
     (point.githubCommits ?? 0) > 0 ||

@@ -3064,10 +3064,9 @@ export function createUsageTrackingService({
       if (requested.provider) work.push(refreshHistory({ reason: "automatic" }));
       if (requested.github) work.push(getGithubStatsForRange(range, exactRange, true));
       await Promise.allSettled(work);
-      // History refresh already emits once after its ledger scan. A combined
-      // provider + GitHub revalidation should settle as one renderer update,
-      // not duplicate notifications for the same stats request.
-      if (requested.github && !requested.provider) emitUpdate(lastSnapshot ?? emptySnapshot());
+      // History refresh emits when its ledger scan settles. GitHub can finish
+      // later, so always emit again after its cache is populated.
+      if (requested.github) emitUpdate(lastSnapshot ?? emptySnapshot());
     })().finally(() => {
       statsRefreshInFlight.delete(key);
     });

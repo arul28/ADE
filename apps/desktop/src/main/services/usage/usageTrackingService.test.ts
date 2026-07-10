@@ -1474,6 +1474,7 @@ describe("createUsageTrackingService", () => {
     });
 
     await service.poll();
+    await service.refreshHistory();
     onUpdate.mockClear();
 
     await service.getAdeUsageStats({ preset: "7d" });
@@ -1497,6 +1498,63 @@ describe("createUsageTrackingService", () => {
     });
 
     await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+    service.dispose();
+  });
+
+  it("notifies again when GitHub finishes after a combined background refresh", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    let resolveClaude!: (entries: never[]) => void;
+    let resolveGithub!: (stats: {
+      repo: string;
+      available: boolean;
+      fetchedAt: string;
+      error: null;
+      commitsCreated: number;
+      prsTracked: number;
+      prsOpen: number;
+      prsMerged: number;
+      prsClosed: number;
+      prAdditions: number;
+      prDeletions: number;
+      filesChanged: number;
+      daily: never[];
+    }) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(() => new Promise<never[]>((resolve) => {
+        resolveClaude = resolve;
+      })),
+      scanGitHubStats: vi.fn(() => new Promise<Parameters<typeof resolveGithub>[0]>((resolve) => {
+        resolveGithub = resolve;
+      })),
+    };
+    const service = createUsageTrackingService({ logger, onUpdate, dependencies });
+
+    await service.getAdeUsageStats({ preset: "7d" });
+    await vi.waitFor(() => expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+
+    resolveClaude([]);
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+
+    resolveGithub({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: "2026-05-29T12:00:00.000Z",
+      error: null,
+      commitsCreated: 1,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    });
+
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     service.dispose();
   });
 
