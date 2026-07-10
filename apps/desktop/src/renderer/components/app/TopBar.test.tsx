@@ -163,6 +163,9 @@ function resetStore() {
     isNewTabOpen: false,
     openNewTab: vi.fn(),
     cancelNewTab: vi.fn(),
+    personalChatsTabOpen: false,
+    setPersonalChatsTabOpen: vi.fn(),
+    closePersonalChatsTab: vi.fn(),
     projectTransition: null,
     projectTransitionError: null,
     openProjectTabRoots: [],
@@ -223,6 +226,33 @@ async function advancePhoneSyncStartupDelay() {
 }
 
 const resourceUsageMock = vi.fn();
+
+function renderChatsTopBar({
+  personalChatsRouteActive,
+  storeOverrides = {},
+}: {
+  personalChatsRouteActive: boolean;
+  storeOverrides?: Partial<ReturnType<typeof useAppStore.getState>>;
+}) {
+  useAppStore.setState({
+    project: null,
+    projectHydrated: true,
+    showWelcome: true,
+    personalChatsTabOpen: true,
+    ...storeOverrides,
+  } as any);
+  const onNavigate = vi.fn();
+
+  return {
+    onNavigate,
+    ...render(
+      <TopBar
+        personalChatsRouteActive={personalChatsRouteActive}
+        onNavigate={onNavigate}
+      />,
+    ),
+  };
+}
 
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
@@ -361,16 +391,118 @@ describe("TopBar", () => {
   });
 
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
-    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
-    const onClose = vi.fn();
-
-    render(<TopBar standaloneChatsActive onCloseStandaloneChats={onClose} />);
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+    });
 
     expect(screen.getByText("Chats")).toBeTruthy();
     const closeButton = screen.getByTitle("Close chats");
-    expect(onClose).not.toHaveBeenCalled();
+    expect(useAppStore.getState().closePersonalChatsTab).not.toHaveBeenCalled();
     fireEvent.click(closeButton);
-    expect(onClose).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().closePersonalChatsTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/work", { replace: true });
+  });
+
+  it("opens and activates New Tab from projectless Chats without closing Chats", () => {
+    const { onNavigate, rerender } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+    });
+
+    fireEvent.click(screen.getByTitle("Open another project"));
+
+    expect(useAppStore.getState().openNewTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/work");
+
+    useAppStore.setState({ isNewTabOpen: true } as any);
+    rerender(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+
+    expect(screen.getByText("New Tab").parentElement?.getAttribute("data-state")).toBe("active");
+    expect(screen.getByText("Chats").parentElement?.getAttribute("data-state")).toBeNull();
+  });
+
+  it("navigates to an inactive Chats tab", () => {
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
+
+    fireEvent.click(screen.getByText("Chats").parentElement!);
+
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/chats");
+  });
+
+  it("returns to Chats when the projectless New Tab is closed", () => {
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
+
+    fireEvent.click(screen.getByTitle("Close new tab"));
+
+    expect(useAppStore.getState().cancelNewTab).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith("/chats");
+  });
+
+  it("closes an inactive Chats tab without navigating away from New Tab", () => {
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
+
+    fireEvent.click(screen.getByTitle("Close chats"));
+
+    expect(useAppStore.getState().closePersonalChatsTab).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().cancelNewTab).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("does not activate a tab when the close button is pressed via keyboard", () => {
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
+
+    fireEvent.keyDown(screen.getByTitle("Close chats"), { key: "Enter" });
+
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("routes back to the project when its tab is clicked while Chats is foreground", () => {
+    const root = "/Users/arul/ADE";
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+      storeOverrides: {
+        project: { rootPath: root, name: "ADE" },
+        showWelcome: false,
+        openProjectTabRoots: [root],
+        projectInfoByRoot: { [root]: { rootPath: root, displayName: "ADE" } },
+      } as any,
+    });
+
+    fireEvent.click(screen.getByText("ADE", { selector: "span" }).closest('[role="button"]')!);
+
+    expect(onNavigate).toHaveBeenCalledWith("/work", { replace: true });
+    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
+  });
+
+  it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
+    const root = "/Users/arul/ADE";
+    renderChatsTopBar({
+      personalChatsRouteActive: true,
+      storeOverrides: {
+        project: { rootPath: root, name: "ADE" },
+        showWelcome: false,
+        openProjectTabRoots: [root],
+        projectInfoByRoot: { [root]: { rootPath: root, displayName: "ADE" } },
+      } as any,
+    });
+
+    expect(screen.getByText("Chats").parentElement?.getAttribute("data-state")).toBe("active");
+    const projectTab = screen.getByText("ADE", { selector: "span" }).closest('[role="button"]');
+    expect(projectTab?.getAttribute("data-state")).toBeNull();
+    expect(projectTab?.getAttribute("aria-current")).toBe("true");
   });
 
   it("keeps the phone sync drawer open before a project is open", async () => {

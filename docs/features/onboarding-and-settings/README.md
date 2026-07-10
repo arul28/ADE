@@ -104,7 +104,10 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level passive help mount. It renders the one-time ADE welcome
   video gate plus `DidYouKnow`; guided per-tab tours and the old
-  welcome wizard are no longer mounted.
+  welcome wizard are no longer mounted. The `DidYouKnow` toast is
+  suppressed on every `/chats` route (projectless or not) because its
+  fixed bottom-right portal overlaps the chats composer at narrow
+  widths.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses sanitized bundled welcome assets, lazy-loads the intro video,

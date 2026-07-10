@@ -41,6 +41,7 @@ import {
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
+import { readStoredProjectRoute } from "./projectRouteStorage";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
@@ -67,6 +68,7 @@ import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
+import { ShellNavTab } from "./ShellNavTab";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -871,13 +873,14 @@ function ProjectTabIcon({
 }
 
 export function TopBar({
-  standaloneChatsActive = false,
-  onCloseStandaloneChats,
+  personalChatsRouteActive = false,
+  onNavigate,
 }: {
-  standaloneChatsActive?: boolean;
-  onCloseStandaloneChats?: () => void;
+  personalChatsRouteActive?: boolean;
+  onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -887,6 +890,8 @@ export function TopBar({
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const openNewTab = useAppStore((s) => s.openNewTab);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
+  const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const clearProjectTransitionError = useAppStore(
@@ -1336,16 +1341,34 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-  }, [isProjectBusy, openNewTab]);
+    if (personalChatsRouteActive) onNavigate?.("/work");
+  }, [isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
+  // Clicking a project tab while the Chats machine tab is foreground must
+  // leave /chats, or ProjectTabHost's route replay (which skips personal chats
+  // routes) never surfaces the project. Navigate to the CURRENT binding's
+  // stored route so the route-cache effect writes that same value back instead
+  // of stamping /work over the project's remembered position.
+  const leavePersonalChatsRoute = useCallback(() => {
+    if (!personalChatsRouteActive) return;
+    const currentBindingKey = remoteBinding
+      ? remoteBinding.key
+      : project?.rootPath
+        ? `local:${project.rootPath}`
+        : null;
+    const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
+    onNavigate?.(route, { replace: true });
+  }, [onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
+      leavePersonalChatsRoute();
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
@@ -1355,6 +1378,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
+      leavePersonalChatsRoute,
       project?.rootPath,
       remoteBinding,
       switchProjectToPath,
@@ -1364,6 +1388,7 @@ export function TopBar({
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
+      leavePersonalChatsRoute();
       if (remoteBinding?.key === binding.key) {
         cancelNewTab();
         return;
@@ -1373,6 +1398,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
+      leavePersonalChatsRoute,
       remoteBinding?.key,
       switchRemoteProject,
     ],
@@ -1951,7 +1977,7 @@ export function TopBar({
         {openRemoteProjectTabs.length > 0 ||
         projectTabs.length > 0 ||
         isNewTabOpen ||
-        standaloneChatsActive ? (
+        personalChatsTabOpen ? (
           <>
             {openRemoteProjectTabs.map((remoteTab) => {
               const isCurrentRemote = remoteBinding?.key === remoteTab.key;
@@ -1974,7 +2000,7 @@ export function TopBar({
                   key={remoteTab.key}
                   role="button"
                   tabIndex={0}
-                  data-state={isCurrentRemote ? "active" : undefined}
+                  data-state={isCurrentRemote && !personalChatsRouteActive ? "active" : undefined}
                   data-remote-state={remoteTabState}
                   aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
@@ -2074,7 +2100,9 @@ export function TopBar({
               let projectTabState: string | undefined;
               if (isRelocating) projectTabState = "open";
               else if (isMissing) projectTabState = "missing";
-              else if (isCurrent) projectTabState = "active";
+              // While the Chats machine tab is the foreground surface, the
+              // bound project tab stays rendered but must not also read active.
+              else if (isCurrent && !personalChatsRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
               return (
                 <div
@@ -2216,37 +2244,41 @@ export function TopBar({
                 </div>
               );
             })}
-            {standaloneChatsActive ? (
-              <div
-                className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
-                  "font-semibold transition-[background-color,color,border-color,box-shadow] duration-150",
-                )}
-                data-state="active"
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            {personalChatsTabOpen ? (
+              <ShellNavTab
+                active={personalChatsRouteActive}
+                label="Chats"
+                onActivate={() => {
+                  if (!personalChatsRouteActive) onNavigate?.("/chats");
+                }}
+                onClose={() => {
+                  closePersonalChatsTab();
+                  if (personalChatsRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close chats"
               >
                 <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
-                <button
-                  type="button"
-                  className="ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                  data-variant="ghost"
-                  onClick={onCloseStandaloneChats}
-                  title="Close chats"
-                >
-                  <X size={12} weight="regular" />
-                </button>
-              </div>
+              </ShellNavTab>
             ) : null}
-            {isNewTabOpen && !standaloneChatsActive && (
-              <div
-                className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                  "font-semibold",
-                )}
-                data-state="active"
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            {isNewTabOpen && (
+              <ShellNavTab
+                active={!personalChatsRouteActive}
+                label="New Tab"
+                onActivate={() => {
+                  if (personalChatsRouteActive) onNavigate?.("/work");
+                }}
+                onClose={() => {
+                  if (isProjectBusy) return;
+                  cancelNewTab();
+                  if (!hasProject && personalChatsTabOpen) {
+                    onNavigate?.("/chats");
+                  }
+                }}
+                closeTitle="Close new tab"
+                closeDisabled={isProjectBusy}
               >
                 {projectTransition?.kind === "opening" ? (
                   <CircleNotch
@@ -2267,24 +2299,7 @@ export function TopBar({
                     ? "Opening…"
                     : "New Tab"}
                 </span>
-                <button
-                  type="button"
-                  className={cn(
-                    "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
-                  )}
-                  data-variant="ghost"
-                  disabled={isProjectBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isProjectBusy) return;
-                    cancelNewTab();
-                  }}
-                  title="Close new tab"
-                >
-                  <X size={11} weight="regular" />
-                </button>
-              </div>
+              </ShellNavTab>
             )}
           </>
         ) : null}

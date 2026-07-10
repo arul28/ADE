@@ -313,6 +313,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
+  const setPersonalChatsTabOpen = useAppStore(
+    (s) => s.setPersonalChatsTabOpen,
+  );
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const closeProject = useAppStore((s) => s.closeProject);
@@ -382,6 +385,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const githubBannerDismissedRef = useRef(false);
   githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
+  const isPersonalChatsRoute =
+    location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
@@ -394,6 +399,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
   }, [isLanesRoute]);
+
+  useEffect(() => {
+    // Any /chats visit opens the machine-level Chats tab — from the projectless
+    // shell AND from a project's sidebar link — so the top bar always carries a
+    // selectable affordance for the surface being shown.
+    if (isPersonalChatsRoute) setPersonalChatsTabOpen(true);
+  }, [isPersonalChatsRoute, setPersonalChatsTabOpen]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -1235,8 +1247,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     >
       <div className="shrink-0 relative z-20">
         <TopBar
-          standaloneChatsActive={showWelcome && location.pathname === "/chats"}
-          onCloseStandaloneChats={() => navigate("/work", { replace: true })}
+          personalChatsRouteActive={isPersonalChatsRoute}
+          onNavigate={(path, opts) => navigate(path, opts)}
         />
       </div>
 

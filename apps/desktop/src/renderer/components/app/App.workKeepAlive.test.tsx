@@ -22,6 +22,10 @@ const lanesLifecycle = vi.hoisted(() => ({
 const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
+  isNewTabOpen: false,
+  personalChatsTabOpen: false,
+  openNewTab: vi.fn(),
+  setPersonalChatsTabOpen: vi.fn(),
   project: { rootPath: "/fake/project" },
   projectBinding: {
     kind: "local",
@@ -98,11 +102,43 @@ vi.mock("../../lib/dirtyWorkspaceBuffers", () => ({
   getDirtyFileTextForWindow: vi.fn(),
 }));
 
-vi.mock("./AppShell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="app-shell">{children}</div>
-  ),
-}));
+vi.mock("./AppShell", async () => {
+  const ReactModule = await vi.importActual("react") as typeof ReactNamespace;
+  const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;
+
+  return {
+    AppShell: ({ children }: { children: React.ReactNode }) => {
+      const location = Router.useLocation();
+      const navigate = Router.useNavigate();
+      const isPersonalChatsRoute =
+        location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+
+      ReactModule.useEffect(() => {
+        if (appStoreState.showWelcome && isPersonalChatsRoute) {
+          appStoreState.setPersonalChatsTabOpen(true);
+        }
+      }, [isPersonalChatsRoute]);
+
+      return (
+        <div data-testid="app-shell">
+          <button
+            type="button"
+            onClick={() => {
+              appStoreState.openNewTab();
+              navigate("/work");
+            }}
+          >
+            Open new tab
+          </button>
+          <button type="button" onClick={() => navigate("/chats")}>
+            Open chats
+          </button>
+          {children}
+        </div>
+      );
+    },
+  };
+});
 
 vi.mock("../onboarding/OnboardingBootstrap", () => ({
   OnboardingBootstrap: () => null,
@@ -203,6 +239,17 @@ describe("App Work route keep-alive", () => {
     lanesLifecycle.unmounts = 0;
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
+    appStoreState.isNewTabOpen = false;
+    appStoreState.personalChatsTabOpen = false;
+    appStoreState.openNewTab.mockReset();
+    appStoreState.openNewTab.mockImplementation(() => {
+      appStoreState.isNewTabOpen = true;
+      appStoreState.showWelcome = true;
+    });
+    appStoreState.setPersonalChatsTabOpen.mockReset();
+    appStoreState.setPersonalChatsTabOpen.mockImplementation((open: boolean) => {
+      appStoreState.personalChatsTabOpen = open;
+    });
     appStoreState.project = { rootPath: "/fake/project" };
     appStoreState.projectBinding = {
       kind: "local",
@@ -292,6 +339,32 @@ describe("App Work route keep-alive", () => {
     expect((await screen.findByTestId("personal-chats-page")).getAttribute("data-standalone")).toBe("true");
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(screen.queryByTestId("project-page")).toBeNull();
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
+
+  it("returns from projectless Chats to New Tab and reopens the existing Chats tab", async () => {
+    appStoreState.project = { rootPath: "" };
+    appStoreState.showWelcome = true;
+    window.history.replaceState({}, "", "/chats");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    expect((await screen.findByTestId("personal-chats-page")).getAttribute("data-standalone")).toBe("true");
+    await waitFor(() => {
+      expect(appStoreState.personalChatsTabOpen).toBe(true);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open new tab" }));
+
+    await screen.findByTestId("project-page");
+    expect(appStoreState.openNewTab).toHaveBeenCalledOnce();
+    expect(appStoreState.isNewTabOpen).toBe(true);
+    expect(appStoreState.personalChatsTabOpen).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open chats" }));
+
+    expect((await screen.findByTestId("personal-chats-page")).getAttribute("data-standalone")).toBe("true");
+    expect(appStoreState.personalChatsTabOpen).toBe(true);
   }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("parks the native Work browser view when the Work route is backgrounded", async () => {

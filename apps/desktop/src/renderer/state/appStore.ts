@@ -762,6 +762,7 @@ export type AppState = {
     | null;
   projectTransitionError: string | null;
   isNewTabOpen: boolean;
+  personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
@@ -916,6 +917,8 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  setPersonalChatsTabOpen: (open: boolean) => void;
+  closePersonalChatsTab: () => void;
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: {
     includeStatus?: boolean;
@@ -1043,6 +1046,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   projectTransition: null,
   projectTransitionError: null,
   isNewTabOpen: false,
+  personalChatsTabOpen: false,
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
@@ -1368,6 +1372,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
+  setPersonalChatsTabOpen: (personalChatsTabOpen) =>
+    set({ personalChatsTabOpen }),
+  closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
   getWorkViewState: (projectRoot) => {
     const key = normalizeProjectKey(projectRoot);
     if (!key) return createDefaultWorkProjectViewState();
@@ -1666,6 +1673,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         const restoredSelection =
           prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
         const cachedLanes = prev.laneCacheByProject[project.rootPath];
+        // personalChatsTabOpen is deliberately omitted so the machine-level Chats tab survives project transitions.
         return {
           projectHydrated: true,
           showWelcome: false,
@@ -2044,6 +2052,7 @@ export function createProjectAppStore(
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
+    personalChatsTabOpen: false,
     theme: rootState.theme,
     terminalPreferences: rootState.terminalPreferences,
     codeBlockCopyButtonPosition: rootState.codeBlockCopyButtonPosition,
