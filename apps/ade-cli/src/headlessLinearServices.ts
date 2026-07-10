@@ -67,7 +67,7 @@ import {
 // Keep headless runtimes aligned with the desktop credential service so packaged
 // alpha builds can offer the same PKCE-based Linear sign-in flow.
 const BUNDLED_LINEAR_OAUTH_CLIENT_ID =
-  process.env.ADE_LINEAR_CLIENT_ID?.trim() || "432fb2ddb16f939ae5d5270e2c86571f";
+  process.env.ADE_LINEAR_CLIENT_ID?.trim() || ADE_LINEAR_APP_CLIENT_ID;
 
 type HeadlessLinearCredentialService = ReturnType<typeof createLinearCredentialService>;
 type HeadlessGitHubStatus = GitHubStatus;
@@ -1571,12 +1571,14 @@ function createHeadlessLinearCredentialService(args: {
       writeCredential(oauthClientKey, null);
     },
     getOAuthClientCredentials() {
-      // A user-configured OAuth client wins; otherwise sign-in uses the
-      // bundled ADE Linear app (PKCE — no client secret ships with ADE).
-      return readOAuthClientCredentials() ?? { clientId: ADE_LINEAR_APP_CLIENT_ID, clientSecret: null };
+      // Resolution order lives in readOAuthClientCredentials: user-configured
+      // client, then the bundled ADE Linear app (PKCE — no secret ships).
+      return readOAuthClientCredentials();
     },
     getOAuthClientSource(): LinearOAuthClientSource {
-      return readOAuthClientCredentials() ? "custom" : "ade-app";
+      // Compare by client id, not by which branch resolved: the bundled id is
+      // the ADE app even when a user pasted it in as a "custom" client.
+      return readOAuthClientCredentials()?.clientId === BUNDLED_LINEAR_OAUTH_CLIENT_ID ? "ade-app" : "custom";
     },
     ensureFreshToken,
   };

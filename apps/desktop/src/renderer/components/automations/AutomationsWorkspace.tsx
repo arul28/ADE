@@ -203,14 +203,23 @@ export function AutomationsWorkspace({
     onDraftConsumed();
   }, [active, onDraftConsumed, pendingDraft]);
 
-  // Load the selected rule into the draft.
+  // Load the selected rule into the draft. `rules` refreshes on every
+  // runs/ingress event, so an unrelated refresh must never clobber edits:
+  // reload only while the draft matches its saved snapshot.
+  const isDirtyRef = useRef(false);
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
   useEffect(() => {
     if (selectedRuleId == null) return;
+    if (isDirtyRef.current) return;
     const selected = rules.find((r) => r.id === selectedRuleId);
     if (!selected) return;
     const nextDraft = toDraftFromRule(selected);
+    const serialized = JSON.stringify(nextDraft);
+    if (savedSnapshotRef.current === serialized) return;
     setDraft(nextDraft);
-    savedSnapshotRef.current = JSON.stringify(nextDraft);
+    savedSnapshotRef.current = serialized;
     setIssues([]);
     setSimulationNotes([]);
     setRequiredConfirmations([]);

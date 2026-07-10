@@ -1,5 +1,4 @@
 import { ArrowRight } from "@phosphor-icons/react";
-import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
 import type { AutomationTemplate } from "./templateData";
@@ -46,10 +45,12 @@ export function TemplateCard({
 
       <div className="mt-auto flex items-center justify-between">
         <span className="truncate font-mono text-[9.5px] text-muted-fg/50">{template.triggerType}</span>
-        <Button size="sm" variant="outline" onClick={onUse} className="pointer-events-none">
+        {/* Decorative affordance: the whole card is the button; a nested
+            <button> would be invalid HTML. */}
+        <span className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-1 text-[10.5px] font-medium text-fg/85 transition-colors group-hover:border-accent/40 group-hover:text-accent">
           Use template
           <ArrowRight size={11} weight="bold" />
-        </Button>
+        </span>
       </div>
     </button>
   );

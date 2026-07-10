@@ -140,6 +140,12 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useClickOutside(wrapRef, () => setOpen(false), open);
+  useEffect(() => {
+    if (!open) return;
+    const escape = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [open]);
   return (
     <div ref={wrapRef} className="relative flex items-center justify-center py-1">
       <button

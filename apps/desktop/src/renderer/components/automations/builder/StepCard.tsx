@@ -57,7 +57,8 @@ function DeleteLaneFields({
             value={Number.isFinite(step.afterMinutes) ? String(step.afterMinutes) : ""}
             onChange={(e) => {
               const raw = e.target.value.trim();
-              onChange({ ...step, afterMinutes: raw ? Math.max(0, Number(raw)) : undefined });
+              const parsed = Number(raw);
+              onChange({ ...step, afterMinutes: raw && Number.isFinite(parsed) ? Math.max(0, parsed) : undefined });
             }}
             placeholder="0"
           />

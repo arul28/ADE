@@ -577,11 +577,16 @@ describe("automationPlannerService.validateDraft", () => {
     for (const template of TEMPLATES) {
       it(`template "${template.id}" passes draft validation`, () => {
         const result = planner.validateDraft({ draft: template.draft as AutomationRuleDraft });
-        // A template may ship a deliberately blank test-suite pick, but only
-        // when its card tells the user they'll configure it.
+        // A template may ship a deliberately BLANK test-suite pick, but only
+        // when its card tells the user they'll configure it. A stale non-empty
+        // suite reference must still fail.
         const declaresSuiteBlank = template.whatYouConfigure.some((entry) => /test suite/i.test(entry));
+        const shipsOnlyBlankSuites = (template.draft.actions ?? []).every(
+          (action) => action.type !== "run-tests" || !(action as { suite?: string }).suite,
+        );
         const blocking = result.issues.filter(
-          (issue) => issue.level === "error" && !(declaresSuiteBlank && issue.path.endsWith(".suite")),
+          (issue) => issue.level === "error"
+            && !(declaresSuiteBlank && shipsOnlyBlankSuites && issue.path.endsWith(".suite")),
         );
         expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
       });

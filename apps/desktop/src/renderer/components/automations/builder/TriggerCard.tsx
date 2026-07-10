@@ -11,7 +11,6 @@ import {
   TRIGGER_SOURCES,
   type TriggerSource,
 } from "../triggerCatalog";
-import { LANE_MERGED_TRIGGER_TYPE } from "../localAutomationConfig";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
@@ -100,17 +99,6 @@ function TriggerFilters({
     );
   }
   if (source === "lane") {
-    if ((trigger.type as string) === LANE_MERGED_TRIGGER_TYPE) {
-      return (
-        <SmallField
-          label="Lane name pattern (optional)"
-          value={trigger.namePattern ?? ""}
-          placeholder="feature/*"
-          mono
-          onChange={(v) => onPatch({ namePattern: v })}
-        />
-      );
-    }
     return (
       <SmallField
         label="Lane name pattern (optional)"

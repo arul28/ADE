@@ -362,14 +362,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     }
   };
 
-  const persistRecord = (record: LinearIngressEventRecord): void => {
+  /** Returns false when the delivery was already persisted (replay). */
+  const persistRecord = (record: LinearIngressEventRecord): boolean => {
     const existing = deps.db.get<{ id: string }>(
       `select id from linear_ingress_events
         where project_id = ? and delivery_id = ?
         limit 1`,
       [deps.projectId, record.deliveryId],
     );
-    if (existing) return;
+    if (existing) return false;
     deps.db.run(
       `insert into linear_ingress_events(
         id, project_id, source, delivery_id, event_id, entity_type, action,
@@ -390,6 +391,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         record.createdAt,
       ],
     );
+    return true;
   };
 
   const poll = async (): Promise<void> => {
@@ -423,6 +425,9 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       if (cursor) url.searchParams.set("after", cursor);
       const response = await fetchImpl(url, {
         headers: { authorization },
+        // pollInFlight only clears in `finally`; an unbounded hung request
+        // would block scheduled and manual polls until restart.
+        signal: AbortSignal.timeout(30_000),
       });
       const rawPayload = await response.json().catch(() => null) as unknown;
       if (!response.ok) {
@@ -445,7 +450,9 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       let newestEventAt: string | null = null;
       for (const event of ordered) {
         const record = mapRelayEventToRecord(event);
-        persistRecord(record);
+        // A replay (at-least-once relay, cursor reset) must not re-trigger
+        // automations: dispatch only deliveries persisted for the first time.
+        if (!persistRecord(record)) continue;
         deps.dispatch(record);
         if (!newestEventAt || Date.parse(record.createdAt) > Date.parse(newestEventAt)) {
           newestEventAt = record.createdAt;

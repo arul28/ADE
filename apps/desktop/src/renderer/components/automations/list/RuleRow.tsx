@@ -93,7 +93,7 @@ export function RuleRow({
 
         <div className="flex shrink-0 flex-col items-end gap-1.5" onClick={(e) => e.stopPropagation()}>
           <SettingsToggle id={`rule-toggle-${rule.id}`} checked={rule.enabled} onChange={onToggle} />
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
             <button
               type="button"
               onClick={onOpenHistory}

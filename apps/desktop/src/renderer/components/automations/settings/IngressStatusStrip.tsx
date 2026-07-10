@@ -67,8 +67,10 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
     setBusy(true);
     try {
       await api.setup();
-      await refreshLinear();
+    } catch {
+      // The service records lastError; the refresh below surfaces it.
     } finally {
+      await refreshLinear().catch(() => {});
       setBusy(false);
     }
   };
