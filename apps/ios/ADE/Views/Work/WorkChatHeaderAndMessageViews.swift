@@ -82,8 +82,9 @@ struct WorkSessionHeader: View {
 /// Menu-relevant values for the chat header overflow menu, split out so the
 /// menu view can be `Equatable`-gated on exactly this data.
 struct WorkChatHeaderMenuModel: Equatable {
+  /// Combined subagents + background + schedule count — Chat Info is the single
+  /// destination for all three now that the standalone Subagents drawer is gone.
   var chatInfoCount: Int
-  var subagentCount: Int
   var artifactCount: Int
   var showsLaneActions: Bool
   var prTag: LanePrTag?
@@ -116,7 +117,6 @@ struct WorkChatHeaderMenuModel: Equatable {
 struct WorkChatHeaderMenu: View, Equatable {
   var model: WorkChatHeaderMenuModel
   var onShowChatInfo: () -> Void
-  var onShowSubagents: () -> Void
   var onShowProof: () -> Void
   var onViewPrDetails: () -> Void
   var onOpenPrsTab: () -> Void
@@ -141,14 +141,6 @@ struct WorkChatHeaderMenu: View, Equatable {
           Label("Chat Info", systemImage: "info.circle")
         } else {
           Label("Chat Info (\(model.chatInfoCount))", systemImage: "info.circle")
-        }
-      }
-
-      Button(action: onShowSubagents) {
-        if model.subagentCount == 0 {
-          Label("Subagents", systemImage: "person.2")
-        } else {
-          Label("Subagents (\(model.subagentCount))", systemImage: "person.2")
         }
       }
 

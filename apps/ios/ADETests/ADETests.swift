@@ -9409,10 +9409,13 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
+    // The two activity updates are consecutive so they cluster into one bundle;
+    // the real subagent's spawn row is a hard timeline boundary that sits
+    // separately and is never folded into that bundle.
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-1","description":"Inspect iOS transcript","turnId":"turn-1"}}
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"subagent_started","taskId":"agent-1","agentId":"agent-1","agentType":"Explore","description":"Inspect iOS transcript","turnId":"turn-1"}}
     """
 
     let snapshot = buildWorkChatTimelineSnapshot(
@@ -9425,6 +9428,10 @@ final class ADETests: XCTestCase {
       guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
       return card
     }
+    let subagentRows = snapshot.timeline.compactMap { entry -> WorkSubagentTimelineRow? in
+      guard case .subagent(let row) = entry.payload else { return nil }
+      return row
+    }
 
     XCTAssertEqual(activityBundles.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
@@ -9432,11 +9439,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activityBundles.first?.title, "Activity")
     XCTAssertTrue(activityBundles.first?.body?.contains("2 activity updates") == true)
     XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
+    // The subagent now lives in its own timeline row, NOT folded into the
+    // activity bundle body or its bullets.
     XCTAssertFalse(activityBundles.first?.body?.contains("Inspect iOS transcript") == true)
     XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(2) ?? []), [
       "Tasks · 0/1 complete",
       "Cron scheduled",
     ])
+    // A real subagent that started (but never sent progress/result) surfaces as
+    // exactly one dedicated spawn row — a hard timeline boundary, not swallowed.
+    XCTAssertEqual(subagentRows.count, 1)
+    XCTAssertEqual(subagentRows.first?.kind, .spawn)
+    XCTAssertEqual(subagentRows.first?.snapshot.description, "Inspect iOS transcript")
   }
 
   func testWorkTimelineKeepsActivityBundlesSeparatedByTurn() {
@@ -9528,6 +9542,272 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first.map(workSubagentMeaningfulName), "Sagan")
   }
 
+  // MARK: - Subagent timeline rows (mirrors chatSubagents.ts deriveSubagentTimelineRows)
+
+  func testWorkSubagentTimelineRowsEmitOneSpawnDespiteDuplicateStartedAndFoldRicherResult() {
+    // Duplicate started events (Codex placeholder + real agent row) plus two
+    // progress ticks and two results with differing richness.
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"call_x","parentToolUseId":"call_x","agentType":"Explore","description":"Explore the repo","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-9","agentId":"agent-9","parentToolUseId":"call_x","agentType":"Explore","description":"Explore the repo","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"subagent_progress","taskId":"agent-9","agentId":"agent-9","summary":"Status: reading","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:04.000Z","sequence":4,"event":{"type":"subagent_progress","taskId":"agent-9","agentId":"agent-9","summary":"Task updated","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:05.000Z","sequence":5,"event":{"type":"subagent_result","taskId":"agent-9","agentId":"agent-9","status":"completed","summary":"Task updated","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:06.000Z","sequence":6,"event":{"type":"subagent_result","taskId":"agent-9","agentId":"agent-9","status":"completed","summary":"Found the routing bug in app/router.ts","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let rows = buildWorkSubagentTimelineRows(from: transcript)
+
+    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 1)
+    XCTAssertEqual(rows.filter { $0.kind == .result }.count, 1)
+    // Progress ticks NEVER produce rows.
+    XCTAssertEqual(rows.count, 2)
+    // Spawn row comes before the result row in timeline order.
+    XCTAssertEqual(rows.first?.kind, .spawn)
+    XCTAssertEqual(rows.last?.kind, .result)
+    // Richer summary wins over the "Task updated" placeholder.
+    XCTAssertEqual(rows.last?.summary, "Found the routing bug in app/router.ts")
+  }
+
+  func testWorkSubagentTimelineResultRowSuppressesPlaceholderSummary() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"agent-1","agentId":"agent-1","agentType":"Explore","description":"Explore","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_result","taskId":"agent-1","agentId":"agent-1","status":"completed","summary":"Status: done","turnId":"turn-1"}}
+    """
+
+    let rows = buildWorkSubagentTimelineRows(from: parseWorkChatTranscript(raw))
+    let result = rows.first { $0.kind == .result }
+    XCTAssertNotNil(result)
+    // A placeholder-only result carries no visible summary preview.
+    XCTAssertNil(result?.summary)
+  }
+
+  func testWorkSubagentTimelineBackgroundShellCommandRendersOnlyFinishChip() {
+    // taskType=background with empty agentType is a background shell command,
+    // NOT a real subagent — no spawn/result rows, one finish chip.
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"bg-1","agentId":"bg-1","taskType":"background","command":"cd /repo && npm run build","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"bg-1","agentId":"bg-1","taskType":"background","summary":"building","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"subagent_result","taskId":"bg-1","agentId":"bg-1","taskType":"background","status":"completed","summary":"exit 0","command":"cd /repo && npm run build","turnId":"turn-1"}}
+    """
+
+    let rows = buildWorkSubagentTimelineRows(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 0)
+    XCTAssertEqual(rows.filter { $0.kind == .result }.count, 0)
+    XCTAssertEqual(rows.filter { $0.kind == .backgroundCommand }.count, 1)
+    let chip = rows.first { $0.kind == .backgroundCommand }
+    // Smart label strips the leading `cd <path> &&`.
+    XCTAssertEqual(chip?.commandLabel, "npm run build")
+    XCTAssertEqual(chip?.exitLabel, "exit 0")
+  }
+
+  func testWorkSubagentTimelineRealBackgroundAgentStillGetsSpawnRows() {
+    // A background AGENT (agentType present) is a real subagent, not a shell
+    // command — it gets spawn/result rows, not a chip.
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"agent-1","agentId":"agent-1","agentType":"Explore","taskType":"background","background":true,"description":"Background explore","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_result","taskId":"agent-1","agentId":"agent-1","agentType":"Explore","taskType":"background","status":"completed","summary":"Explored 12 files","turnId":"turn-1"}}
+    """
+
+    let rows = buildWorkSubagentTimelineRows(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(rows.filter { $0.kind == .backgroundCommand }.count, 0)
+    XCTAssertEqual(rows.filter { $0.kind == .spawn }.count, 1)
+    XCTAssertEqual(rows.filter { $0.kind == .result }.count, 1)
+    XCTAssertTrue(rows.first { $0.kind == .spawn }?.snapshot.background == true)
+  }
+
+  func testHistoricalCommandShapedSubagentClassifiesAsBackgroundChip() {
+    // Older transcripts carry command-shaped subagent events (taskType absent
+    // but a command payload). With taskType=background + empty agentType the
+    // predicate routes them to a chip.
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"cmd-1","agentId":"cmd-1","taskType":"background","command":"FOO=1 nohup npx vitest run a.test.ts","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"subagent_result","taskId":"cmd-1","agentId":"cmd-1","taskType":"background","status":"failed","summary":"exit 1","command":"FOO=1 nohup npx vitest run a.test.ts","turnId":"turn-1"}}
+    """
+
+    let rows = buildWorkSubagentTimelineRows(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertEqual(rows.first?.kind, .backgroundCommand)
+    XCTAssertEqual(rows.first?.commandLabel, "npx vitest run a.test.ts")
+    // Command-shaped historical snapshots are excluded from the Chat Info
+    // Subagents section too.
+    let snapshots = buildWorkSubagentSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertTrue(workChatInfoSubagents(snapshots).isEmpty)
+  }
+
+  func testIsBackgroundShellCommandPredicateMatchesDesktop() {
+    XCTAssertTrue(isBackgroundShellCommand(taskType: "background", agentType: nil))
+    XCTAssertTrue(isBackgroundShellCommand(taskType: "background", agentType: ""))
+    XCTAssertTrue(isBackgroundShellCommand(taskType: "background", agentType: "background"))
+    // A real agentType makes it a subagent, not a shell command.
+    XCTAssertFalse(isBackgroundShellCommand(taskType: "background", agentType: "Explore"))
+    XCTAssertFalse(isBackgroundShellCommand(taskType: "subagent", agentType: nil))
+  }
+
+  func testWorkBackgroundCommandSmartLabelAndCwdExtraction() {
+    let presentation = workBackgroundCommandPresentation("cd /x/y && FOO=1 nohup npx vitest run a.test.ts")
+    XCTAssertEqual(presentation.label, "npx vitest run a.test.ts")
+    XCTAssertEqual(presentation.cwd, "/x/y")
+
+    // No cd prefix → no cwd; env + exec wrappers still stripped.
+    let noCwd = workBackgroundCommandPresentation("BAR=2 exec node server.js")
+    XCTAssertEqual(noCwd.label, "node server.js")
+    XCTAssertNil(noCwd.cwd)
+
+    // Multi-line falls back to the first non-empty line.
+    let multiline = workBackgroundCommandPresentation("\n\n  echo hi\nsecond line")
+    XCTAssertEqual(multiline.label, "echo hi")
+  }
+
+  func testPreferredWorkSubagentSummaryKeepsRealSummaryOverPlaceholder() {
+    XCTAssertEqual(
+      preferredWorkSubagentSummary("Real summary here", incoming: "Task updated"),
+      "Real summary here"
+    )
+    XCTAssertEqual(
+      preferredWorkSubagentSummary("Status: running", incoming: "Real result"),
+      "Real result"
+    )
+    // Two real summaries: the longer/newer wins.
+    XCTAssertEqual(
+      preferredWorkSubagentSummary("short", incoming: "a much longer richer summary"),
+      "a much longer richer summary"
+    )
+  }
+
+  // MARK: - Scheduled work partitioning + stopped coercion
+
+  func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","title":"Nightly","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"npm run build","prompt":"cd /repo && npm run build","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let snapshots = buildWorkScheduledWorkSnapshots(from: transcript)
+    // Schedule section excludes background_task.
+    XCTAssertEqual(workChatInfoScheduleItems(snapshots).map(\.kind), ["cron"])
+    // Background section carries exactly the background_task.
+    XCTAssertEqual(workChatInfoBackgroundItems(snapshots).map(\.id), ["bg-1"])
+
+    // The timeline no longer renders a scheduled-work card for background_task.
+    let timelineSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let scheduledCards = timelineSnapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
+      let body = card.body ?? ""
+      let bundle = card.bullets.joined(separator: " ")
+      return body.contains("npm run build") || bundle.contains("npm run build") ? card : nil
+    }
+    XCTAssertTrue(scheduledCards.isEmpty)
+  }
+
+  func testScheduledWorkBackgroundTaskCoercedToStoppedWhenTurnEnded() {
+    // A background_task left "running", whose parent turn later ends, must not
+    // stay live forever — coerce to stopped (mirrors chatScheduledWork.ts).
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"long build","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"done","status":"completed","summary":"done","turnId":"turn-1"}}
+    """
+
+    let snapshots = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.first { $0.id == "bg-1" }?.status, "stopped")
+  }
+
+  func testScheduledWorkBackgroundTaskStaysRunningWhenTurnStillActive() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"long build","turnId":"turn-1"}}
+    """
+
+    let snapshots = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.first { $0.id == "bg-1" }?.status, "running")
+  }
+
+  // MARK: - Live title fold (session_meta_updated)
+
+  @MainActor
+  func testSessionMetaUpdatedTitleUpdatesCachedSummary() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let summaryPayload: [String: Any] = [
+      "sessionId": "chat-title-1",
+      "laneId": "lane-1",
+      "provider": "claude",
+      "model": "claude",
+      "title": "Untitled chat",
+      "status": "running",
+      "startedAt": "2026-07-08T00:00:00.000Z",
+      "lastActivityAt": "2026-07-08T00:00:00.000Z",
+    ]
+    let summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: summaryPayload)
+    )
+    service.cacheChatSummary(summary)
+    XCTAssertEqual(service.chatSummaryCache["chat-title-1"]?.title, "Untitled chat")
+
+    let eventPayload: [String: Any] = [
+      "sessionId": "chat-title-1",
+      "timestamp": "2026-07-08T00:00:05.000Z",
+      "sequence": 5,
+      "event": [
+        "type": "session_meta_updated",
+        "title": "Fix routing bug",
+        "manuallyNamed": false,
+      ],
+    ]
+    let envelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: try JSONSerialization.data(withJSONObject: eventPayload)
+    )
+    service.applyChatSessionMetaModeUpdateIfNeeded(envelope: envelope, rawPayload: eventPayload)
+
+    XCTAssertEqual(service.chatSummaryCache["chat-title-1"]?.title, "Fix routing bug")
+  }
+
+  @MainActor
+  func testSessionMetaUpdatedBlankTitleLeavesCachedTitleIntact() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let summaryPayload: [String: Any] = [
+      "sessionId": "chat-title-2",
+      "laneId": "lane-1",
+      "provider": "claude",
+      "model": "claude",
+      "title": "Keep me",
+      "status": "running",
+      "startedAt": "2026-07-08T00:00:00.000Z",
+      "lastActivityAt": "2026-07-08T00:00:00.000Z",
+    ]
+    let summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: summaryPayload)
+    )
+    service.cacheChatSummary(summary)
+
+    // A bare mode update without a title must not blank the existing title.
+    let eventPayload: [String: Any] = [
+      "sessionId": "chat-title-2",
+      "timestamp": "2026-07-08T00:00:05.000Z",
+      "sequence": 5,
+      "event": [
+        "type": "session_meta_updated",
+        "permissionMode": "edit",
+      ],
+    ]
+    let envelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: try JSONSerialization.data(withJSONObject: eventPayload)
+    )
+    service.applyChatSessionMetaModeUpdateIfNeeded(envelope: envelope, rawPayload: eventPayload)
+
+    XCTAssertEqual(service.chatSummaryCache["chat-title-2"]?.title, "Keep me")
+    XCTAssertEqual(service.chatSummaryCache["chat-title-2"]?.permissionMode, "edit")
+  }
+
   func testWorkSubagentSnapshotsDecodeCanonicalDottedLifecycleEvents() throws {
     let json = """
     {
@@ -9602,7 +9882,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(completed?.agentType, "Kuhn")
     XCTAssertEqual(completed?.parentToolUseId, "call_spawn_agent")
     XCTAssertEqual(completed?.status, WorkSubagentSnapshot.Status.succeeded)
-    XCTAssertEqual(completed?.latestSummary, "Completed")
+    // The result event carries no real summary (only the injected "Completed"
+    // default), so the richer in-flight progress text is preserved — matching
+    // the desktop roster's `preferSubagentSummary`, which keeps the longer real
+    // summary rather than letting a short default displace it.
+    XCTAssertEqual(completed?.latestSummary, "Reading runtime events")
     XCTAssertEqual(completed?.lastToolName, "functions.Read")
 
     let progressOnly = subagents.first { $0.taskId == "agent-2" }

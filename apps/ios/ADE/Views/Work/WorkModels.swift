@@ -378,6 +378,10 @@ enum WorkTimelinePayload: Equatable {
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
   case fileChangeCard(WorkFileChangeCardModel)
+  /// Dedicated subagent lifecycle row. Keeping this out of `eventCard` makes
+  /// spawn/result rows hard timeline boundaries that tool/activity folding
+  /// cannot absorb.
+  case subagent(WorkSubagentTimelineRow)
   /// Cluster of consecutive read-only tool-like entries (tool cards,
   /// commands) collapsed into a single header-only row. Tap to reveal the
   /// member list; tap a row to reveal its output. Matches the desktop
@@ -582,8 +586,31 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   let turnId: String?
   let startedAt: String?
   let updatedAt: String?
+  /// Raw runtime classification used to distinguish background shell commands
+  /// from real background agents. Defaults preserve older roster payloads.
+  var taskType: String? = nil
+  var command: String? = nil
 
   var id: String { taskId }
+}
+
+struct WorkSubagentTimelineRow: Identifiable, Equatable {
+  enum Kind: String, Equatable {
+    case spawn
+    case result
+    case backgroundCommand
+  }
+
+  let kind: Kind
+  let snapshot: WorkSubagentSnapshot
+  let timestamp: String
+  let summary: String?
+  let commandLabel: String?
+  let exitLabel: String?
+
+  var id: String {
+    "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+  }
 }
 
 struct WorkSubagentSelection: Identifiable, Equatable {
@@ -599,7 +626,7 @@ struct WorkSubagentSelection: Identifiable, Equatable {
 struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
   let id: String
   let kind: String
-  let status: String
+  var status: String
   let origin: String?
   let title: String
   let summary: String?
@@ -809,6 +836,27 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let timestamp: String
   let sequence: Int?
   let event: WorkChatEvent
+  /// Raw fields intentionally kept beside the normalized event so the broad
+  /// WorkChatEvent associated-value surface does not need to grow just for
+  /// subagent classification.
+  let subagentTaskType: String?
+  let subagentCommand: String?
+
+  init(
+    sessionId: String,
+    timestamp: String,
+    sequence: Int?,
+    event: WorkChatEvent,
+    subagentTaskType: String? = nil,
+    subagentCommand: String? = nil
+  ) {
+    self.sessionId = sessionId
+    self.timestamp = timestamp
+    self.sequence = sequence
+    self.event = event
+    self.subagentTaskType = subagentTaskType
+    self.subagentCommand = subagentCommand
+  }
 }
 
 enum WorkChatEvent: Equatable {

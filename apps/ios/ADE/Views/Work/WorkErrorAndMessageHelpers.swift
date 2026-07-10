@@ -526,7 +526,9 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       sessionId: entry.sessionId,
       timestamp: entry.timestamp,
       sequence: entry.sequence,
-      event: makeWorkChatEvent(from: entry.event)
+      event: makeWorkChatEvent(from: entry.event),
+      subagentTaskType: entry.subagentTaskType,
+      subagentCommand: entry.subagentCommand
     )
   }
   .sorted { lhs, rhs in
