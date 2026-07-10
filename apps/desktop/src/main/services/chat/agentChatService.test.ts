@@ -799,6 +799,7 @@ import { createOrchestrationService } from "../orchestration/orchestrationServic
 import { runGit } from "../git/git";
 import { deriveScheduledWorkSnapshots } from "../../../shared/chatScheduledWork";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
@@ -1211,7 +1212,7 @@ function createMockSessionService() {
       const sessionId = typeof args === "string" ? args : args?.sessionId;
       const row = sessions.get(sessionId);
       if (row) {
-        row.status = "ended";
+        row.status = args?.status ?? "disposed";
         row.endedAt = args?.endedAt ?? new Date().toISOString();
       }
     }),
@@ -1276,6 +1277,142 @@ function createMockProjectConfigService() {
     getAll: vi.fn(() => ({})),
     set: vi.fn(),
   } as any;
+}
+
+const SCHEDULED_WORK_STATE_KEY = "agent-chat:scheduled-work:v1";
+const SCHEDULE_TEST_START = Date.parse("2026-07-10T09:00:00.000Z");
+
+function createScheduledWorkDb(initialState: ChatScheduledWorkState | null = null) {
+  const values = new Map<string, unknown>();
+  if (initialState) values.set(SCHEDULED_WORK_STATE_KEY, structuredClone(initialState));
+  return {
+    db: {
+      getJson: vi.fn((key: string) => structuredClone(values.get(key) ?? null)),
+      setJson: vi.fn((key: string, value: unknown) => {
+        values.set(key, structuredClone(value));
+      }),
+    },
+    readState: (): ChatScheduledWorkState | null => {
+      const state = values.get(SCHEDULED_WORK_STATE_KEY);
+      return state ? structuredClone(state) as ChatScheduledWorkState : null;
+    },
+  };
+}
+
+function storedWakeup(
+  sessionId: string,
+  overrides: Partial<ChatScheduledWorkRecord> = {},
+): ChatScheduledWorkRecord {
+  return {
+    id: `wakeup:${sessionId}`,
+    sessionId,
+    kind: "wakeup",
+    prompt: "Check PR CI and report the result.",
+    reason: "Check PR CI",
+    fireAt: Date.now() + 60_000,
+    createdAt: Date.now(),
+    status: "scheduled",
+    pausedFlag: false,
+    lateFlag: false,
+    ...overrides,
+  };
+}
+
+function installClaudeWakeupFixture(args: {
+  sdkSessionId: string;
+  delaySeconds: number;
+  prompt?: string;
+}) {
+  let streamCall = 0;
+  const send = vi.fn().mockResolvedValue(undefined);
+  const close = vi.fn();
+  const handle = {
+    send,
+    stream: vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: args.sdkSessionId,
+          slash_commands: [],
+        };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            id: `tool-${args.sdkSessionId}`,
+            name: "ScheduleWakeup",
+            input: {
+              delaySeconds: args.delaySeconds,
+              reason: "Check PR CI",
+              prompt: args.prompt ?? "Check PR CI and report the result.",
+            },
+          }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: args.sdkSessionId,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })()),
+    close,
+    sessionId: args.sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  };
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+  vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+  return { handle, send, close };
+}
+
+function installClaudeResponseFixture(args: {
+  sdkSessionId: string;
+  responseText: string;
+}) {
+  let streamCall = 0;
+  const send = vi.fn().mockResolvedValue(undefined);
+  const handle = {
+    send,
+    stream: vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: args.sdkSessionId,
+          slash_commands: [],
+        };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: args.responseText }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: args.sdkSessionId,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })()),
+    close: vi.fn(),
+    sessionId: args.sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  };
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+  vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+  return { handle, send };
 }
 
 function createService(overrides: Record<string, unknown> = {}) {
@@ -3031,6 +3168,7 @@ describe("createAgentChatService", () => {
       const claudeSubprocessReaper = {
         register: vi.fn(),
         spawnClaudeCodeProcess: vi.fn(() => spawnedProcess),
+        reapForSession: vi.fn(),
         reapAll: vi.fn(),
         liveRecords: vi.fn(() => []),
       };
@@ -3077,6 +3215,12 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           cwd: expect.any(String),
         }),
+      );
+
+      await service.dispose({ sessionId: session.id });
+      expect(claudeSubprocessReaper.reapForSession).toHaveBeenCalledWith(
+        session.id,
+        "ended_session",
       );
     });
 
@@ -11138,6 +11282,140 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("dispose cancels durable schedules and emits cancelled scheduled_work_update", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-dispose-cancel",
+        delaySeconds: 60,
+      });
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Check CI again later.",
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ sessionId: session.id, status: "scheduled" }),
+      ]);
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
+        status: "disposed",
+        endedAt: expect.any(String),
+      }));
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ sessionId: session.id, status: "cancelled" }),
+      ]);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          event: expect.objectContaining({
+            type: "scheduled_work_update",
+            status: "cancelled",
+          }),
+        }),
+      ]));
+      service.forceDisposeAll();
+    });
+
+    it("a scheduled fire after dispose does not resume the session", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-dispose-no-fire",
+        delaySeconds: 1,
+      });
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Wake once to check CI.",
+      });
+      await service.dispose({ sessionId: session.id });
+      const startedTurnsBeforeAdvance = events.filter((event) =>
+        event.sessionId === session.id
+        && event.event.type === "status"
+        && event.event.turnStatus === "started"
+      ).length;
+
+      await vi.advanceTimersByTimeAsync(65_000);
+
+      expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
+        status: "disposed",
+        endedAt: expect.any(String),
+      }));
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("cancelled");
+      expect(events.filter((event) =>
+        event.sessionId === session.id
+        && event.event.type === "status"
+        && event.event.turnStatus === "started"
+      )).toHaveLength(startedTurnsBeforeAdvance);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake != null
+      )).toBe(false);
+      service.forceDisposeAll();
+    });
+
+    it("finishSession clears pending native scheduled wakes", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-pending-native-wake",
+        delaySeconds: 60,
+        prompt: "Stale native wake must not survive dispose.",
+      });
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Queue a native wake.",
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("fired");
+      expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(1);
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(0);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.reason === "Stale native wake must not survive dispose."
+      )).toBe(false);
+      service.forceDisposeAll();
+    });
+
     it("evicts disposed chats from the live managed session cache", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -11265,6 +11543,7 @@ describe("createAgentChatService", () => {
       const claudeSubprocessReaper = {
         register: vi.fn(),
         spawnClaudeCodeProcess: vi.fn(),
+        reapForSession: vi.fn(),
         reapAll: vi.fn(),
         liveRecords: vi.fn(() => []),
       };
@@ -11273,6 +11552,138 @@ describe("createAgentChatService", () => {
       await expect(service.disposeAll()).resolves.toBeUndefined();
 
       expect(claudeSubprocessReaper.reapAll).toHaveBeenCalledWith("dispose_all");
+    });
+
+    it("disposeAll ends sessions as detached and preserves scheduled work", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-dispose-all-detached",
+        delaySeconds: 60,
+      });
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule work across restart.",
+      });
+
+      await service.disposeAll();
+
+      expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.id,
+        status: "detached",
+      }));
+      expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
+        status: "detached",
+        endedAt: expect.any(String),
+      }));
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ sessionId: session.id, status: "scheduled" }),
+      ]);
+    });
+
+    it("scheduled fire into a detached session still delivers by cold resume", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-detached-cold-resume",
+        delaySeconds: 60,
+        prompt: "Deliver this wake after restart.",
+      });
+      const first = createService({ db: scheduledWork.db });
+      const session = await first.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await first.service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule restart work.",
+      });
+      await first.service.disposeAll();
+
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-detached-cold-resume",
+        responseText: "Cold scheduled work delivered.",
+      });
+      const restarted = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      await restarted.service.refreshScheduledWork();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === session.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.scheduledWake?.reason === "Check PR CI"
+        )).toBe(true);
+      });
+
+      expect(restarted.sessionService.get(session.id)).toEqual(expect.objectContaining({
+        status: "running",
+        endedAt: null,
+      }));
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "done"
+        && event.event.status === "completed"
+      )).toBe(true);
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("done");
+      restarted.service.forceDisposeAll();
+    });
+  });
+
+  describe("disposeForLane", () => {
+    it("cancels schedules for lane sessions including unmanaged ones", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      mockState.sessions.set("unmanaged-lane-1", {
+        id: "unmanaged-lane-1",
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        status: "running",
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        archivedAt: null,
+      });
+      mockState.sessions.set("unmanaged-lane-2", {
+        id: "unmanaged-lane-2",
+        laneId: "lane-2",
+        toolType: "claude-chat",
+        status: "running",
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        archivedAt: null,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [
+          storedWakeup("unmanaged-lane-1"),
+          storedWakeup("unmanaged-lane-2"),
+          storedWakeup("missing-session"),
+        ],
+        pausedSessionIds: [],
+      });
+      const { service } = createService({ db: scheduledWork.db });
+
+      await expect(service.disposeForLane("lane-1")).resolves.toBe(0);
+
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ sessionId: "missing-session", status: "cancelled" }),
+        expect.objectContaining({ sessionId: "unmanaged-lane-1", status: "cancelled" }),
+        expect.objectContaining({ sessionId: "unmanaged-lane-2", status: "scheduled" }),
+      ]);
+      service.forceDisposeAll();
     });
   });
 

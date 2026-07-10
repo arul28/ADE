@@ -12023,6 +12023,13 @@ export function createAgentChatService(args: {
       if (preserveProviderResumeState) persistChatState(managed);
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.query?.close(); } catch { /* ignore */ }
+      if (
+        openCodeReason === "ended_session"
+        || openCodeReason === "handle_close"
+        || openCodeReason === "model_switch"
+      ) {
+        claudeSubprocessReaper.reapForSession(managed.session.id, openCodeReason);
+      }
       managed.runtime.inputPump?.close();
       try { managed.runtime.warmQuery?.close(); } catch { /* ignore */ }
       managed.runtime.query = null;
@@ -12221,6 +12228,7 @@ export function createAgentChatService(args: {
     status: TerminalSessionStatus,
     options?: { exitCode?: number | null; summary?: string | null }
   ): Promise<void> => {
+    pendingNativeScheduledWakeBySession.delete(managed.session.id);
     if (managed.endedNotified) return;
     managed.endedNotified = true;
     clearSubagentSnapshots(managed.session.id);
@@ -12232,6 +12240,16 @@ export function createAgentChatService(args: {
       pending.resolve({ decision: "cancel" });
     }
     managed.localPendingInputs.clear();
+
+    if (status === "disposed") {
+      await scheduledWorkReady;
+      if (scheduledWorkScheduler) {
+        await Promise.all(
+          scheduledWorkScheduler.list(managed.session.id).map((schedule) =>
+            scheduledWorkScheduler!.cancel(schedule.id)),
+        );
+      }
+    }
 
     if (options?.summary !== undefined) {
       sessionService.setSummary(managed.session.id, options.summary);
@@ -28799,6 +28817,9 @@ export function createAgentChatService(args: {
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
+  const pendingNativeScheduledWakeCountForTesting = (sessionId: string): number =>
+    pendingNativeScheduledWakeBySession.get(sessionId)?.length ?? 0;
+
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
@@ -28888,6 +28909,17 @@ export function createAgentChatService(args: {
         }
         errors.push(`${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    await scheduledWorkReady;
+    if (scheduledWorkScheduler) {
+      await Promise.all(
+        scheduledWorkScheduler.list()
+          .filter((schedule) => {
+            const row = sessionService.get(schedule.sessionId);
+            return !row || row.laneId === laneId;
+          })
+          .map((schedule) => scheduledWorkScheduler!.cancel(schedule.id)),
+      );
     }
     if (errors.length > 0) {
       throw new Error(`Failed to close ${errors.length} chat session${errors.length === 1 ? "" : "s"}: ${errors.join("; ")}`);
@@ -30043,7 +30075,10 @@ export function createAgentChatService(args: {
     return await loadModelCatalogRequest(catalogArgs);
   };
 
-  const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
+  const disposeManagedSession = async (
+    { sessionId }: AgentChatDisposeArgs,
+    terminalStatus: "disposed" | "detached",
+  ): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
 
@@ -30139,9 +30174,13 @@ export function createAgentChatService(args: {
       cancelQueuedSteers(managed, managed.runtime, "disposed");
     }
 
-    await finishSession(managed, "disposed", {
+    await finishSession(managed, terminalStatus, {
       summary: managed.preview ? `Session closed: ${managed.preview}` : "Session closed."
     });
+  };
+
+  const dispose = async (args: AgentChatDisposeArgs): Promise<void> => {
+    await disposeManagedSession(args, "disposed");
   };
 
   const deleteSession = async ({ sessionId }: AgentChatDeleteArgs): Promise<void> => {
@@ -30256,7 +30295,7 @@ export function createAgentChatService(args: {
     scheduledWorkScheduler?.dispose();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
-        await dispose({ sessionId });
+        await disposeManagedSession({ sessionId }, "detached");
       } catch {
         // ignore shutdown errors
       }
@@ -32828,7 +32867,9 @@ export function createAgentChatService(args: {
     sessionState: (sessionId) => {
       const row = sessionService.get(sessionId);
       if (!row) return "missing";
-      return row.archivedAt ? "archived" : "active";
+      if (row.archivedAt) return "archived";
+      if (row.status === "running" || row.status === "detached") return "active";
+      return "ended";
     },
     fire: async (schedule, context) => {
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
@@ -32885,7 +32926,9 @@ export function createAgentChatService(args: {
       const row = sessionService.get(schedule.sessionId);
       if (!row || row.archivedAt) return;
       const managed = managedSessions.get(schedule.sessionId)
-        ?? (status === "fired" ? ensureManagedSession(schedule.sessionId) : null);
+        ?? (status === "fired" && (row.status === "running" || row.status === "detached")
+          ? ensureManagedSession(schedule.sessionId)
+          : null);
       if (!managed || managed.session.provider !== "claude") return;
 
       const eventStatus: ScheduledWorkEvent["status"] = status === "done" ? "completed" : status;
@@ -32936,6 +32979,7 @@ export function createAgentChatService(args: {
     messageSession,
     setScheduledWorkPaused,
     refreshScheduledWork,
+    pendingNativeScheduledWakeCountForTesting,
     readTranscript,
     setOrchestrationFields,
     getCodexGoal,

@@ -134,8 +134,17 @@ host was asleep or the runtime was down, an overdue one-shot fires once with
 then computes its next ordinary cron occurrence from the current time; ADE
 does not replay every missed interval. Paused schedules remain armed. Work
 that became overdue while either the chat or global pause was active follows
-the same one-late-fire rule after resume. Archiving or deleting the owning
-chat cancels its schedules.
+the same one-late-fire rule after resume.
+
+Session teardown distinguishes deliberate end from runtime lifecycle. Deleting,
+archiving, or explicitly disposing a chat, and archiving or deleting its lane,
+cancels every durable schedule owned by that chat. Project close and graceful
+app quit instead end live chat rows as `detached`; their schedules remain armed
+so restart reconciliation can late-fire overdue work and cold-resume the chat.
+The scheduler's `sessionState` contract treats `running` and `detached` rows as
+`active`, any other non-archived terminal row as `ended`, archived rows as
+`archived`, and absent rows as `missing`. Ended, archived, and missing owners
+are cancelled during reconciliation or before delivery.
 
 Delivery reuses the session peer-message path with `kind: "wake"`. A live,
 idle Claude query is resumed through its existing idle reader; otherwise the
@@ -516,7 +525,13 @@ happen to begin with `User request:`.
 5. On completion the service emits `status: "completed" | "failed" |
    "interrupted"`, optionally emits a `turn_diff_summary`, flushes
    buffered text, and pulls the next queued steer.
-6. `dispose({ sessionId })` ends the runtime and persists the final state.
+6. `dispose({ sessionId })` deliberately ends the runtime, persists the final
+   state as `disposed`, and cancels the chat's durable scheduled work. Project
+   close and graceful app quit use the lifecycle variant: live rows become
+   `detached`, provider runtimes are torn down, and durable schedules remain for
+   restart reconciliation and cold resume. Lane archive/delete additionally
+   cancels schedules for every session owned by that lane, including sessions
+   that were not rehydrated into the current runtime.
 
 Parallel launch is a renderer-orchestrated workflow layered on the same
 session primitives:

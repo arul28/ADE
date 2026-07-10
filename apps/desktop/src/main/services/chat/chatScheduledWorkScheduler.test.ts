@@ -49,6 +49,115 @@ afterEach(() => {
 });
 
 describe("createChatScheduledWorkScheduler", () => {
+  it("cancels persisted work for an ended session during start reconciliation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([wakeup()]);
+    const transitions: string[] = [];
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "ended",
+      fire,
+      onTransition: (_schedule, status) => {
+        transitions.push(status);
+      },
+    });
+
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(transitions).toEqual(["cancelled"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      id: "wake-1",
+      status: "cancelled",
+    }));
+    scheduler.dispose();
+  });
+
+  it("cancels work when its session becomes ended before processDue fires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let sessionState: "active" | "ended" = "active";
+    let state: ChatScheduledWorkState | null = null;
+    const transitions: string[] = [];
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => sessionState,
+      fire,
+      onTransition: (_schedule, status) => {
+        transitions.push(status);
+      },
+    });
+    await scheduler.upsert(wakeup({ fireAt: START + 1_000 }));
+
+    sessionState = "ended";
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(transitions).toEqual(["scheduled", "cancelled"]);
+    expect(requireState(state).schedules[0]?.status).toBe("cancelled");
+    scheduler.dispose();
+  });
+
+  it("does not let an ended session claim a native scheduled fire", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let sessionState: "active" | "ended" = "active";
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => sessionState,
+      fire: createFireMock(),
+    });
+    await scheduler.upsert(wakeup({ fireAt: START }));
+
+    sessionState = "ended";
+    const claimed = scheduler.claimNativeFire("session-1", "native-turn-ended");
+
+    expect(claimed).toBeNull();
+    expect(scheduler.list("session-1")[0]).toEqual(expect.objectContaining({
+      id: "wake-1",
+      status: "scheduled",
+    }));
+    scheduler.dispose();
+  });
+
+  it("persists a new schedule as cancelled when its session is ended", async () => {
+    let state: ChatScheduledWorkState | null = null;
+    const transitions: string[] = [];
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => {
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "ended",
+      fire: createFireMock(),
+      onTransition: (_schedule, status) => {
+        transitions.push(status);
+      },
+    });
+
+    const schedule = await scheduler.upsert(wakeup());
+
+    expect(schedule.status).toBe("cancelled");
+    expect(transitions).toEqual(["cancelled"]);
+    expect(requireState(state).schedules[0]?.status).toBe("cancelled");
+    scheduler.dispose();
+  });
+
   it("persists an arm and re-arms it in a fresh scheduler after restart", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

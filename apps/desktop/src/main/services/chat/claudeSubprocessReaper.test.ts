@@ -144,6 +144,41 @@ describe("createClaudeSubprocessReaper", () => {
     expect(child.killedWith).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
+  it("reapForSession terminates only the matching session's live subprocesses", () => {
+    vi.useFakeTimers();
+    const logger = createLogger();
+    const matchingChild = createProcess(2469);
+    const otherChild = createProcess(2470);
+    const reaper = createClaudeSubprocessReaper({
+      logger,
+      killGraceMs: 25,
+    });
+    reaper.register(matchingChild, {
+      sessionId: "chat-matching",
+      laneId: "lane-1",
+      cwd: "/tmp/lane-1",
+    }, "claude", []);
+    reaper.register(otherChild, {
+      sessionId: "chat-other",
+      laneId: "lane-2",
+      cwd: "/tmp/lane-2",
+    }, "claude", []);
+
+    reaper.reapForSession("chat-matching", "ended_session");
+
+    expect(matchingChild.killedWith).toEqual(["SIGTERM"]);
+    expect(otherChild.killedWith).toEqual([]);
+    expect(reaper.liveRecords().map((record) => record.sessionId)).toEqual([
+      "chat-matching",
+      "chat-other",
+    ]);
+
+    vi.advanceTimersByTime(25);
+
+    expect(matchingChild.killedWith).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(otherChild.killedWith).toEqual([]);
+  });
+
   it("reaps subprocesses left behind by a crashed ADE owner", () => {
     vi.useFakeTimers();
     const logger = createLogger();
