@@ -431,6 +431,65 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("reuses a preserved verified archive after install-space recovery without a download-volume preflight", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const installTargetPath = "/Applications/ADE.app/Contents/MacOS/ADE";
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 300 * 1024 * 1024, sha512: "test" }],
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const getDiskSpace = vi.fn((targetPath: string) => ({
+      availableBytes: targetPath === installTargetPath
+        ? 1024 * 1024 * 1024
+        : 64 * 1024 * 1024,
+      volumePath: targetPath === installTargetPath ? "/System/Volumes/Data" : "/Volumes/Cache",
+    }));
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      installTargetPath,
+      getDiskSpace,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", updateInfo);
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      version: "1.2.3",
+      errorDetails: {
+        kind: "insufficient_space",
+        phase: "install",
+        preservesDownload: true,
+      },
+    });
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    updater.downloadUpdate.mockImplementationOnce(async () => {
+      updater.emit("update-downloaded", updateInfo);
+    });
+
+    service.checkForUpdates();
+    service.checkForUpdates();
+
+    await vi.waitFor(() => expect(service.getSnapshot().status).toBe("ready"));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(getDiskSpace).not.toHaveBeenCalledWith(updaterCacheDir);
+
+    service.dispose();
+  });
+
   it("classifies a synchronous ENOSPC handoff failure and keeps the downloaded update", async () => {
     const updaterCacheDir = makeUpdaterCacheDir();
     const updater = new FakeAutoUpdater();

@@ -728,6 +728,10 @@ export function createAutoUpdateService({
     ) {
       return;
     }
+    const reusableDownloadedVersion = snapshot.status === "error"
+      && snapshot.errorDetails?.preservesDownload
+      ? snapshot.version
+      : null;
     checkPromise = updater.checkForUpdates()
       .then(async (result) => {
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
@@ -743,7 +747,8 @@ export function createAutoUpdateService({
         }
         if (snapshot.version) {
           const downloadTarget = updaterCacheDir ?? path.dirname(globalStatePath);
-          if (!preflightSpace("download", downloadTarget)) return;
+          const reusesPreservedDownload = reusableDownloadedVersion === snapshot.version;
+          if (!reusesPreservedDownload && !preflightSpace("download", downloadTarget)) return;
           currentPhase = "download";
           patchSnapshot({
             status: "downloading",
