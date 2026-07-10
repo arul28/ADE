@@ -2009,6 +2009,7 @@ app.whenReady().then(async () => {
     currentVersion: app.getVersion(),
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
+    installTargetPath: process.execPath,
     autoCheckEnabled: app.isPackaged,
     beforeQuitAndInstall: prepareAutoUpdateInstall,
   });

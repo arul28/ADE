@@ -120,8 +120,32 @@ export type RecentlyInstalledUpdate = {
 
 export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
 
+export type AutoUpdatePhase = "download" | "staging" | "verification" | "install";
+
+export type AutoUpdateErrorKind =
+  | "insufficient_space"
+  | "disk_full"
+  | "quota"
+  | "network"
+  | "signature"
+  | "permission"
+  | "verification"
+  | "installer"
+  | "unknown";
+
+export type AutoUpdateErrorDetails = {
+  kind: AutoUpdateErrorKind;
+  phase: AutoUpdatePhase;
+  message: string;
+  availableBytes: number | null;
+  requiredBytes: number | null;
+  volumePath: string | null;
+  preservesDownload: boolean;
+};
+
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;
+  currentVersion: string;
   version: string | null;
   progressPercent: number | null;
   bytesPerSecond: number | null;
@@ -129,6 +153,7 @@ export type AutoUpdateSnapshot = {
   totalBytes: number | null;
   releaseNotesUrl: string | null;
   error: string | null;
+  errorDetails: AutoUpdateErrorDetails | null;
   recentlyInstalled: RecentlyInstalledUpdate | null;
 };
 

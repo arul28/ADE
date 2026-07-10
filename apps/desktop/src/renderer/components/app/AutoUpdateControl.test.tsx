@@ -3,11 +3,13 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 
 const idleSnapshot: AutoUpdateSnapshot = {
   status: "idle",
+  currentVersion: "1.2.0",
   version: null,
   progressPercent: null,
   bytesPerSecond: null,
@@ -15,6 +17,7 @@ const idleSnapshot: AutoUpdateSnapshot = {
   totalBytes: null,
   releaseNotesUrl: null,
   error: null,
+  errorDetails: null,
   recentlyInstalled: null,
 };
 
@@ -74,6 +77,7 @@ function installAdeMock(args: {
   const updateCheckForUpdates = vi.fn(args.updateCheckForUpdates ?? (async () => undefined));
   const openExternal = vi.fn(async () => undefined);
   const updateDismissInstalledNotice = vi.fn(async () => undefined);
+  let updateListener: ((snapshot: AutoUpdateSnapshot) => void) | null = null;
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -86,10 +90,22 @@ function installAdeMock(args: {
       updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
       updateQuitAndInstall: vi.fn(async () => true),
       updateDismissInstalledNotice,
-      onUpdateEvent: vi.fn(() => () => undefined),
+      onUpdateEvent: vi.fn((listener: (snapshot: AutoUpdateSnapshot) => void) => {
+        updateListener = listener;
+        return () => {
+          updateListener = null;
+        };
+      }),
     },
   });
-  return { updateCheckForUpdates, openExternal, updateDismissInstalledNotice };
+  return {
+    updateCheckForUpdates,
+    openExternal,
+    updateDismissInstalledNotice,
+    emitUpdate(snapshot: AutoUpdateSnapshot) {
+      updateListener?.(snapshot);
+    },
+  };
 }
 
 const installedSnapshot: AutoUpdateSnapshot = {
@@ -99,6 +115,23 @@ const installedSnapshot: AutoUpdateSnapshot = {
     installedAt: "2026-07-09T00:00:00.000Z",
     releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.18",
     githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.18",
+  },
+};
+
+const diskSpaceErrorSnapshot: AutoUpdateSnapshot = {
+  ...idleSnapshot,
+  status: "error",
+  version: "1.3.0",
+  releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.3.0",
+  error: "Not enough space to update ADE.",
+  errorDetails: {
+    kind: "insufficient_space",
+    phase: "install",
+    message: "Not enough space to update ADE.",
+    availableBytes: 1024 ** 3,
+    requiredBytes: 3 * (1024 ** 3),
+    volumePath: "/Applications/ADE.app/Contents/MacOS/ADE",
+    preservesDownload: true,
   },
 };
 
@@ -144,6 +177,63 @@ describe("AutoUpdateControl", () => {
 
     expect(await screen.findByText("Install update v1.3.0")).toBeTruthy();
     expect(screen.queryByText("Update required")).toBeNull();
+  });
+
+  it("keeps update failures visible and shows capacity recovery details", async () => {
+    installAdeMock({ snapshot: diskSpaceErrorSnapshot });
+
+    render(<AutoUpdateControl />);
+
+    const warning = await screen.findByRole("button", { name: "Not enough space to update" });
+    expect(warning.getAttribute("aria-haspopup")).toBe("dialog");
+    await userEvent.click(warning);
+
+    expect(await screen.findByRole("dialog", { name: "Not enough space to update" })).toBeTruthy();
+    expect(screen.getByText("v1.2.0 → v1.3.0")).toBeTruthy();
+    expect(screen.getByText("Install")).toBeTruthy();
+    expect(screen.getByText("1.0 GB")).toBeTruthy();
+    expect(screen.getByText("3.0 GB")).toBeTruthy();
+    expect(screen.getByText("/Applications/ADE.app/Contents/MacOS/ADE")).toBeTruthy();
+    expect(screen.getByText(/downloaded update was kept/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close update error details" })).toBeTruthy();
+  });
+
+  it("retries from the error dialog and clears the persistent warning on progress", async () => {
+    const mock = installAdeMock({ snapshot: diskSpaceErrorSnapshot });
+
+    render(<AutoUpdateControl />);
+    await userEvent.click(await screen.findByRole("button", { name: "Not enough space to update" }));
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    expect(mock.updateCheckForUpdates).toHaveBeenCalledTimes(1);
+    mock.emitUpdate({
+      ...idleSnapshot,
+      status: "checking",
+      version: "1.3.0",
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Not enough space to update" })).toBeNull();
+      expect(screen.queryByRole("dialog", { name: "Not enough space to update" })).toBeNull();
+    });
+    expect(screen.getByText("Checking for updates")).toBeTruthy();
+  });
+
+  it("opens and closes update recovery details with the keyboard", async () => {
+    installAdeMock({ snapshot: diskSpaceErrorSnapshot });
+    const user = userEvent.setup();
+
+    render(<AutoUpdateControl />);
+    const warning = await screen.findByRole("button", { name: "Not enough space to update" });
+    warning.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog", { name: "Not enough space to update" })).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Not enough space to update" })).toBeNull();
+    });
   });
 
   it("shows the simplified installed modal with Changelog and View on GitHub actions", async () => {

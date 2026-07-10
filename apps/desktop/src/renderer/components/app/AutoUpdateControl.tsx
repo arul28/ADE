@@ -4,9 +4,11 @@ import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
 
 const EMPTY_UPDATE_SNAPSHOT: AutoUpdateSnapshot = {
   status: "idle",
+  currentVersion: "",
   version: null,
   progressPercent: null,
   bytesPerSecond: null,
@@ -14,6 +16,7 @@ const EMPTY_UPDATE_SNAPSHOT: AutoUpdateSnapshot = {
   totalBytes: null,
   releaseNotesUrl: null,
   error: null,
+  errorDetails: null,
   recentlyInstalled: null,
 };
 
@@ -48,6 +51,8 @@ export function AutoUpdateControl() {
   const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_UPDATE_SNAPSHOT);
   const [runtimeSkew, setRuntimeSkew] = useState<RuntimeVersionSkew | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [updateErrorOpen, setUpdateErrorOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [installRequested, setInstallRequested] = useState(false);
 
   useEffect(() => {
@@ -66,6 +71,10 @@ export function AutoUpdateControl() {
     const unsubscribe = window.ade.onUpdateEvent((nextSnapshot) => {
       if (cancelled) return;
       setSnapshot(nextSnapshot);
+      if (nextSnapshot.status !== "error") {
+        setUpdateErrorOpen(false);
+        setRetrying(false);
+      }
       if (nextSnapshot.status !== "ready") {
         setInstallRequested(false);
       }
@@ -170,7 +179,7 @@ export function AutoUpdateControl() {
 
   const handleSkewUpdateCheck = useCallback(() => {
     setSnapshot((current) => current.status === "idle"
-      ? { ...current, status: "checking", error: null }
+      ? { ...current, status: "checking", error: null, errorDetails: null }
       : current);
     void window.ade.updateCheckForUpdates()
       .catch(() => {
@@ -180,10 +189,20 @@ export function AutoUpdateControl() {
       });
   }, []);
 
+  const handleRetryUpdate = useCallback(() => {
+    setRetrying(true);
+    void window.ade.updateCheckForUpdates()
+      .catch(() => undefined)
+      .finally(() => {
+        setRetrying(false);
+      });
+  }, []);
+
   const effectiveStatus = installRequested && snapshot.status === "ready"
     ? "installing"
     : snapshot.status;
   const isReadyOrInstalling = effectiveStatus === "ready" || effectiveStatus === "installing";
+  const showUpdateError = effectiveStatus === "error";
   const shouldShowIndicator =
     effectiveStatus === "checking"
     || effectiveStatus === "downloading"
@@ -193,7 +212,7 @@ export function AutoUpdateControl() {
   const githubReleaseUrl = snapshot.recentlyInstalled?.githubReleaseUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
-  const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator;
+  const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
 
   function indicatorTitle(): string {
     switch (effectiveStatus) {
@@ -224,6 +243,24 @@ export function AutoUpdateControl() {
         >
           <WarningCircle size={12} weight="fill" />
           <span>Update required</span>
+        </button>
+      ) : null}
+
+      {showUpdateError ? (
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "border border-amber-300/55 bg-amber-400/15 text-[11px] font-medium text-amber-100",
+            "shadow-[0_0_18px_rgba(245,158,11,0.2)] transition-colors duration-150 hover:bg-amber-400/24",
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          onClick={() => setUpdateErrorOpen(true)}
+          aria-haspopup="dialog"
+          title="Open update failure details and recovery steps"
+        >
+          <WarningCircle size={12} weight="fill" aria-hidden="true" />
+          <span>{isAutoUpdateDiskSpaceError(snapshot) ? "Not enough space to update" : "Update failed"}</span>
         </button>
       ) : null}
 
@@ -267,6 +304,13 @@ export function AutoUpdateControl() {
           ) : null}
         </button>
       ) : null}
+      <AutoUpdateErrorDialog
+        snapshot={snapshot}
+        open={updateErrorOpen}
+        retrying={retrying}
+        onOpenChange={setUpdateErrorOpen}
+        onRetry={handleRetryUpdate}
+      />
 
       <Dialog.Root
         open={releaseNotesOpen}
