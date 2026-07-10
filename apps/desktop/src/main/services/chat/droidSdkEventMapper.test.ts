@@ -92,3 +92,81 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission control", () => {
     expect(map({ type: "mission_state_changed" })).toEqual([]);
   });
 });
+
+describe("mapDroidSdkMessageToChatEvents — structured assistant content", () => {
+  it("maps assistant image blocks to the shared compact image event and dedupes replay", () => {
+    const state = createDroidSdkEventMapperState();
+    const message = {
+      type: "create_message",
+      role: "assistant",
+      messageId: "message-1",
+      content: [
+        { type: "text", text: "Here is the diagram." },
+        {
+          type: "image",
+          id: "image-1",
+          source: { type: "base64", mediaType: "image/png", data: "AAAA" },
+        },
+      ],
+    };
+    const mapWithState = () => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+
+    expect(mapWithState()).toEqual([
+      expect.objectContaining({ type: "text", text: "Here is the diagram." }),
+      {
+        type: "codex_image_generation",
+        itemId: "image-1",
+        turnId: "turn-1",
+        prompt: "Droid image output",
+        result: "data:image/png;base64,AAAA",
+        status: "completed",
+      },
+    ]);
+    expect(mapWithState()).toEqual([
+      expect.objectContaining({ type: "text", text: "Here is the diagram." }),
+    ]);
+  });
+
+  it("keeps large inline images intact for the desktop live preview", () => {
+    const imageData = "A".repeat(80 * 1024);
+
+    const events = map({
+      type: "create_message",
+      role: "assistant",
+      messageId: "message-large-image",
+      content: [{
+        type: "image",
+        id: "image-large",
+        source: { type: "base64", mediaType: "image/png", data: imageData },
+      }],
+    });
+
+    expect(events).toEqual([{
+      type: "codex_image_generation",
+      itemId: "image-large",
+      turnId: "turn-1",
+      prompt: "Droid image output",
+      result: `data:image/png;base64,${imageData}`,
+      status: "completed",
+    }]);
+  });
+
+  it("does not infer MCP identity from generic Droid tool names", () => {
+    expect(map({
+      type: "tool_use",
+      toolUseId: "tool-1",
+      toolName: "search_issues",
+      toolInput: { query: "bug" },
+    })).toEqual([{
+      type: "tool_call",
+      tool: "search_issues",
+      args: { query: "bug" },
+      itemId: "tool-1",
+      turnId: "turn-1",
+    }]);
+  });
+});

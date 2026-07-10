@@ -75,13 +75,13 @@ export function AppScreenshot() {
                                 <div className="text-purple-400">import</div> <span className="text-white">{"{"} Page {"}"}</span> <div className="text-purple-400">from</div> <span className="text-green-400">"../../components/Page"</span>;<br />
                                 <br />
                                 <div className="text-purple-400">export function</div> <span className="text-yellow-300">HomePage</span>() {"{"}<br />
-                                &nbsp;&nbsp;<span className="text-blue-400">useDocumentTitle</span>(<span className="text-green-400">"ADE"</span>);<br />
+                                {"  "}<span className="text-blue-400">useDocumentTitle</span>(<span className="text-green-400">"ADE"</span>);<br />
                                 <br />
-                                &nbsp;&nbsp;<div className="text-purple-400">return</div> (<br />
-                                &nbsp;&nbsp;&nbsp;&nbsp;&lt;<span className="text-yellow-300">Page</span> <span className="text-blue-300">className</span>=<span className="text-green-400">"overflow-hidden"</span>&gt;<br />
-                                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;<span className="text-yellow-300">HeroSection</span> /&gt;<br />
-                                &nbsp;&nbsp;&nbsp;&nbsp;&lt;/<span className="text-yellow-300">Page</span>&gt;<br />
-                                &nbsp;&nbsp;);<br />
+                                {"  "}<div className="text-purple-400">return</div> (<br />
+                                {"    "}&lt;<span className="text-yellow-300">Page</span> <span className="text-blue-300">className</span>=<span className="text-green-400">"overflow-hidden"</span>&gt;<br />
+                                {"      "}&lt;<span className="text-yellow-300">HeroSection</span> /&gt;<br />
+                                {"    "}&lt;/<span className="text-yellow-300">Page</span>&gt;<br />
+                                {"  "});<br />
                                 {"}"}
                                 <motion.div
                                     animate={{ opacity: [1, 0, 1] }}
@@ -111,13 +111,13 @@ export function AppScreenshot() {
                                     <span className="text-white">npm run dev</span>
                                 </div>
                                 <div className="mt-1 text-white/50">
-                                    &nbsp;&nbsp;VITE v4.5.3	<span className="text-green-500">ready in 240 ms</span>
+                                    {"  "}VITE v4.5.3	<span className="text-green-500">ready in 240 ms</span>
                                 </div>
                                 <div className="mt-1">
-                                    &nbsp;&nbsp;<span className="text-white">➜</span>  <span className="text-white">Local:</span>   <span className="text-blue-400 underline">http://localhost:5173/</span>
+                                    {"  "}<span className="text-white">➜</span>  <span className="text-white">Local:</span>   <span className="text-blue-400 underline">http://localhost:5173/</span>
                                 </div>
                                 <div className="mt-1">
-                                    &nbsp;&nbsp;<span className="text-white">➜</span>  <span className="text-white">Network:</span> use --host to expose
+                                    {"  "}<span className="text-white">➜</span>  <span className="text-white">Network:</span> use --host to expose
                                 </div>
                             </div>
                         </div>

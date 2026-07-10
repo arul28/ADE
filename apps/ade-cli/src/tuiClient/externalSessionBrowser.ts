@@ -1,8 +1,8 @@
 import {
-  importAffordancesFor,
-  shortenCwd,
+  externalSessionImportAffordances as importAffordancesFor,
+  shortenExternalSessionCwd as shortenCwd,
   type ImportAffordance,
-} from "../../../desktop/src/renderer/components/terminals/importSessions/affordances";
+} from "../../../desktop/src/shared/externalSessionAffordances";
 import type {
   ExternalSessionProvider,
   ExternalSessionSummary,
@@ -11,6 +11,46 @@ import type { RightPaneContent } from "./types";
 
 export { importAffordancesFor, shortenCwd };
 export type { ImportAffordance };
+
+export type ExternalSessionBrowserAction = ImportAffordance | {
+  kind: "open-existing";
+  label: string;
+  description: string;
+  hero: true;
+  enabled: true;
+  importedSessionRef: { kind: "chat" | "cli"; sessionId: string };
+};
+
+export function isImportAffordance(
+  action: ExternalSessionBrowserAction,
+): action is ImportAffordance {
+  return action.kind !== "open-existing";
+}
+
+export function externalSessionBrowserActions(
+  session: ExternalSessionSummary,
+): ExternalSessionBrowserAction[] {
+  const ref = session.importedSessionRef;
+  const validRef = session.alreadyImported
+    && ref
+    && (ref.kind === "chat" || ref.kind === "cli")
+    && ref.sessionId.trim().length > 0
+      ? { kind: ref.kind, sessionId: ref.sessionId.trim() }
+      : null;
+  const imports = importAffordancesFor(session);
+  if (!validRef) return imports;
+  return [
+    {
+      kind: "open-existing",
+      label: "Open existing ADE session",
+      description: "Opens the ADE session already linked to this provider session.",
+      hero: true,
+      enabled: true,
+      importedSessionRef: validRef,
+    },
+    ...imports.filter((action) => action.mode === "fork"),
+  ];
+}
 
 export const EXTERNAL_SESSION_PROVIDER_FILTERS = [
   "all",
@@ -87,7 +127,7 @@ export function clampExternalSessionBrowserContent(
     ? Math.min(Math.max(0, content.selectedIndex), visible.length - 1)
     : 0;
   const selected = visible[selectedIndex] ?? null;
-  const actions = selected ? importAffordancesFor(selected) : [];
+  const actions = selected ? externalSessionBrowserActions(selected) : [];
   const actionIndex = actions.length
     ? Math.min(Math.max(0, content.actionIndex), actions.length - 1)
     : 0;
@@ -98,7 +138,7 @@ export function clampExternalSessionBrowserContent(
 
 export function externalSessionActionKey(
   session: ExternalSessionSummary,
-  affordance: ImportAffordance,
+  affordance: Pick<ExternalSessionBrowserAction, "kind">,
 ): string {
   return `${session.provider}:${session.id}:${affordance.kind}`;
 }

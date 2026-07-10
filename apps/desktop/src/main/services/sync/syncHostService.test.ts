@@ -24,18 +24,20 @@ import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
 
-const { execFileMock, spawnMock } = vi.hoisted(() => ({
+const { execFileMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
   spawnMock: vi.fn(() => ({
     kill: vi.fn(),
     once: vi.fn(),
     unref: vi.fn(),
   })),
+  spawnSyncMock: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
 }));
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
   spawn: spawnMock,
+  spawnSync: spawnSyncMock,
 }));
 
 function createStubPinStore(initialPin: string | null = null): SyncPinStore {
@@ -2423,6 +2425,74 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect((eventA.payload as { sessionId: string; event: { text: string } }).event.text).toBe("hello from session 1");
     expect((eventB.payload as { sessionId: string }).sessionId).toBe("session-1");
 
+    const inlineImage = `data:image/png;base64,${"A".repeat(80 * 1024)}`;
+    const desktopImageEvent = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:00.500Z",
+      event: {
+        type: "codex_image_generation" as const,
+        itemId: "droid-image-1",
+        result: inlineImage,
+        status: "completed" as const,
+      },
+      sequence: 2,
+    };
+    chatService.emit(desktopImageEvent);
+
+    const imageEventA = await clientA.queue.next("chat_event");
+    const imageEventB = await clientB.queue.next("chat_event");
+    for (const imageEvent of [imageEventA, imageEventB]) {
+      expect((imageEvent.payload as {
+        event: { result: string | null; resultOriginalBytes?: number; resultOmittedBytes?: number };
+      }).event).toMatchObject({
+        result: null,
+        resultOriginalBytes: Buffer.byteLength(inlineImage, "utf8"),
+        resultOmittedBytes: Buffer.byteLength(inlineImage, "utf8"),
+      });
+      expect(JSON.stringify(imageEvent.payload)).not.toContain("A".repeat(1024));
+    }
+    expect(desktopImageEvent.event.result).toBe(inlineImage);
+
+    const nestedToolResult = {
+      output: {
+        preview: inlineImage,
+        message: "desktop keeps the full preview",
+      },
+    };
+    const desktopToolEvent = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:10:00.750Z",
+      event: {
+        type: "tool_result" as const,
+        tool: "mcp__images__generate",
+        itemId: "image-tool-result-1",
+        result: nestedToolResult,
+        status: "completed" as const,
+      },
+      sequence: 3,
+    };
+    chatService.emit(desktopToolEvent);
+
+    const toolEventA = await clientA.queue.next("chat_event");
+    const toolEventB = await clientB.queue.next("chat_event");
+    for (const toolEvent of [toolEventA, toolEventB]) {
+      const payload = toolEvent.payload as {
+        event: {
+          result: { output: { preview: string; message: string } };
+          resultOriginalBytes?: number;
+          resultOmittedBytes?: number;
+        };
+      };
+      expect(payload.event.result.output).toMatchObject({
+        preview: expect.stringContaining("Inline image data omitted from mobile chat sync"),
+        message: "desktop keeps the full preview",
+      });
+      expect(payload.event.resultOmittedBytes).toBe(Buffer.byteLength(inlineImage, "utf8"));
+      expect(JSON.stringify(toolEvent.payload)).not.toContain("A".repeat(1024));
+    }
+    expect(desktopToolEvent.event.result).toBe(nestedToolResult);
+    expect(nestedToolResult.output.preview).toBe(inlineImage);
+
     chatService.emit({
       sessionId: "session-2",
       timestamp: "2026-03-17T00:10:01.000Z",
@@ -2443,7 +2513,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       sessionId: "session-1",
       timestamp: "2026-03-17T00:10:02.000Z",
       event: { type: "text", text: "still live for A only", turnId: "turn-3", itemId: "item-3" },
-      sequence: 3,
+      sequence: 4,
     });
 
     const replayA = await clientA.queue.next("chat_event");

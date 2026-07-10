@@ -121,6 +121,7 @@
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
+		F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000002 /* PersonalChatsScreen.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		AC2200000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
@@ -214,7 +215,9 @@
 		E1000000000000000000003F /* WorkModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003F /* WorkModelCatalog.swift */; };
 		E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000040 /* WorkModelPickerSheet.swift */; };
 		E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000041 /* WorkNewChatScreen.swift */; };
+		E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000041 /* WorkUsageActivityCarousel.swift */; };
 		E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000056 /* WorkImportSessionScreen.swift */; };
+		E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000057 /* WorkExternalSessionAffordances.swift */; };
 		E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000051 /* WorkLanePickerDropdown.swift */; };
 		E10000000000000000000042 /* WorkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000042 /* WorkPreviews.swift */; };
 		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
@@ -335,7 +338,9 @@
 		D1000000000000000000003F /* WorkModelCatalog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelCatalog.swift; path = ADE/Views/Work/WorkModelCatalog.swift; sourceTree = "<group>"; };
 		D10000000000000000000040 /* WorkModelPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelPickerSheet.swift; path = ADE/Views/Work/WorkModelPickerSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000041 /* WorkNewChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatScreen.swift; path = ADE/Views/Work/WorkNewChatScreen.swift; sourceTree = "<group>"; };
+		D30000000000000000000041 /* WorkUsageActivityCarousel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageActivityCarousel.swift; path = ADE/Views/Work/WorkUsageActivityCarousel.swift; sourceTree = "<group>"; };
 		D10000000000000000000056 /* WorkImportSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkImportSessionScreen.swift; path = ADE/Views/Work/WorkImportSessionScreen.swift; sourceTree = "<group>"; };
+		D10000000000000000000057 /* WorkExternalSessionAffordances.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkExternalSessionAffordances.swift; path = ADE/Views/Work/WorkExternalSessionAffordances.swift; sourceTree = "<group>"; };
 		D10000000000000000000051 /* WorkLanePickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLanePickerDropdown.swift; path = ADE/Views/Work/WorkLanePickerDropdown.swift; sourceTree = "<group>"; };
 		D10000000000000000000042 /* WorkPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPreviews.swift; path = ADE/Views/Work/WorkPreviews.swift; sourceTree = "<group>"; };
 		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
@@ -369,6 +374,7 @@
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
+		F40000000000000000000002 /* PersonalChatsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PersonalChatsScreen.swift; path = ADE/Views/PersonalChats/PersonalChatsScreen.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
 		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
@@ -582,6 +588,7 @@
 			children = (
 				02B9E655310A24835B5CFC3B /* Components */,
 				HB00000000000000000000F1 /* Hub */,
+				F40000000000000000000003 /* PersonalChats */,
 				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
@@ -606,6 +613,14 @@
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
 			);
 			name = Hub;
+			sourceTree = "<group>";
+		};
+		F40000000000000000000003 /* PersonalChats */ = {
+			isa = PBXGroup;
+			children = (
+				F40000000000000000000002 /* PersonalChatsScreen.swift */,
+			);
+			name = PersonalChats;
 			sourceTree = "<group>";
 		};
 		D30000000000000000000004 /* AttentionDrawer */ = {
@@ -713,7 +728,9 @@
 				D1000000000000000000003F /* WorkModelCatalog.swift */,
 				D10000000000000000000040 /* WorkModelPickerSheet.swift */,
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
+				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D10000000000000000000056 /* WorkImportSessionScreen.swift */,
+				D10000000000000000000057 /* WorkExternalSessionAffordances.swift */,
 				D10000000000000000000051 /* WorkLanePickerDropdown.swift */,
 				D10000000000000000000042 /* WorkPreviews.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
@@ -1205,6 +1222,7 @@
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
+				F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */,
 				B10000000000000000000002 /* LaneAttachSheet.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
 				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,
@@ -1291,7 +1309,9 @@
 				E1000000000000000000003F /* WorkModelCatalog.swift in Sources */,
 				E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */,
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
+				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */,
+				E10000000000000000000057 /* WorkExternalSessionAffordances.swift in Sources */,
 				E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */,
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,

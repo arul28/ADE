@@ -71,6 +71,76 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
+  it("preserves typed Cursor MCP connector identity across the tool lifecycle", () => {
+    const args = {
+      providerIdentifier: "github",
+      toolName: "search_issues",
+      args: { query: "is:open label:bug" },
+    };
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "mcp-1",
+      name: "mcp",
+      status: "running",
+      args,
+    }, mapperMeta())).toEqual([{
+      type: "tool_call",
+      tool: "github:search_issues",
+      args: { query: "is:open label:bug" },
+      mcp: { server: "github", tool: "search_issues" },
+      itemId: "mcp-1",
+      turnId: "turn-1",
+    }]);
+
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "mcp-1",
+      name: "mcp",
+      status: "completed",
+      args,
+      result: { status: "success", value: { content: [], isError: false } },
+    }, mapperMeta())).toEqual([expect.objectContaining({
+      type: "tool_result",
+      tool: "github:search_issues",
+      mcp: { server: "github", tool: "search_issues" },
+      itemId: "mcp-1",
+      status: "completed",
+    })]);
+  });
+
+  it("maps Cursor generateImage calls to the shared compact image lifecycle", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "image-1",
+      name: "generateImage",
+      status: "running",
+      args: { description: "A tiny moon icon", filePath: "/tmp/moon.png" },
+    }, mapperMeta())).toEqual([{
+      type: "codex_image_generation",
+      itemId: "image-1",
+      turnId: "turn-1",
+      prompt: "A tiny moon icon",
+      status: "running",
+    }]);
+
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "image-1",
+      name: "generateImage",
+      status: "completed",
+      args: { description: "A tiny moon icon", filePath: "/tmp/moon.png" },
+      result: { status: "success", value: { filePath: "/tmp/moon.png" } },
+    }, mapperMeta())).toEqual([{
+      type: "codex_image_generation",
+      itemId: "image-1",
+      turnId: "turn-1",
+      prompt: "A tiny moon icon",
+      result: "/tmp/moon.png",
+      savedPath: "/tmp/moon.png",
+      status: "completed",
+    }]);
+  });
+
   it("maps run results to done events", () => {
     expect(mapCursorSdkRunResultToDoneEvent({ status: "error" }, {
       turnId: "turn-1",

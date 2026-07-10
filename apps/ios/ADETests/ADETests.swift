@@ -163,6 +163,70 @@ private final class IntentCommandRecorder: ADEIntentCommandBridge {
 }
 
 final class ADETests: XCTestCase {
+  func testExternalSessionModelsDecodeOlderHostPayloads() throws {
+    let summaryJson = #"{"provider":"claude","id":"external-1"}"#
+    let summary = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(summaryJson.utf8))
+
+    XCTAssertEqual(summary.provider, "claude")
+    XCTAssertEqual(summary.id, "external-1")
+    XCTAssertFalse(summary.alreadyImported)
+    XCTAssertFalse(summary.possiblyActive)
+    XCTAssertEqual(summary.capabilities, ExternalSessionCapabilities())
+
+    let resultJson = #"{"kind":"cli","sessionId":"ade-session-1","ptyId":"pty-1","laneId":"lane-1"}"#
+    let result = try JSONDecoder().decode(ExternalSessionImportResult.self, from: Data(resultJson.utf8))
+
+    XCTAssertEqual(result.kind, "cli")
+    XCTAssertEqual(result.sessionId, "ade-session-1")
+    XCTAssertNil(result.session)
+    XCTAssertNil(result.chatSummary)
+  }
+
+  func testExternalSessionActionsHonorCrossFolderCapabilities() {
+    let summary = ExternalSessionSummary(
+      provider: "claude",
+      id: "external-1",
+      cwd: "/tmp/other-project",
+      cwdMatchesRequestedLane: false,
+      capabilities: ExternalSessionCapabilities(
+        resumeInPlace: true,
+        resumeInDifferentCwd: false,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true
+      )
+    )
+
+    let actions = workExternalSessionActions(for: summary)
+
+    XCTAssertEqual(actions.map(\.id), ["fork-as-chat", "fork-into-lane", "resume-in-place"])
+    XCTAssertEqual(actions.filter(\.isPrimary).map(\.id), ["fork-as-chat"])
+    XCTAssertEqual(actions.first(where: { $0.id == "resume-in-place" })?.mode, "resume")
+  }
+
+  func testExternalSessionActionsOpenExistingInsteadOfReimporting() {
+    let summary = ExternalSessionSummary(
+      provider: "codex",
+      id: "external-2",
+      alreadyImported: true,
+      importedSessionRef: ExternalSessionImportedRef(kind: " CHAT ", sessionId: " chat-1 "),
+      cwdMatchesRequestedLane: true,
+      capabilities: ExternalSessionCapabilities(
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true
+      )
+    )
+
+    let actions = workExternalSessionActions(for: summary)
+
+    XCTAssertEqual(actions.map(\.id), ["open-existing", "fork-as-chat", "fork-into-lane"])
+    XCTAssertEqual(actions.first?.importedSessionRef, ExternalSessionImportedRef(kind: "chat", sessionId: "chat-1"))
+    XCTAssertFalse(actions.contains(where: { $0.mode == "resume" }))
+  }
+
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {
     let encodedPayload = "H4sIAAAAAAAAE6tWKkhMScnMS1eyUkqkECjVAgB1YfDxTgAAAA=="
     let envelope = """
@@ -184,6 +248,15 @@ final class ADETests: XCTestCase {
     let cleaned = DictationCleanup.clean("ßeta", glossary: .empty)
 
     XCTAssertEqual(cleaned, "SSeta")
+  }
+
+  func testBundledVoiceGlossaryKeepsContextualTermsWithinSpeechAnalyzerLimit() {
+    let terms = VoiceGlossary.shared.contextualTerms
+
+    XCTAssertLessThanOrEqual(terms.count, 100)
+    XCTAssertTrue(terms.contains("GPT-5.6 Sol"))
+    XCTAssertTrue(terms.contains("GPT-5.6 Terra"))
+    XCTAssertTrue(terms.contains("GPT-5.6 Luna"))
   }
 
   func testDictationBufferConverterRecreatesWhenInputFormatChanges() throws {
@@ -3909,6 +3982,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
+    XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
   }
 
   @MainActor
@@ -3945,6 +4019,100 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
+    XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
+  }
+
+  func testMobileAdeUsageStatsDecodesPayloadWithoutNewOptionalBreakdowns() throws {
+    let json = """
+    {
+      "generatedAt": "2026-07-09T12:00:00.000Z",
+      "summary": {
+        "totalTokens": 42,
+        "chatSessions": 2
+      },
+      "daily": [
+        {
+          "date": "2026-07-09",
+          "inputTokens": 12,
+          "outputTokens": 30,
+          "insertions": 7,
+          "deletions": 3,
+          "filesChanged": 1,
+          "sessions": 2
+        }
+      ]
+    }
+    """
+
+    let stats = try JSONDecoder().decode(MobileAdeUsageStats.self, from: Data(json.utf8))
+
+    XCTAssertEqual(stats.generatedAt, "2026-07-09T12:00:00.000Z")
+    XCTAssertEqual(stats.summary.totalTokens, 42)
+    XCTAssertEqual(stats.daily.first?.totalTokens, nil)
+    XCTAssertEqual(stats.daily.first?.inputTokens, 12)
+    XCTAssertNil(stats.summary.totalInteractions)
+    XCTAssertNil(stats.clients)
+    XCTAssertNil(stats.freshness)
+  }
+
+  @MainActor
+  func testFetchAdeUsageStatsRejectsLegacyHostBeforeTransport() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+      ],
+    ])
+
+    do {
+      _ = try await service.fetchAdeUsageStats(preset: "7d")
+      XCTFail("A legacy host must reject usage stats before attempting transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
+    }
+  }
+
+  @MainActor
+  func testPersonalChatsStayLocallyActionGatedOnPartialHost() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "personalChats.list",
+            "scope": "runtime",
+            "policy": [
+              "viewerAllowed": true,
+              "queueable": false,
+            ],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertTrue(service.supportsPersonalChats)
+    XCTAssertTrue(service.supportsRemoteAction("personalChats.list"))
+    XCTAssertFalse(service.supportsRemoteAction("personalChats.create"))
+    XCTAssertFalse(service.canInvokeRemoteAction("personalChats.create"))
   }
 
   @MainActor
@@ -6680,6 +6848,144 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testPersonalChatSendQueuesWithoutFallingBackToActiveProject() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.send",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.setPersonalChatScope(sessionId: "personal-1")
+    service.disconnect()
+
+    let delivery = try await service.sendChatMessage(sessionId: "personal-1", text: "projectless prompt")
+
+    XCTAssertEqual(delivery, .queued(steerId: nil))
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.action, "personalChats.send")
+    XCTAssertNil(queued.first?.projectId)
+    XCTAssertNil(queued.first?.projectRootPath)
+    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
+  }
+
+  @MainActor
+  func testPersonalChatCreateRemainsLiveOnlyAndNeverQueuesOffline() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.create",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+
+    XCTAssertFalse(service.canInvokeRemoteAction("personalChats.create"))
+    do {
+      _ = try await service.createPersonalChat(
+        provider: "claude",
+        model: "claude-sonnet-5",
+        kickoffText: "Do not duplicate this chat"
+      )
+      XCTFail("Expected projectless chat creation to require a live machine.")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "This action requires a live connection to the machine.")
+    }
+    XCTAssertEqual(service.pendingOperationCount, 0)
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+    XCTAssertTrue(service.personalChatSessions.isEmpty)
+  }
+
+  func testRemoteCommandDescriptorDecodesRuntimeScope() throws {
+    let data = Data(#"{"action":"personalChats.list","scope":"runtime","policy":{"viewerAllowed":true,"queueable":false}}"#.utf8)
+    let descriptor = try JSONDecoder().decode(SyncRemoteCommandDescriptor.self, from: data)
+
+    XCTAssertEqual(descriptor.action, "personalChats.list")
+    XCTAssertEqual(descriptor.scope, "runtime")
+    XCTAssertEqual(descriptor.policy.queueable, false)
+  }
+
+  @MainActor
+  func testPersonalChatSubscriptionCarriesRuntimeScope() async throws {
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+    service.setPersonalChatScope(sessionId: "personal-stream")
+
+    try await service.subscribeToChatEvents(sessionId: "personal-stream")
+
+    let payload = try XCTUnwrap(service.chatSubscriptionPayloads().first)
+    XCTAssertEqual(payload["sessionId"] as? String, "personal-stream")
+    XCTAssertEqual(payload["chatScope"] as? String, "personal")
+    XCTAssertNil(payload["projectId"])
+    XCTAssertNil(payload["projectRootPath"])
+  }
+
+  @MainActor
+  func testPersonalChatMapsProjectHistoryCapabilitiesToRuntimeActionNames() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.read",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.getEventHistory",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.getEventHistoryPage",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setPersonalChatScope(sessionId: "personal-history")
+
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getTranscript", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: "personal-history"))
+  }
+
+  @MainActor
   func testFireAndForgetRemoteCommandQueuesWithStableCommandIdWhenOffline() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     let pendingOperationsKey = "ade.sync.pendingOperations"
@@ -6731,6 +7037,31 @@ final class ADETests: XCTestCase {
       delivery,
       .dropped("This action is not available on this machine version. Update ADE on the machine and reconnect.")
     )
+    XCTAssertEqual(service.pendingOperationCount, 0)
+  }
+
+  @MainActor
+  func testCodexRecoveryIsGatedWhenLegacyHostDoesNotAdvertiseAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+
+    do {
+      _ = try await service.recoverCodexTurn(
+        sessionId: "chat-legacy",
+        turnId: "turn-1",
+        action: "wait"
+      )
+      XCTFail("Expected recovery to be rejected before an unsupported command is sent.")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("not available on this machine version"))
+    }
+    XCTAssertFalse(service.supportsRemoteAction("chat.recoverCodexTurn"))
     XCTAssertEqual(service.pendingOperationCount, 0)
   }
 
@@ -9490,8 +9821,8 @@ final class ADETests: XCTestCase {
 
   func testWorkSubagentSnapshotsPreserveAgentIdAndRunningCount() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","description":"Docs helper","background":true,"turnId":"turn-1"}}
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"task-1","agentId":"agent-1","summary":"Reading README.md","lastToolName":"functions.Read","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","description":"Docs helper","background":true,"label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"task-1","agentId":"agent-1","summary":"Reading README.md","lastToolName":"functions.Read","label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"subagent_started","taskId":"task-2","agentId":"agent-2","description":"Done helper","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"subagent_result","taskId":"task-2","agentId":"agent-2","status":"completed","summary":"Done","turnId":"turn-1"}}
     """
@@ -9503,6 +9834,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first?.agentId, "agent-1")
     XCTAssertEqual(snapshots.first?.parentToolUseId, "parent-agent-1")
     XCTAssertEqual(snapshots.first?.background, true)
+    XCTAssertEqual(snapshots.first?.label, "Researcher")
+    XCTAssertEqual(snapshots.first?.model, "gpt-5.6-luna")
+    XCTAssertEqual(snapshots.first?.reasoningEffort, "xhigh")
     XCTAssertEqual(snapshots.first?.lastToolName, "functions.Read")
     XCTAssertEqual(snapshots.first?.startedAt, "2026-03-25T00:00:01.000Z")
     XCTAssertEqual(snapshots.first?.updatedAt, "2026-03-25T00:00:02.000Z")
@@ -10919,8 +11253,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workReasoningChipLabel("xhigh"), "XH")
     XCTAssertEqual(workReasoningChipLabel("extra-high"), "XH")
     XCTAssertEqual(workReasoningChipLabel("max"), "MAX")
+    XCTAssertEqual(workReasoningChipLabel("ultra"), "ULTRA")
     XCTAssertEqual(workReasoningChipLabel("ultracode"), "ULTRA")
     XCTAssertEqual(workReasoningChipLabel("custom-effort"), "CUS")
+    XCTAssertEqual(workReasoningEffortDisplayName("low"), "Light")
+    XCTAssertEqual(workReasoningEffortDisplayName("medium"), "Medium")
+    XCTAssertEqual(workReasoningEffortDisplayName("high"), "High")
+    XCTAssertEqual(workReasoningEffortDisplayName("xhigh"), "Extra High")
+    XCTAssertEqual(workReasoningEffortDisplayName("ultra"), "Ultra")
   }
 
   func testWorkChatComposerShowsFastModeForCodexSessionsWithoutPersistedFlag() {
@@ -11483,6 +11823,170 @@ final class ADETests: XCTestCase {
       return XCTFail("Expected system_notice event.")
     }
     XCTAssertEqual(noticeSteerId, "steer-1")
+  }
+
+  func testParseWorkChatTranscriptPreservesWebSearchSourceActions() {
+    let raw = #"{"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"web_search","query":"GPT-5.6 Sol","action":"open_page","actions":[{"type":"search","status":"completed","queries":["GPT-5.6 Sol","GPT-5.6 Terra"]},{"type":"open_page","status":"completed","url":"https://openai.com/index/previewing-gpt-5-6-sol/","title":"Previewing GPT-5.6 Sol","snippet":"A new model family."}],"itemId":"search-1","turnId":"turn-1","status":"completed"}}"#
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+    guard case .webSearch(let query, let action, let actions, let status, let itemId, let turnId) = transcript[0].event else {
+      return XCTFail("Expected web_search event.")
+    }
+    XCTAssertEqual(query, "GPT-5.6 Sol")
+    XCTAssertEqual(action, "open_page")
+    XCTAssertEqual(status, .completed)
+    XCTAssertEqual(itemId, "search-1")
+    XCTAssertEqual(turnId, "turn-1")
+    XCTAssertEqual(actions?.count, 2)
+    XCTAssertEqual(actions?.first?.queries, ["GPT-5.6 Sol", "GPT-5.6 Terra"])
+    XCTAssertEqual(actions?.last?.url, "https://openai.com/index/previewing-gpt-5-6-sol/")
+    XCTAssertEqual(actions?.last?.title, "Previewing GPT-5.6 Sol")
+  }
+
+  func testImageActivityBecomesCompactToolCardsWithoutEmbeddingImageData() throws {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_image_generation","itemId":"image-1","turnId":"turn-1","prompt":"Draw a moonlit terminal","status":"running"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"codex_image_generation","itemId":"image-1","turnId":"turn-1","prompt":"Draw a moonlit terminal","revisedPrompt":"A clean moonlit terminal illustration","result":null,"savedPath":"/tmp/moon.png","resultOriginalBytes":81920,"resultOmittedBytes":81920,"status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:03.000Z","sequence":3,"event":{"type":"codex_image_view","itemId":"image-view-1","turnId":"turn-1","path":"/tmp/moon.png","url":"data:image/png;base64,AAAA","title":"Moon preview","status":"completed"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let cards = buildWorkToolCards(from: transcript)
+
+    XCTAssertEqual(cards.map(\.toolName), ["image_generation", "image_view"])
+    XCTAssertEqual(cards.first?.status, .completed)
+    XCTAssertEqual(cards.first?.argsText, "Draw a moonlit terminal")
+    XCTAssertTrue(cards.first?.resultText?.contains("/tmp/moon.png") == true)
+    XCTAssertTrue(cards.first?.resultText?.contains("A clean moonlit terminal illustration") == true)
+    XCTAssertTrue(cards.first?.resultText?.contains("Inline preview omitted from mobile sync (80 KB)") == true)
+    XCTAssertEqual(toolDisplayName(cards[0].toolName), "Image generation")
+    XCTAssertEqual(toolDisplayName(cards[1].toolName), "Image viewed")
+    XCTAssertTrue(cards[1].resultText?.contains("Inline image data") == true)
+    XCTAssertFalse(cards[1].resultText?.contains("base64,AAAA") == true)
+
+    let decoded = try AgentChatEvent.decode(from: [
+      "type": "codex_image_generation",
+      "itemId": "decoded-image",
+      "turnId": "turn-2",
+      "prompt": "Draw a clean icon",
+      "result": "https://example.com/icon.png",
+      "status": "completed",
+    ])
+    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status) = makeWorkChatEvent(from: decoded) else {
+      return XCTFail("Expected decoded image generation to map to a compact tool result.")
+    }
+    XCTAssertEqual(tool, "image_generation")
+    XCTAssertEqual(itemId, "decoded-image")
+    XCTAssertEqual(turnId, "turn-2")
+    XCTAssertEqual(status, .completed)
+    XCTAssertTrue(result.contains("https://example.com/icon.png"))
+  }
+
+  func testCodexRecoveryPreservesChildSessionAndAdvertisedActions() throws {
+    let eventObject: [String: Any] = [
+      "type": "codex_turn_stalled",
+      "turnId": "turn-child",
+      "threadId": "thread-child",
+      "reason": "no_output",
+      "message": "Codex accepted the turn but has not streamed output yet.",
+      "recoveryOptions": ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"],
+      "sourceSessionId": "chat-child",
+    ]
+    let decoded = try AgentChatEvent.decode(from: eventObject)
+    guard case .codexTurnStalled(let turnId, let threadId, let reason, let message, let options, let sourceSessionId) = decoded else {
+      return XCTFail("Expected a Codex stalled-turn event.")
+    }
+    XCTAssertEqual(turnId, "turn-child")
+    XCTAssertEqual(threadId, "thread-child")
+    XCTAssertEqual(reason, "no_output")
+    XCTAssertEqual(sourceSessionId, "chat-child")
+    XCTAssertEqual(options, ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"])
+
+    let mapped = makeWorkChatEvent(from: decoded)
+    let envelope = WorkChatEnvelope(
+      sessionId: "chat-parent",
+      timestamp: "2026-07-09T00:00:01.000Z",
+      sequence: 1,
+      event: mapped
+    )
+    let card = try XCTUnwrap(buildWorkEventCards(from: [envelope]).first)
+    XCTAssertEqual(card.kind, "codexRecovery")
+    XCTAssertEqual(card.body, message)
+    XCTAssertEqual(card.recoverySessionId, "chat-child")
+    XCTAssertEqual(card.recoveryTurnId, "turn-child")
+    XCTAssertEqual(card.recoveryOptions, options)
+
+    let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child"}}"#
+    guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId) = parseWorkChatTranscript(raw).first?.event else {
+      return XCTFail("Expected transcript fallback to preserve the recovery event.")
+    }
+    XCTAssertEqual(parsedOptions, options)
+    XCTAssertEqual(parsedTurnId, "turn-child")
+    XCTAssertEqual(parsedSourceSessionId, "chat-child")
+  }
+
+  func testCodexRecoveryRemainsAvailableInSubagentTranscriptWhenHostSupportsIt() {
+    XCTAssertTrue(workChatCodexRecoveryAvailable(
+      hostSupportsRecovery: true,
+      viewingSubagent: true
+    ))
+    XCTAssertFalse(workChatCodexRecoveryAvailable(
+      hostSupportsRecovery: false,
+      viewingSubagent: true
+    ))
+  }
+
+  func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {
+    let eventObject: [String: Any] = [
+      "type": "tool_call",
+      "tool": "google_drive:search_files",
+      "args": ["query": "roadmap"],
+      "mcp": [
+        "server": "google_drive",
+        "tool": "search_files",
+        "appContext": ["appName": "Google Drive", "actionName": "Search files"],
+      ],
+      "itemId": "mcp-1",
+      "turnId": "turn-1",
+    ]
+    let decoded = try AgentChatEvent.decode(from: eventObject)
+    guard case .toolCall(let decodedTool, _, _, _, _, _) = decoded else {
+      return XCTFail("Expected decoded MCP tool call.")
+    }
+    XCTAssertEqual(decodedTool, "Google Drive:search_files")
+
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"google_drive:search_files","args":{"query":"roadmap"},"mcp":{"server":"google_drive","tool":"search_files","appContext":{"appName":"Google Drive","actionName":"Search files"}},"itemId":"mcp-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"tool_result","tool":"google_drive:search_files","result":"2 files","mcp":{"server":"google_drive","tool":"search_files","appContext":{"appName":"Google Drive","actionName":"Search files"}},"itemId":"mcp-1","turnId":"turn-1","status":"completed"}}
+    """
+    let cards = buildWorkToolCards(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(cards.first?.toolName, "Google Drive:search_files")
+    XCTAssertEqual(toolDisplayName(cards.first?.toolName ?? ""), "Google Drive · search files")
+    XCTAssertEqual(cards.first?.resultText, "2 files")
+    XCTAssertTrue(isRequestUserInputToolName("ADE:request_user_input"))
+  }
+
+  func testMalformedMcpMetadataFallsBackToRawToolForCallAndResult() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"google_drive:search_files","args":{"query":"roadmap"},"mcp":{"server":"google_drive"},"itemId":"mcp-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"tool_result","tool":"google_drive:search_files","result":"2 files","mcp":{"tool":"search_files"},"itemId":"mcp-1","turnId":"turn-1","status":"completed"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+
+    guard transcript.count == 2,
+          case .toolCall(let callTool, _, let callItemId, _, _) = transcript[0].event,
+          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status) = transcript[1].event else {
+      return XCTFail("Expected malformed MCP metadata to preserve the raw tool call and result.")
+    }
+    XCTAssertEqual(callTool, "google_drive:search_files")
+    XCTAssertEqual(callItemId, "mcp-1")
+    XCTAssertEqual(resultTool, "google_drive:search_files")
+    XCTAssertEqual(resultText, "2 files")
+    XCTAssertEqual(resultItemId, "mcp-1")
+    XCTAssertEqual(status, .completed)
   }
 
   func testParseWorkChatTranscriptPrefersUserMessageDisplayText() {
@@ -12216,6 +12720,46 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.5"), ["low", "medium", "high", "xhigh"])
   }
 
+  func testWorkModelCatalogKeepsGPT56TiersFirstWithExactReasoningDefaults() {
+    let codexModels = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+      .first(where: { $0.key == "codex" })?
+      .providers
+      .first(where: { $0.key == "openai" })?
+      .models
+
+    XCTAssertEqual(codexModels?.prefix(3).map(\.id), [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ])
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-5.6-sol")
+
+    let sol = codexModels?.first(where: { $0.id == "gpt-5.6-sol" })
+    XCTAssertEqual(sol?.displayName, "GPT-5.6 Sol")
+    XCTAssertEqual(sol?.tier, .flagship)
+    XCTAssertEqual(sol?.tagline, "Flagship · 372k context")
+    XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(sol?.defaultReasoningEffort, "low")
+    XCTAssertTrue(sol?.supportsCodexFastMode == true)
+
+    let terra = codexModels?.first(where: { $0.id == "gpt-5.6-terra" })
+    XCTAssertEqual(terra?.tier, .balanced)
+    XCTAssertEqual(terra?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(terra?.defaultReasoningEffort, "medium")
+
+    let luna = codexModels?.first(where: { $0.id == "gpt-5.6-luna" })
+    XCTAssertEqual(luna?.tier, .fast)
+    XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh"])
+    XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
+
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-5.6-terra"))
+    XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-5.6-luna"))
+    XCTAssertEqual(workModelCatalogGroupKey(for: "sol", currentProvider: ""), "codex")
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.6-terra"), "GPT-5.6 Terra")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "luna"))
+  }
+
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
@@ -12229,6 +12773,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
   }
@@ -12310,6 +12857,71 @@ final class ADETests: XCTestCase {
     let cursorGroup = groups.first(where: { $0.key == "cursor" })
     XCTAssertEqual(cursorGroup?.providers.map(\.key), ["anthropic", "cursor"])
     XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
+  }
+
+  func testHostModelCatalogDefensivelyPrioritizesGPT56AndCarriesDefaultEffort() throws {
+    let payload: [String: Any] = [
+      "groups": [[
+        "key": "codex",
+        "displayName": "Codex",
+        "providers": [[
+          "key": "openai",
+          "displayName": "OpenAI",
+          "badgeColor": "#10A37F",
+          "modelCount": 4,
+          "subsections": [[
+            "key": "models",
+            "label": "Models",
+            "models": [
+              ["id": "gpt-5.5", "runtimeModelId": "gpt-5.5", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.5", "isDefault": false, "isAvailable": true],
+              ["id": "gpt-5.6-luna", "runtimeModelId": "gpt-5.6-luna", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Luna", "isDefault": false, "defaultReasoningEffort": "medium", "isAvailable": true],
+              ["id": "gpt-5.6-sol", "runtimeModelId": "gpt-5.6-sol", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Sol", "isDefault": true, "defaultReasoningEffort": "low", "reasoningEfforts": [["effort": "low", "description": "fast"], ["effort": "medium", "description": "balanced"], ["effort": "high", "description": "deep"], ["effort": "xhigh", "description": "extended"], ["effort": "max", "description": "optional"], ["effort": "ultra", "description": "delegates"]], "isAvailable": true],
+              ["id": "gpt-5.6-terra", "runtimeModelId": "gpt-5.6-terra", "provider": "codex", "providerKey": "openai", "groupKey": "codex", "displayName": "GPT-5.6 Terra", "isDefault": false, "defaultReasoningEffort": "medium", "isAvailable": true],
+            ],
+          ]],
+        ]],
+      ]],
+      "fetchedAt": "2026-07-09T00:00:00Z",
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let hostCatalog = try JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+    let models = workModelCatalogGroups(
+      hostCatalog: hostCatalog,
+      currentModelId: "",
+      currentProvider: "codex"
+    ).first?.providers.first?.models
+
+    XCTAssertEqual(models?.map(\.id), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
+    XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
+    XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "ultra"])
+
+    let legacyListData = try JSONSerialization.data(withJSONObject: [
+      "id": "gpt-5.6-luna",
+      "displayName": "GPT-5.6 Luna",
+      "isDefault": false,
+      "reasoningEfforts": [
+        ["effort": "low", "description": "light"],
+        ["effort": "medium", "description": "balanced"],
+        ["effort": "high", "description": "deep"],
+        ["effort": "xhigh", "description": "extended"],
+        ["effort": "max", "description": "optional"],
+      ],
+    ])
+    let legacyListModel = try JSONDecoder().decode(AgentChatModelInfo.self, from: legacyListData)
+    XCTAssertEqual(workVisibleReasoningEfforts(for: legacyListModel).map(\.effort), ["low", "medium", "high", "xhigh"])
+
+    let flatListData = try JSONSerialization.data(withJSONObject: [
+      ["id": "gpt-5.5", "displayName": "GPT-5.5", "isDefault": false],
+      ["id": "gpt-5.6-luna", "displayName": "GPT-5.6 Luna", "isDefault": false],
+      ["id": "gpt-5.6-sol", "displayName": "GPT-5.6 Sol", "isDefault": true],
+      ["id": "gpt-5.6-terra", "displayName": "GPT-5.6 Terra", "isDefault": false],
+    ])
+    let flatList = try JSONDecoder().decode([AgentChatModelInfo].self, from: flatListData)
+    XCTAssertEqual(
+      workPrioritizeGPT56ChatModels(flatList, provider: "codex").map(\.id),
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+    )
+    XCTAssertEqual(workPrioritizeGPT56ChatModels(flatList, provider: "claude").map(\.id), flatList.map(\.id))
   }
 
   func testCuratedCursorSonnetUsesCursorRuntimeDescriptorId() {

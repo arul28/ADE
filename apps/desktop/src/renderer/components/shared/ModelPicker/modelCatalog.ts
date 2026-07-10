@@ -202,9 +202,10 @@ export function descriptorsFromAgentChatModelCatalog(
         for (const model of subsection.models ?? []) {
           const base = resolveModelDescriptor(model.id) ?? createUnknownModelPlaceholder(model.id);
           const family = pickerFamilyForCatalogGroup(String(model.groupKey || group.key), model.family);
+          const isGpt56CodexModel = /^gpt-5\.6-(?:sol|terra|luna)$/i.test(base.providerModelId);
           const runtimeReasoningTiers = model.reasoningEfforts
             ?.map((entry) => entry.effort.trim().toLowerCase())
-            .filter(Boolean);
+            .filter((effort) => Boolean(effort) && (!isGpt56CodexModel || effort !== "max"));
           const serviceTiers = model.serviceTiers
             ?.map((entry) => entry.trim().toLowerCase())
             .filter(Boolean);
@@ -224,6 +225,11 @@ export function descriptorsFromAgentChatModelCatalog(
             ...(model.aliases?.length ? { aliases: model.aliases } : base.aliases?.length ? { aliases: base.aliases } : {}),
             capabilities,
             ...(runtimeReasoningTiers?.length ? { reasoningTiers: runtimeReasoningTiers } : {}),
+            ...(model.defaultReasoningEffort
+              ? { defaultReasoningEffort: model.defaultReasoningEffort.trim().toLowerCase() }
+              : base.defaultReasoningEffort
+                ? { defaultReasoningEffort: base.defaultReasoningEffort }
+                : {}),
             ...(model.serviceTiers !== undefined
               ? { serviceTiers }
               : base.serviceTiers?.length

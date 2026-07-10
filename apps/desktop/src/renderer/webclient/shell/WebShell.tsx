@@ -95,6 +95,7 @@ export function WebShell({
   onPairNew,
   onForgetEnv,
   onSwitchProject,
+  onOpenChats,
   children,
 }: {
   status: AdeSyncClientStatus;
@@ -106,6 +107,7 @@ export function WebShell({
   onPairNew: () => void;
   onForgetEnv: (environment: WebClientEnvironmentRecord) => void;
   onSwitchProject: (project: SyncMobileProjectSummary) => void;
+  onOpenChats: () => void;
   children: React.ReactNode;
 }) {
   const tone = connectionTone(status.state);
@@ -249,8 +251,7 @@ export function WebShell({
             type="button"
             style={triggerStyle(projectMenu)}
             onClick={() => { setProjectMenu((open) => !open); setMachineMenu(false); }}
-            disabled={catalog.length === 0}
-            title={activeProject?.rootPath ?? undefined}
+            title={activeProject?.rootPath ?? "Choose a project or open a projectless chat"}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {activeProject?.displayName ?? "Select project"}
@@ -259,9 +260,22 @@ export function WebShell({
           </button>
           {projectMenu ? (
             <div style={menuStyle}>
+              <button
+                type="button"
+                style={menuItemStyle}
+                onClick={() => { onOpenChats(); setProjectMenu(false); }}
+              >
+                Chat without a project
+              </button>
+              <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
               <div style={{ padding: "4px 8px 6px", color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
                 Projects
               </div>
+              {catalog.length === 0 ? (
+                <div style={{ padding: "5px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>
+                  No projects available
+                </div>
+              ) : null}
               <div style={{ display: "grid", gap: 2, maxHeight: "60vh", overflow: "auto" }}>
                 {catalog.map((project) => {
                   const isActive = project.id === activeProjectId;

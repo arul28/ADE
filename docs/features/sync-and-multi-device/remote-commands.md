@@ -8,7 +8,7 @@ action against its in-process services, and replies with `command_ack`
 and then `command_result`.
 
 Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
-(~3,280 lines). The desktop tree's
+(~4,600 lines). The desktop tree's
 `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
 one-line re-export of the canonical module.
 
@@ -83,8 +83,9 @@ type SyncRemoteCommandPolicy = {
 ```
 
 The scope label matters because the brain serves **multiple projects**
-at once. `runtime`-scoped commands (machine-wide diagnostics, project
-catalog reads, settings, and `sync.getWebPairingInfo` — the browser
+and one hidden personal-chat scope at once. `runtime`-scoped commands
+(machine-wide diagnostics, personal chats, project catalog reads, settings,
+and `sync.getWebPairingInfo` — the browser
 pairing URL / PIN / relay-availability read the iOS "Pair a browser"
 sheet calls) run without a project binding. `project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
@@ -142,9 +143,16 @@ Listed in order of appearance in the registry. The hosted browser web
 client (`../web-client/README.md`) is a controller of this same registry,
 so read-heavy Work/chat/git/PR/history surfaces plus whole families
 (`terminal.*`, `rebase.*`, `history.*`, `github.*`, `projectConfig.*`,
-`ai.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
+`ai.*`, `usage.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
 over the wire. A controller only invokes an action the host advertises in
 `hello_ok.features.commandRouting.actions`.
+
+**Usage** (`usage.*`)
+- `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
+  or all time. Returns the same stale-while-revalidate aggregate used by
+  desktop Stats: provider tokens, project-DB activity, daily points, and
+  `desktop` / `mobile` / `tui` / `web` / `api` client attribution. It does
+  not replicate or return raw `usage_events` rows.
 
 **Lanes** (`lanes.*`)
 - `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`,
@@ -233,6 +241,22 @@ the queued message runs next; it returns `{ ok, dispatchedAt }`.
 model reads it, returning `{ ok, cancelled }`. The iOS companion uses
 both via `SyncService.dispatchChatSteer` /
 `cancelDispatchedChatSteer`.
+
+**Personal chat** (`personalChats.*`)
+- `list`, `create`, `getSummary`, `read`, `send`
+- `steer`, `cancelSteer`, `editSteer`, `dispatchSteer`,
+  `cancelDispatchedSteer`, `interrupt`, `respondToInput`, `approve`
+- `updateSession`, `archive`, `unarchive`, `delete`
+- `models`, `modelCatalog`, `getEventHistory`, `getEventHistoryPage`
+- `terminalCreate`, `terminalWrite`, `terminalResize`, `terminalDispose`
+- `saveTempAttachment`, `getImageDataUrl`, `streamEvents`
+
+All personal actions are `scope: "runtime"` and dispatch to the injected
+`PersonalChatScope`, never to the active project's `agentChatService`. Only
+`send` is queueable. `create` is live-only because replaying a queued create
+cannot return a stable session id and may duplicate the conversation. Every
+session-bound action revalidates `surface: "personal"`; terminal and attachment
+actions additionally enforce scope ownership/path confinement.
 
 **Git** (`git.*`)
 - `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`
@@ -402,6 +426,10 @@ A handful have more logic:
   — the same module the desktop Work tab uses — so the runtime owns the
   startup-command shape and a phone cannot smuggle in a free-form
   shell command (the `shell` provider takes no startup payload at all).
+  For Codex on macOS, the runtime resolves the explicitly opted-in and
+  OpenAI-signature-verified standalone Computer Use client at launch time and
+  adds only the canonical `mcp_servers.computer_use` config overrides; a
+  missing/disabled/unverified client adds nothing.
   The runtime resolves the requested lane worktree before building that
   launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
   lane-local `.claude` / `.agents` / `.ade` / `.codex` skill dirs and
@@ -422,6 +450,16 @@ A handful have more logic:
   only the returned session handle and summary, not the `initialInput`
   text, so reconnect replay does not leak the user's prompt into the
   runtime-side ledger.
+- **`work.listExternalSessions` / `work.importExternalSession`** — list and
+  import provider-native Claude, Codex, Cursor, Droid, and OpenCode CLI
+  sessions through the runtime's external-session service. Import forwards the
+  full service result: CLI results carry the new `sessionId` / `ptyId` plus a
+  persisted `TerminalSessionSummary` when available; chat results carry the
+  new `chatSessionId` plus the required persisted `AgentChatSessionSummary`.
+  Controllers use those summaries for immediate navigation rather than waiting
+  for the next sync/session-list refresh. Provider storage, cwd validation, and
+  process launch remain host-side; see
+  [External Session Import](../terminals-and-sessions/external-session-import.md).
 - **`work.sendToSession`** — sends text to an existing durable Work
   CLI session. If the PTY is live, the runtime writes into it; if the
   process ended and the session is resumable, the runtime starts the
@@ -432,6 +470,10 @@ A handful have more logic:
 - **`chat.create`** — resolves a missing `model` to the first
   available provider model via `agentChatService.getAvailableModels`
   before forwarding.
+- **`chat.recoverCodexTurn`** — validates one of `wait`, `steer`,
+  `interrupt_retry_same_thread`, or `restart_resume_thread` and forwards to
+  the chat service. It is viewer-allowed but deliberately non-queueable: the
+  session/turn pair must still be the active stalled turn when handled.
 - **`lanes.suggestName`** — background lane naming for the mobile
   auto-create flow (desktop parity with
   `agentChatService.suggestLaneNameFromPrompt`). Takes `{ prompt,
@@ -515,6 +557,7 @@ services:
   laneTemplateService?,
   rebaseSuggestionService?,
   autoRebaseService?,
+  usageTrackingService?,
   logger,
 }
 ```
@@ -565,7 +608,10 @@ can be sensitive.
   a command, subscribe to the transcript stream for incremental
   events. `chat.send` waits for the runtime-side dispatch acknowledgement
   before returning `ok`, so the phone does not clear its local echo
-  while the desktop is still preparing the turn.
+  while the desktop is still preparing the turn. Personal chat uses the same
+  envelopes but sends `chatScope: "personal"`; that explicit discriminator
+  resolves the hidden durable transcript and active-turn state without a
+  `projectId`.
 - **File access sub-protocol** (`file_request` / `file_response`) is
   a separate envelope from remote commands; it handles large binary
   payloads and streaming reads outside the command surface to avoid
@@ -619,11 +665,16 @@ first fetch instead of returning an empty passive cache.
 - **`chat.models` returns the brain's model catalog.** A controller
   must not hardcode model IDs. The brain is authoritative about
   which models are wired up, which providers have credentials, and
-  what the default model is.
+  what the default model and `defaultReasoningEffort` are. Compatibility
+  catalogs may keep fallback rows for older hosts, but host-advertised tiers
+  and defaults win.
 - **`lanes.delete` and `lanes.archive` are queueable.** A
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
+- **Do not make `personalChats.create` queueable.** Clients can cache personal
+  summaries per host for offline reading, but creation must wait for a live
+  brain. Only an existing session's `personalChats.send` may queue.
 - **`prs.createFromLane` requires GitHub auth on the brain.** Headless
   brains resolve auth the same way the desktop does: a stored PAT,
   then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),

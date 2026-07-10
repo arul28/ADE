@@ -7,9 +7,10 @@ protocol, using the same sync host that iOS uses.
 
 Production hosting is Cloudflare Pages. The Pages URL is
 `https://ade-web-client.pages.dev`; the canonical product URL in source is
-`https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`). DNS for the canonical domain
-is pending, so use the Pages URL for live deployment checks until it resolves.
-The app is built from `apps/desktop` with `npm run build:webclient`.
+`https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`). The canonical domain is live
+and attached to the `ade-web-client` Pages project; the Pages URL remains a
+direct deployment-check fallback. The app is built from `apps/desktop` with
+`npm run build:webclient`.
 
 ## Source file map
 
@@ -65,9 +66,16 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
-  `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
+  `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
-  sync sub-protocols, and local browser-only state.
+  sync sub-protocols, and local browser-only state. `misc.ts` routes
+  `window.ade.usage.getAdeStats` through the viewer-allowed
+  `usage.getAdeStats` command so the reused empty-Work activity carousel shows
+  the runtime's cached cross-client aggregate instead of an empty native stub.
+  `personalChats.ts` invokes
+  runtime-scoped `personalChats.*` actions with `requireProject: false`, adds
+  explicit `chatScope: "personal"` transcript subscriptions, dedupes their
+  events, and provides the cursor stream consumed by the shared Chats page.
 
 Browser shell and routes:
 
@@ -76,7 +84,8 @@ Browser shell and routes:
   `WebClientRoot`.
 - `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
   sequence, saved-machine reconnect, pair flow, project picker, adapter load,
-  pending `/open` target stash, and project binding.
+  pending `/open` target stash, project binding, and projectless `/chats`
+  routing before a project is selected.
 - `apps/desktop/src/renderer/webclient/shell/PairFlow.tsx` - pairing-link
   parser, PIN entry, device name, manual `wss://` endpoint override, and
   hosted-page reachability errors.
@@ -96,11 +105,18 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/lib/webClientMode.ts` - `isWebClientMode()` reads
   the `window.__adeWebClient` flag the bootstrap stamps before the App module
   loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
-  (`/work`, `/lanes`, `/files`, `/prs`). Desktop-only chrome
+  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). Desktop-only chrome
   (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` - desktop Mobile and
+  Web connection chips. The Web chip reports connected browser peers, opens
+  the web-only pairing sheet, and is omitted from the hosted web-client shell.
+  Remote, Mobile, and Web sheets are mutually exclusive.
+- `apps/desktop/src/renderer/components/app/HeaderSheet.tsx` - shared portaled
+  sheet scaffold and dialog focus-trap helpers used by the Mobile and Web
+  top-bar sheets.
 
 Machine runtime and sync host:
 
@@ -133,8 +149,12 @@ Machine runtime and sync host:
 Pairing, links, and entry points:
 
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
-  desktop Settings > Sync web-client card, web pairing QR/link, cloud relay
-  toggle, and Web clients revoke/remove list.
+  desktop Settings > Sync device management plus the focused top-bar sheet
+  bodies. Its `variant?: "all" | "phone" | "web"` prop keeps Settings complete
+  while the Mobile and Web sheets show only their relevant controls. The web
+  variant can generate a new six-digit PIN when the configured PIN is hashed
+  at rest and no longer displayable, and provides copy feedback plus an
+  enlarged pairing-QR dialog.
 - `apps/desktop/src/shared/pairingQr.ts` - smart pairing URL
   `https://ade-app.dev/pair#<base64url(JSON)>`; the fragment carries host
   identity, port, address candidates, and optional relay URL, never the PIN.
@@ -150,6 +170,10 @@ Pairing, links, and entry points:
   `SessionContextMenu.tsx` - desktop "Open in web" entry points.
 - `apps/web/src/app/pages/PairPage.tsx` - marketing-site `/pair` hash-forward
   to the hosted web client.
+- `apps/web/scripts/check-entities.mjs` - dependency-free TypeScript-AST guard
+  run by the marketing-site build. It rejects unsupported named HTML entities
+  in JSX text, expressions, and attributes before they can ship as literal UI
+  text.
 - `apps/ios/ADE/Views/Settings/SettingsWebClientPairSheet.swift` - iOS
   Settings > Pairing > "Pair a browser" sheet. It fetches the machine's
   pairing URL, PIN, machine name, and relay availability over the
@@ -158,6 +182,8 @@ Pairing, links, and entry points:
 
 Tests:
 
+- `apps/desktop/src/renderer/components/app/TopBar.test.tsx`.
+- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
@@ -307,6 +333,9 @@ adapter then refreshes through the appropriate remote command or sub-protocol:
   `terminal_input`, and `terminal_resize`.
 - Projects: `project_catalog`, `project_catalog_request`,
   `project_switch_request`, and `project_switch_result`.
+- Personal chats: runtime-scoped `personalChats.*` commands plus
+  `chat_subscribe` / `chat_event` carrying `chatScope: "personal"`. These are
+  not inferred from, or stored in, the selected project's changeset stream.
 
 Browser-local persistence is limited to UI state and pairing state:
 `envStore.ts` stores paired environments in IndexedDB, and
@@ -391,6 +420,8 @@ Ops checks after deploy:
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
 - No ADE Browser, app control, computer use, or iOS Simulator surface.
+  Projectless Chats therefore shows its runtime-backed Terminal control but not
+  the desktop-only Browser button/profile.
 - No local file watcher. File-change events are synthesized from
   changeset-driven invalidation and are coarser than desktop chokidar events.
 - Some progress/live updates are invalidation-triggered snapshots rather than
@@ -402,6 +433,8 @@ Ops checks after deploy:
 
 ## Cross-links
 
+- [Personal chats](../personal-chats/README.md) - machine-scoped projectless
+  chat storage, command surface, transcript scope, and shared UI contract.
 - [Sync and multi-device](../sync-and-multi-device/README.md) - shared sync
   protocol, pairing, DPoP, project catalog, remote commands, and relay.
 - [Deeplinks](../deeplinks/README.md) - canonical `ade://` and

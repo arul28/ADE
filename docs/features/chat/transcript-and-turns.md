@@ -74,7 +74,7 @@ Two helpers summarise a parsed stream:
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
-| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. |
+| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. |
 | `file_change` | Emitted when the agent writes or deletes a file; carries `path`, `diff`, and `kind`. |
 | `command` | A shell command invocation; carries `cwd`, `output`, `exitCode`, `durationMs`. |
 | `plan` | Final plan payload (steps + explanation); replaces any earlier `plan_text` rows for that turn. |
@@ -96,8 +96,9 @@ Two helpers summarise a parsed stream:
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
 | `context_compact` | Emitted before the provider compacts context (manual or auto). |
-| `web_search` | Web-search tool lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Codex actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. |
-| `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. |
+| `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. |
+| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. Large stored data URIs are removed with original/omitted byte metadata. |
+| `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. Its actions are `wait`, `steer`, `interrupt_retry_same_thread`, and `restart_resume_thread`. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
 
@@ -116,6 +117,25 @@ underscore subagent rows used by older renderer paths, then
 subagent row beside it. `AgentChatPane` filters the dotted rows from
 the transcript display because they are coordination data, while
 subagent-specific panels can consume either shape during the transition.
+
+## Structured activity normalization
+
+Adapters preserve provider richness while converging on compact event shapes:
+
+- Claude server `web_search` / `web_fetch` blocks become `web_search` start
+  and terminal events. Claude MCP blocks become paired tool events; unfinished
+  server activities are closed when the turn ends.
+- Codex 0.144.0 `mcpToolCall` items retain plugin/app/resource metadata, while
+  native web/image/subagent items keep their specialized compact rows.
+- Cursor MCP calls and generated images, OpenCode image file parts, and Droid
+  assistant image blocks reuse those same tool/image events.
+
+Every event uses the provider item id (plus turn id) as its lifecycle key.
+Desktop `chatTranscriptRows`, ADE Code `aggregateChatBlocks`, and iOS
+`WorkEventMapping`/`WorkTranscriptParser` therefore update one row instead of
+printing repeated start/progress/result records. The Codex Sources tab derives
+files, web results, connector apps/actions, and external URLs from this same
+stream; it is a view, not a second persistence channel.
 
 ## Render pipeline
 
@@ -266,12 +286,15 @@ or capped files do not hide compacted chat history.
 
 Persisted chat events keep the same public `AgentChatEvent` shape, but bulky
 payloads are compacted before storage for rows users rarely need in full after
-the turn is over. Large command output, tool results, file diffs, and reasoning
-text are replaced with a short head/tail preview plus original/omitted byte
-metadata on the event (`outputOriginalBytes`, `resultOmittedBytes`,
-`diffOmittedBytes`, `textOmittedBytes`, etc.). Live subscribers still receive
-the full event payload while a turn is active; the renderer, iOS client, CLI,
-and TUI see the persisted preview only when replaying stored history.
+the turn is over. Large command output, tool results, file diffs, reasoning
+text, and inline image data URIs are replaced with a short preview (or no inline
+media) plus original/omitted-byte metadata on the event
+(`outputOriginalBytes`, `resultOmittedBytes`, `diffOmittedBytes`,
+`textOmittedBytes`, `urlOmittedBytes`, etc.). Desktop/runtime live subscribers
+still receive the original event while a turn is active. The sync host
+independently removes inline image data URIs over 64 KB from mobile live sends,
+snapshots, and replay entries without mutating the desktop event.
+Persisted-history consumers see the stored preview on replay.
 
 `sessionRecovery.ts` implements version-2 reconstruction:
 

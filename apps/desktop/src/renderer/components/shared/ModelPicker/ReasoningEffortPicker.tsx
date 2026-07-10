@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Question } from "@phosphor-icons/react";
 import type { ModelDescriptor } from "../../../../shared/modelRegistry";
@@ -18,84 +18,31 @@ export type ReasoningEffortPickerProps = {
   triggerClassName?: string;
 };
 
-export function reasoningChipLabel(effort: string | null | undefined): string | null {
+export function reasoningChipLabel(
+  effort: string | null | undefined,
+  useCodex56Labels = false,
+): string | null {
   if (!effort) return null;
   const lower = effort.trim().toLowerCase();
   if (!lower) return null;
   if (lower === "minimal") return "MIN";
-  if (lower === "low") return "LOW";
+  if (lower === "low") return useCodex56Labels ? "LIGHT" : "LOW";
   if (lower === "medium") return "MED";
   if (lower === "high") return "HI";
   if (lower === "xhigh") return "XH";
   if (lower === "max") return "MAX";
+  if (lower === "ultra") return "ULTRA";
   if (lower === "ultracode") return "ULTRA";
   return lower.slice(0, 3).toUpperCase();
 }
 
-function tierLabel(tier: string): string {
+function tierLabel(tier: string, useCodex56Labels = false): string {
+  if (useCodex56Labels && tier === "low") return "Light";
   if (tier === "xhigh") return "Extra High";
   if (tier === "max") return "Max";
+  if (tier === "ultra") return "Ultra";
   if (tier === "ultracode") return "Ultracode";
   return tier.charAt(0).toUpperCase() + tier.slice(1);
-}
-
-const reasoningSliderStyleId = "ade-reasoning-slider-effects";
-
-function ensureReasoningSliderStyles(): void {
-  if (typeof document === "undefined") return;
-  if (document.getElementById(reasoningSliderStyleId)) return;
-  const sheet = document.createElement("style");
-  sheet.id = reasoningSliderStyleId;
-  sheet.textContent = `
-    @keyframes ade-reasoning-effort-word-pop {
-      0% { opacity: 0; transform: translateY(3px); filter: blur(3px); }
-      100% { opacity: 1; transform: translateY(0); filter: blur(0); }
-    }
-    @keyframes ade-reasoning-fill-sheen {
-      0% { transform: translateX(-80%); opacity: 0; }
-      35% { opacity: 0.55; }
-      100% { transform: translateX(80%); opacity: 0; }
-    }
-    @keyframes ade-reasoning-grid-drift {
-      0% { background-position: 0 0, 0 0; }
-      100% { background-position: -18px 0, 0 0; }
-    }
-    .ade-reasoning-effort-word {
-      animation: ade-reasoning-effort-word-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-    }
-    .ade-reasoning-slider-fill {
-      background: linear-gradient(90deg, rgba(var(--reasoning-fill-rgb), 0.38), rgba(var(--reasoning-fill-rgb), 0.82));
-      box-shadow: 0 0 18px rgba(var(--reasoning-fill-rgb), 0.24);
-      transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background 220ms ease, box-shadow 220ms ease;
-    }
-    .ade-reasoning-slider-fill::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.22) 50%, transparent 78%);
-      animation: ade-reasoning-fill-sheen 1.8s ease-in-out infinite;
-    }
-    .ade-reasoning-slider-fill-max {
-      background:
-        radial-gradient(circle at center, rgba(255,255,255,0.20) 0 0.8px, transparent 1px),
-        linear-gradient(90deg, rgba(124,58,237,0.34), rgba(216,180,254,0.86));
-      background-size: 4px 4px, 100% 100%;
-      animation: ade-reasoning-grid-drift 1.15s linear infinite;
-      box-shadow: 0 0 24px rgba(167,139,250,0.34);
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .ade-reasoning-effort-word,
-      .ade-reasoning-slider-fill::after,
-      .ade-reasoning-slider-fill-max {
-        animation: none;
-      }
-      .ade-reasoning-slider-fill {
-        transition: none;
-      }
-    }
-  `;
-  document.head.appendChild(sheet);
 }
 
 type ReasoningToneKey = "auto" | "low" | "steady" | "smart" | "deep" | "max";
@@ -177,6 +124,48 @@ function tierPercent(index: number, total: number): number {
   return (index / (total - 1)) * 100;
 }
 
+function pointerPercent(clientX: number, rect: DOMRect): number {
+  const ratio = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
+  return Math.max(0, Math.min(100, ratio * 100));
+}
+
+function nearestTierIndex(percent: number, total: number): number {
+  if (total <= 1) return 0;
+  return Math.round((percent / 100) * (total - 1));
+}
+
+function sliderThumbPosition(percent: number): string {
+  const clamped = Math.max(0, Math.min(100, percent));
+  return `calc(${clamped}% + ${8 - (clamped / 100) * 16}px)`;
+}
+
+function setSliderTrackPosition(track: HTMLDivElement, percent: number, hasFill = true): void {
+  const position = sliderThumbPosition(percent);
+  track.style.setProperty("--reasoning-slider-thumb-position", position);
+  track.style.setProperty("--reasoning-slider-fill-position", hasFill ? position : "0%");
+}
+
+function reasoningProgressiveGradient(total: number): string {
+  if (total <= 0) return "linear-gradient(90deg, transparent, transparent)";
+  const stops = Array.from({ length: total }, (_, index) => {
+    const tone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(index, total)];
+    const percent = tierPercent(index, total);
+    const opacity = 0.58 + (index / Math.max(1, total - 1)) * 0.34;
+    return `rgba(${tone.rgb} / ${opacity.toFixed(2)}) ${percent}%`;
+  });
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
+const POINTER_DRAG_THRESHOLD_PX = 3;
+
+type ActivePointerGesture = {
+  pointerId: number;
+  startClientX: number;
+  startedOnRidge: boolean;
+  moved: boolean;
+  captured: boolean;
+};
+
 export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   modelId,
   reasoningEffort,
@@ -188,9 +177,23 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   triggerClassName,
 }: ReasoningEffortPickerProps) {
   const [open, setOpen] = useState(false);
+  const activePointerGestureRef = useRef<ActivePointerGesture | null>(null);
+  const suppressTierClickRef = useRef(false);
+  const suppressTierClickTimerRef = useRef<number | null>(null);
   const { rememberReasoning, getReasoningForFamily } = useReasoningByFamily();
   useEffect(() => {
-    ensureReasoningSliderStyles();
+    if (open) return;
+    activePointerGestureRef.current = null;
+    suppressTierClickRef.current = false;
+    if (suppressTierClickTimerRef.current != null) {
+      window.clearTimeout(suppressTierClickTimerRef.current);
+      suppressTierClickTimerRef.current = null;
+    }
+  }, [open]);
+  useEffect(() => () => {
+    if (suppressTierClickTimerRef.current != null) {
+      window.clearTimeout(suppressTierClickTimerRef.current);
+    }
   }, []);
 
   const descriptor = useMemo<ModelDescriptor | undefined>(
@@ -198,23 +201,33 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [modelId],
   );
 
-  const tiers = descriptor?.reasoningTiers ?? [];
+  const tiers = useMemo(
+    () => descriptor?.reasoningTiers ?? [],
+    [descriptor?.reasoningTiers],
+  );
   const family = descriptor?.family;
+  const useCodex56Labels = /^gpt-5\.6-(?:sol|terra|luna)$/i.test(descriptor?.providerModelId ?? "");
 
   const displayedEffort = useMemo<string | null>(() => {
-    if (reasoningEffort) return reasoningEffort;
-    if (useFamilyDefaults && family) return getReasoningForFamily(family);
+    const modelDefault = descriptor?.defaultReasoningEffort;
+    const validModelDefault = modelDefault && tiers.includes(modelDefault) ? modelDefault : null;
+    if (reasoningEffort) {
+      return tiers.includes(reasoningEffort) ? reasoningEffort : validModelDefault;
+    }
+    if (useFamilyDefaults && family) {
+      const remembered = getReasoningForFamily(family);
+      if (remembered) return tiers.includes(remembered) ? remembered : validModelDefault;
+    }
     return null;
-  }, [reasoningEffort, family, getReasoningForFamily, useFamilyDefaults]);
+  }, [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
   const activeTone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(activeIndex, tiers.length)];
-  const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!) : "Auto";
-  const fillPercent = activeIndex < 0 ? 0 : tiers.length <= 1 ? 100 : tierPercent(activeIndex, tiers.length);
+  const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
   const thumbPercent = activeIndex < 0 ? 0 : tierPercent(activeIndex, tiers.length);
-  const thumbLeft = activeIndex < 0 || tiers.length <= 1
-    ? activeIndex < 0 ? "8px" : "50%"
-    : `calc(${thumbPercent}% + ${8 - (thumbPercent / 100) * 16}px)`;
+  const thumbLeft = activeIndex < 0 ? "8px" : sliderThumbPosition(thumbPercent);
+  const fillPosition = activeIndex < 0 ? "0%" : thumbLeft;
+  const progressiveGradient = useMemo(() => reasoningProgressiveGradient(tiers.length), [tiers.length]);
 
   const commitEffort = useCallback(
     (tier: string | null) => {
@@ -228,23 +241,138 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const handleSelect = useCallback(
     (tier: string) => {
       commitEffort(displayedEffort === tier ? null : tier);
-      setOpen(false);
     },
     [commitEffort, displayedEffort],
   );
 
-  const handleTrackPointer = useCallback(
+  const restoreTrackPosition = useCallback(
+    (track: HTMLDivElement) => {
+      track.removeAttribute("data-dragging");
+      track.style.setProperty("--reasoning-slider-thumb-position", thumbLeft);
+      track.style.setProperty("--reasoning-slider-fill-position", fillPosition);
+    },
+    [fillPosition, thumbLeft],
+  );
+
+  const releasePointerCapture = useCallback((track: HTMLDivElement, pointerId: number) => {
+    if (typeof track.releasePointerCapture !== "function") return;
+    if (typeof track.hasPointerCapture === "function" && !track.hasPointerCapture(pointerId)) return;
+    track.releasePointerCapture(pointerId);
+  }, []);
+
+  const suppressTrailingTierClick = useCallback(() => {
+    suppressTierClickRef.current = true;
+    if (suppressTierClickTimerRef.current != null) {
+      window.clearTimeout(suppressTierClickTimerRef.current);
+    }
+    suppressTierClickTimerRef.current = window.setTimeout(() => {
+      suppressTierClickRef.current = false;
+      suppressTierClickTimerRef.current = null;
+    }, 0);
+  }, []);
+
+  const handleTrackClickCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressTierClickRef.current) return;
+    suppressTierClickRef.current = false;
+    if (suppressTierClickTimerRef.current != null) {
+      window.clearTimeout(suppressTierClickTimerRef.current);
+      suppressTierClickTimerRef.current = null;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  const handleTrackPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (disabled || tiers.length === 0) return;
       const target = event.target as Element | null;
-      if (target?.closest?.("[data-reasoning-slider-ridge-button]")) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
-      const clamped = Math.max(0, Math.min(1, ratio));
-      const nextIndex = tiers.length <= 1 ? 0 : Math.round(clamped * (tiers.length - 1));
+      const startedOnRidge = Boolean(target?.closest?.("[data-reasoning-slider-ridge-button]"));
+      if (event.button !== 0 || activePointerGestureRef.current != null) return;
+      const gesture: ActivePointerGesture = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startedOnRidge,
+        moved: false,
+        captured: false,
+      };
+      activePointerGestureRef.current = gesture;
+      if (startedOnRidge) return;
+      event.preventDefault();
+      event.currentTarget.dataset.dragging = "true";
+      if (typeof event.currentTarget.setPointerCapture === "function") {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        gesture.captured = true;
+      }
+      setSliderTrackPosition(
+        event.currentTarget,
+        pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()),
+      );
+    },
+    [disabled, tiers.length],
+  );
+
+  const handleTrackPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = activePointerGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (!gesture.moved) {
+      if (Math.abs(event.clientX - gesture.startClientX) < POINTER_DRAG_THRESHOLD_PX) return;
+      gesture.moved = true;
+    }
+    event.preventDefault();
+    event.currentTarget.dataset.dragging = "true";
+    if (!gesture.captured && typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      gesture.captured = true;
+    }
+    setSliderTrackPosition(
+      event.currentTarget,
+      pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect()),
+    );
+  }, []);
+
+  const handleTrackPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = activePointerGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      const moved = gesture.moved
+        || Math.abs(event.clientX - gesture.startClientX) >= POINTER_DRAG_THRESHOLD_PX;
+      activePointerGestureRef.current = null;
+      if (gesture.startedOnRidge && !moved) {
+        restoreTrackPosition(event.currentTarget);
+        return;
+      }
+      event.preventDefault();
+      const percent = pointerPercent(event.clientX, event.currentTarget.getBoundingClientRect());
+      const nextIndex = nearestTierIndex(percent, tiers.length);
+      const snappedPercent = tierPercent(nextIndex, tiers.length);
+      event.currentTarget.removeAttribute("data-dragging");
+      setSliderTrackPosition(event.currentTarget, snappedPercent);
+      if (gesture.captured) releasePointerCapture(event.currentTarget, event.pointerId);
+      if (gesture.startedOnRidge) suppressTrailingTierClick();
       commitEffort(tiers[nextIndex] ?? null);
     },
-    [commitEffort, disabled, tiers],
+    [commitEffort, releasePointerCapture, restoreTrackPosition, suppressTrailingTierClick, tiers],
+  );
+
+  const handleTrackPointerCancel = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = activePointerGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      activePointerGestureRef.current = null;
+      restoreTrackPosition(event.currentTarget);
+      if (gesture.captured) releasePointerCapture(event.currentTarget, event.pointerId);
+    },
+    [releasePointerCapture, restoreTrackPosition],
+  );
+
+  const handleTrackLostPointerCapture = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = activePointerGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      activePointerGestureRef.current = null;
+      restoreTrackPosition(event.currentTarget);
+    },
+    [restoreTrackPosition],
   );
 
   const handleSliderKeyDown = useCallback(
@@ -269,7 +397,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
   if (tiers.length === 0) return null;
 
-  const label = reasoningChipLabel(displayedEffort) ?? "AUTO";
+  const label = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
 
   return (
     <Popover.Root
@@ -333,18 +461,34 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               <span>Faster</span>
               <span>Smarter</span>
             </div>
+            {displayedEffort === "ultra" ? (
+              <p className="mt-3 font-sans text-[10px] leading-4 text-fuchsia-100/65">
+                Automatically delegates work to multiple agents and can use limits faster.
+              </p>
+            ) : null}
             <div
-              className="relative mt-3 h-[18px] cursor-pointer rounded-md bg-[#242327] p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)]"
-              onPointerDown={handleTrackPointer}
+              data-reasoning-slider-track
+              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-[#242327] p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
+              onPointerDown={handleTrackPointerDown}
+              onPointerMove={handleTrackPointerMove}
+              onPointerUp={handleTrackPointerUp}
+              onPointerCancel={handleTrackPointerCancel}
+              onLostPointerCapture={handleTrackLostPointerCapture}
+              onClickCapture={handleTrackClickCapture}
               role="presentation"
+              style={{
+                "--reasoning-slider-fill-position": fillPosition,
+                "--reasoning-slider-thumb-position": thumbLeft,
+                "--reasoning-progressive-gradient": progressiveGradient,
+              } as React.CSSProperties}
             >
               <div className="relative h-full overflow-hidden rounded-[5px] bg-black/18">
                 <div
+                  data-reasoning-slider-fill
                   className={cn(
-                    "ade-reasoning-slider-fill absolute inset-y-0 left-0 overflow-hidden rounded-[5px]",
+                    "ade-reasoning-slider-fill absolute inset-0 overflow-hidden rounded-[5px]",
                     activeIndex === tiers.length - 1 && activeIndex >= 0 && "ade-reasoning-slider-fill-max",
                   )}
-                  style={{ width: `${fillPercent}%` }}
                   aria-hidden
                 />
                 {tiers.map((tier, index) => {
@@ -357,7 +501,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                       type="button"
                       role="radio"
                       aria-checked={isActive}
-                      aria-label={tierLabel(tier)}
+                      aria-label={tierLabel(tier, useCodex56Labels)}
                       data-reasoning-slider-ridge-button
                       onClick={(event) => {
                         event.stopPropagation();
@@ -367,7 +511,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                       className="absolute top-1/2 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-white/40"
                       style={{ left: `${percent}%` }}
                     >
-                      <span className="sr-only">{tierLabel(tier)}</span>
+                      <span className="sr-only">{tierLabel(tier, useCodex56Labels)}</span>
                       <span
                         className={cn(
                           "h-1 w-1 rounded-full transition-all duration-200",
@@ -379,12 +523,13 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                   );
                 })}
                 <div
+                  data-reasoning-slider-thumb
                   className={cn(
-                    "pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-md border shadow-[0_3px_10px_rgba(0,0,0,0.32)] transition-[left,background-color,border-color,box-shadow] duration-200",
+                    "ade-reasoning-slider-thumb pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-md border shadow-[0_3px_10px_rgba(0,0,0,0.32)] transition-[left,background-color,border-color,box-shadow] duration-200",
                     activeTone.thumb,
                     activeIndex < 0 && "opacity-60",
                   )}
-                  style={{ left: thumbLeft }}
+                  style={{ left: "var(--reasoning-slider-thumb-position)" }}
                   aria-hidden
                 />
               </div>

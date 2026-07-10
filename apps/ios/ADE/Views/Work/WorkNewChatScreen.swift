@@ -539,7 +539,7 @@ struct WorkNewChatScreen: View {
   let activeProjectRootPath: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String, Bool, String?, [AgentChatFileRef]) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
-  let onChatImported: @MainActor (String) async -> Void
+  let onChatImported: @MainActor (AgentChatSessionSummary) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
 
   @State private var selectedLaneId: String = ""
@@ -570,7 +570,7 @@ struct WorkNewChatScreen: View {
     activeProjectRootPath: String?,
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String, Bool, String?, [AgentChatFileRef]) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
-    onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
+    onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void
   ) {
     self.lanes = lanes
@@ -685,6 +685,15 @@ struct WorkNewChatScreen: View {
       }
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
+
+      // Kept outside the scroll view so lane selection can scroll away while
+      // the activity card stays pinned immediately above the composer. The
+      // keyboard lifts the composer without coupling it to chart scrolling.
+      WorkUsageActivityCarousel()
+        .environmentObject(syncService)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
+        .fixedSize(horizontal: false, vertical: true)
 
       if let autoCreateStatus, busy {
         HStack(spacing: 8) {
@@ -843,6 +852,7 @@ struct WorkNewChatScreen: View {
         NavigationLink {
           WorkImportSessionScreen(
             lane: lane,
+            lanes: lanes,
             onCliImported: onCliStarted,
             onChatImported: onChatImported
           )
@@ -1256,7 +1266,7 @@ private func workDefaultNewChatModelId(provider: String) -> String {
     return defaultModel
   }
   switch workNormalizedNewChatProvider(provider) {
-  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
+  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-5"
   default: return "claude-sonnet-5"

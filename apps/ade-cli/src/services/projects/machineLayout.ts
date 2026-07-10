@@ -17,6 +17,9 @@ export type MachineAdeLayout = {
   desktopBridgeSocketPath: string;
   binDir: string;
   runtimeDir: string;
+  personalChatsDir?: string;
+  personalChatsStateRoot?: string;
+  personalChatsWorkspaceRoot?: string;
 };
 
 export function resolveMachineAdeDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -59,5 +62,8 @@ export function resolveMachineAdeLayout(
     desktopBridgeSocketPath,
     binDir: path.join(adeDir, "bin"),
     runtimeDir: path.join(adeDir, "runtime"),
+    personalChatsDir: path.join(adeDir, "personal-chats"),
+    personalChatsStateRoot: path.join(adeDir, "personal-chats", "state"),
+    personalChatsWorkspaceRoot: path.join(adeDir, "personal-chats", "workspaces"),
   };
 }

@@ -2,7 +2,7 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, agent chats, work sessions, processes, sync, proof, and the machine project catalog. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
+The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, processes, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
 
 ## Reading order
 
@@ -35,6 +35,7 @@ docs/
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
+    ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── remote-runtime/                    # local runtime + SSH remote machines

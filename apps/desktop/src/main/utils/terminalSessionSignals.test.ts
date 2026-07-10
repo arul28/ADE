@@ -195,7 +195,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "chat-1",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --model auto --resume chat-1");
+    })).toBe("cursor-agent --resume chat-1");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -209,7 +209,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "ses_1",
       launch: { permissionMode: "full-auto", fastMode: true },
-    })).toBe("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode run --interactive --variant fast --session ses_1");
+    })).toBe("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode run --interactive --variant fast --session ses_1");
   });
 
   it("applies resume-time model, reasoning, and permission overrides", () => {
@@ -219,7 +219,7 @@ describe("terminalSessionSignals", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default" },
     }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto", prompt: "keep going" })).toBe(
-      "claude --permission-mode auto --model claude-haiku-4-5 --effort low --resume claude-session-1 'keep going'",
+      "claude --permission-mode auto --model claude-haiku-4-5 --effort low --resume claude-session-1 \"keep going\"",
     );
 
     expect(buildTrackedCliResumeCommand({
@@ -228,8 +228,17 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan", prompt: "fix tests" })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-99 'fix tests'",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-99 \"fix tests\"",
     );
+
+    const droidModelOnly = buildTrackedCliResumeCommand({
+      provider: "droid",
+      targetKind: "session",
+      targetId: "droid-session-1",
+      launch: {},
+    }, { model: "droid/gpt-5.4" });
+    expect(droidModelOnly).toContain("\\\"model\\\":\\\"gpt-5.4\\\"");
+    expect(droidModelOnly).not.toContain("sessionDefaultSettings");
   });
 
   it("preserves parsed model and reasoning when resuming without overrides", () => {
@@ -271,7 +280,7 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' -c 'service_tier=\"fast\"' -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
     );
   });
 
@@ -282,7 +291,7 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", codexFastMode: true },
     })).toBe(
-      "codex --no-alt-screen -c 'service_tier=\"fast\"' -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+      "codex --no-alt-screen -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
     );
   });
 
@@ -364,6 +373,26 @@ describe("terminalSessionSignals", () => {
     });
   });
 
+  it("preserves Codex resume targets after quoted Computer Use config values with spaces", () => {
+    const command = buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread_computer_use_123",
+      launch: { permissionMode: "default" },
+    }, {
+      codexComputerUse: {
+        command: "/Applications/Codex Computer Use.app/Contents/MacOS/Sky Computer Use Client",
+        args: ["mcp", "--profile", "ADE Computer Use"],
+      },
+    });
+
+    expect(command).toContain("Codex Computer Use.app");
+    expect(parseTrackedCliResumeCommand(command, "codex")).toEqual({
+      provider: "codex",
+      targetId: "thread_computer_use_123",
+    });
+  });
+
   it("builds OpenCode run replay resume commands with question tool enabled", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "edit",
@@ -373,8 +402,8 @@ describe("terminalSessionSignals", () => {
       prompt: "continue from here",
     });
 
-    expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --variant fast --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
-    expect(command).toContain("\"question\":\"allow\"");
+    expect(command).toContain("opencode run --interactive --model \"openai/gpt-5.4\" --variant fast --session ses_abc --replay --replay-limit 40 -- \"continue from here\"");
+    expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
 
   it("normalizes ADE OpenCode registry IDs in replay resume commands", () => {
@@ -385,7 +414,7 @@ describe("terminalSessionSignals", () => {
       prompt: "continue from here",
     });
 
-    expect(command).toContain("--model lmstudio/openai/gpt-oss-20b");
+    expect(command).toContain("--model \"lmstudio/openai/gpt-oss-20b\"");
   });
 
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {

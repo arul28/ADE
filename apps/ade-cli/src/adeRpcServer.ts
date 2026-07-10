@@ -60,10 +60,16 @@ import {
 } from "../../desktop/src/shared/cliLaunch";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
+import {
+  recordUsageInteraction,
+  usageActionFromRpcDomain,
+  usageClientSurfaceFromRpcName,
+} from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
+import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -160,6 +166,7 @@ type SessionIdentity = {
 type SessionState = {
   initialized: boolean;
   protocolVersion: string;
+  clientName: string;
   identity: SessionIdentity;
   askUserEvents: number[];
   askUserRateLimit: {
@@ -2413,6 +2420,21 @@ function isExternalSessionProviderName(value: string | null): value is ExternalS
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
 }
 
+function isUnboundAdeCliCaller(session: SessionState): boolean {
+  // `ade actions run` is a local user-facing escape hatch. Unlike an agent
+  // launched inside Work, it has no chat/run lane binding, so applying the
+  // bound-agent scope here would make the documented external-session actions
+  // unreachable. The caller id is minted by cli.ts for the direct `ade` client.
+  const caller = resolveCallerContext(session);
+  return (caller.role === "agent" || caller.role === "orchestrator")
+    && /^ade-cli:\d+$/.test(caller.callerId ?? "")
+    && !caller.chatSessionId
+    && !caller.runId
+    && !caller.stepId
+    && !caller.attemptId
+    && !caller.ownerId;
+}
+
 function realishPath(filePath: string): string {
   try {
     return fs.realpathSync(filePath);
@@ -3394,7 +3416,7 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (!callerIsCto && domain === "external-sessions") {
+    } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
         const scoped = scopeExternalSessionsListArgs(runtime, session, externalArgs);
@@ -3447,6 +3469,22 @@ async function runTool(args: {
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
     };
+    const isUserClient = !session.identity.runId
+      && !session.identity.stepId
+      && !session.identity.attemptId
+      && !session.identity.chatSessionId;
+    if (isUserClient) {
+      const requestedSessionId = typeof scopedObjectArgs.sessionId === "string"
+        ? scopedObjectArgs.sessionId
+        : null;
+      recordUsageInteraction(runtime.db, {
+        projectId: runtime.projectId,
+        client: usageClientSurfaceFromRpcName(session.clientName),
+        action: usageActionFromRpcDomain(domain, action),
+        feature: domain,
+        sessionId: statusHints.chatSessionId ?? requestedSessionId,
+      });
+    }
     return {
       domain,
       action,
@@ -3479,6 +3517,9 @@ async function runTool(args: {
     const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
     const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
+    const codexComputerUse = provider === "codex"
+      ? await resolveCodexComputerUseMcpConfig()
+      : null;
 
     const launchFields: Partial<TrackedCliLaunchCommand> = (() => {
       if (provider === "shell") {
@@ -3498,6 +3539,7 @@ async function runTool(args: {
         fastMode,
         initialPrompt: initialInput,
         laneWorktreePath,
+        ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     })();
 
@@ -4908,6 +4950,7 @@ export function createAdeRpcRequestHandler(args: {
   const session: SessionState = {
     initialized: false,
     protocolVersion: DEFAULT_PROTOCOL_VERSION,
+    clientName: "unknown",
     identity: {
       callerId: "unknown",
       role: "external",
@@ -4954,6 +4997,10 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/initialize") {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
+      const clientInfo = safeObject(params.clientInfo);
+      session.clientName = asOptionalTrimmedString(params.clientName)
+        ?? asOptionalTrimmedString(clientInfo.name)
+        ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {

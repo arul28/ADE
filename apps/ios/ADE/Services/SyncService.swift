@@ -105,6 +105,10 @@ struct SavedChatTempAttachment: Decodable, Equatable {
   var previewDataUrl: String?
 }
 
+private struct PersonalChatImageData: Decodable {
+  var dataUrl: String
+}
+
 func syncChatMessageDelivery(from response: Any) -> SyncChatMessageDelivery {
   if let response = response as? [String: Any], response["queued"] as? Bool == true {
     return .queued(steerId: response["steerId"] as? String)
@@ -1501,6 +1505,11 @@ struct SyncCrossProjectChatScope: Equatable {
   let projectRootPath: String?
 }
 
+enum SyncChatCommandScope: Equatable {
+  case foreignProject(projectId: String?, projectRootPath: String?)
+  case personal
+}
+
 struct WebPairingInfo: Decodable, Equatable {
   let pairingUrl: String
   let code: String?
@@ -1625,6 +1634,11 @@ final class SyncService: ObservableObject {
   // `projects` (the catalog). Mutated only by the roster apply path below.
   @Published private(set) var rosterProjects: [RemoteRosterProject] = []
   @Published private(set) var rosterRevision = 0
+  /// Machine-scoped conversations. Unlike Work sessions these never hydrate
+  /// through the active project's CRR database; the runtime command surface is
+  /// authoritative and this bounded cache keeps the list useful offline.
+  @Published private(set) var personalChatSessions: [AgentChatSessionSummary] = []
+  @Published private(set) var personalChatsRevision = 0
   /// Last applied roster `seq`; gates delta-vs-resnapshot. nil ⇒ no baseline.
   var rosterSeq: Int?
   /// Whether `roster_subscribe` has been sent on the current connection.
@@ -1868,6 +1882,7 @@ final class SyncService: ObservableObject {
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private var supportsChangesetAck = false
+  @Published private(set) var supportsPersonalChats = false
   /// Host advertises cross-project chat "quick look": a `chat_subscribe` (and
   /// the chat command actions) may carry a `projectId`/`projectRootPath`
   /// override so a foreign project's chat streams read-only without switching
@@ -1880,7 +1895,7 @@ final class SyncService: ObservableObject {
   /// open (registered by the chat view, cleared on close); empty in the common
   /// same-project case, so it adds no work when the feature is unused. Every
   /// chat read/write for a listed session routes to that project.
-  private var crossProjectChatScopeBySession: [String: SyncCrossProjectChatScope] = [:]
+  private var chatCommandScopeBySession: [String: SyncChatCommandScope] = [:]
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
@@ -2999,6 +3014,7 @@ final class SyncService: ObservableObject {
       sortedProjectList(database.listMobileProjects().filter { !isProjectHidden($0) })
     )
     rosterProjects = loadCachedRoster()
+    personalChatSessions = loadCachedPersonalChats()
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
     // The hub (all-projects ProjectHomeView) is the launch surface: always land
@@ -5547,26 +5563,68 @@ final class SyncService: ObservableObject {
       return false
     }()
     guard supportsCrossProjectChat, !matchesActive, normalizedProjectId != nil || normalizedRootPath != nil else {
-      crossProjectChatScopeBySession.removeValue(forKey: trimmedSessionId)
+      chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
       return
     }
-    crossProjectChatScopeBySession[trimmedSessionId] = SyncCrossProjectChatScope(
+    chatCommandScopeBySession[trimmedSessionId] = .foreignProject(
       projectId: normalizedProjectId,
       projectRootPath: normalizedRootPath
     )
   }
 
+  /// Marks a machine-scoped conversation. All subsequent chat reads and
+  /// mutations use `personalChats.*`, and the live stream is explicitly tagged
+  /// so it can never bind to an active project's coincidentally named session.
+  func setPersonalChatScope(sessionId: String) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    chatCommandScopeBySession[trimmedSessionId] = .personal
+  }
+
   func clearCrossProjectChatScope(sessionId: String) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    crossProjectChatScopeBySession.removeValue(forKey: trimmedSessionId)
+    chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
+  }
+
+  func clearPersonalChatScope(sessionId: String) {
+    clearCrossProjectChatScope(sessionId: sessionId)
+  }
+
+  func isPersonalChatScope(sessionId: String) -> Bool {
+    chatCommandScopeBySession[sessionId] == .personal
   }
 
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
   private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
-    guard let scope = crossProjectChatScopeBySession[sessionId] else { return (nil, nil) }
-    return (scope.projectId, scope.projectRootPath)
+    guard case let .foreignProject(projectId, projectRootPath) = chatCommandScopeBySession[sessionId] else {
+      return (nil, nil)
+    }
+    return (projectId, projectRootPath)
+  }
+
+  private func chatActionName(_ projectAction: String, sessionId: String) -> String {
+    guard isPersonalChatScope(sessionId: sessionId), projectAction.hasPrefix("chat.") else {
+      return projectAction
+    }
+    // The runtime-owned surface deliberately uses shorter public names for
+    // transcript/history reads instead of inheriting the project command
+    // registry's historical spellings.
+    switch projectAction {
+    case "chat.getTranscript": return "personalChats.read"
+    case "chat.getChatEventHistory": return "personalChats.getEventHistory"
+    case "chat.getChatEventHistoryPage": return "personalChats.getEventHistoryPage"
+    default: return "personalChats." + projectAction.dropFirst("chat.".count)
+    }
+  }
+
+  func supportsChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
+    supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+  }
+
+  func isChatRemoteActionQueueable(_ projectAction: String, sessionId: String) -> Bool {
+    isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
 
   func subscribeToChatEvents(sessionId: String, requestSnapshot: Bool = false, maxBytes: Int? = nil) async throws {
@@ -6715,7 +6773,7 @@ final class SyncService: ObservableObject {
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
-      action: "chat.getSummary",
+      action: chatActionName("chat.getSummary", sessionId: sessionId),
       args: ["sessionId": sessionId],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
@@ -6726,7 +6784,7 @@ final class SyncService: ObservableObject {
   func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
-      action: "chat.getChatEventHistory",
+      action: chatActionName("chat.getChatEventHistory", sessionId: sessionId),
       args: ["sessionId": sessionId, "maxEvents": max(1, min(chatEventHistoryMaxEvents, maxEvents))],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
@@ -6765,7 +6823,7 @@ final class SyncService: ObservableObject {
     }
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
-      action: "chat.getChatEventHistoryPage",
+      action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
       args: args,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
@@ -6775,8 +6833,22 @@ final class SyncService: ObservableObject {
 
   func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
     let scope = chatCommandScope(for: sessionId)
+    if isPersonalChatScope(sessionId: sessionId) {
+      let response = try await sendCommand(
+        action: "personalChats.read",
+        args: ["sessionId": sessionId, "limit": limit],
+        fallbackToActiveProjectScope: false
+      )
+      let entries = try decode(response, as: [AgentChatTranscriptEntry].self)
+      return AgentChatTranscriptResponse(
+        sessionId: sessionId,
+        entries: entries,
+        truncated: false,
+        totalEntries: entries.count
+      )
+    }
     return try await sendDecodableCommand(
-      action: "chat.getTranscript",
+      action: chatActionName("chat.getTranscript", sessionId: sessionId),
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
@@ -6843,13 +6915,39 @@ final class SyncService: ObservableObject {
     limit: Int = 200,
     maxChars: Int = 600_000
   ) async throws -> AgentChatTranscriptPage {
+    if isPersonalChatScope(sessionId: sessionId) {
+      // Personal chat scrollback uses the byte-offset event-history API. The
+      // plain `read` action returns one bounded transcript array and has no
+      // stable numeric cursor, so expose it only as the initial fallback page.
+      guard cursor == nil else {
+        return AgentChatTranscriptPage(
+          sessionId: sessionId,
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+          nextCursor: nil
+        )
+      }
+      let transcript = try await fetchChatTranscriptResponse(
+        sessionId: sessionId,
+        limit: limit,
+        maxChars: maxChars
+      )
+      return AgentChatTranscriptPage(
+        sessionId: transcript.sessionId,
+        entries: transcript.entries,
+        truncated: transcript.truncated,
+        totalEntries: transcript.totalEntries,
+        nextCursor: nil
+      )
+    }
     var args: [String: Any] = ["sessionId": sessionId, "limit": limit, "maxChars": maxChars]
     if let cursor, cursor > 0 {
       args["cursor"] = String(cursor)
     }
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
-      action: "chat.getTranscript",
+      action: chatActionName("chat.getTranscript", sessionId: sessionId),
       args: args,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -6901,7 +6999,7 @@ final class SyncService: ObservableObject {
     }
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
-      action: "chat.getSubagentTranscript",
+      action: chatActionName("chat.getSubagentTranscript", sessionId: sessionId),
       args: args,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -6918,7 +7016,7 @@ final class SyncService: ObservableObject {
   func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
-      action: "chat.listSubagents",
+      action: chatActionName("chat.listSubagents", sessionId: sessionId),
       args: ["sessionId": sessionId],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -6955,7 +7053,7 @@ final class SyncService: ObservableObject {
       }
     }
     let response = try await sendCommand(
-      action: "chat.send",
+      action: chatActionName("chat.send", sessionId: sessionId),
       args: args,
       disconnectOnTimeout: false,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
@@ -6969,10 +7067,49 @@ final class SyncService: ObservableObject {
   func interruptChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.interrupt",
+      action: chatActionName("chat.interrupt", sessionId: sessionId),
       payload: AgentChatInterruptRequest(sessionId: sessionId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func recoverCodexTurn(
+    sessionId: String,
+    turnId: String,
+    action: String
+  ) async throws -> AgentChatRecoverCodexTurnResult {
+    let supportedActions = Set([
+      "wait",
+      "steer",
+      "interrupt_retry_same_thread",
+      "restart_resume_thread",
+    ])
+    guard supportedActions.contains(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 24,
+        userInfo: [NSLocalizedDescriptionKey: "This Codex recovery action is not supported."]
+      )
+    }
+    guard supportsRemoteAction("chat.recoverCodexTurn") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [NSLocalizedDescriptionKey: "Recovery actions are not available on this machine version. Update ADE on the machine and reconnect."]
+      )
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: "chat.recoverCodexTurn",
+      payload: AgentChatRecoverCodexTurnRequest(
+        sessionId: sessionId,
+        turnId: turnId,
+        action: action
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatRecoverCodexTurnResult.self
     )
   }
 
@@ -6984,7 +7121,7 @@ final class SyncService: ObservableObject {
   ) async throws -> SyncChatMessageDelivery {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendChatCommand(
-      action: "chat.steer",
+      action: chatActionName("chat.steer", sessionId: sessionId),
       payload: AgentChatSteerRequest(sessionId: sessionId, text: text, attachments: attachments),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7018,6 +7155,19 @@ final class SyncService: ObservableObject {
     filename: String
   ) async throws -> SavedChatTempAttachment {
     let scope = chatCommandScope(for: sessionId)
+    if isPersonalChatScope(sessionId: sessionId) {
+      try requireInvokableRemoteAction("personalChats.saveTempAttachment")
+      var args: [String: Any] = ["dataUrl": dataUrl]
+      if !filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        args["filename"] = filename
+      }
+      return try await sendDecodableCommand(
+        action: "personalChats.saveTempAttachment",
+        args: args,
+        fallbackToActiveProjectScope: false,
+        as: SavedChatTempAttachment.self
+      )
+    }
     return try await saveChatTempAttachment(
       dataUrl: dataUrl,
       filename: filename,
@@ -7026,10 +7176,21 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func personalChatImageDataUrl(path: String) async throws -> String {
+    try requireInvokableRemoteAction("personalChats.getImageDataUrl")
+    let payload = try await sendDecodableCommand(
+      action: "personalChats.getImageDataUrl",
+      args: ["path": path],
+      fallbackToActiveProjectScope: false,
+      as: PersonalChatImageData.self
+    )
+    return payload.dataUrl
+  }
+
   func cancelChatSteer(sessionId: String, steerId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.cancelSteer",
+      action: chatActionName("chat.cancelSteer", sessionId: sessionId),
       payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7039,7 +7200,7 @@ final class SyncService: ObservableObject {
   func editChatSteer(sessionId: String, steerId: String, text: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.editSteer",
+      action: chatActionName("chat.editSteer", sessionId: sessionId),
       payload: AgentChatEditSteerRequest(sessionId: sessionId, steerId: steerId, text: text),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7049,7 +7210,7 @@ final class SyncService: ObservableObject {
   func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.dispatchSteer",
+      action: chatActionName("chat.dispatchSteer", sessionId: sessionId),
       payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7059,7 +7220,7 @@ final class SyncService: ObservableObject {
   func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.cancelDispatchedSteer",
+      action: chatActionName("chat.cancelDispatchedSteer", sessionId: sessionId),
       payload: AgentChatCancelDispatchedSteerRequest(sessionId: sessionId, steerId: steerId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7074,7 +7235,7 @@ final class SyncService: ObservableObject {
   ) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.approve",
+      action: chatActionName("chat.approve", sessionId: sessionId),
       payload: AgentChatApproveRequest(sessionId: sessionId, itemId: itemId, decision: decision, responseText: responseText),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7090,7 +7251,7 @@ final class SyncService: ObservableObject {
   ) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.respondToInput",
+      action: chatActionName("chat.respondToInput", sessionId: sessionId),
       payload: AgentChatRespondToInputRequest(
         sessionId: sessionId,
         itemId: itemId,
@@ -7125,7 +7286,7 @@ final class SyncService: ObservableObject {
   ) async throws -> AgentChatSession {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableChatCommand(
-      action: "chat.updateSession",
+      action: chatActionName("chat.updateSession", sessionId: sessionId),
       payload: AgentChatUpdateSessionRequest(
         sessionId: sessionId,
         title: title,
@@ -7155,7 +7316,7 @@ final class SyncService: ObservableObject {
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.archive",
+      action: chatActionName("chat.archive", sessionId: sessionId),
       payload: AgentChatSessionIdRequest(sessionId: sessionId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7165,7 +7326,7 @@ final class SyncService: ObservableObject {
   func unarchiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.unarchive",
+      action: chatActionName("chat.unarchive", sessionId: sessionId),
       payload: AgentChatSessionIdRequest(sessionId: sessionId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7175,7 +7336,7 @@ final class SyncService: ObservableObject {
   func deleteChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
-      action: "chat.delete",
+      action: chatActionName("chat.delete", sessionId: sessionId),
       payload: AgentChatSessionIdRequest(sessionId: sessionId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
@@ -7576,6 +7737,7 @@ final class SyncService: ObservableObject {
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
+    let previousHostKey = activeHostStorageKey()
     if let profile, let data = try? encoder.encode(profile) {
       UserDefaults.standard.set(data, forKey: profileKey)
       if let key = profileStorageKey(profile) {
@@ -7609,6 +7771,10 @@ final class SyncService: ObservableObject {
       hiddenProjectKeys = loadHiddenProjectKeys()
       activeProjectHostIdentity = nil
       UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+    if activeHostStorageKey() != previousHostKey {
+      personalChatSessions = loadCachedPersonalChats()
+      personalChatsRevision &+= 1
     }
   }
 
@@ -8068,12 +8234,42 @@ final class SyncService: ObservableObject {
     commandDescriptor(for: action)?.policy
   }
 
+  private func commandIsRuntimeScoped(_ action: String) -> Bool {
+    commandDescriptor(for: action)?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "runtime"
+  }
+
   func supportsRemoteAction(_ action: String) -> Bool {
     commandDescriptor(for: action) != nil
   }
 
   func isRemoteActionQueueable(_ action: String) -> Bool {
     commandPolicy(for: action)?.queueable == true
+  }
+
+  /// Whether an advertised command can be invoked in the current transport
+  /// state. This is the UI-facing capability gate: live-only commands stay
+  /// disabled while offline, while explicitly queueable commands remain
+  /// available and are persisted for replay.
+  func canInvokeRemoteAction(_ action: String) -> Bool {
+    guard supportsRemoteAction(action) else { return false }
+    return canSendLiveRequests() || isRemoteActionQueueable(action)
+  }
+
+  private func requireInvokableRemoteAction(_ action: String) throws {
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 15,
+        userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current machine. Reconnect to refresh capabilities."]
+      )
+    }
+    guard canSendLiveRequests() || isRemoteActionQueueable(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 15,
+        userInfo: [NSLocalizedDescriptionKey: "This action requires a live connection to the machine."]
+      )
+    }
   }
 
   private func normalizeOpenLaneId(_ laneId: String) -> String? {
@@ -9364,6 +9560,7 @@ final class SyncService: ObservableObject {
     }
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
     supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
+    supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
@@ -9378,6 +9575,10 @@ final class SyncService: ObservableObject {
       }
       return (try? decode(actions, as: [SyncRemoteCommandDescriptor].self)) ?? []
     }()
+    // iOS reaches this surface exclusively through runtime commands. A feature
+    // bit without the list command would open a dead Hub destination, so the
+    // actionable descriptor is the compatibility source of truth.
+    supportsPersonalChats = commandDescriptors.contains(where: { $0.action == "personalChats.list" })
     if let compatibility = features?["mobileCompatibility"] as? [String: Any] {
       let mode = (compatibility["mode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       hostCompatibilityMode = mode == "full" ? .full : .limited
@@ -10336,6 +10537,29 @@ final class SyncService: ObservableObject {
     return try decoder.decode(T.self, from: data)
   }
 
+  /// Fetches the fast, cached cross-client activity snapshot exposed by the
+  /// paired desktop runtime. The host refreshes expensive provider/GitHub
+  /// sources in the background, so this request is safe on the new-chat path.
+  func fetchAdeUsageStats(preset: String) async throws -> MobileAdeUsageStats {
+    guard supportsRemoteAction("usage.getAdeStats") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Usage activity is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    return try await sendDecodableCommand(
+      action: "usage.getAdeStats",
+      args: ["preset": preset],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageStats.self
+    )
+  }
+
   private func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
@@ -10519,6 +10743,7 @@ final class SyncService: ObservableObject {
     }
     let payload = try adeJSONData(withJSONObject: args)
     var queued = loadPendingOperations()
+    let useActiveProjectScope = fallbackToActiveProjectScope && !commandIsRuntimeScoped(action)
     queued.append(PendingOperation(
       id: id ?? makeRequestId(),
       kind: kind,
@@ -10526,9 +10751,9 @@ final class SyncService: ObservableObject {
       payload: payload,
       queuedAt: syncDateFormatter.string(from: Date()),
       hostId: activeHostStorageKey(),
-      projectId: fallbackToActiveProjectScope ? (targetProjectId ?? activeProjectId) : targetProjectId,
-      projectRootPath: fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeProjectRootPath) : targetProjectRootPath,
-      fallbackToActiveProjectScope: fallbackToActiveProjectScope
+      projectId: useActiveProjectScope ? (targetProjectId ?? activeProjectId) : targetProjectId,
+      projectRootPath: useActiveProjectScope ? (targetProjectRootPath ?? activeProjectRootPath) : targetProjectRootPath,
+      fallbackToActiveProjectScope: useActiveProjectScope
     ))
     savePendingOperations(queued)
     if canSendLiveRequests() {
@@ -10695,7 +10920,8 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
-    if !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
+    let runtimeScoped = commandIsRuntimeScoped(action)
+    if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
     guard canSendLiveRequests() else {
@@ -10708,8 +10934,8 @@ final class SyncService: ObservableObject {
     // via the command-payload projectId without switching the phone's active
     // sync project. Most callers default to the active project; shell launches
     // opt out when the selected lane does not carry trustworthy project scope.
-    let resolvedProjectId = fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId
-    let resolvedProjectRootPath = fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath
+    let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
+    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath)
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
@@ -10741,7 +10967,7 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
-    if !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
+    if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
     let commandId = makeRequestId()
@@ -10848,6 +11074,9 @@ final class SyncService: ObservableObject {
       let scope = chatCommandScope(for: sessionId)
       if let projectId = scope.projectId { payload["projectId"] = projectId }
       if let projectRootPath = scope.rootPath { payload["projectRootPath"] = projectRootPath }
+    }
+    if isPersonalChatScope(sessionId: sessionId) {
+      payload["chatScope"] = "personal"
     }
     return payload
   }
@@ -12729,5 +12958,163 @@ extension SyncService {
       targetProjectRootPath: foreign ? project.rootPath : nil
     )
     requestRosterSnapshot()
+  }
+}
+
+// MARK: - Machine-scoped personal chats
+
+enum PersonalChatLifecycleAction: String {
+  case archive
+  case unarchive
+  case delete
+}
+
+extension SyncService {
+  private var personalChatsCacheKey: String {
+    let host = activeHostStorageKey() ?? "unpaired"
+    let encoded = Data(host.utf8).base64EncodedString()
+    return "ade.personalChats.cache.v1.\(encoded)"
+  }
+
+  func loadCachedPersonalChats() -> [AgentChatSessionSummary] {
+    guard let data = ADESharedContainer.defaults.data(forKey: personalChatsCacheKey),
+          let sessions = try? JSONDecoder().decode([AgentChatSessionSummary].self, from: data)
+    else { return [] }
+    return sortPersonalChats(sessions)
+  }
+
+  private func persistPersonalChats() {
+    guard let data = try? JSONEncoder().encode(personalChatSessions) else { return }
+    ADESharedContainer.defaults.set(data, forKey: personalChatsCacheKey)
+  }
+
+  private func sortPersonalChats(_ sessions: [AgentChatSessionSummary]) -> [AgentChatSessionSummary] {
+    sessions.sorted { lhs, rhs in
+      let lhsArchived = lhs.archivedAt != nil
+      let rhsArchived = rhs.archivedAt != nil
+      if lhsArchived != rhsArchived { return !lhsArchived }
+      let lhsAttention = lhs.awaitingInput == true || lhs.status == "awaiting-input"
+      let rhsAttention = rhs.awaitingInput == true || rhs.status == "awaiting-input"
+      if lhsAttention != rhsAttention { return lhsAttention }
+      if lhs.lastActivityAt != rhs.lastActivityAt { return lhs.lastActivityAt > rhs.lastActivityAt }
+      return lhs.sessionId < rhs.sessionId
+    }
+  }
+
+  @discardableResult
+  func refreshPersonalChats(includeArchived: Bool = false) async throws -> [AgentChatSessionSummary] {
+    try requireInvokableRemoteAction("personalChats.list")
+    let sessions = try await sendDecodableCommand(
+      action: "personalChats.list",
+      args: ["includeArchived": includeArchived],
+      fallbackToActiveProjectScope: false,
+      as: [AgentChatSessionSummary].self
+    )
+    let sorted = sortPersonalChats(sessions)
+    if sorted != personalChatSessions {
+      personalChatSessions = sorted
+      personalChatsRevision &+= 1
+      cacheChatSummaries(Dictionary(uniqueKeysWithValues: sorted.map { ($0.sessionId, $0) }))
+      persistPersonalChats()
+    }
+    return sorted
+  }
+
+  func personalChatSummary(sessionId: String) -> AgentChatSessionSummary? {
+    personalChatSessions.first { $0.sessionId == sessionId }
+      ?? chatSummaryCache[sessionId]
+  }
+
+  func createPersonalChat(
+    provider: String,
+    model: String,
+    kickoffText: String,
+    reasoningEffort: String? = nil,
+    codexFastMode: Bool? = nil,
+    permissionMode: String? = nil,
+    interactionMode: String? = nil,
+    claudePermissionMode: String? = nil,
+    codexApprovalPolicy: String? = nil,
+    codexSandbox: String? = nil,
+    codexConfigSource: String? = nil,
+    opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
+    cursorModeId: String? = nil
+  ) async throws -> AgentChatSessionSummary {
+    try requireInvokableRemoteAction("personalChats.create")
+    var args: [String: Any] = [
+      "provider": provider,
+      "model": model,
+      "modelId": model,
+      "kickoffText": kickoffText,
+    ]
+    if let reasoningEffort, !reasoningEffort.isEmpty { args["reasoningEffort"] = reasoningEffort }
+    if let codexFastMode { args["codexFastMode"] = codexFastMode }
+    if let permissionMode, !permissionMode.isEmpty { args["permissionMode"] = permissionMode }
+    if let interactionMode, !interactionMode.isEmpty { args["interactionMode"] = interactionMode }
+    if let claudePermissionMode, !claudePermissionMode.isEmpty { args["claudePermissionMode"] = claudePermissionMode }
+    if let codexApprovalPolicy, !codexApprovalPolicy.isEmpty { args["codexApprovalPolicy"] = codexApprovalPolicy }
+    if let codexSandbox, !codexSandbox.isEmpty { args["codexSandbox"] = codexSandbox }
+    if let codexConfigSource, !codexConfigSource.isEmpty { args["codexConfigSource"] = codexConfigSource }
+    if let opencodePermissionMode, !opencodePermissionMode.isEmpty { args["opencodePermissionMode"] = opencodePermissionMode }
+    if let droidPermissionMode, !droidPermissionMode.isEmpty { args["droidPermissionMode"] = droidPermissionMode }
+    if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
+
+    let summary = try await sendDecodableCommand(
+      action: "personalChats.create",
+      args: args,
+      fallbackToActiveProjectScope: false,
+      as: AgentChatSessionSummary.self
+    )
+    setPersonalChatScope(sessionId: summary.sessionId)
+    cacheChatSummary(summary)
+    personalChatSessions.removeAll { $0.sessionId == summary.sessionId }
+    personalChatSessions.insert(summary, at: 0)
+    personalChatSessions = sortPersonalChats(personalChatSessions)
+    personalChatsRevision &+= 1
+    persistPersonalChats()
+    return summary
+  }
+
+  func getPersonalChatModelCatalog(
+    mode: String = "cached",
+    refreshProvider: String? = nil,
+    cursorSource: String? = "sdk"
+  ) async throws -> AgentChatModelCatalog {
+    try requireInvokableRemoteAction("personalChats.modelCatalog")
+    var args: [String: Any] = ["mode": mode]
+    if let refreshProvider, !refreshProvider.isEmpty { args["refreshProvider"] = refreshProvider }
+    if let cursorSource, !cursorSource.isEmpty { args["cursorSource"] = cursorSource }
+    return try await sendDecodableCommand(
+      action: "personalChats.modelCatalog",
+      args: args,
+      fallbackToActiveProjectScope: false,
+      as: AgentChatModelCatalog.self
+    )
+  }
+
+  func removePersonalChatFromCache(sessionId: String) {
+    let previousCount = personalChatSessions.count
+    personalChatSessions.removeAll { $0.sessionId == sessionId }
+    guard previousCount != personalChatSessions.count else { return }
+    personalChatsRevision &+= 1
+    persistPersonalChats()
+  }
+
+  func performPersonalChatAction(
+    _ action: PersonalChatLifecycleAction,
+    sessionId: String
+  ) async throws {
+    try requireInvokableRemoteAction("personalChats.\(action.rawValue)")
+    _ = try await sendCommand(
+      action: "personalChats.\(action.rawValue)",
+      args: ["sessionId": sessionId],
+      fallbackToActiveProjectScope: false
+    )
+    if action == .delete {
+      removePersonalChatFromCache(sessionId: sessionId)
+    } else {
+      _ = try? await refreshPersonalChats(includeArchived: true)
+    }
   }
 }

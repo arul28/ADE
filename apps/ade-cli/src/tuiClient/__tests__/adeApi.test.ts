@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -461,7 +461,7 @@ describe("getAvailableModels", () => {
 });
 
 describe("createChatSession", () => {
-  it("defaults Codex chats to GPT-5.5 low reasoning", async () => {
+  it("defaults Codex chats to GPT-5.6 Sol low reasoning", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
     const connection = {
       action: async (domain: string, action: string, args?: Record<string, unknown>) => {
@@ -470,7 +470,7 @@ describe("createChatSession", () => {
           id: "chat-1",
           laneId: "lane-1",
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-sol",
           status: "idle",
           createdAt: "2026-01-01T00:00:00.000Z",
           lastActivityAt: "2026-01-01T00:00:00.000Z",
@@ -486,13 +486,35 @@ describe("createChatSession", () => {
         action: "createSession",
         args: expect.objectContaining({
           provider: "codex",
-          model: "gpt-5.5",
-          modelId: "openai/gpt-5.5",
+          model: "gpt-5.6-sol",
+          modelId: "openai/gpt-5.6-sol",
           reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
           surface: "work",
         }),
       }),
     ]);
+  });
+
+  it("uses a selected GPT-5.6 model's advertised default reasoning", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { id: "chat-1", laneId: "lane-1", provider: "codex", model: args?.model };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await createChatSession({
+      connection,
+      laneId: "lane-1",
+      modelId: "openai/gpt-5.6-terra",
+    });
+
+    expect(calls[0]?.args).toEqual(expect.objectContaining({
+      model: "gpt-5.6-terra",
+      modelId: "openai/gpt-5.6-terra",
+      reasoningEffort: "medium",
+    }));
   });
 
   it("passes native model controls when creating chats", async () => {
@@ -936,5 +958,26 @@ describe("steer helpers", () => {
       { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-1", steerId: "steer-1" } },
       { domain: "chat", action: "dispatchSteer", args: { sessionId: "chat-1", steerId: "steer-1", mode: "inline" } },
     ]);
+  });
+
+  it("routes stalled-turn recovery through the shared Codex chat action", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { action: "steer", turnId: "turn-1", status: "nudged" };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverCodexTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "steer",
+    })).resolves.toEqual({ action: "steer", turnId: "turn-1", status: "nudged" });
+    expect(calls).toEqual([{
+      domain: "chat",
+      action: "recoverCodexTurn",
+      args: { sessionId: "chat-1", turnId: "turn-1", action: "steer" },
+    }]);
   });
 });

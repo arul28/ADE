@@ -389,6 +389,10 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       description: expect.stringContaining("normalized"),
       input: expect.stringContaining("interrupt-replace"),
     });
+    expect(getAdeActionInputContract("chat", "recoverCodexTurn")).toMatchObject({
+      description: expect.stringContaining("stalled Codex turn"),
+      input: expect.stringContaining("restart_resume_thread"),
+    });
   });
 
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {

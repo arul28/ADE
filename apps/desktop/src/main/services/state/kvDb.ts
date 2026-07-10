@@ -514,6 +514,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "process_definitions",
   "pull_request_ai_summaries",
   "runtime_processes",
+  // Compact local interaction ledger used by Stats. Phones and browsers read
+  // its aggregation over the runtime command surface; shipping every raw click
+  // as a CRR row would add sync churn without giving controllers useful data.
+  "usage_events",
   "stack_buttons",
   "test_suites",
   "local_worktree_residual_cleanups",
@@ -1878,6 +1882,25 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_ai_usage_feature_timestamp on ai_usage_log(feature, timestamp)");
   db.run("create index if not exists idx_ai_usage_timestamp on ai_usage_log(timestamp)");
+
+  // Local-first product interaction ledger. Only meaningful user actions are
+  // recorded (session starts/messages, writes, git/PR/lane mutations), never
+  // background reads or polling. This makes client-surface comparisons stable
+  // while keeping the write rate low.
+  db.run(`
+    create table if not exists usage_events (
+      id text primary key,
+      project_id text not null,
+      client_surface text not null,
+      action text not null,
+      feature text not null,
+      session_id text,
+      occurred_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_usage_events_occurred on usage_events(occurred_at)");
+  db.run("create index if not exists idx_usage_events_client_occurred on usage_events(client_surface, occurred_at)");
+  db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
 
   // Phase 7 GitHub PR tracking (lane -> PR mapping).
   db.run(`

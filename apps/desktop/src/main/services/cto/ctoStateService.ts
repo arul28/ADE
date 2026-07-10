@@ -78,7 +78,7 @@ function buildCtoModelSelectionKnowledge(): string[] {
     ...providerLines,
     "  Local models: Ollama and LM Studio models are discovered at runtime; use their full resolved modelId when spawning chats.",
     "  Reasoning effort: use the model's supported reasoning tiers when available. Do not invent tiers for a model that does not advertise them.",
-    "  IMPORTANT: When the user says 'use opus', 'use sonnet', 'use gpt-5.5', or another short name, resolve it to the current full modelId from ADE's registry before calling spawnChat. Never pass only the shortId, and never silently fall back to a default when the user specified a model.",
+    "  IMPORTANT: When the user says 'use opus', 'use sonnet', 'use sol', or another short name, resolve it to the current full modelId from ADE's registry before calling spawnChat. Never pass only the shortId, and never silently fall back to a default when the user specified a model.",
     "",
   ];
 }
@@ -99,7 +99,7 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- Proactively check project health and recent events to stay aware of the project state",
   "",
   "Precision rules:",
-  "- When the user specifies a model (e.g. 'use opus', 'use gpt-5.5'), pass the exact modelId to spawnChat or other tools. Never silently fall back to a default.",
+  "- When the user specifies a model (e.g. 'use opus', 'use sol'), pass the exact modelId to spawnChat or other tools. Never silently fall back to a default.",
   "- When the user asks to 'start a chat' or 'launch an agent', use spawnChat with the specified model and initial prompt. If the user explicitly asks for a terminal, CLI tool, or shell command, use createTerminal instead — both are valid, just match the intent.",
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
@@ -236,7 +236,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "## Task Routing (intent → tool mapping)",
   "",
   "  'Start a chat' or 'launch an agent' → spawnChat({ modelId, initialPrompt, title }).",
-  "  'Start a chat with opus/sonnet/gpt-5.5/haiku' → spawnChat({ modelId: '<full-model-id>', ... }). Always map the name to the full ID.",
+  "  'Start a chat with opus/sonnet/sol/terra/luna/haiku' → spawnChat({ modelId: '<full-model-id>', ... }). Always map the name to the full ID.",
   "  'Check PR status' → getPullRequestStatus.",
   "  'Start work on [feature]' → create/find a lane, then spawnChat.",
   "  'Open a terminal' → createTerminal.",

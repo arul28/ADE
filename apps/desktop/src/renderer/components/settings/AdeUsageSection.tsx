@@ -8,7 +8,6 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import type {
-  AdeUsageDailyPoint,
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
@@ -22,6 +21,7 @@ import {
   SANS_FONT,
   outlineButton,
 } from "../lanes/laneDesignTokens";
+import { UsageActivityCarousel } from "../usage/UsageActivityCarousel";
 
 const ACCENT = {
   tokens: "#60A5FA",
@@ -34,6 +34,7 @@ const RANGE_OPTIONS: Array<{ preset: AdeUsageRangePreset; label: string }> = [
   { preset: "today", label: "Today" },
   { preset: "7d", label: "7 days" },
   { preset: "30d", label: "30 days" },
+  { preset: "year", label: "Year" },
   { preset: "all", label: "All time" },
 ];
 
@@ -98,49 +99,6 @@ function compactRange(stats: AdeUsageStats | null): string {
   if (!since || Number.isNaN(since.getTime())) return "All time";
   if (Number.isNaN(until.getTime())) return "";
   return `${since.toLocaleDateString([], { month: "short", day: "numeric" })} - ${until.toLocaleDateString([], { month: "short", day: "numeric" })}`;
-}
-
-function rowTotal(point: AdeUsageDailyPoint): number {
-  return point.insertions + point.deletions;
-}
-
-type ChartPoint = AdeUsageDailyPoint & {
-  label: string;
-  title: string;
-};
-
-function compactDailyChartPoints(points: AdeUsageDailyPoint[], maxColumns = 45): ChartPoint[] {
-  if (points.length <= maxColumns) {
-    return points.map((point) => ({
-      ...point,
-      label: point.date.slice(5),
-      title: point.date,
-    }));
-  }
-
-  const chunkSize = Math.ceil(points.length / maxColumns);
-  const compacted: ChartPoint[] = [];
-  for (let index = 0; index < points.length; index += chunkSize) {
-    const chunk = points.slice(index, index + chunkSize);
-    const first = chunk[0];
-    const last = chunk[chunk.length - 1];
-    if (!first || !last) continue;
-    compacted.push({
-      date: last.date,
-      label: last.date.slice(5),
-      title: `${first.date} - ${last.date}`,
-      inputTokens: chunk.reduce((sum, point) => sum + point.inputTokens, 0),
-      outputTokens: chunk.reduce((sum, point) => sum + point.outputTokens, 0),
-      totalTokens: chunk.reduce((sum, point) => sum + point.totalTokens, 0),
-      commits: chunk.reduce((sum, point) => sum + point.commits, 0),
-      prs: chunk.reduce((sum, point) => sum + point.prs, 0),
-      insertions: chunk.reduce((sum, point) => sum + point.insertions, 0),
-      deletions: chunk.reduce((sum, point) => sum + point.deletions, 0),
-      filesChanged: chunk.reduce((sum, point) => sum + point.filesChanged, 0),
-      sessions: chunk.reduce((sum, point) => sum + point.sessions, 0),
-    });
-  }
-  return compacted;
 }
 
 function StatCard({
@@ -281,11 +239,8 @@ function GithubBreakdown({ stats }: { stats: AdeUsageStats }) {
 
   return (
     <section style={PANEL_STYLE}>
-      <SectionHeader label="Code activity" detail={stats.github.available ? repoLabel : githubLoading ? "Loading GitHub" : "GitHub unavailable"} />
-      {!stats.github.available ? (
-        <EmptyState text={githubLoading ? "GitHub activity is still loading." : "No GitHub activity is available for this range."} />
-      ) : (
-        <>
+      <SectionHeader label="Code activity" detail={stats.github.available ? repoLabel : githubLoading ? "Loading GitHub + local history" : "ADE local history"} />
+      <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginTop: 14 }}>
             <MiniMetric label="Commits" value={formatWhole(summary.commitsCreated)} accent={ACCENT.cost} />
             <MiniMetric label="PRs" value={formatWhole(summary.prsTracked)} accent={ACCENT.pr} />
@@ -302,8 +257,12 @@ function GithubBreakdown({ stats }: { stats: AdeUsageStats }) {
             <Fact label="Open PRs" value={formatWhole(summary.prsOpen)} />
             <Fact label="Code movement" value={formatWhole(totalCode)} />
           </div>
+          {!stats.github.available ? (
+            <div style={{ marginTop: 12, fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>
+              {githubLoading ? "GitHub activity is still loading; local ADE history is shown now." : "GitHub is unavailable; local ADE history is shown."}
+            </div>
+          ) : null}
         </>
-      )}
     </section>
   );
 }
@@ -333,59 +292,6 @@ function ChangeRow({ label, value, max, color }: { label: string; value: number;
       <Bar value={value} max={max} color={color} />
       <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, textAlign: "right" }}>{formatWhole(value)}</span>
     </div>
-  );
-}
-
-function DailyChart({ points, loading = false }: { points: AdeUsageDailyPoint[]; loading?: boolean }) {
-  const visiblePoints = compactDailyChartPoints(points.length > 0 ? points : []);
-  const maxTokens = Math.max(1, ...visiblePoints.map((point) => point.totalTokens));
-  const maxCode = Math.max(1, ...visiblePoints.map(rowTotal));
-  const hasData = visiblePoints.some((point) => point.totalTokens > 0 || rowTotal(point) > 0 || point.commits > 0 || point.prs > 0);
-
-  return (
-    <section style={{ ...PANEL_STYLE, minHeight: 238 }}>
-      <SectionHeader label="Recent daily activity" detail="Tokens and GitHub movement" />
-      {loading ? (
-        <EmptyState text="Loading daily activity." />
-      ) : !hasData ? (
-        <EmptyState text="No activity found for this range." />
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${visiblePoints.length}, minmax(9px, 1fr))`, alignItems: "end", gap: 5, height: 142, marginTop: 18 }}>
-            {visiblePoints.map((point) => {
-              const tokenHeight = point.totalTokens > 0 ? Math.max(4, (point.totalTokens / maxTokens) * 118) : 0;
-              const codeHeight = rowTotal(point) > 0 ? Math.max(4, (rowTotal(point) / maxCode) * 118) : 0;
-              return (
-                <div key={`${point.title}:${point.date}`} title={`${point.title}: ${formatTokens(point.totalTokens)} tokens, ${formatWhole(rowTotal(point))} changed lines`} style={{ height: 132, display: "flex", alignItems: "end", justifyContent: "center", gap: 2 }}>
-                  <div style={{ width: 4, height: tokenHeight, borderRadius: 2, background: ACCENT.tokens }} />
-                  <div style={{ width: 4, height: codeHeight, borderRadius: 2, background: ACCENT.code }} />
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${visiblePoints.length}, minmax(9px, 1fr))`, gap: 5, marginTop: 8 }}>
-            {visiblePoints.map((point, index) => (
-              <div key={`${point.title}:${point.date}`} style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textMuted, textAlign: "center" }}>
-                {visiblePoints.length <= 14 || index % 2 === 0 ? point.label : ""}
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 16, marginTop: 16, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            <Legend color={ACCENT.tokens} label="Tokens" />
-            <Legend color={ACCENT.code} label="Changed lines" />
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
-
-function Legend({ color, label }: { color: string; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
-      {label}
-    </span>
   );
 }
 
@@ -479,24 +385,22 @@ export function AdeUsageSection() {
 
   React.useEffect(() => {
     if (!cacheScope) return;
-    if (stats?.github.error !== "GitHub activity is still loading.") return;
+    if (stats?.freshness?.state !== "refreshing") return;
     const timeout = window.setTimeout(() => {
       void loadStats(preset, cacheScope, false);
     }, 3_500);
     return () => window.clearTimeout(timeout);
-  }, [cacheScope, loadStats, preset, stats?.github.error, stats?.generatedAt]);
+  }, [cacheScope, loadStats, preset, stats?.freshness?.state, stats?.generatedAt]);
 
   const summary = stats?.summary;
   const providerCount = stats?.providers.length ?? 0;
   const modelCount = stats?.models.length ?? 0;
   const topProvider = stats?.providers[0] ? humanizeProvider(stats.providers[0].provider) : "No providers";
   const updatedLabel = stats?.generatedAt ? relativeTimeCompact(stats.generatedAt) : "";
-  const githubAvailable = stats?.github.available ?? false;
-  const githubUnavailableLabel = stats?.github.error === "GitHub activity is still loading." ? "Loading" : "Unavailable";
   const rangeLabel = compactRange(stats);
   const loadingEmpty = loading && !stats;
   const headerDetail = [
-    "Local AI usage and GitHub activity",
+    "ADE activity across desktop, mobile, terminal, and web",
     rangeLabel,
     updatedLabel ? `updated ${updatedLabel}` : "",
   ].filter(Boolean).join(" / ");
@@ -555,6 +459,13 @@ export function AdeUsageSection() {
 
       {error ? <EmptyState text={error} /> : null}
 
+      <UsageActivityCarousel
+        stats={stats}
+        loading={loadingEmpty}
+        preset={preset}
+        onPresetChange={setPreset}
+      />
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14 }}>
         <StatCard
           label="AI tokens"
@@ -572,15 +483,15 @@ export function AdeUsageSection() {
         />
         <StatCard
           label="Code movement"
-          value={summary ? githubAvailable ? formatWhole(summary.insertions + summary.deletions) : githubUnavailableLabel : "0"}
-          detail={summary ? githubAvailable ? `${formatWhole(summary.insertions)} added / ${formatWhole(summary.deletions)} deleted / ${formatWhole(summary.filesChanged)} files` : (stats?.github.error ?? "GitHub activity unavailable") : "GitHub activity"}
+          value={summary ? formatWhole(summary.insertions + summary.deletions) : "0"}
+          detail={summary ? `${formatWhole(summary.insertions)} added / ${formatWhole(summary.deletions)} deleted / ${formatWhole(summary.filesChanged)} files` : "ADE and GitHub activity"}
           accent={ACCENT.code}
           icon={<GitBranch size={18} />}
         />
         <StatCard
           label="Pull requests"
-          value={summary ? githubAvailable ? formatWhole(summary.prsTracked) : githubUnavailableLabel : "0"}
-          detail={summary ? githubAvailable ? `${formatWhole(summary.prsMerged)} merged / ${formatWhole(summary.prsOpen)} open / ${formatWhole(summary.commitsCreated)} commits` : (stats?.github.error ?? "GitHub activity unavailable") : "GitHub activity"}
+          value={summary ? formatWhole(summary.prsTracked) : "0"}
+          detail={summary ? `${formatWhole(summary.prsMerged)} merged / ${formatWhole(summary.prsOpen)} open / ${formatWhole(summary.commitsCreated)} commits` : "ADE and GitHub activity"}
           accent={ACCENT.pr}
           icon={<GitPullRequest size={18} />}
         />
@@ -594,8 +505,6 @@ export function AdeUsageSection() {
         )}
         {stats ? <GithubBreakdown stats={stats} /> : <section style={PANEL_STYLE}><EmptyState text="Loading GitHub activity." /></section>}
       </div>
-
-      <DailyChart points={stats?.daily ?? []} loading={loadingEmpty} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14 }}>
         <StatCard

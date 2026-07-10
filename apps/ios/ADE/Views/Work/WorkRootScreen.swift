@@ -705,7 +705,11 @@ struct WorkRootScreen: View {
               await reload(refreshRemote: true)
             }
           },
-          onChatImported: { chatSessionId in
+          onChatImported: { summary in
+            let chatSessionId = summary.sessionId
+            optimisticSessions[chatSessionId] = makeOptimisticSession(for: summary)
+            chatSummaries[chatSessionId] = summary
+            syncService.cacheChatSummary(summary)
             selectedSessionTransitionId = nil
             var fresh = NavigationPath()
             fresh.append(WorkSessionRoute(sessionId: chatSessionId))

@@ -1561,7 +1561,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       invalidateSessionListCache();
       if (result.kind === "cli") {
         const startedAt = new Date().toISOString();
-        const optimisticSession: TerminalSessionSummary = {
+        const optimisticSession: TerminalSessionSummary = result.session ?? {
           id: result.sessionId,
           laneId: result.laneId,
           laneName: lanes.find((lane) => lane.id === result.laneId)?.name ?? result.laneId,
@@ -1597,6 +1597,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         focusSession(result.sessionId);
         openSessionTab(result.sessionId);
       } else {
+        if (result.chatSummary) {
+          const chat = result.chatSummary;
+          const optimistic = buildOptimisticChatSessionSummary({
+            session: {
+              id: chat.sessionId,
+              laneId: chat.laneId,
+              provider: chat.provider,
+              status: chat.status,
+              createdAt: chat.startedAt,
+              lastActivityAt: chat.lastActivityAt,
+              idleSinceAt: chat.idleSinceAt,
+              orchestrationRunId: chat.orchestrationRunId,
+              orchestrationRole: chat.orchestrationRole,
+              orchestrationTag: chat.orchestrationTag,
+            },
+            laneName: lanes.find((lane) => lane.id === chat.laneId)?.name ?? chat.laneId,
+          });
+          setSessions((prev) => upsertSessionByStartedAt(prev, {
+            ...optimistic,
+            goal: chat.goal ?? null,
+            title: chat.title ?? optimistic.title,
+            endedAt: chat.endedAt,
+            archivedAt: chat.archivedAt ?? null,
+            lastOutputPreview: chat.lastOutputPreview,
+            summary: chat.summary,
+          }));
+        }
         selectLane(result.laneId);
         focusSession(result.chatSessionId);
         openSessionTab(result.chatSessionId);

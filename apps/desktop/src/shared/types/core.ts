@@ -115,6 +115,7 @@ export type RecentlyInstalledUpdate = {
   version: string;
   installedAt: string;
   releaseNotesUrl: string | null;
+  githubReleaseUrl: string | null;
 };
 
 export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";

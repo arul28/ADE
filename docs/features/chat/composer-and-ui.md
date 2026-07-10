@@ -12,10 +12,12 @@ subagents, computer use). The pane derives all visible state from the
 | Path | Role |
 |---|---|
 | `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through **root**-store-backed `DraftLaunchJob` state machines with multi-step progress (`creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`; auto-create names the lane deterministically up front and renames to the AI name in the background, so there is no blocking `naming-lane` phase); jobs live in the root store (not the per-project store) so an in-flight launch survives a remote project switch that tears down the originating project surface. The detached launch chain captures the originating `OpenProjectBinding`, passes it as a `pin` to branch/lane/chat/orchestration/PTY calls so a mid-launch project switch keeps targeting the originating runtime, pins rollback to that binding, and caps each step at 90 s (`withDraftLaunchTimeout`). The composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, failed jobs expose Restore in the job strip and matching error banner, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
+| `apps/desktop/src/renderer/components/usage/UsageActivityCarousel.tsx` | Cross-client activity, token, code-movement, and client-mix charts. `AgentChatPane` mounts `WorkUsageActivityCarousel` beneath the empty Work draft composer when no app panel is open; the component persists the chosen chart and day/week/month/year range. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
 | `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The handoff drawer can offer a brief summarized handoff or a full-history fork when source and target stay within Claude or within Codex; Codex forks use the app-server thread id returned by `thread/fork`. |
-| `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details. |
-| `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, voice-dictation target registration, and parallel model-slot controls. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
+| `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details. |
+| `AgentChatComposer.tsx` | Text input, attachments, model selector, compact title-only permission controls, slash commands, pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
+| `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | Chat Actions tab shell plus Codex Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
 | `VoiceDictationButton.tsx`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*` | Desktop dictation UI and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. The header indicator and composer pill render the same recording state. |
 | `apps/desktop/src/main/services/transcription/*` | Electron main-process transcription service. Writes captured 16 kHz mono PCM to WAV, runs bundled whisper.cpp `base.en`, parses the JSON sidecar, and applies deterministic glossary cleanup. |
 | `apps/desktop/resources/voice/voice-glossary.json`, `apps/desktop/resources/whisper/README.md` | Shared dictation glossary and release notes for materialized whisper resources. The large model and binary are generated by `materialize-whisper-resources.mjs` and ignored by git. |
@@ -47,7 +49,7 @@ subagents, computer use). The pane derives all visible state from the
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). |
-| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx`, `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
+| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
 
 ## Pane layout
 
@@ -212,7 +214,15 @@ and a footer that contains the composer.
   from the model row) is rendered next to the model trigger when the
   active descriptor exposes `reasoningTiers`. The picker remembers the
   last-used effort per model family via the `useReasoningByFamily`
-  hook.
+  hook. The control is a real pointer slider: click or drag previews the
+  position and release snaps to the nearest model-supported tick; arrows,
+  Home, and End provide the same keyboard path. The filled portion uses a
+  progressive low-to-high gradient and the active tier keeps the existing
+  pulse/colour treatment. A tier choice does **not** close the popover — the
+  user can compare levels until clicking outside or pressing Escape.
+  GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
+  is hidden for that family, and Ultra explains that it can delegate to
+  multiple agents and use limits faster.
 - **Voice dictation.** When voice input is enabled and the bundled
   model is installed, a mic button appears beside Send. Capture is
   owned by the app-global `globalVoiceRecorder`, so recording survives
@@ -227,7 +237,7 @@ and a footer that contains the composer.
   toggles the legacy-named `codexFastMode` bit for the selected
   session. It renders whenever the selected descriptor advertises
   `serviceTiers: ["fast"]`, including dynamic Cursor SDK/CLI rows and
-  the Codex GPT 5.4 / 5.5 entries. Codex state flows into the next
+  GPT-5.6 and older fast-capable Codex entries. Codex state flows into the next
   `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor SDK
   state flows through the discovered model-parameter selection, and
   Work CLI launches resolve fast Cursor rows to the matching `*-fast`
@@ -248,6 +258,10 @@ and a footer that contains the composer.
     tooltip, so the trigger can always show the effective preset.
   - OpenCode permission mode selector.
   - Cursor mode snapshot + config options when on Cursor.
+
+  All shared permission dropdowns render only each mode's title in the row.
+  The longer explanation remains available as the row tooltip/title instead
+  of forcing the popover to become a wall of text.
 
   Both the Claude and Codex popovers render via `createPortal` into
   `document.body` and are positioned with `getBoundingClientRect` +
@@ -600,6 +614,27 @@ sources differ per runtime:
   service intentionally does NOT set `agentType` so the renderer falls
   back to that description for the row label.
 
+## Chat Actions and Sources
+
+`ChatActionsDrawerPanel` assembles the contextual tabs for an active chat.
+When the selected provider is Codex, **Sources** is the first tab (ahead of
+Missions/Agents/Proof/Handoff/Run) and receives the current display event set.
+`deriveChatSources()` builds four compact sections:
+
+- **Files** — user attachments and image URLs.
+- **Apps & tools** — MCP servers/plugins/connectors, grouped by app identity
+  with the distinct actions summarized once.
+- **Web** — search queries and result URLs/titles/snippets.
+- **External resources** — HTTP(S) links and resource URIs found in MCP
+  metadata/results, including Linear issue context.
+
+The derivation is bounded and recursive only for JSON-shaped tool results,
+deduplicates by canonical path/URL/source id, and excludes the internal
+`node_repl` execution host. A row is clickable only for an allowed HTTP(S)
+URL and opens through `openUrlInAdeBrowser`; local paths remain informational.
+The main transcript separately keeps web, image, MCP/connector, and subagent
+lifecycle compact across Codex, Claude, Cursor, Droid, and OpenCode adapters.
+
 ## Terminal drawer
 
 `ChatTerminalDrawer` is a collapsible drawer at the bottom of the chat
@@ -669,6 +704,16 @@ Responses are sent back via `ade.agentChat.respondToInput` (accepts
 Legacy `ade.agentChat.approve` is still supported. Plan approval cards
 receive the plan text from the `ExitPlanMode` tool input so the UI shows
 meaningful content rather than a generic label.
+
+Codex app-server `mcpServer/elicitation/request` uses the same contract.
+Form-mode JSON Schema properties become paged questions (enum/oneOf,
+boolean, freeform primitive, and multiselect array); answers are coerced back
+to the schema before ADE replies. Approval/URL mode shows **Allow once** and
+**Deny**, an **Open authorization** action only for safe web URLs, and
+**Always allow** only when `_meta.persist` includes `always`. Provider
+full-auto mode does not auto-answer these app/connector consent requests.
+`serverRequest/resolved` emits the usual resolution event so a request
+completed outside the card cannot leave the composer locked.
 
 ### Cross-surface parity
 
@@ -818,6 +863,13 @@ These modules are pure and unit-testable:
 - **Model warmup on selection.** Selecting a Claude model triggers
   `ade.agentChat.warmupModel` to preload a V2 session. If the warmup
   promise is never awaited, the first turn incurs a 20 s latency.
+- **Reasoning slider pointer ownership.** The track captures a drag only
+  after the small movement threshold, writes preview positions through CSS
+  custom properties, and commits exactly once on pointer-up. Ridge-button
+  clicks take the normal radio path; a drag that starts on a ridge suppresses
+  the trailing synthetic click so it cannot toggle the newly snapped tier
+  back to Auto. Do not close the Radix popover from `onChange` — outside click
+  and Escape are the intentional close actions.
 - **Stale slash commands.** SDK-provided slash commands are fetched once
   per session initialisation. If the user switches model mid-session,
   the pane re-fetches. Missing the refetch surfaces slash commands

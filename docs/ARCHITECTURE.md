@@ -6,9 +6,9 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ## 1. System at a Glance
 
-ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is the **ADE brain**: the always-on, machine-owned ADE process for one channel. The brain hosts every project on that machine through a project registry, exposes a multi-project JSON-RPC surface on the channel's local endpoint, serves the sync websocket for ADE Mobile, and carries executor authority. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all **clients** that attach to a local brain or remote runtime transport and invoke runtime-owned actions through that one surface.
+ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees and also hosts projectless personal chats. The center of the system is the **ADE brain**: the always-on, machine-owned ADE process for one channel. The brain hosts every project on that machine through a project registry, owns a separate machine-level personal-chat scope, exposes both through one JSON-RPC surface on the channel's local endpoint, serves the sync websocket for ADE Mobile, and carries executor authority. Desktop, the terminal `ade code` client, the iOS app, hosted web, and SSH-attached desktop windows are all **clients** that attach to a local brain or remote runtime transport and invoke runtime-owned actions through that one surface.
 
-The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a persistent CTO agent with durable memory and a Linear read/write surface, rule-based automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, project and personal multi-provider agent chat, work-session orchestration, a persistent CTO agent with durable memory and a Linear read/write surface, rule-based automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as one computer install, ADE Mobile, and the marketing site:
 
@@ -36,9 +36,12 @@ flowchart TB
     Artifacts[".ade/artifacts + cache<br/>proof, transcripts, packs"]
   end
 
+  Personal["$ADE_HOME/personal-chats<br/>hidden state + scratch workspace"]
+
   Brain --> Database
   Brain --> Lanes
   Brain --> Artifacts
+  Brain --> Personal
 
   IOS["ADE Mobile<br/>controller client"] <-->|"machine pairing + sync WebSocket<br/>catalog, changesets, commands"| Brain
 
@@ -58,7 +61,8 @@ flowchart TB
                 │   - always-on runtime for one channel          │
                 │   - listens on $ADE_HOME/sock/ade.sock         │
                 │   - login service (launchd / systemd / Win)    │
-                │   - multi-project RPC + project registry       │
+                │   - machine RPC + project registry             │
+                │   - hidden projectless personal-chat scope     │
                 │   - sync service (cr-sqlite over WebSocket)    │
                 │   - credential store, agent registry           │
                 │   - dispatches CLI runtimes:                   │
@@ -77,14 +81,14 @@ flowchart TB
         ┌──────────────────┐ ┌──────────────┐ ┌──────────┐ ┌──────────────────┐
         │ apps/desktop     │ │ ade code TUI │ │ apps/ios │ │ apps/desktop     │
         │ (Electron, multi-│ │ (apps/ade-cli│ │ SwiftUI  │ │ window bound to a│
-        │ window — one     │ │  /tuiClient) │ │ controller│ │ remote brain     │
-        │ window/project)  │ │              │ │ (never   │ │ (RemoteConnection│
+        │ window — project │ │  /tuiClient) │ │ controller│ │ remote brain     │
+        │ or machine chat) │ │              │ │ (never   │ │ (RemoteConnection│
         │ LocalRuntime-    │ │ defaults to  │ │ runs     │ │ Pool, bootstrap- │
         │ ConnectionPool   │ │ machine brain│ │ agents)  │ │ uploads bundled  │
         │                  │ │              │ │          │ │ runtime binary)  │
         └──────────────────┘ └──────────────┘ └──────────┘ └──────────────────┘
                               All clients share the brain's view of
-                                projects, lanes, agent chats, work sessions,
+                                projects, lanes, project/personal chats, work sessions,
                                 processes, sync.
                                             │
                                             ▼
@@ -116,13 +120,14 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 - **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes.
 - **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to the machine brain and will start it if the endpoint is missing. `ade --socket /path code` requires a specific endpoint; `ade code --embedded` keeps the in-process runtime fallback explicit.
 
-**Multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `~/.ade/`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves host-side project icons under a connect-path budget (64 icons / 12 MB per call); records outside the budget get a null icon instead of blocking connection setup.
+**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call` and `personalChats.streamEvents`; they never enter project dispatch and their capability/version is advertised by `runtime/info`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves host-side project icons under a connect-path budget (64 icons / 12 MB per call); records outside the budget get a null icon instead of blocking connection setup.
 
 **Runtime-side services** (under `apps/ade-cli/src/services/`):
 
 | Directory | Role |
 |-----------|------|
 | `projects/` | Project registry, project scope (per-project runtime), machine layout. |
+| `personalChats/` | Lazy machine-owned personal-chat runtime, allowlisted action/terminal/attachment ingress, and durable transcript/event access outside the project registry. |
 | `sync/` | Sync service, peer client, device registry, pairing store, PIN store, sync protocol, remote command service, Tailscale CLI resolver. The sync service now lives here; desktop's old in-process sync host is disabled by default (env-gated `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics only). |
 | `credentials/` | Per-machine credential store. |
 | `agentRegistry.ts` | Per-machine agent registry. |
@@ -132,6 +137,8 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`.
 
 **Action surface.** First-class command families cover lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create-from-linear` / `batch-create-from-linear` to spin up one or many issue lanes — optionally launching an agent chat with `--start-chat`), git, diffs, files, PRs, runs, shells, chats (including `ade chat create --prompt` for a persistent Work chat followed by an initial chat message, `ade chat send` / `message` / `steer` / `wait` for peer chat delivery and status polling, `ade chat read <session>` for recent transcript messages, `ade chat create --from-linear-issue <id>`, `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment, and `--parent <sessionId>` / `--no-parent` to control child-chat lineage — a chat created via `ade chat create` / `ade new --mode chat` defaults its parent to `$ADE_CHAT_SESSION_ID` (the spawning agent's own chat, injected into every tracked agent shell) so it lists in the parent's subagents panel instead of becoming an orphan, and `--no-parent` opts out), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE runtime endpoint), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), universal search (`ade search "<query>"` over chats, terminals, PRs, commits, branches, lanes, files, and Linear — see [features/search/README.md](./features/search/README.md)), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The chat action surface includes `chat.createSession`, `chat.sendMessage` (low-level normal-turn send), `chat.messageSession` (normalized peer delivery: auto, queue, wake, interrupt-replace), `chat.readTranscript`, and model-catalog actions; session-bound non-CTO callers are restricted to their own chat for `chat.sendMessage` and `chat.readTranscript`, while `chat.messageSession` is the reviewed primitive for deliberately messaging another ADE chat through routing semantics. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), named iOS Simulator actions for launch, live view, inspection, input, and Preview Lab workflows, and `search` (`query`, `indexStatus`, and the CTO-only `rebuildIndex` against `searchService`; session-bound non-CTO callers get chat/terminal hits scoped to their own session).
+
+Personal chat is an explicit machine-only variant of the typed chat family: `ade chat list|create|show|read|send|interrupt|archive|unarchive|delete --personal`. It connects to the running brain, invokes `personalChats.call`, and rejects lane/Linear project flags rather than falling back to `--headless` project dispatch. ADE Code remains a project Work TUI and intentionally has no personal-chat UI in this release.
 
 **Proof subcommands** — `ade proof capture` (alias of `screenshot`), `ade proof attach <path>`, `ade proof record`, `ade proof launch`, `ade proof interact`, `ade proof list/status/environment/ingest`. `attach` infers the artifact kind from the file extension and routes through `ingest_computer_use_artifacts` with `backendStyle: "manual"`. Capture-style commands set `preferHeadless: true` on the plan so the connection layer drops to headless mode unless `--socket` is explicitly requested. All proof subcommands accept `--owner-kind` / `--owner-id` (with `chat` and `pr` aliases) to layer an explicit owner on top of the inferred session identity.
 
@@ -166,12 +173,12 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 | `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local ADE runtime when needed, and owns Electron-only services that cannot run inside the runtime. Entry: `main.ts`. |
 | `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); file APIs are strict once a local/remote runtime is bound, while usage/budget reads only route to runtime for remote-bound windows. During project switches, mutating runtime/sync calls that target the ambiguous active binding are blocked, read-only calls avoid refreshing stale bindings, active remote opens can be awaited before retrying reads, and remote lane preview URLs are localized through desktop-owned TCP forwards. Explicitly targeted work can pass an `OpenProjectBinding` pin through `callPinnedRuntimeAction` to route to the captured project during a switch, used by detached draft launches and rollback. |
 | `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
-| `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and cross-client chat derivations such as `chatScheduledWork.ts`. Imported by desktop, `apps/ade-cli`, and mobile contract generation paths. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
+| `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and cross-client derivations such as `chatScheduledWork.ts` and `externalSessionAffordances.ts` (the desktop/ADE Code Continue/Copy policy for provider-native imports). Imported by desktop, `apps/ade-cli`, and mobile contract generation paths. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
 | `apps/desktop/src/generated/` | Build-time generated code (e.g., bootstrap SQL snapshots). |
 | `apps/desktop/src/test/` | Shared vitest setup and fixtures. |
 | `apps/desktop/src/types/` | Ambient type declarations. |
 
-**Multi-window shell.** `main.ts` hosts multiple `BrowserWindow` instances; opening another project opens it in a dedicated window. Each window has its own runtime binding (local pool or a specific remote target). External controllers — for example a `ade code` TUI — can drive desktop window navigation via the `app/navigate` JSON-RPC method against the runtime; the desktop's IPC tracing carries window ID so logs distinguish which renderer surface invoked a channel.
+**Multi-window shell.** `main.ts` hosts multiple `BrowserWindow` instances; opening another project opens it in a dedicated window. Each window has its own runtime binding (local pool or a specific remote target). The global `/chats` route can run as a standalone machine tab from the no-project shell or inside the current project tab without clearing that binding. Personal-chat IPC therefore targets the local brain from local/no-project windows and the remote brain from an SSH-bound project window. External controllers — for example a `ade code` TUI — can drive desktop window navigation via the `app/navigate` JSON-RPC method against the runtime; the desktop's IPC tracing carries window ID so logs distinguish which renderer surface invoked a channel.
 
 **Runtime binding pools.**
 
@@ -194,7 +201,34 @@ Terminal-native **Work** chat client (Ink 7 + React 19) for agents and power use
 - **Remote mode**: `ade code remote` reads saved desktop remote targets, picks a target/project/session, starts `ade rpc --stdio` over SSH, bridges that stdio stream to a local one-connection socket (`remoteBridge.ts`), and then runs the normal TUI against the bridged endpoint. Compatibility checks that only make sense for local processes (entrypoint build hash and project-root equality) are skipped.
 - **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a machine brain. Used when no brain endpoint or manual runtime endpoint is reachable.
 
-Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in `apps/ade-cli` covers both typed commands and the TUI. Entry: `apps/ade-cli/src/tuiClient/cli.tsx` → `apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight dependencies and injects ESM shims for `__dirname` / `__filename`; both `apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators smoke-import it and run `runAdeCodeCli(["--help"])`. Provider/model/interface setup is kept in pure helpers (`modelState.ts`, `providerMetadata.ts`, `modelPickerController.ts`) so Chat-vs-CLI availability, Cursor SDK-vs-CLI model filtering, permission presets, Fast Mode, and setup rows stay testable outside the Ink root. Chat Info uses shared derivations for subagents, tasks, and scheduled work, so Claude wakeups/cron/background activity rendered in desktop also appears in ADE Code. The TUI can hand off to a desktop window via the `app/navigate` JSON-RPC method when a desktop client is attached to the same runtime.
+Shared DTOs and cross-client policies are imported from
+`apps/desktop/src/shared/*` (never the renderer barrel) so `npm run typecheck`
+in `apps/ade-cli` covers both typed commands and the TUI. This includes
+`externalSessionAffordances.ts`, which keeps ADE Code's provider-native
+Continue/Copy choices aligned with desktop while `externalSessionBrowser.ts`
+owns TUI-only navigation and the Open-existing action. Entry:
+`apps/ade-cli/src/tuiClient/cli.tsx` →
+`apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI
+bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight
+dependencies and injects ESM shims for `__dirname` / `__filename`; both
+`apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators
+smoke-import it and run `runAdeCodeCli(["--help"])`.
+Provider/model/interface setup is kept in pure helpers (`modelState.ts`,
+`providerMetadata.ts`, `modelPickerController.ts`) so Chat-vs-CLI availability,
+Cursor SDK-vs-CLI model filtering, permission presets, Fast Mode, and setup rows
+stay testable outside the Ink root. Chat Info uses shared derivations for
+subagents, tasks, and scheduled work, so Claude wakeups/cron/background activity
+rendered in desktop also appears in ADE Code. The TUI can hand off to a desktop
+window via the `app/navigate` JSON-RPC method when a desktop client is attached
+to the same runtime.
+
+Model setup shares the desktop registry: GPT-5.6 Sol/Terra/Luna lead the Codex
+list, Sol is the default, and host-advertised reasoning defaults are honored
+while the GPT-5.6 raw Max tier stays hidden. Transcript aggregation also
+preserves MCP app/action labels and collapses web/image lifecycle updates. In
+CLI interface mode, attached and embedded runtime actions use the same signed,
+explicit-opt-in `computer_use` MCP resolver as desktop when launching or
+resuming Codex.
 
 ### 2.4 iOS client (`apps/ios/`)
 
@@ -203,20 +237,29 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
 - Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`, `DpopKeyService.swift` (Secure Enclave P-256 pairing proof), `PushNotificationService.swift`, `LiveActivityService.swift`.
-- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel). The Work chat decodes the same chat event union as desktop for live transcripts, including scheduled-work updates and transcript retractions; scheduled work appears in a native Chat Info popup/sheet while the phone remains a controller only.
+- Shipped project tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel). The projectless Chats surface is entered only from the Hub, outside the project tab bar. It uses runtime-scoped commands and the same chat event union/Work transcript renderer while suppressing lane/project actions. The Work chat decodes the same chat event union as desktop for live transcripts, including scheduled-work updates and transcript retractions; scheduled work appears in a native Chat Info popup/sheet while the phone remains a controller only.
 - Shipped widgets: a Lock Screen widget for prioritized agent/PR/sync/offline/idle status, plus an ActivityKit Live Activity + Dynamic Island for active agent runs (`ADEWidgets/ADEAgentActivityWidget.swift`).
-- Push: APNs alert pushes (deep-linked) and Live Activity updates arrive via the Cloudflare push relay (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket.
+- Push: APNs alert pushes (deep-linked) and Live Activity updates arrive via the Cloudflare push relay (§2.7); the phone hands tokens/prefs to the brain over the paired sync WebSocket.
 - Pairing: user-set 6-digit PIN over a v3 smart-URL QR (or discovery / manual entry), hardened with device-bound DPoP proofs.
 - Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
-### 2.5 Web app (`apps/web/`)
+### 2.5 Hosted web client (`apps/desktop/src/renderer/webclient/`)
+
+Static Cloudflare Pages controller built from the desktop renderer package. It
+pairs to the machine sync WebSocket with PIN + DPoP, keeps no local ADE DB, and
+installs a sync-backed subset of `window.ade`. Its project routes use remote
+commands plus file/chat/terminal sub-protocols; `/chats` is also reachable from
+the project picker and uses runtime-scoped `personalChats.*` commands without
+selecting a project. See [Web client](./features/web-client/README.md).
+
+### 2.6 Web app (`apps/web/`)
 
 A Vite/React SPA that serves the public marketing site, download page, and the deeplink landing page. Five pages: `HomePage`, `DownloadPage`, `OpenPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
 The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app.dev/open?type=...&...`). `apps/web/api/open.ts` is a Vercel serverless function that self-fetches `index.html`, rewrites OpenGraph + Twitter meta tags from the query params so chat-app unfurlers (Slack, Discord, iMessage, Gmail, Linear) show a rich card without executing JavaScript, then hands the SPA over to `OpenPage` which attempts the `ade://` upgrade in the browser and falls back to an install/marketing card if no handler is registered. Supported targets include lanes, Work sessions, repo branches, PRs, and Linear issues. See [features/deeplinks/README.md](./features/deeplinks/README.md).
 
-### 2.6 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
+### 2.7 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
 
 Three independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
 
@@ -242,7 +285,7 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
 
 ### 3.2 Schema highlights
 
-Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents reading this doc:
+Schema bootstrap in `kvDb.ts` creates ~104 tables. Anchor tables for agents reading this doc:
 
 | Table | Purpose |
 |-------|---------|
@@ -253,6 +296,7 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 | `runtime_processes` | Machine-local process-liveness registry. Every ADE process (desktop main, brain process, TUI runtime) inserts a row on boot keyed by the process incarnation (`pid`, `started_at`) and refreshes `last_seen` on a 5 s heartbeat. The table is excluded from CRR replication because PIDs are only meaningful on the current OS; reconcile / dispose paths cross-reference `terminal_sessions.owner_pid` and `owner_process_started_at` against locally known and live rows to tell "row whose local owner crashed" from "row a sibling process is actively managing" without detaching sessions owned by another synced machine. See §3.5. |
 | `session_deltas` | Post-session diff stats + touched files + failure lines. Input to pack generation. |
 | `operations` | Audit log of every significant mutation (git, pack updates). Pre/post HEAD SHAs enable undo. |
+| `usage_events` | Low-volume local ledger of successful user mutations, attributed to `desktop`, `mobile`, `tui`, `web`, or `api`. It is excluded from CRR replication; controllers read its aggregates through `usage.getAdeStats` instead of syncing raw events. |
 | `process_definitions` / `process_runtime` / `process_runs` | Managed-process lifecycle (derived from `ade.yaml`). |
 | `test_suites` / `test_runs` | Declared test suites and their execution history. |
 | `pull_requests` / `pr_review_threads` / `pr_checks` | GitHub PR projections with queue and stack metadata. |
@@ -295,8 +339,12 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │       ├── sync-site-id
 │       ├── sync-device-id
 │       └── sync-bootstrap-token
-└── ~/.ade/                      # Global state (user profile directory)
+└── ~/.ade/                      # Stable-channel ADE home (beta/alpha use their own homes)
     ├── global-state.json        # Recent projects list
+    ├── projects.json            # Machine project registry
+    ├── personal-chats/
+    │   ├── state/               # Hidden chat runtime DB, transcripts, attachments
+    │   └── workspaces/          # Separate provider cwd + personal terminal scratch
     └── logs/                    # Main-process structured logs
 ```
 
@@ -304,7 +352,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
 2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
-3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, and generated context markdown. Never leaves the device.
+3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, generated context markdown, and the channel-local personal-chat state/scratch roots. Never leaves the device. Personal chats can still be controlled from another client connected to that machine brain; they are not CRR rows in an active project's database.
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 
@@ -344,9 +392,9 @@ Service entry points live under `apps/desktop/src/main/services/ai/`. The subsys
 ### 4.1 Provider routing
 
 - **Router** — `aiIntegrationService.ts` resolves a task → model → provider class and dispatches.
-- **Model registry** — `apps/desktop/src/shared/modelRegistry.ts` is the single source of truth. Each `ModelDescriptor` carries identity (`id`, `shortId`, `providerRoute`, `providerModelId`), capabilities, pricing, context sizing, auth type (`cli-subscription`, `api-key`, `openrouter`, `local`), and optional `harnessProfile`/`discoverySource` for safety metadata.
+- **Model registry** — `apps/desktop/src/shared/modelRegistry.ts` is the single source of truth. Each `ModelDescriptor` carries identity (`id`, `shortId`, `providerRoute`, `providerModelId`), capabilities, pricing, context sizing, auth type (`cli-subscription`, `api-key`, `openrouter`, `local`), optional reasoning tiers plus `defaultReasoningEffort`, and optional `harnessProfile`/`discoverySource` for safety metadata.
 - **Classes**:
-  - **CLI-wrapped** (Claude via `@anthropic-ai/claude-agent-sdk`, Codex CLI via `@openai/codex-sdk`) — spawned as subprocesses; Claude uses the SDK `query()` stream with ADE's async input pump and bundled Claude Code binary, while Codex uses its app-server JSON-RPC bridge. Authentication inherits from the user's own CLI login. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
+  - **CLI-wrapped** (Claude via `@anthropic-ai/claude-agent-sdk`, Codex via the pinned `@openai/codex` package) — spawned as subprocesses; Claude uses the SDK `query()` stream with ADE's async input pump and bundled Claude Code binary, while Codex uses its app-server JSON-RPC bridge. Desktop and runtime packages pin Codex `0.144.0`, including the matching native app-server binary. Authentication inherits from the user's own CLI login. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
   - **API-key / OpenRouter** (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter) — routed through the **OpenCode server** (`opencode` binary, user-installed or bundled). Discovery via `openCodeInventory.ts`; replaces dynamic portion of the registry.
   - **Local** (Ollama, LM Studio, vLLM) — OpenAI-compatible local endpoints through OpenCode. Discovery via `localModelDiscovery.ts`.
 - **Detection pipeline**:
@@ -392,7 +440,7 @@ Agent tools are split by domain:
 
 `apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
 
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. The Claude block is ordered for every picker as Fable 5, Opus 4.8 1M, Sonnet 5, Haiku 4.5, then Opus 4.7 1M. Sonnet 5 uses provider model `claude-sonnet-5` (1,000,000 context / 128,000 max output); removed Sonnet 4.6 and basic Opus 4.7 ids resolve forward as compatibility aliases but do not appear as selectable rows. Opus 4.7 1M remains available as `anthropic/claude-opus-4-7-1m` with aliases `opus[1m]` / `claude-opus-4-7[1m]`. `ModelDescriptor.serviceTiers?: string[]` advertises optional service tiers (today: `"fast"`, set on Fable/Opus, Codex GPT 5.4 / 5.5 entries, and dynamic Cursor SDK/CLI rows) that the UI's Fast Mode toggle keys off. Codex maps it to the JSON-RPC `serviceTier` argument; Cursor SDK maps it through discovered model parameters, and Cursor CLI launches use the matching fast model alias when present.
+- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. The OpenAI/Codex block is ordered GPT-5.6 Sol, Terra, Luna, then the retained GPT-5.5 and older rows; `pickDefaultCodexModel` chooses the newest Sol row, so new Codex sessions default to GPT-5.6 Sol. All three GPT-5.6 descriptors have a 372k context window and advertise Fast. Sol and Terra expose `low | medium | high | xhigh | ultra`; Luna stops at `xhigh`. The product labels those tiers Light, Medium, High, Extra High, and Ultra. Raw app-server catalogs can report `max`, but ADE hides that feature-gated tier for GPT-5.6. `defaultReasoningEffort` is `low` for Sol and `medium` for Terra/Luna and is honored by desktop, TUI, iOS, CTO, review, and handoff pickers. The Claude block is ordered for every picker as Fable 5, Opus 4.8 1M, Sonnet 5, Haiku 4.5, then Opus 4.7 1M. Sonnet 5 uses provider model `claude-sonnet-5` (1,000,000 context / 128,000 max output); removed Sonnet 4.6 and basic Opus 4.7 ids resolve forward as compatibility aliases but do not appear as selectable rows. Opus 4.7 1M remains available as `anthropic/claude-opus-4-7-1m` with aliases `opus[1m]` / `claude-opus-4-7[1m]`. `ModelDescriptor.serviceTiers?: string[]` advertises optional service tiers (today: `"fast"`, set on Fable/Opus, GPT-5.6 and older fast-capable Codex entries, and dynamic Cursor SDK/CLI rows) that the UI's Fast Mode toggle keys off. Codex maps it to the JSON-RPC `serviceTier` argument; Cursor SDK maps it through discovered model parameters, and Cursor CLI launches use the matching fast model alias when present.
 - `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor" | "droid"`. Cursor and Droid each have their own top-level provider group used by the model picker, identity routing, and tracked CLI provider catalog.
 - Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`, `modelSupportsServiceTier(descriptor, tier)` / `modelSupportsFastMode(descriptor)`.
 - Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. Claude Fable and Opus 4.8 rows advertise `low | medium | high | xhigh | max | ultracode`; Sonnet 5 advertises `low | medium | high | max`.
@@ -463,7 +511,12 @@ ade.agentChat.*              # agent chat sessions, model inventory, parallel la
                              # used by desktop + TUI + iOS ModelPickers; accepts
                              # `{ mode: "cached"|"refresh-stale"|"force", refreshProvider?: "opencode"|"cursor"|"droid"|"lmstudio"|"ollama" }`)
                              # and ade.agentChat.codex.* goal controls backed by
-                             # Codex app-server thread/goal RPCs.
+                             # Codex app-server thread/goal RPCs, plus
+                             # recoverCodexTurn for guarded Wait/Nudge/Retry/Resume
+                             # handling of the currently active stalled turn.
+ade.personalChats.*          # preload namespace over machine RPC: allowlisted personal-chat
+                             # call + cursor event stream. Local/no-project windows target the
+                             # local brain; a remote-bound project window targets that remote brain.
 modelPicker.*                # cross-surface model favorites/recents backed by
                              # per-project CRR tables (`model_picker_favorites`,
                              # `model_picker_recents`) and shared by desktop,
@@ -486,12 +539,12 @@ ade.processes.* / ade.tests.* # processes also expose group bulk ops:
 ade.config.*                 # project config get/save/trust
 ade.keybindings.*
 ade.sync.*                   # device registry, PIN pairing (getPin/setPin/clearPin), QR payload, lane presence announce (setActiveLanePresence), host transfer
-ade.usage.*                  # token/cost accounting
+ade.usage.*                  # live provider quotas/budgets plus retrospective ADE activity stats
 ade.layout.* / ade.graph.*
 ade.computerUse.*
 ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/resolvePreviewMatch/ensurePreviewWorkspace/renderCurrentPreview/renderPreview/openPreviewWorkspace/startStream/stopStream/getStreamStatus/getWindowState/listWindowSources/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
 ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
-ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startSession/listSessions/endSession/observe/getTrace/click/typeText/dispatchKey/scroll/fill/clear/wait/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection/claim, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
+ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startSession/listSessions/endSession/observe/getTrace/click/typeText/dispatchKey/scroll/fill/clear/wait/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection/claim, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab, personal chat's explicitly global profile, and the renderer-wide `openUrlInAdeBrowser()` link router.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
 ade.updates.*
 ```
@@ -541,8 +594,9 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `appControl/` | `appControlService.ts`, `appControlLaunchCommand.ts` | Chrome DevTools Protocol bridge for developer-owned Electron apps. Launches a chat-owned PTY running the user's dev command (or connects to an existing `--remote-debugging-port`), polls `/json` for ready CDP targets, attaches a long-lived `CdpClient` WebSocket, and exposes screenshot / DOM snapshot / hit-test / click / type / scroll / key dispatch / screencast frames. `appControlLaunchCommand.ts` owns the shell-command detection and debug-flag injection helpers for direct Electron and package-script launches. `inspectPoint` and `selectPoint` produce `AppControlContextItem`s for the chat composer (DOM packet + screenshot + source-file candidates resolved by `findSourceMatches` over an indexed tree of project source files). See [features/computer-use/app-control.md](./features/computer-use/app-control.md). |
 | `builtInBrowser/` | `builtInBrowserService.ts`, `builtInBrowserNavigation.ts`, `builtInBrowserPermissions.ts` | In-app web browser owned by the main process. Allocates `WebContentsView` tabs against persistent project-profile partitions derived from the active project root (fallback `persist:ade-browser`, cap 10 tabs per window/project service), positions them over a renderer-supplied bounds rect, drives navigation / tabs / reload / back / forward, attaches the Chrome DevTools Protocol debugger for inspect-mode hit tests and background input dispatch, captures screenshots, handles Electron download requests with sanitized unique filenames in the user's Downloads folder, and emits `BuiltInBrowserEventPayload`s to subscribers. Tabs carry per-tab owner metadata (`ownerLaneId`, `ownerChatSessionId`, `ownerClaimedAt`, `ownerLeaseExpiresAt`), and observe/click/type/key/scroll/fill/clear/wait/screenshot/select/reload/back/forward/stop can target a hidden or non-active tab by `tabId` or by a lightweight browser session id. Browser sessions bind one agent workflow to one tab, remember owner plus last observation/trace ids, support `ade browser session <action> <id>` aliases, and end explicitly or when the tab closes. Browser agent observations are scratch PNG/JSON files under `.ade/cache/browser-observations/` with a bounded DOM element list for selector/text/index targeting, optional numbered element-map screenshots, console/network diagnostics, pending request count, and short-lived element handles that preserve same-origin iframe/open-shadow-root context. Click/fill/clear/press/wait can resolve `selector`, `text`, `testId`, `elementIndex`, or `handle`, scroll the target into view, focus as needed, and reject disabled targets before dispatching CDP input. Waits wake from browser/network/page activity events with a timeout fallback; `network-idle` requires complete ready state, zero pending browser requests, and a configurable idle window. Per-tab action traces record action, target metadata, before/after URL, duration, observation id, session id, and errors; typed/fill values are represented by length rather than raw text. Scratch observations prune to the latest 3 observations per tab by default and sweep stale cache files; `ade browser proof` promotes a fresh observation through the computer-use artifact broker. Desktop bridge calls from `ade browser` carry the runtime project root and are routed only to an ADE window/project tab for that root, so a command from one project cannot mutate another project's browser. Navigation normalization and protocol allowlisting live in `builtInBrowserNavigation.ts`; Google-auth permission policy lives in `builtInBrowserPermissions.ts`; WebAuthn account selection is registered per Electron storage session in `builtInBrowserWebAuthn.ts`. Consumed by `ChatBuiltInBrowserPanel` (Work sidebar Browser tab), which hides the native view while ADE overlays intersect the browser rectangle, and by `openUrlInAdeBrowser()` in the renderer so renderer-side link clicks open inside ADE rather than the system browser. |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
-| `chat/` | `agentChatService.ts`, `runtimeEvents.ts`, `buildClaudeV2Message.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `codexSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts`, `projectSlashCommandDiscovery.ts`, `slashCommandPromptExpansion.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`), `sessionRecovery.ts` | Agent chat sessions (lane-scoped + orchestration worker/coordinator). Builds Claude messages, hosts the Cursor SDK in a Node worker pool with official local-store persistence, formalizes the cross-runtime event vocabulary, discovers and resolves provider-specific slash commands through a shared markdown engine, recovers sessions on restart, derives prompt-based lane names for parallel model launches, keeps Claude Agent SDK streams alive for scheduled wake/cron/background work after visible turns, emits transcript retractions for provider-superseded assistant rows, and manages Codex app-server goals with persisted, unlimited-budget session state. |
-| `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
+| `chat/` | `agentChatService.ts`, `runtimeEvents.ts`, `claudeStructuredActivity.ts`, `openCodeStructuredActivity.ts`, `codexMcpElicitation.ts`, `buildClaudeV2Message.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `codexSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts`, `projectSlashCommandDiscovery.ts`, `slashCommandPromptExpansion.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`), `droidSdkEventMapper.ts`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + orchestration worker/coordinator). Builds Claude messages, hosts the Cursor SDK in a Node worker pool with official local-store persistence, formalizes the cross-runtime event vocabulary, normalizes provider-native web/MCP/image activity into compact shared events, handles Codex app-server MCP elicitations and stalled-turn recovery, discovers and resolves provider-specific slash commands through a shared markdown engine, recovers sessions on restart, derives prompt-based lane names for parallel model launches, keeps Claude Agent SDK streams alive for scheduled wake/cron/background work after visible turns, emits transcript retractions for provider-superseded assistant rows, and manages Codex app-server goals with persisted, unlimited-budget session state. |
+| `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, and macOS capture capability descriptor. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. Direct Codex Computer Use executable resolution lives outside this folder in `main/utils/codexComputerUse.ts` because it configures provider runtimes rather than ingesting proof. |
+| `proof/` | `agentBrowserArtifactAdapter.ts` | Parses agent-browser payloads into broker inputs. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
 | `cto/` | `ctoStateService.ts`, `ctoMemoryService.ts`, `ctoPromptContent.ts`, `linearClient.ts`, `linearIssueTracker.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` | CTO identity, the smart-memory file store, session logs, and the Linear read/credential/OAuth surface. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL; `linearLiveStatusService` is the optional launch/PR/merge status round-trip. |
@@ -577,8 +631,10 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | **Thin delegation to the ADE runtime's sync service.** The authoritative sync service now lives in `apps/ade-cli/src/services/sync/`; the desktop main-process instances default to a non-host viewer role for legacy state and tests. The old in-process host is disabled unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1` (diagnostics only). Wire formats — WebSocket envelope, remote command routing, device registry, pairing secrets — are the same across both implementations. Viewer joins clear the local `devices` + `sync_cluster_state` rows and then call `db.sync.discardUnpublishedChangesForTables(["devices", "sync_cluster_state"])` so the resulting DELETE rows do not leak back to other peers; the peer client follows up with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
 | `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle \| checking \| downloading \| ready \| installing \| error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. Packaged builds schedule startup/periodic checks; source/dev launches construct the service without auto-check timers so missing `app-update.yml` never surfaces as a renderer error. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
-| `usage/` | `usageTrackingService.ts`, `budgetCapService.ts`, `ledgers/localUsageLedgers.ts` | Token/cost accounting, budget enforcement. `usageTrackingService.ts` owns polling, aggregation, pacing, GitHub stats, and cache orchestration; local provider ledger scanners live under `usage/ledgers/`. Budget caps can match a rule scope while `usd-per-run` evaluates usage records keyed to the active run id. Threshold state is shared at module level across all `createUsageTrackingService` instances so multiple project contexts don't fire duplicate threshold events; `main.ts` adds a final IPC-level dedup gate with a 10-minute TTL per `provider:threshold:resetCycle` key. |
+| `usage/` | `usageTrackingService.ts`, `usageStatsStore.ts`, `budgetCapService.ts`, `ledgers/localUsageLedgers.ts` | Live provider quota/cost accounting, budget enforcement, and retrospective activity stats. `usageTrackingService.ts` owns polling, pacing, provider/GitHub cache orchestration, and `getAdeUsageStats`; that read returns cached expensive sources plus live project-DB aggregates immediately, marks the result `refreshing` when stale, and revalidates provider ledgers / GitHub in the background. `usageStatsStore.ts` aggregates AI calls, sessions, lanes, code movement, artifacts, automations, workers, streaks, and the local-only cross-client `usage_events` ledger. Local provider scanners live under `usage/ledgers/`. Budget caps can match a rule scope while `usd-per-run` evaluates usage records keyed to the active run id. Threshold state is shared at module level across all `createUsageTrackingService` instances so multiple project contexts don't fire duplicate threshold events; `main.ts` adds a final IPC-level dedup gate with a 10-minute TTL per `provider:threshold:resetCycle` key. |
 | `perf/` | `perfLog.ts`, `perfIpc.ts`, `metricsSampler.ts`, `aggregator.ts` | Opt-in local performance harness. `ADE_PERF_RUN_ID` opens a JSONL event log, samples Electron process metrics, records IPC durations, accepts renderer perf marks/web-vitals, and aggregates each run into `summary.json`. |
+
+**Cross-cutting personal-chat paths.** Personal chat reuses `chat/agentChatService.ts` with `surface: "personal"`, a light session profile, a neutral general-assistant prompt, project/lane environment variables removed, and project slash-command/ADE-guidance injection disabled. The hidden runtime also disables project push publication. Desktop Browser calls from that surface pass `profileScope: "global"`; `builtInBrowserService.ts` treats it as an explicit storage partition choice instead of falling back to the source window's active project profile. See [Personal chats](./features/personal-chats/README.md) for the complete source map and invariants.
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
 
@@ -648,6 +704,7 @@ orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, Pl
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync
 chat/           # AgentChatPane + composer + subpanels
+personalChats/  # global projectless chat list/transcript/composer + personal PTY panel
 shared/         # MentionInput, shared interactive bits
 ui/             # pure presentation primitives
 ```
@@ -660,6 +717,7 @@ Design tokens have been intentionally trimmed. The CTO design tokens at `apps/de
 - `SplitPane` / resizable panels — structured 2/3-pane views.
 - Work view's grid mode is `PaneTilingLayout` seeded by `buildWorkSessionTilingTree(sessionIds)` (in `renderer/components/terminals/workSessionTiling.ts`); every session becomes a `FloatingPane` leaf with `grid-tile` chrome.
 - Project tab hosting: `App.tsx`'s `ProjectTabHost` mounts one persistent `ProjectSurface` per open project tab inside a single window, keyed by the runtime binding (`local:<root>` or the remote binding key) so a local and remote view of the same path cannot share renderer state accidentally. Each `ProjectSurface` owns its own zustand store instance (`createProjectAppStore(project, projectBinding)`), pre-hydrated with the project binding plus a copy of root-store user preferences (theme, terminal preferences, chat font, sound, density, etc.). User-preference setters point at the **root** store, so changes flow to one place and are then mirrored into every project store on the next `rootPrefs` change. A LRU sorts mounted surfaces and caps the warm-mounted set at `WARM_PROJECT_SURFACE_LIMIT = 8`; surfaces beyond that limit are dropped from the React tree (their store entry is GC'd) but the persisted lane/chat caches in the root store keep their data live so a re-mount is cheap.
+- Global personal-chat routing: `/chats` sits outside the project route set. From a selected project it renders against that surface's retained runtime binding; from the welcome/project picker it renders in a standalone machine tab and the normal project-only tabs remain disabled. The Chats sidebar entry itself stays enabled in both states.
 - Per-surface routing: each surface remembers its own route (`/work`, `/lanes`, `/files`, `/prs`, `/cto`, `/automations`, `/settings`, …) under `ade:project-route:<bindingKey>` in `localStorage`. `ProjectTabHost` swaps which surface is `active` based on the foreground project tab, stashing the outgoing route and replaying the incoming surface's last route via `navigate(..., { replace: true })`. Inactive surfaces stay in the tree (`aria-hidden`, `inert`, absolutely positioned at `z-index: -1`, opacity 0, pointer-events none) so chats / terminals / live polling don't tear down on tab swap.
 - Work-surface reveal: `ProjectRouteContent` keeps the `/work` route mounted lazily inside each project surface. When the surface itself becomes active **and** the route is a work route, it dispatches the `WORK_SURFACE_REVEALED_EVENT` window event so terminal tiles can clear their texture atlas, force-fit, and refocus.
 - Page-level active gating: lazy feature pages (`LanesPage`, `FilesTab`, `WorkspaceGraphPage`, `PRsPage`, `ReviewPage`, `HistoryPage`, `AutomationsPage`, `AutomationsTemplatesPage`, `CtoPage`, `SettingsPage`) accept an `active?: boolean` prop and gate every `useEffect` that fires IPC polling, event subscriptions, or initial data fetches behind it. Inactive surfaces in background project tabs render their last state but don't poll — the project's runtime is still alive, so the freshness is restored on the next refresh when the user returns.
@@ -678,10 +736,20 @@ Enforced rules (from the stability overhaul):
 6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots).
 7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
 8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
-9. Settings sections that surface a snapshot read the cached snapshot on mount (`ade.usage.getSnapshot`) instead of forcing a refresh; an explicit Refresh button drives recompute.
+9. Usage surfaces never block first paint on provider-ledger or GitHub scans. The quota popup reads `ade.usage.getSnapshot` before an explicit refresh; retrospective Stats calls `ade.usage.getAdeStats`, which returns cached expensive sources plus live DB aggregates and refreshes stale sources in the background. An explicit Refresh remains available for a forced recompute.
 10. Persistence callbacks dedupe against the last-saved value: the workspace-graph view-mode persister tracks the last-loaded preference root and skips the immediate write that the load handler's `setViewMode` would otherwise fire.
 
-CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under `apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI action surface, and sync remote-command service share one provider launch contract. Renderer imports go through thin re-export shims under `apps/desktop/src/renderer/`. The mobile launcher path (`work.startCliSession`) uses the same shared helpers on the host side, so iOS CLI launches do not depend on renderer modules.
+CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under
+`apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI
+action surface, and sync remote-command service share one provider launch
+contract. Resume builders preserve provider-native model/permission state when
+an import supplies no explicit override. `externalSessionAffordances.ts`
+similarly centralizes provider capability-to-action policy for desktop and ADE
+Code. Renderer imports go through thin re-export shims under
+`apps/desktop/src/renderer/`. The mobile launcher path
+(`work.startCliSession`) uses the shared launch helpers on the host side, while
+iOS mirrors the external-import action policy natively in
+`WorkExternalSessionAffordances.swift`.
 
 Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
 
@@ -844,7 +912,7 @@ ADE does not generate PRD or architecture bootstrap documents. Agent prompts tel
 
 ### 12.1 Principle
 
-Proof is **intentional**. Agents run computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run, a local screenshot. ADE stays out of that loop. When the agent reaches a checkpoint worth showing, it files an artifact through the broker (directly or via `ade proof capture` / `attach`), optionally with a caption. That record is what the drawer UI renders and what reviewers see.
+Proof is **intentional**. Agents run computer use through their provider tool — including direct Codex Computer Use, Claude's `computer_use`, a scripted browser, a headless Playwright run, or a local screenshot. ADE may provision the provider tool, but it does not passively promote every tool result into proof. When the agent reaches a checkpoint worth showing, it files an artifact through the broker (directly or via `ade proof capture` / `attach`), optionally with a caption. That record is what the drawer UI renders and what reviewers see.
 
 The previous control-plane model — `ComputerUsePolicy` (`off`/`auto`/`enabled`, `allowLocalFallback`, `retainProof`, `preferredBackend`), passive `proofObserver` ingestion from chat `tool_result` events, and the Settings > Computer Use panel — was removed. There is **one path** now: intentional ingest via the broker.
 
@@ -858,8 +926,16 @@ Supporting files in the same directory:
 
 - `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities) over the broker.
 - `localComputerUse.ts` — exports `getLocalProofCaptureCapabilities()`, a macOS-only descriptor reporting whether `screencapture`, app launch, and GUI-interaction commands are available.
-- `agentBrowserArtifactAdapter.ts` — parses agent-browser payloads into `ComputerUseArtifactInput[]`.
-- `syntheticToolResult.ts` — produces tool-result stubs during Claude compaction so a previously-executed tool response can be re-surfaced without re-running the tool.
+- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — parses agent-browser payloads into `ComputerUseArtifactInput[]`.
+
+Direct Codex Computer Use is a separate execution path. On macOS,
+`apps/desktop/src/main/utils/codexComputerUse.ts` requires an explicit
+`computer-use@openai-bundled` plugin or `mcp_servers.computer_use` opt-in,
+finds the standalone `SkyComputerUseClient`, verifies the full code signature
+plus OpenAI team/bundle identifiers, and injects it as the canonical
+`computer_use` MCP server into native Work chats and tracked Codex CLI
+start/resume commands. It does not replace the proof broker or bypass MCP
+elicitation prompts.
 
 ### 12.3 Artifact record
 
@@ -911,21 +987,26 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
 - Opens WebSocket to host after racing all saved address candidates with concurrent TCP probes (happy eyeballs) — a dead LAN IP no longer delays the live Tailscale route. Sends local `db_version` plus the per-host-DB cursor map (`remoteDbVersionBySite`); host replies with its `serverDbSiteId` and sends catch-up changesets.
 - `hello_ok` can include the host's mobile project catalog and project-action feature flag. The iOS app shows a native project home until an active project is selected, can browse/open/create/clone projects on the paired machine when project actions are available, then drives `project_switch_request` / `project_switch_result`; the port stays stable across switches.
 - Bidirectional sync continues; inbound processing (envelope parse, gunzip, chunk reassembly, changeset decode + apply) runs off the main actor. On disconnect: a fast exponential-backoff burst, then an indefinite ~30 s slow-heartbeat retry — the phone never permanently gives up. `reconnectIfPossible` is guarded against overlapping runs.
-- Chat streaming resumes by sequence: each `chat_event` carries a host-assigned per-session `seq` backed by a replay buffer; `chat_subscribe` passes `sinceSeq` so reconnects replay only the missed events. The subscribe ack also carries `turnActive` (live turn state from the agent chat service) so a phone subscribing mid-turn renders streaming/stop affordances immediately even when the byte-capped snapshot tail dropped the turn's start event. `chat.getTranscript` pages older history via an opaque cursor. When the host advertises the `crossProjectChat` feature flag, `chat_subscribe` can also name a foreign (non-active) project via `projectId`/`projectRootPath`; the host streams that project's transcript read-only straight off its `.ade` transcript files, so the all-projects Hub can open any project's chat without a project switch or runtime boot.
+- Chat streaming resumes by sequence: each `chat_event` carries a host-assigned per-session `seq` backed by a replay buffer; `chat_subscribe` passes `sinceSeq` so reconnects replay only the missed events. The subscribe ack also carries `turnActive` (live turn state from the agent chat service) so a phone subscribing mid-turn renders streaming/stop affordances immediately even when the byte-capped snapshot tail dropped the turn's start event. `chat.getTranscript` pages older history via an opaque cursor. When the host advertises the `crossProjectChat` feature flag, `chat_subscribe` can also name a foreign (non-active) project via `projectId`/`projectRootPath`; the host streams that project's transcript read-only straight off its `.ade` transcript files, so the all-projects Hub can open any project's chat without a project switch or runtime boot. Personal subscriptions instead send `chatScope: "personal"`; the host resolves the durable transcript and active-turn state through `PersonalChatScope` with no project id.
 - All reads are local and scoped to the active project id — the iOS tab is instant and offline-capable after the selected project's row has hydrated.
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
 - Sub-protocols: changeset sync, project catalog/switch, file access,
   subscribed terminal stream/control, chat stream (live `chat_event`
-  push from host, including read-only cross-project quick look), the
+  push from host, including read-only cross-project quick look and explicit
+  personal-chat scope), the
   all-projects chat roster feed backing the Hub, command routing, and
   lane presence announce/release.
   Command routing includes the Work CLI launcher
   (`work.startCliSession`), whose provider command construction is
   shared with the desktop Work tab through
   `apps/desktop/src/shared/cliLaunch.ts`.
+  Runtime-scoped `personalChats.*` descriptors let the Hub list/create/manage
+  personal chats without switching projects. The iOS cache is keyed by paired
+  host; creates require a live host, while sends are the only personal action
+  allowed into the offline command queue.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is a **v3 smart URL** (`https://ade-app.dev/pair#<base64url(JSON)>` — host identity + port + address candidates + optional cloud-relay URL, no pairing code); the iOS camera scanner parses it. Pairing is hardened with **device-bound DPoP**: iOS keeps a Secure Enclave P-256 key and every paired hello carries a signed proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP` on the host, enforced on both the project host and the brain ingress path).
-- Off-LAN transport: an optional, off-by-default **cloud tunnel relay** (`apps/tunnel-relay`, §2.6) advertised as the lowest-priority `relay` address candidate; the phone dials it only after every direct route fails and only when the user enabled it.
-- Push: APNs alert pushes (deep-linked) and Live Activity updates via `apps/push-relay` (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket (`push.*` runtime-scoped commands) and never talks to the relay directly.
+- Off-LAN transport: an optional, off-by-default **cloud tunnel relay** (`apps/tunnel-relay`, §2.7) advertised as the lowest-priority `relay` address candidate; the phone dials it only after every direct route fails and only when the user enabled it.
+- Push: APNs alert pushes (deep-linked) and Live Activity updates via `apps/push-relay` (§2.7); the phone hands tokens/prefs to the brain over the paired sync WebSocket (`push.*` runtime-scoped commands) and never talks to the relay directly.
 - Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. `ADEAgentActivityWidget` registers an ActivityKit Live Activity + Dynamic Island for active agent runs. Home Screen and Control Center surfaces are not registered.
 - Tabs: Lanes, Files, Work, PRs, CTO, Settings.
 
@@ -1069,7 +1150,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - **IPC tracing** — every handler emits `ipc.invoke.begin` / `ipc.invoke.done` / `ipc.invoke.failed` with call ID, channel, window ID, duration, summarized args. Mandatory for new handlers.
 - **Renderer lifecycle** — `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`. Mandatory for new surfaces that introduce novel lifecycle transitions.
 - **Startup tasks** — `project.startup_task_enabled`, `project.startup_task_skipped`, `project.startup_task_begin`, `project.startup_task_done` with durations.
-- **Usage tracking** — `usageTrackingService.ts` + `usage/ledgers/*` + `budgetCapService.ts` account for tokens and cost per provider/model/call-type; surfaced in the top-bar Usage popup (`HeaderUsageControl` → `UsageQuotaPanel` + collapsible `BudgetCapEditor`). `main.ts` keeps a dormant usage tracker alive while no project context is open so the main menu can show provider usage from machine-level Claude/Codex auth, then pauses it while project-scoped contexts own polling.
+- **Usage tracking** — `usageTrackingService.ts` + `usageStatsStore.ts` + `usage/ledgers/*` + `budgetCapService.ts` account for provider quotas/cost and retrospective ADE activity. The top-bar Usage popup (`HeaderUsageControl` → `UsageQuotaPanel` + collapsible `BudgetCapEditor`) shows live quota windows; Settings > Stats and the empty Work composer use the cached cross-client activity projection. After a successful meaningful mutation, desktop IPC, ADE action RPC, and paired sync-command ingress record one local `usage_events` row with client attribution; reads, polling, background work, and failed calls do not count. `main.ts` keeps a dormant usage tracker alive while no project context is open so the main menu can show provider usage from machine-level Claude/Codex auth, then pauses it while project-scoped contexts own polling.
 - **Local perf runs** — `scripts/perf-launch.mjs` / `scripts/run-perf-scenario.mjs` launch ADE with a run id, feed renderer scenarios, and collect JSONL events plus `summary.json` under `~/.ade/perf-runs/<runId>/`. This is local-only diagnostics, not external telemetry.
 - **No external telemetry** — ADE does not ship analytics to any cloud service. All telemetry is local.
 
@@ -1108,6 +1189,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - Project dashboard / Run tab · [Project Home](./features/project-home/README.md)
 - Lanes and Git isolation · [Lanes](./features/lanes/README.md)
 - Agent chat · [Chat](./features/chat/README.md)
+- Projectless AI conversations · [Personal chats](./features/personal-chats/README.md)
 - Pull requests and queues · [Pull Requests](./features/pull-requests/README.md)
 - Multi-device sync and iOS · [Sync and Multi-device](./features/sync-and-multi-device/README.md)
 - Terminal sessions and Work · [Terminals and Sessions](./features/terminals-and-sessions/README.md)

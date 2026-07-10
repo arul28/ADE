@@ -22,6 +22,13 @@ failure is surfaced to the caller instead of being retried against the
 desktop process. The same source files run on both paths. Remote-bound windows
 now rely on the same terminal/session APIs as local windows.
 
+Projectless personal chat has a deliberately narrower terminal path. Its
+compact Terminal button creates a PTY through `PersonalChatScope` in the
+machine's personal scratch workspace, records ownership in that scope, and
+streams PTY events through `personalChats.streamEvents`. It does not expose the
+project Work terminal/session inventory or accept an arbitrary lane/cwd. See
+[Personal chats](../personal-chats/README.md).
+
 These services are large and have been repeatedly rewritten:
 `ptyService.ts`, `sessionService.ts`, and `processService.ts`. Treat
 them as fragile and re-read whenever wiring changes.
@@ -237,12 +244,16 @@ Renderer surfaces:
   shares its row with `WorkSidebar` via a flex container with a
   draggable column separator.
 - `apps/desktop/src/renderer/components/terminals/importSessions/` —
-  desktop import browser, bridge contract, and pure capability-to-action
-  affordance mapper. It lists external sessions by provider/search,
-  shows provider/cwd/message-count/imported/possibly-active badges, and
-  offers only the safe actions for the target lane (`Open as ADE chat`,
-  `Fork as ADE chat`, `Resume here`, `Fork into this lane`, or
-  `Resume` in the original folder).
+  desktop two-stage import browser/details flow and bridge contract. It lists
+  external sessions by provider/search, counts meaningful user prompts, shows
+  cwd/imported/active state, lets the user choose a target lane on the details
+  screen, and offers only the safe `Continue`/`Copy` actions for ADE chat or
+  CLI (including an explicit `Continue in original folder` when a provider is
+  cwd-locked). `sessionPresentation.ts` keeps title-free path/time headings
+  separate from prompt previews.
+- `apps/desktop/src/shared/externalSessionAffordances.ts` — pure shared
+  capability-to-action policy consumed by both desktop and `ade code`, so the
+  two surfaces expose the same safe Continue/Copy choices.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
   Work draft/new-chat surface. In draft mode the lane picker stays at
   the top, with Shell and Import buttons below; Import opens
@@ -584,16 +595,23 @@ iOS Work surfaces:
   lightweight terminal emulator remains here only for compact previews.
 - `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
   `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
-  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
+  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift`,
+  `WorkUsageActivityCarousel.swift` — mobile chat,
   composer, command/tool/reasoning cards, and new-chat launch surface.
   `WorkNewChatScreen` segments between **ADE chat** and **CLI session**;
   the CLI mode submits `work.startCliSession` against the host through
   `SyncService.startCliSession`, and the Import entry opens the external
-  session browser.
-- `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` — iOS import
-  browser/action sheet. It calls `SyncService.listExternalSessions` and
-  `SyncService.importExternalSession`, mirrors the desktop capability
-  affordances, and routes CLI imports to the terminal screen or chat
+  session browser. A compact activity carousel is pinned outside the welcome
+  scroll view above the composer, so keyboard/composer movement does not drag
+  it through the page. It fetches the host's cached `usage.getAdeStats`
+  snapshot, supports activity/token/code/client-mix charts and
+  day/week/month/year ranges, and persists both selections on-device.
+- `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` and
+  `WorkExternalSessionAffordances.swift` — iOS import browser/details flow and
+  pure capability-to-action policy. The screen calls
+  `SyncService.listExternalSessions` and `SyncService.importExternalSession`,
+  mirrors the desktop capability affordances, installs the returned persisted
+  session summary, and routes CLI imports to the terminal screen or chat
   imports to the chat screen.
 
 ## External CLI session import
@@ -920,7 +938,7 @@ Processes (managed):
 
 - External session import:
   [external-session-import.md](external-session-import.md) — provider-native
-  session discovery/import, the Open/Fork x ADE-chat/CLI-session model, and
+  session discovery/import, the Continue/Copy x ADE-chat/CLI-session model, and
   mobile/host constraints.
 - Lanes feature: [lanes/](../lanes/)
 - Files surface used by terminals for the transcript: see

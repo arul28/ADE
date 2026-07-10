@@ -98,8 +98,8 @@ Use `ade new chat` as the canonical launch command. It mirrors the desktop New
 Chat mode toggle:
 
 ```
-ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
-ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
 ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"
 ```
 

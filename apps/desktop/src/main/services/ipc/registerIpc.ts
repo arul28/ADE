@@ -26,6 +26,7 @@ import {
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { runGit } from "../git/git";
 import type {
@@ -280,6 +281,8 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
@@ -2032,6 +2035,21 @@ export function registerIpc({
           ]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
+          const usageAction = usageActionFromIpcChannel(channel);
+          if (isMeaningfulUsageAction(usageAction)) {
+            try {
+              const ctx = getCtx();
+              const payload = args.find((value) => value && typeof value === "object" && !Array.isArray(value)) as Record<string, unknown> | undefined;
+              recordUsageInteraction(ctx.db, {
+                projectId: ctx.projectId,
+                client: "desktop",
+                action: usageAction,
+                sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : null,
+              });
+            } catch {
+              // Global/project-selection IPC can run without an active context.
+            }
+          }
           if (traceIpcInvokes && (traceEveryIpcInvoke || durationMs >= 120)) {
             traceLogger?.info("ipc.invoke.done", {
               callId,
@@ -2437,8 +2455,16 @@ export function registerIpc({
     channel: string,
   ): BuiltInBrowserProjectScopeArgs => {
     const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
+    const profileScope = optionalBuiltInBrowserString(record, "profileScope", channel, 16);
+    if (profileScope && profileScope !== "global") {
+      return invalidBuiltInBrowserArg(channel, "profileScope is invalid");
+    }
+    if (profileScope === "global" && projectRoot) {
+      return invalidBuiltInBrowserArg(channel, "profileScope and projectRoot cannot both be set");
+    }
     return {
       ...(projectRoot ? { projectRoot } : {}),
+      ...(profileScope === "global" ? { profileScope } : {}),
     };
   };
 
@@ -6228,6 +6254,14 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.interrupt(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRecoverCodexTurn, async (
+    _event,
+    arg: AgentChatRecoverCodexTurnArgs,
+  ): Promise<AgentChatRecoverCodexTurnResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.recoverCodexTurn(arg);
   });
 
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

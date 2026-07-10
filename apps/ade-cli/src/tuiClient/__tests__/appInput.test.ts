@@ -58,6 +58,8 @@ import {
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolvePromptChatSubmitTarget,
+  resolveTuiCodexRecoveryRequest,
+  resolveTuiCodexRecoveryTargetProvider,
   shouldHandlePendingQuestionKey,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
@@ -96,9 +98,11 @@ import {
   cursorModeIdsForState,
   cursorSourceForInterfaceMode,
   initialModelState,
+  modelReasoningEfforts,
   applyProviderPermissionMode,
   permissionSummary,
   reconcileCursorModelStateForInterface,
+  registryModelsForProvider,
   resolveCursorCliModelForLaunch,
 } from "../modelState";
 import { normalizeCatalogProvider } from "../providerMetadata";
@@ -1180,6 +1184,122 @@ describe("interface draft setup", () => {
     });
     expect(initialModelState("cli").interfaceMode).toBe("cli");
     expect(initialModelState("chat").interfaceMode).toBe("chat");
+  });
+
+  it("starts new TUI chats on GPT-5.6 Sol with its low default", () => {
+    expect(initialModelState("chat")).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      modelId: "openai/gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      reasoningEffort: "low",
+    });
+    expect(registryModelsForProvider("codex").slice(0, 4).map((model) => model.modelId)).toEqual([
+      "openai/gpt-5.6-sol",
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-luna",
+      "openai/gpt-5.5",
+    ]);
+  });
+
+  it("shows the product-facing Sol effort ladder without internal max", () => {
+    const modelState = initialModelState("chat");
+    const models = [{
+      id: "gpt-5.6-sol",
+      modelId: "openai/gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      isDefault: true,
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+        .map((effort) => ({ effort, description: effort })),
+    }];
+
+    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "ultra"]);
+    expect(buildSetupRows({
+      modelState,
+      models,
+      includeRefresh: false,
+      includeApply: true,
+      interfaceMode: "chat",
+      interfaceEditable: true,
+    }).find((row) => row.kind === "reasoning")).toMatchObject({
+      value: "Light",
+      detail: "Light, Medium, High, Extra High, Ultra",
+    });
+  });
+
+  it("maps friendly recovery aliases to the latest stalled turn in this chat", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "chat-1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "codex_turn_stalled",
+          turnId: "child-turn",
+          sourceSessionId: "child-chat",
+          reason: "no_output",
+          message: "Child stalled",
+        },
+      },
+      {
+        sessionId: "chat-1",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "codex_turn_stalled",
+          turnId: "turn-1",
+          reason: "no_output",
+          message: "Parent stalled",
+        },
+      },
+    ];
+
+    expect(resolveTuiCodexRecoveryRequest({ input: "nudge", sessionId: "chat-1", events })).toEqual({
+      action: "steer",
+      turnId: "turn-1",
+      sessionId: "chat-1",
+    });
+    expect(resolveTuiCodexRecoveryRequest({ input: "resume explicit-turn", sessionId: "chat-1", events })).toEqual({
+      action: "restart_resume_thread",
+      turnId: "explicit-turn",
+      sessionId: "chat-1",
+    });
+    expect(resolveTuiCodexRecoveryRequest({
+      input: "retry",
+      sessionId: "chat-1",
+      events: events.slice(0, 1),
+    })).toEqual({
+      action: "interrupt_retry_same_thread",
+      turnId: "child-turn",
+      sessionId: "child-chat",
+    });
+    expect(resolveTuiCodexRecoveryRequest({ input: "unknown", sessionId: "chat-1", events })).toBeNull();
+  });
+
+  it("gates recovery on the resolved Codex child instead of its visible Claude parent", () => {
+    const sessions = [
+      { sessionId: "parent-chat", provider: "claude" as const },
+      { sessionId: "child-chat", provider: "codex" as const },
+    ];
+
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "child-chat",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBe("codex");
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "parent-chat",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBe("claude");
+    expect(resolveTuiCodexRecoveryTargetProvider({
+      targetSessionId: "child-not-yet-listed",
+      visibleSessionId: "parent-chat",
+      visibleProvider: "claude",
+      sessions,
+    })).toBeNull();
   });
 });
 

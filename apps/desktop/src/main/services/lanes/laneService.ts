@@ -925,6 +925,7 @@ export type LaneDeleteTeardownDeps = {
 export function createLaneService({
   db,
   projectRoot,
+  primaryWorktreePath = projectRoot,
   projectId,
   defaultBaseRef,
   worktreesDir,
@@ -940,6 +941,12 @@ export function createLaneService({
 }: {
   db: AdeDb;
   projectRoot: string;
+  /**
+   * Filesystem boundary for the synthetic primary lane. Ordinary projects use
+   * `projectRoot`; machine-owned personal chats keep runtime state and agent
+   * scratch space in separate directories.
+   */
+  primaryWorktreePath?: string;
   projectId: string;
   defaultBaseRef: string;
   worktreesDir: string;
@@ -2120,7 +2127,7 @@ export function createLaneService({
 
     const laneId = randomUUID();
     const now = new Date().toISOString();
-    const branchRef = await detectBranchRef(projectRoot, defaultBaseRef);
+    const branchRef = await detectBranchRef(primaryWorktreePath, defaultBaseRef);
     db.run(
       `
         insert into lanes(
@@ -2129,7 +2136,7 @@ export function createLaneService({
         )
         values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, null, null, null, 'active', ?, null)
       `,
-      [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, projectRoot, now]
+      [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, primaryWorktreePath, now]
     );
     invalidateLaneListCache();
   };

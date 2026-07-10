@@ -210,7 +210,8 @@ struct WorkNewChatSheet: View {
             }
           }
 
-          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+          let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
+          if !reasoningEfforts.isEmpty {
             GlassSection(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
                 ADEOptionButton(
@@ -224,7 +225,7 @@ struct WorkNewChatSheet: View {
 
                 ForEach(reasoningEfforts) { effort in
                   ADEOptionButton(
-                    title: effort.effort.capitalized,
+                    title: workReasoningEffortDisplayName(effort.effort),
                     subtitle: effort.description,
                     systemImage: "brain.head.profile",
                     isSelected: selectedReasoningEffort == effort.effort
@@ -393,7 +394,8 @@ struct WorkNewChatSheet: View {
         }
       }
       .onChange(of: selectedModelId) { _, _ in
-        if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+        let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
+        if !reasoningEfforts.isEmpty {
           if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
             selectedReasoningEffort = ""
           }
@@ -424,7 +426,10 @@ struct WorkNewChatSheet: View {
   func loadModels(resetSelection: Bool) async {
     let requestedProvider = provider
     do {
-      let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
+      let loadedModels = workPrioritizeGPT56ChatModels(
+        try await syncService.listChatModels(provider: requestedProvider),
+        provider: requestedProvider
+      )
       guard provider == requestedProvider else { return }
       let scopedModels = requestedProvider == "cursor"
         ? workFilterChatModelsForCursorAvailability(loadedModels, mode: .chat)
@@ -469,7 +474,7 @@ struct WorkNewChatSheet: View {
         model: selectedModelId,
         reasoningEffort: {
           guard !selectedReasoningEffort.isEmpty else { return nil }
-          guard selectedModel?.reasoningEfforts?.contains(where: { $0.effort == selectedReasoningEffort }) == true else { return nil }
+          guard workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) else { return nil }
           return selectedReasoningEffort
         }()
       )

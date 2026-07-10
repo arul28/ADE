@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
+import { buildGithubReleaseUrl, buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -61,6 +61,14 @@ describe("buildReleaseNotesUrl", () => {
     expect(buildReleaseNotesUrl("v1.2.11")).toBe("https://www.ade-app.dev/docs/changelog/v1.2.11");
     expect(buildReleaseNotesUrl("1.2.11", "https://staging.ade-app.dev/")).toBe("https://staging.ade-app.dev/docs/changelog/v1.2.11");
     expect(buildReleaseNotesUrl(" ", "https://www.ade-app.dev")).toBeNull();
+  });
+});
+
+describe("buildGithubReleaseUrl", () => {
+  it("points at the GitHub release tag and normalizes the version", () => {
+    expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
+    expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
+    expect(buildGithubReleaseUrl(" ")).toBeNull();
   });
 });
 
@@ -188,6 +196,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
     });
 
     expect(JSON.parse(fs.readFileSync(globalStatePath, "utf8"))).toEqual({
@@ -195,6 +204,7 @@ describe("createAutoUpdateService", () => {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
       },
     });
     expectCacheEmpty(updaterCacheDir);
@@ -652,6 +662,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
+      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.4",
     });
     expectCacheEmpty(updaterCacheDir);
 

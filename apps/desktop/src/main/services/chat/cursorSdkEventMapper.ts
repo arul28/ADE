@@ -117,6 +117,34 @@ function extractExitCode(result: unknown): number | null {
   return readNumber(record?.exitCode) ?? readNumber(record?.exit_code) ?? readNumber(record?.code);
 }
 
+function cursorMcpSource(args: unknown): {
+  source: NonNullable<Extract<AgentChatEvent, { type: "tool_call" }>["mcp"]>;
+  args: unknown;
+} | null {
+  const record = asRecord(args);
+  const server = readString(record?.providerIdentifier);
+  const tool = readString(record?.toolName);
+  if (!server && !tool) return null;
+  return {
+    source: { server: server ?? "cursor-mcp", tool: tool ?? "tool" },
+    args: record?.args ?? {},
+  };
+}
+
+function cursorMcpResultFailed(result: unknown): boolean {
+  const record = asRecord(result);
+  if (readString(record?.status)?.toLowerCase() === "error") return true;
+  const value = asRecord(record?.value);
+  return value?.isError === true;
+}
+
+function cursorGeneratedImagePath(result: unknown): string | null {
+  const record = asRecord(result);
+  return readString(asRecord(record?.value)?.filePath)
+    ?? readString(record?.filePath)
+    ?? null;
+}
+
 function extractTextContent(message: unknown): string[] {
   const record = asRecord(message);
   const content = asRecord(record?.message)?.content;
@@ -244,6 +272,46 @@ export function mapCursorSdkMessageToChatEvents(
       const result = record.result;
       const out: AgentChatEvent[] = [];
       const lowerTool = tool.toLowerCase();
+      if (lowerTool === "mcp") {
+        const mcp = cursorMcpSource(args);
+        if (mcp) {
+          const label = `${mcp.source.server}:${mcp.source.tool}`;
+          if (status === "running") {
+            return [tagRuntime({
+              type: "tool_call" as const,
+              tool: label,
+              args: mcp.args,
+              mcp: mcp.source,
+              itemId: callId,
+              turnId,
+            }, runtime)];
+          }
+          const failed = status === "error" || cursorMcpResultFailed(result);
+          return [tagRuntime({
+            type: "tool_result" as const,
+            tool: label,
+            result,
+            mcp: mcp.source,
+            itemId: callId,
+            turnId,
+            status: failed ? "failed" : "completed",
+          }, runtime)];
+        }
+      }
+      if (lowerTool === "generateimage" || lowerTool === "generate_image") {
+        const input = asRecord(args);
+        const prompt = readString(input?.description) ?? "Generated image";
+        const failed = status === "error" || readString(asRecord(result)?.status)?.toLowerCase() === "error";
+        const savedPath = cursorGeneratedImagePath(result);
+        return [tagRuntime({
+          type: "codex_image_generation" as const,
+          itemId: callId,
+          turnId,
+          prompt,
+          ...(savedPath ? { result: savedPath, savedPath } : {}),
+          status: status === "running" ? "running" : failed ? "failed" : "completed",
+        }, runtime)];
+      }
       const command = lowerTool === "shell" || lowerTool === "bash" || lowerTool === "terminal"
         ? extractCommand(args)
         : null;

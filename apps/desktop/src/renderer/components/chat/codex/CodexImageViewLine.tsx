@@ -1,6 +1,6 @@
 import { ArrowUpRight } from "@phosphor-icons/react";
 import type { AgentChatEvent } from "../../../../shared/types";
-import { openExternalUrl } from "../../../lib/openExternal";
+import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../../lib/openExternal";
 
 type ImageViewEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 
@@ -49,7 +49,11 @@ export function CodexImageViewLine({ event }: CodexImageViewLineProps) {
   const trimmedUrl = event.url?.trim() || null;
   const localPath = stripFileUrlPrefix(trimmedPath)
     ?? (trimmedUrl && /^file:\/\//i.test(trimmedUrl) ? stripFileUrlPrefix(trimmedUrl) : null);
-  const url = trimmedUrl && !/^file:\/\//i.test(trimmedUrl) ? trimmedUrl : null;
+  const url = trimmedUrl
+    && !/^file:\/\//i.test(trimmedUrl)
+    && canOpenInAdeBrowser(trimmedUrl)
+    ? trimmedUrl
+    : null;
   const canOpen = Boolean(localPath || url);
 
   const handleOpen = () => {
@@ -57,7 +61,7 @@ export function CodexImageViewLine({ event }: CodexImageViewLineProps) {
       void window.ade.app.openPath(localPath).catch(() => undefined);
       return;
     }
-    if (url) openExternalUrl(url);
+    if (url) openUrlInAdeBrowser(url);
   };
 
   return (

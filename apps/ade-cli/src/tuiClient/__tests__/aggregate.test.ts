@@ -577,6 +577,43 @@ describe("aggregateChatBlocks desktop work-log parity", () => {
     expect(group.entries[0]!.tool).toBe("custom_migration");
   });
 
+  it("renders MCP calls as connector + target and collapses their lifecycle", () => {
+    const mcp = {
+      server: "github",
+      tool: "search_issues",
+      appContext: { appName: "GitHub", actionName: "Search issues" },
+    };
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "tool_call",
+        tool: "github:search_issues",
+        args: { query: "is:open label:bug" },
+        mcp,
+        itemId: "mcp-1",
+        turnId: "turn-1",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "tool_result",
+        tool: "github:search_issues",
+        result: "Issue 1",
+        mcp,
+        itemId: "mcp-1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group.entries).toEqual([
+      expect.objectContaining({
+        itemId: "mcp-1",
+        tool: "git_hub",
+        arg: "is:open label:bug",
+        status: "ok",
+      }),
+    ]);
+  });
+
   it("groups web_search lifecycle events into the tool-calls group keyed by query", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", {
@@ -597,6 +634,35 @@ describe("aggregateChatBlocks desktop work-log parity", () => {
     expect(group).toBeDefined();
     expect(group.entries).toHaveLength(1);
     expect(group.entries[0]).toMatchObject({ tool: "search", arg: "ink truncate text", status: "ok" });
+  });
+
+  it("collapses image generation lifecycle updates into one completed line", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "codex_image_generation",
+        itemId: "image-1",
+        turnId: "turn-1",
+        prompt: "A tiny moon icon",
+        status: "running",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "codex_image_generation",
+        itemId: "image-1",
+        turnId: "turn-1",
+        prompt: "A tiny moon icon",
+        result: "/tmp/moon.png",
+        savedPath: "/tmp/moon.png",
+        status: "completed",
+      }),
+    ];
+    const imageBlocks = aggregate(events).filter((block) =>
+      block.kind === "notice" && block.line.body.includes("image generated")
+    );
+    expect(imageBlocks).toHaveLength(1);
+    expect(imageBlocks[0]).toMatchObject({
+      kind: "notice",
+      line: expect.objectContaining({ body: expect.stringContaining("A tiny moon icon") }),
+    });
   });
 
   it("merges streamed reasoning into one block and finishes it at turn end", () => {

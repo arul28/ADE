@@ -78,6 +78,37 @@ describe("createSyncService", () => {
     }
   });
 
+  it("forwards the usage service to the paired-client remote command surface", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-usage-stats-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const getAdeUsageStats = vi.fn(async () => ({
+      generatedAt: "2026-07-09T12:00:00.000Z",
+      preset: "year",
+      daily: [],
+    }));
+    const service = createService(db, projectRoot, {
+      usageTrackingService: { getAdeUsageStats } as any,
+    });
+
+    try {
+      expect(service.getRemoteCommandDescriptor("usage.getAdeStats")).toEqual({
+        action: "usage.getAdeStats",
+        scope: "project",
+        policy: { viewerAllowed: true },
+      });
+      await expect(service.executeRemoteCommand({
+        commandId: "cmd-usage-stats",
+        action: "usage.getAdeStats",
+        args: { preset: "year" },
+      })).resolves.toMatchObject({ preset: "year", daily: [] });
+      expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "year" });
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
   it("keeps the local device registry when connectToBrain fails before handshake", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-connect-fail-");
     cleanupRoots.push(projectRoot);
@@ -197,10 +228,17 @@ describe("createSyncService", () => {
         importToChat: true,
       },
     }]);
-    const externalSessionsService = {
-      list,
-      importExternalSession: vi.fn(),
-    };
+    const importExternalSession = vi.fn(async (args: { laneId: string }) => ({
+      kind: "chat" as const,
+      chatSessionId: "chat-imported",
+      laneId: args.laneId,
+      chatSummary: {
+        sessionId: "chat-imported",
+        laneId: args.laneId,
+        title: "Persisted imported chat",
+      },
+    }));
+    const externalSessionsService = { list, importExternalSession };
     const service = createService(db, projectRoot, {
       getExternalSessionsService: () => externalSessionsService as any,
     });
@@ -228,6 +266,35 @@ describe("createSyncService", () => {
         scope: "project",
       });
       expect(result).toEqual(await list.mock.results[0]!.value);
+
+      const imported = await service.executeRemoteCommand({
+        commandId: "cmd-2",
+        action: "work.importExternalSession",
+        args: {
+          provider: "claude",
+          sessionId: "session-1",
+          laneId: "lane-1",
+          target: "chat",
+          mode: "fork",
+        },
+      });
+      expect(importExternalSession).toHaveBeenCalledWith({
+        provider: "claude",
+        sessionId: "session-1",
+        laneId: "lane-1",
+        target: "chat",
+        mode: "fork",
+      });
+      expect(imported).toEqual({
+        kind: "chat",
+        chatSessionId: "chat-imported",
+        laneId: "lane-1",
+        chatSummary: {
+          sessionId: "chat-imported",
+          laneId: "lane-1",
+          title: "Persisted imported chat",
+        },
+      });
     } finally {
       await service.dispose();
       db.close();

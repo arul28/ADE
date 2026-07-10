@@ -72,22 +72,35 @@ function installAdeMock(args: {
   updateCheckForUpdates?: () => Promise<void>;
 } = {}) {
   const updateCheckForUpdates = vi.fn(args.updateCheckForUpdates ?? (async () => undefined));
+  const openExternal = vi.fn(async () => undefined);
+  const updateDismissInstalledNotice = vi.fn(async () => undefined);
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
       app: {
         getInfo: vi.fn(async () => args.appInfo ?? appInfoWithRuntimeSkew("none")),
+        openExternal,
       },
       updateGetState: vi.fn(async () => args.snapshot ?? idleSnapshot),
       updateCheckForUpdates,
       updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
       updateQuitAndInstall: vi.fn(async () => true),
-      updateDismissInstalledNotice: vi.fn(async () => undefined),
+      updateDismissInstalledNotice,
       onUpdateEvent: vi.fn(() => () => undefined),
     },
   });
-  return { updateCheckForUpdates };
+  return { updateCheckForUpdates, openExternal, updateDismissInstalledNotice };
 }
+
+const installedSnapshot: AutoUpdateSnapshot = {
+  ...idleSnapshot,
+  recentlyInstalled: {
+    version: "1.2.18",
+    installedAt: "2026-07-09T00:00:00.000Z",
+    releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.18",
+    githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.18",
+  },
+};
 
 describe("AutoUpdateControl", () => {
   beforeEach(() => {
@@ -131,5 +144,44 @@ describe("AutoUpdateControl", () => {
 
     expect(await screen.findByText("Install update v1.3.0")).toBeTruthy();
     expect(screen.queryByText("Update required")).toBeNull();
+  });
+
+  it("shows the simplified installed modal with Changelog and View on GitHub actions", async () => {
+    installAdeMock({ snapshot: installedSnapshot });
+
+    render(<AutoUpdateControl />);
+
+    expect(await screen.findByText("Updated to v1.2.18")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /changelog/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /view on github/i })).toBeTruthy();
+    // Redundant copy and the old text buttons are gone.
+    expect(screen.queryByText(/open release notes/i)).toBeNull();
+    expect(screen.queryByText(/the update is installed and ade is ready/i)).toBeNull();
+  });
+
+  it("opens the docs changelog and dismisses when Changelog is clicked", async () => {
+    const { openExternal, updateDismissInstalledNotice } = installAdeMock({ snapshot: installedSnapshot });
+
+    render(<AutoUpdateControl />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /changelog/i }));
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith("https://www.ade-app.dev/docs/changelog/v1.2.18");
+    });
+    expect(updateDismissInstalledNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the GitHub release page and dismisses when View on GitHub is clicked", async () => {
+    const { openExternal, updateDismissInstalledNotice } = installAdeMock({ snapshot: installedSnapshot });
+
+    render(<AutoUpdateControl />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /view on github/i }));
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith("https://github.com/arul28/ADE/releases/tag/v1.2.18");
+    });
+    expect(updateDismissInstalledNotice).toHaveBeenCalledTimes(1);
   });
 });

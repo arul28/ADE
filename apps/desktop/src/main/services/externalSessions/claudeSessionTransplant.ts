@@ -41,6 +41,7 @@ async function rewriteClaudeSessionFile(args: {
   sourcePath: string;
   targetPath: string;
   newSessionId: string;
+  targetCwd: string;
 }): Promise<void> {
   const tempPath = `${args.targetPath}.${process.pid}.${Date.now()}.tmp`;
   let input: fs.ReadStream | null = null;
@@ -83,7 +84,12 @@ async function rewriteClaudeSessionFile(args: {
             try {
               const parsed = JSON.parse(line);
               if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                nextLine = JSON.stringify({ ...parsed, sessionId: args.newSessionId });
+                const record = parsed as Record<string, unknown>;
+                nextLine = JSON.stringify({
+                  ...record,
+                  sessionId: args.newSessionId,
+                  ...(typeof record.cwd === "string" ? { cwd: args.targetCwd } : {}),
+                });
               }
             } catch {
               nextLine = line;
@@ -139,14 +145,14 @@ export async function transplantClaudeSession(args: {
   await fs.promises.mkdir(targetDir, { recursive: true });
 
   if (args.fork) {
-    await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId });
+    await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
     return { newSessionId, targetPath };
   }
 
   if (path.resolve(sourcePath) === path.resolve(targetPath)) {
     return { newSessionId, targetPath };
   }
-  await linkWithoutClobber(sourcePath, targetPath);
+  await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
   await fs.promises.unlink(sourcePath);
   return { newSessionId, targetPath };
 }

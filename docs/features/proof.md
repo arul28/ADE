@@ -190,7 +190,6 @@ The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBroke
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
 - `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.
-- `agentBrowserArtifactAdapter.ts` parses agent-browser output into `ComputerUseArtifactInput[]`.
-- `syntheticToolResult.ts` produces tool-result stubs for the Claude compaction path.
+- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` parses agent-browser output into `ComputerUseArtifactInput[]`.
 
-Every piece upstream of the CLI is the agent's own business. Every piece downstream is a thin line to disk, a broker insert, and the drawer. No backend abstraction, no policy engine, no observer — the proof observer was deleted with this rebuild, along with `ComputerUsePolicy` and the Settings > Computer Use panel.
+Provider execution can be provisioned by ADE (for example the signed direct Codex Computer Use MCP client), but proof remains explicit. Every piece downstream of `ade proof` is a thin line to disk, a broker insert, and the drawer. No passive observer promotes provider tool calls automatically — the proof observer was deleted with this rebuild, along with `ComputerUsePolicy` and the Settings > Computer Use panel.

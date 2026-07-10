@@ -33,6 +33,11 @@ function createService(options?: {
   syncPinStore?: Record<string, unknown>;
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   isCloudRelayEnabled?: () => boolean;
+  usageTrackingService?: Record<string, unknown>;
+  personalChatScope?: {
+    call: ReturnType<typeof vi.fn>;
+    streamEvents?: ReturnType<typeof vi.fn>;
+  };
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -76,6 +81,8 @@ function createService(options?: {
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
+    ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
+    ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -98,6 +105,68 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
+    const getAdeUsageStats = vi.fn().mockResolvedValue({ generatedAt: "2026-07-09T12:00:00.000Z", daily: [] });
+    const { service } = createService({ usageTrackingService: { getAdeUsageStats } });
+
+    expect(service.getDescriptor("usage.getAdeStats")).toEqual({
+      action: "usage.getAdeStats",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    await expect(service.execute(makePayload("usage.getAdeStats", { preset: "year" }))).resolves.toEqual({
+      generatedAt: "2026-07-09T12:00:00.000Z",
+      daily: [],
+    });
+    expect(getAdeUsageStats).toHaveBeenCalledWith({ preset: "year" });
+    await expect(service.execute(makePayload("usage.getAdeStats", { preset: "decade" }))).rejects.toThrow(
+      "usage.getAdeStats preset must be today, 7d, 30d, year, or all.",
+    );
+  });
+
+  it("advertises and executes machine personal chats as runtime commands", async () => {
+    const personalChatScope = {
+      call: vi.fn(async (action: string, args: unknown) => ({
+        action,
+        result: { action, args },
+      })),
+      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0 })),
+    };
+    const { service } = createService({ personalChatScope });
+
+    expect(service.getDescriptor("personalChats.create")).toEqual({
+      action: "personalChats.create",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.cancelDispatchedSteer")).toEqual({
+      action: "personalChats.cancelDispatchedSteer",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.streamEvents")).toEqual({
+      action: "personalChats.streamEvents",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.terminalCreate")).toEqual({
+      action: "personalChats.terminalCreate",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("personalChats.send", {
+      sessionId: "personal-1",
+      text: "hello",
+    }))).resolves.toEqual({
+      action: "send",
+      args: { sessionId: "personal-1", text: "hello" },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("send", {
+      sessionId: "personal-1",
+      text: "hello",
+    });
+  });
+
   it("registers sync.getWebPairingInfo and returns the configured browser pairing info", async () => {
     const syncPinStore = {
       getPin: vi.fn(() => "428193"),
@@ -217,6 +286,53 @@ describe("createSyncRemoteCommandService", () => {
       "work.resumeCliSession requires sessionId.",
     );
     expect(ptyService.resumeSession).not.toHaveBeenCalled();
+  });
+
+  it("routes all Codex recovery actions through the mobile sync command", async () => {
+    const recoverCodexTurn = vi.fn(async (args) => ({
+      action: args.action,
+      turnId: args.turnId,
+      status: args.action === "wait" ? "waiting" : "retrying",
+    }));
+    const { service } = createService({ agentChatService: { recoverCodexTurn } });
+
+    expect(service.getDescriptor("chat.recoverCodexTurn")).toEqual({
+      action: "chat.recoverCodexTurn",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+
+    for (const action of [
+      "wait",
+      "steer",
+      "interrupt_retry_same_thread",
+      "restart_resume_thread",
+    ]) {
+      await service.execute(makePayload("chat.recoverCodexTurn", {
+        sessionId: "chat-1",
+        turnId: "turn-1",
+        action,
+      }));
+    }
+
+    expect(recoverCodexTurn.mock.calls.map(([args]) => args)).toEqual([
+      { sessionId: "chat-1", turnId: "turn-1", action: "wait" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "steer" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "interrupt_retry_same_thread" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "restart_resume_thread" },
+    ]);
+  });
+
+  it("rejects unsupported Codex recovery actions before invoking chat", async () => {
+    const recoverCodexTurn = vi.fn();
+    const { service } = createService({ agentChatService: { recoverCodexTurn } });
+
+    await expect(service.execute(makePayload("chat.recoverCodexTurn", {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "replace",
+    }))).rejects.toThrow("unsupported action 'replace'");
+    expect(recoverCodexTurn).not.toHaveBeenCalled();
   });
 
   it("omits non-finite work.resumeCliSession dimensions", async () => {
@@ -348,6 +464,7 @@ describe("createSyncRemoteCommandService", () => {
       sessionId: "session-1",
       ptyId: "pty-1",
       laneId: "lane-1",
+      session: { id: "session-1", laneId: "lane-1", title: "Persisted CLI" },
     });
     const { service } = createService({
       externalSessionsService: { list: vi.fn(), importExternalSession },
@@ -383,6 +500,7 @@ describe("createSyncRemoteCommandService", () => {
       sessionId: "session-1",
       ptyId: "pty-1",
       laneId: "lane-1",
+      session: { id: "session-1", laneId: "lane-1", title: "Persisted CLI" },
     });
   });
 
@@ -391,6 +509,7 @@ describe("createSyncRemoteCommandService", () => {
       kind: "chat",
       chatSessionId: "chat-1",
       laneId: "lane-1",
+      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
     });
     const { service } = createService({
       externalSessionsService: { list: vi.fn(), importExternalSession },
@@ -408,7 +527,71 @@ describe("createSyncRemoteCommandService", () => {
       kind: "chat",
       chatSessionId: "chat-1",
       laneId: "lane-1",
+      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
     });
+  });
+
+  it("routes every supported provider import affordance without narrowing the provider contract", async () => {
+    const imports = [
+      { provider: "claude", target: "cli", mode: "resume" },
+      { provider: "claude", target: "cli", mode: "fork" },
+      { provider: "claude", target: "chat", mode: "resume" },
+      { provider: "claude", target: "chat", mode: "fork" },
+      { provider: "codex", target: "cli", mode: "resume" },
+      { provider: "codex", target: "cli", mode: "fork" },
+      { provider: "codex", target: "chat", mode: "resume" },
+      { provider: "codex", target: "chat", mode: "fork" },
+      { provider: "cursor", target: "cli", mode: "resume" },
+      { provider: "droid", target: "cli", mode: "resume" },
+      { provider: "droid", target: "cli", mode: "fork" },
+      { provider: "opencode", target: "cli", mode: "resume" },
+      { provider: "opencode", target: "cli", mode: "fork" },
+    ] as const;
+    const importExternalSession = vi.fn(async (args: (typeof imports)[number] & { sessionId: string; laneId: string }) => (
+      args.target === "chat"
+        ? {
+            kind: "chat" as const,
+            chatSessionId: `chat-${args.provider}-${args.mode}`,
+            laneId: args.laneId,
+            chatSummary: {
+              sessionId: `chat-${args.provider}-${args.mode}`,
+              laneId: args.laneId,
+              title: "Ready chat",
+            },
+          }
+        : {
+            kind: "cli" as const,
+            sessionId: `cli-${args.provider}-${args.mode}`,
+            ptyId: `pty-${args.provider}-${args.mode}`,
+            laneId: args.laneId,
+            session: {
+              id: `cli-${args.provider}-${args.mode}`,
+              laneId: args.laneId,
+              title: "Ready CLI",
+            },
+          }
+    ));
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession },
+    });
+
+    for (const entry of imports) {
+      const result = await service.execute(makePayload("work.importExternalSession", {
+        ...entry,
+        sessionId: `external-${entry.provider}`,
+        laneId: "lane-1",
+      }));
+      expect(result).toHaveProperty("kind", entry.target === "chat" ? "chat" : "cli");
+      expect(result).toHaveProperty(entry.target === "chat" ? "chatSummary" : "session");
+    }
+
+    expect(importExternalSession.mock.calls.map(([args]) => args)).toEqual(
+      imports.map((entry) => ({
+        ...entry,
+        sessionId: `external-${entry.provider}`,
+        laneId: "lane-1",
+      })),
+    );
   });
 
   it("rejects invalid work.importExternalSession payloads", async () => {

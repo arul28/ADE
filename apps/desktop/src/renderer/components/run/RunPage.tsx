@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowsClockwise,
   CaretDown,
   CaretUp,
+  ChatCircleDots,
   DesktopTower,
   Folder,
   Play,
@@ -804,6 +806,7 @@ function RecentProjectRow({
 const FORGET_UNDO_WINDOW_MS = 5_000;
 
 function WelcomeScreen() {
+  const navigate = useNavigate();
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
@@ -1135,6 +1138,7 @@ function WelcomeScreen() {
           </div>
         </div>
 
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: -16 }}>
         <button
           type="button"
           data-tour="project.welcomeAddButton"
@@ -1151,7 +1155,6 @@ function WelcomeScreen() {
                 ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
                 : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
             transition: "transform 0.2s ease, box-shadow 0.2s ease",
-            marginTop: -16,
           }}
           onMouseEnter={(event) => {
             event.currentTarget.style.transform = "translateY(-2px)";
@@ -1171,6 +1174,33 @@ function WelcomeScreen() {
           <Plus size={20} weight="bold" />
           ADD PROJECT
         </button>
+        <button
+          type="button"
+          onClick={() => navigate("/chats")}
+          style={{
+            ...outlineButton({ height: 48, padding: "0 22px", fontSize: 12 }),
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 9,
+            color: COLORS.textPrimary,
+            border: `1px solid ${COLORS.border}`,
+            background: "color-mix(in srgb, var(--color-surface-raised) 88%, transparent)",
+            boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
+            transition: "transform 0.2s ease, box-shadow 0.2s ease",
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = "translateY(-2px)";
+            event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = "none";
+            event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
+          }}
+        >
+          <ChatCircleDots size={18} weight="duotone" />
+          CHAT WITHOUT A PROJECT
+        </button>
+        </div>
         {connectedRemoteCount > 0 ? (
           <div
             style={{

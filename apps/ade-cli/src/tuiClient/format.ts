@@ -684,11 +684,10 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "codex_turn_stalled") {
-      const options = event.recoveryOptions?.map((option) => option.replace(/_/g, " ")).join(" · ");
       lines.push({
         id,
         tone: "error",
-        body: `recovery · ${singleLine(event.message, 140)}${options ? `\n   ${options}` : ""}`,
+        body: `recovery · ${singleLine(event.message, 140)}\n   /recover wait · nudge · retry · resume`,
       });
       continue;
     }

@@ -51,9 +51,9 @@ export function IndexPage() {
     >
       <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(44px,5.5vw,84px)]">
         <div className="mb-10 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-4 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
-          <span>ADE &middot; {EDITORIAL_ISSUE.shortMonthYear}</span>
+          <span>ADE · {EDITORIAL_ISSUE.shortMonthYear}</span>
           <span className="hidden sm:block">Back matter</span>
-          <span>{EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; 34</span>
+          <span>{EDITORIAL_ISSUE.volume} · {EDITORIAL_ISSUE.version} · 34</span>
         </div>
 
         <motion.h2

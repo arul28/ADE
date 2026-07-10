@@ -29,6 +29,11 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
 };
 
+export type CodexComputerUseCliConfig = {
+  command: string;
+  args?: readonly string[];
+};
+
 export type CleanShellLaunchFields = {
   command: string;
   args: string[];
@@ -306,6 +311,22 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   return "claude";
 }
 
+export function codexComputerUseMcpFlags(
+  config: CodexComputerUseCliConfig | null | undefined,
+): string[] {
+  const command = config?.command?.trim();
+  if (!command) return [];
+  const args = config?.args?.length ? [...config.args] : ["mcp"];
+  return [
+    "-c",
+    `mcp_servers.computer_use.command=${JSON.stringify(command)}`,
+    "-c",
+    `mcp_servers.computer_use.args=${JSON.stringify(args)}`,
+    "-c",
+    "mcp_servers.computer_use.enabled=true",
+  ];
+}
+
 function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPrompt = false): string {
   const launchInstruction = hasInitialPrompt
     ? [
@@ -355,6 +376,8 @@ export function buildTrackedCliStartupCommand(args: {
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
   laneWorktreePath?: string | null;
+  /** Signed standalone Computer Use MCP client selected by ADE's main process. */
+  codexComputerUse?: CodexComputerUseCliConfig | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -375,6 +398,8 @@ export function buildTrackedCliLaunchCommand(args: {
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
   laneWorktreePath?: string | null;
+  /** Signed standalone Computer Use MCP client selected by ADE's main process. */
+  codexComputerUse?: CodexComputerUseCliConfig | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = effectiveOrchestrationPermissionMode(args);
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -424,6 +449,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...codexServiceTierFlags(args.fastMode),
+      ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     const usePromptArg = codexModel === "gpt-5.3-codex";
@@ -600,6 +626,7 @@ export function resolveClaudeCliModelForLaunch(model: string | null | undefined)
 }
 
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  if (permissionMode == null) return [];
   if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
   if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
   if (permissionMode === "auto") return ["--permission-mode", "auto"];
@@ -627,6 +654,7 @@ function droidSettingsJson(args: {
   reasoningEffort?: string | null;
 }): string {
   const sessionDefaultSettings = (() => {
+    if (args.permissionMode == null) return null;
     if (args.permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
     if (args.permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
     if (args.permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
@@ -634,7 +662,9 @@ function droidSettingsJson(args: {
   })();
   const model = normalizeDroidCliModel(args.model);
   const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
-  const settings: Record<string, unknown> = { sessionDefaultSettings };
+  const settings: Record<string, unknown> = {
+    ...(sessionDefaultSettings ? { sessionDefaultSettings } : {}),
+  };
   if (model) settings.model = model;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (args.permissionMode === "plan") {
@@ -703,6 +733,7 @@ function buildDroidCommandLine(args: {
 const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
+  if (permissionMode == null) return null;
   if (permissionMode === "config-toml") return null;
   if (permissionMode === "full-auto") return "allow";
   if (permissionMode === "edit") return { "*": "ask", edit: "allow", question: "allow" };
@@ -819,6 +850,7 @@ export function buildTrackedCliResumeCommand(
     fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
     prompt?: string | null;
+    codexComputerUse?: CodexComputerUseCliConfig | null;
   } = {},
 ): string {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
@@ -852,6 +884,7 @@ export function buildTrackedCliResumeCommand(
       ...modelToCliFlag(model),
       ...codexReasoningEffortFlags(reasoningEffort),
       ...codexServiceTierFlags(fastMode),
+      ...codexComputerUseMcpFlags(overrides.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");
@@ -861,9 +894,9 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (metadata.provider === "cursor") {
-    const cursorModel = overrides.model !== undefined
-      ? resolveCursorCliModelForLaunch(overrides.model)
-      : resolveCursorCliModelForLaunch(metadata.launch.model);
+    const cursorModel = normalizeCliFlagValue(model)
+      ? resolveCursorCliModelForLaunch(model)
+      : null;
     const parts = [
       "cursor-agent",
       ...permissionModeToCursorFlags(permissionMode),
@@ -879,6 +912,13 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (metadata.provider === "droid") {
+    if (permissionMode == null && !normalizeCliFlagValue(model) && !normalizeCliFlagValue(reasoningEffort)) {
+      const parts = ["droid"];
+      if (targetId) parts.push("--resume", targetId);
+      else parts.push("--resume");
+      if (prompt) parts.push(prompt);
+      return commandArrayToLine(parts);
+    }
     return buildDroidCommandLine({
       permissionMode,
       model,
