@@ -133,6 +133,17 @@ implements a two-layer transform:
      `scheduled_wake_divider` keyed
      `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
      state; the while-you-were-away strip scrolls to these stable keys.
+   - `subagent_started` / `subagent_progress` / `subagent_result`
+     events collapse per agent (keyed by `agentId ?? taskId`) into two
+     stable render rows — a `subagent_spawn_anchor` at the start
+     position (mutated in place as progress arrives) and a
+     `subagent_result_card` at the settle position — while backgrounded
+     shell commands collapse to a single `background_finish_chip`. The
+     anchor keys (`subagent-spawn:` / `subagent-result:` /
+     `background-chip:<agentKey>`) never change on rebind so the
+     virtualizer's measured heights survive; a `transcript_retraction`
+     splice repairs each stored row index. Raw lifecycle events are then
+     hidden.
    - `pending_input_resolved`, `activity`, `step_boundary`, raw tool/
      command/file-change events, standalone reasoning events, and
      `scheduled_work_update` are hidden (consumed by other derivations).

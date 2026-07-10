@@ -2399,6 +2399,43 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds typed chat schedules pause/resume/inspect commands", () => {
+    const pause = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1", "--pause"]));
+    expect(pause.label).toBe("chat schedules pause");
+    expect(pause.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "setScheduledWorkPaused",
+        args: { sessionId: "chat-1", paused: true },
+      },
+    });
+
+    const resume = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1", "--resume"]));
+    expect(resume.label).toBe("chat schedules resume");
+    expect(resume.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setScheduledWorkPaused",
+        args: { sessionId: "chat-1", paused: false },
+      },
+    });
+
+    const inspect = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1"]));
+    expect(inspect.label).toBe("chat schedules");
+    expect(inspect.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "getSessionSummary",
+        argsList: ["chat-1"],
+      },
+    });
+
+    expect(() => buildCliPlan(["chat", "schedules", "chat-1", "--pause", "--resume"])).toThrow(
+      /either --pause or --resume/,
+    );
+  });
+
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 

@@ -2817,6 +2817,8 @@ private struct WorkScheduledWorkRow: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(tint.opacity(0.18), lineWidth: 0.8)
     )
+    // Paused schedules read as inactive (matches desktop's dimmed row).
+    .opacity(workScheduledWorkIsPaused(status) ? 0.55 : 1)
   }
 }
 
@@ -2843,9 +2845,16 @@ private func workScheduledWorkKindLabel(_ raw: String) -> String {
 }
 
 private func workScheduledWorkStatusLabel(_ raw: String) -> String {
-  switch raw {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fired":
     return "Fired"
+  case "paused":
+    return "Paused"
+  case "missed":
+    return "Missed"
+  case "completed":
+    // Desktop labels a completed one-shot schedule "done".
+    return "Done"
   default:
     return raw.replacingOccurrences(of: "_", with: " ").capitalized
   }
@@ -2861,6 +2870,7 @@ private func workScheduledWorkStatusTint(_ status: String) -> Color {
     return ADEColor.success
   case "failed", "missed":
     return ADEColor.danger
+  // `paused`, `cancelled`, `stopped`, and any unknown status read as muted.
   default:
     return ADEColor.textMuted
   }
@@ -2876,11 +2886,19 @@ private func workScheduledWorkStatusSymbol(_ status: String) -> String {
     return "checkmark.circle.fill"
   case "failed", "missed":
     return "xmark.circle.fill"
+  case "paused":
+    return "pause.circle.fill"
   case "cancelled", "stopped":
     return "stop.circle"
   default:
     return "circle"
   }
+}
+
+/// A paused schedule is dimmed on desktop (opacity 0.45). Mirror that so the
+/// mobile Schedule section reads paused rows as inactive at a glance.
+func workScheduledWorkIsPaused(_ status: String) -> Bool {
+  status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "paused"
 }
 
 private struct WorkSubagentStatusChip: View {

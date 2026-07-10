@@ -6,6 +6,7 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { formatSessionLabel } from "../format";
 import { computeStackRowMeta, sortLanesForStackGraph } from "../laneTree";
 import { formatRelativePastTime } from "../relativeTime";
+import { compactRelativeDuration } from "../../../../desktop/src/shared/chatScheduledWork";
 import { closedCliSessionStatusKind } from "../closedCliSessions";
 import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
@@ -88,6 +89,20 @@ function truncate(text: string, max: number): string {
 function pad(text: string, width: number): string {
   if (text.length >= width) return text;
   return text + " ".repeat(width - text.length);
+}
+
+/**
+ * Compact armed-wake label for a chat row (e.g. "12m"), or null when the chat
+ * has no armed/unpaused wake, or the timestamp is invalid or already past.
+ * Mirrors the desktop SessionCard NextWakeChip so a durable wakeup/cron shows an
+ * at-a-glance "⏰12m" marker in the chat list, not only in the ChatInfo pane.
+ */
+function chatNextWakeLabel(session: AgentChatSessionSummary, nowMs = Date.now()): string | null {
+  const value = session.nextWakeAt;
+  if (!value) return null;
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
+  return compactRelativeDuration(Math.max(60_000, timestampMs - nowMs));
 }
 
 function DrawerComponent({
@@ -607,9 +622,13 @@ function ChatRow({
   const provider = (session.provider as AdeCodeProvider) ?? null;
   const exec = theme.provider(provider);
   const dot = statusGlyph(chatStatusDot(session));
+  // An armed durable wake shows a trailing "⏰Nm" marker (desktop SessionCard
+  // NextWakeChip parity); reserve its width so the title never collides with it.
+  const wake = chatNextWakeLabel(session);
+  const wakeReserve = wake ? wake.length + 3 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
-  const label = truncate(formatSessionLabel(session), max - 4);
+  const label = truncate(formatSessionLabel(session), max - 4 - wakeReserve);
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
   // non-selected lane (dimTitle) than under the focused one.
@@ -624,6 +643,7 @@ function ChatRow({
         {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
         <Text color={exec.color}>{exec.glyph} </Text>
         <Text color={titleColor}>{label}</Text>
+        {wake ? <Text color={theme.color.t4}>{` ⏰${wake}`}</Text> : null}
         {running ? <Text> <ActiveChatSpin /></Text> : null}
         {session.sessionId === activeSessionId ? (
           <Text color={theme.color.violet}> ●</Text>

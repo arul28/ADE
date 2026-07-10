@@ -505,3 +505,52 @@ describe("Drawer active chat indicator", () => {
     expect(frame).not.toContain("now");
   });
 });
+
+describe("Drawer next-wake marker", () => {
+  function wakeSession(nextWakeAt: string | null): AgentChatSessionSummary {
+    return {
+      sessionId: "chat-wake",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-opus-4-8",
+      title: "Nightly sweep",
+      status: "ended",
+      startedAt: "2026-05-12T12:00:00.000Z",
+      endedAt: "2026-05-12T12:05:00.000Z",
+      lastActivityAt: "2026-05-12T12:05:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt,
+    };
+  }
+
+  function renderWith(nextWakeAt: string | null): string {
+    return stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "feature", "feature/wake", "2026-05-12T12:00:00.000Z")]}
+        sessions={[wakeSession(nextWakeAt)]}
+        activeLaneId="lane-1"
+        activeSessionId={null}
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={40}
+        mode="chats"
+        focused
+        width={48}
+      />,
+    ).lastFrame() ?? "");
+  }
+
+  it("shows a ⏰ marker for an armed future wake", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const frame = renderWith(nextWakeAt);
+    expect(frame).toContain("⏰");
+    expect(frame).toContain("12m");
+  });
+
+  it("omits the marker when there is no armed wake (null or past)", () => {
+    expect(renderWith(null)).not.toContain("⏰");
+    expect(renderWith(new Date(Date.now() - 60_000).toISOString())).not.toContain("⏰");
+  });
+});

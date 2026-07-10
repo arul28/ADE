@@ -2503,7 +2503,11 @@ private func eventCard(
         kind: "activity",
         title: kind == "cron" ? "Cron \(normalized.lowercased())" : "Scheduled work \(normalized.lowercased())",
         icon: kind == "cron" ? "calendar.badge.clock" : "clock.arrow.circlepath",
-        tint: status == "failed" || status == "cancelled" ? .danger : status == "running" || status == "fired" ? .accent : .warning,
+        tint: status == "failed" || status == "cancelled" ? .danger
+          : status == "running" || status == "fired" ? .accent
+          // Paused/stopped schedules read as inactive, not pending (amber).
+          : status == "paused" || status == "stopped" ? .secondary
+          : .warning,
         timestamp: envelope.timestamp,
         body: nonEmptyWorkTimelineText(summary)
           ?? nonEmptyWorkTimelineText(error)

@@ -183,11 +183,12 @@ apps/ios/
 │   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
-│   │   │                            #   file-change transcript cards plus
-│   │   │                            #   Chat Info schedule popup/sheet for
-│   │   │                            #   scheduled_work_update snapshots,
-│   │   │                            #   plus subagent strip / badge / drawer
-│   │   │                            #   parity for subagent lifecycle),
+│   │   │                            #   file-change transcript cards, inline
+│   │   │                            #   subagent spawn/result/background-chip
+│   │   │                            #   timeline rows, plus the unified Chat
+│   │   │                            #   Info sheet — ordered Subagents /
+│   │   │                            #   Background / Schedule sections mirroring
+│   │   │                            #   desktop — and the subagent strip/badge),
 │   │   │                            # WorkPlanComposerViews (plan-approval
 │   │   │                            #   strip + review sheet),
 │   │   │                            # WorkComposerTypedTriggers (UITextView
@@ -1380,11 +1381,16 @@ reflected in the phone's UI on the next descriptor read.
   `RemoteModels.swift` accepts both legacy `subagent_started` /
   `subagent_progress` / `subagent_result` events and the canonical dotted
   `subagent.started` / `subagent.progress` / `subagent.completed` forms.
-  `WorkChatSessionView` surfaces the roster through the subagent overview
-  strip and composer badge, `WorkChatRichCardViews` owns the popup/drawer
-  presentation, and `WorkTimelineHelpers` suppresses individual lifecycle
-  cards so mobile chats match the desktop transcript instead of duplicating
-  every subagent tick.
+  `WorkChatSessionView` surfaces the live roster through the subagent
+  overview strip and composer badge. `WorkTimelineHelpers`
+  (`buildWorkSubagentTimelineRows`) collapses the raw lifecycle ticks into
+  the same durable structure the desktop transcript uses — one spawn row
+  and one result row per real subagent anchored where it started and
+  ended, and a single finish chip for backgrounded shell commands —
+  mirroring `deriveSubagentTimelineRows` in `chatSubagents.ts` so a
+  subagent never repaints per tick. `WorkChatRichCardViews` renders those
+  rows plus the unified Chat Info sheet, whose ordered Subagents /
+  Background / Schedule sections mirror the desktop Chat Info pane.
 - **Long Work chats must keep row work and root polling cheap.** The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible

@@ -9408,6 +9408,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.durable, true)
   }
 
+  /// Durable-wakeup parity (desktop 93d7f889): the host now emits `paused`,
+  /// `fired`, and `late` on scheduled_work_update. iOS carries `status` as a raw
+  /// String, so new/unknown statuses must decode without crashing and must not
+  /// be treated as active. Extra host fields (`firedAt`, `late`) that iOS does
+  /// not model must be ignored, not fatal.
+  func testParseWorkChatTranscriptToleratesPausedAndUnknownScheduleStatuses() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"paused","origin":"schedule_cron","title":"Nightly checks","cron":"0 9 * * *","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"wakeup-2","kind":"wakeup","status":"fired","origin":"schedule_wakeup","title":"Fired wakeup","firedAt":"2026-07-08T00:00:02.000Z","late":true,"turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"future-1","kind":"cron","status":"totally_new_status","origin":"schedule_cron","title":"Future status","turnId":"turn-3"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    let byId = Dictionary(
+      uniqueKeysWithValues: snapshot.scheduledWorkSnapshots.map { ($0.id, $0) }
+    )
+    XCTAssertEqual(byId["cron-1"]?.status, "paused")
+    XCTAssertEqual(byId["wakeup-2"]?.status, "fired")
+    XCTAssertEqual(byId["future-1"]?.status, "totally_new_status")
+
+    // Paused schedules are dormant, not active — they must not inflate the
+    // Chat Info active badge count.
+    XCTAssertTrue(workScheduledWorkIsPaused("paused"))
+    XCTAssertFalse(workScheduledWorkIsPaused("scheduled"))
+    if let paused = byId["cron-1"] {
+      XCTAssertFalse(workScheduledWorkIsActive(paused))
+    } else {
+      XCTFail("Expected paused snapshot")
+    }
+    // `fired` still counts as active (an in-flight wakeup turn).
+    if let fired = byId["wakeup-2"] {
+      XCTAssertTrue(workScheduledWorkIsActive(fired))
+    } else {
+      XCTFail("Expected fired snapshot")
+    }
+
+    // All three are cron/wakeup schedule kinds, so they belong in the Schedule
+    // section (not Background) of the Chat Info sheet.
+    let scheduleItems = workChatInfoScheduleItems(snapshot.scheduledWorkSnapshots)
+    XCTAssertEqual(Set(scheduleItems.map(\.id)), ["cron-1", "wakeup-2", "future-1"])
+  }
+
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
     // The two activity updates are consecutive so they cluster into one bundle;
     // the real subagent's spawn row is a hard timeline boundary that sits

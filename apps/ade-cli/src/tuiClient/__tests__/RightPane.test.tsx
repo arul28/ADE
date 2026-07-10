@@ -361,6 +361,49 @@ describe("RightPane chat info", () => {
     expect(longestLine).toBeLessThanOrEqual(44);
   });
 
+  it("renders paused and late schedule statuses without raw enum leakage", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            scheduledWork: [
+              {
+                id: "cron-paused",
+                kind: "cron",
+                status: "paused",
+                title: "Nightly digest",
+                summary: null,
+                cron: "0 9 * * *",
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:00.000Z",
+              },
+              {
+                id: "wake-late",
+                kind: "wakeup",
+                status: "fired",
+                title: "Follow up",
+                summary: null,
+                late: true,
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:05.000Z",
+              },
+            ],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE");
+    // Statuses render as clean lowercase words, and a behind-schedule fire adds
+    // a "· late" decoration (desktop history-row parity).
+    expect(frame).toContain("cron · paused");
+    expect(frame).toContain("wakeup · fired · late");
+  });
+
   it("renders a BACKGROUND block with smart labels, distinct from SCHEDULE", () => {
     const result = render(
       <RightPane

@@ -310,6 +310,7 @@ ade chat create --lane lane-id --provider codex --no-parent   # spawned chats de
 ade chat read session-id --limit 20 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
+ade chat schedules session-id --pause              # pause this chat's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
 ade chat wait session-id --for idle --timeout-ms 600000
 ade code
 ade code --embedded

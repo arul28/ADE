@@ -1025,6 +1025,9 @@ function scheduleStatusColor(status: ChatScheduledWorkSnapshot["status"]): strin
   if (status === "running" || status === "fired") return theme.color.running;
   if (status === "failed" || status === "missed") return theme.color.error;
   if (status === "completed") return theme.color.done;
+  // Paused reads as dormant, not armed — dimmest text so it never looks like a
+  // live "scheduled" row (which stays info-blue).
+  if (status === "paused") return theme.color.t5;
   if (status === "cancelled" || status === "stopped") return theme.color.t4;
   return theme.color.info;
 }
@@ -1033,6 +1036,7 @@ function scheduleStatusGlyph(status: ChatScheduledWorkSnapshot["status"]): strin
   if (status === "running" || status === "fired") return "●";
   if (status === "failed" || status === "missed") return "×";
   if (status === "completed") return "✓";
+  if (status === "paused") return "‖";
   if (status === "cancelled" || status === "stopped") return "○";
   return "◷";
 }
@@ -1070,7 +1074,8 @@ function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnap
       ) : null}
       {visible.map((item) => {
         const detail = scheduleLineDetail(item);
-        const label = `${scheduleKindLabel(item.kind)} · ${item.status}`;
+        // Mirror desktop's history row: a fired-behind-schedule wake reads `· late`.
+        const label = `${scheduleKindLabel(item.kind)} · ${item.status}${item.late ? " · late" : ""}`;
         const titleBudget = Math.max(6, inner - label.length - 4);
         return (
           <Box key={item.id} flexDirection="column">
