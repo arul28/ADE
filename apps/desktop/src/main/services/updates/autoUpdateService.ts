@@ -2,11 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
-import type { AutoUpdateSnapshot, RecentlyInstalledUpdate } from "../../../shared/types";
+import type {
+  AutoUpdateErrorDetails,
+  AutoUpdateErrorKind,
+  AutoUpdatePhase,
+  AutoUpdateSnapshot,
+  RecentlyInstalledUpdate,
+} from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { readGlobalState, writeGlobalState, type GlobalState } from "../state/globalState";
+import {
+  classifyUpdateError,
+  estimateUpdateRequiredBytes,
+  finitePositive,
+  readDiskSpace,
+  updateDownloadBytes,
+  type DiskSpaceInfo,
+} from "./autoUpdateErrors";
 
 const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
+const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+const DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS = 5 * 60_000;
 
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
@@ -18,6 +34,7 @@ type AutoUpdaterLike = {
       | { provider: "generic"; url: string },
   ) => void;
   checkForUpdates: () => Promise<unknown>;
+  downloadUpdate?: () => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
   on: (event: string, listener: (...args: any[]) => void) => unknown;
   removeListener: (event: string, listener: (...args: any[]) => void) => unknown;
@@ -34,11 +51,16 @@ type CreateAutoUpdateServiceArgs = {
   startupDelayMs?: number;
   periodicCheckMs?: number;
   updaterCacheDir?: string;
+  installTargetPath?: string;
+  getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
+  installWatchdogMs?: number;
+  nativeHandoffWatchdogMs?: number;
   autoCheckEnabled?: boolean;
 };
 
 type UpdateCheckResultLike = {
   downloadPromise?: Promise<unknown> | null;
+  updateInfo?: UpdateInfo;
 };
 
 type ProgressInfo = {
@@ -48,9 +70,15 @@ type ProgressInfo = {
   total: number;
 };
 
-export function createEmptyAutoUpdateSnapshot(): AutoUpdateSnapshot {
+type PreservedDownloadRetry = {
+  version: string;
+  releaseNotesUrl: string | null;
+};
+
+export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSnapshot {
   return {
     status: "idle",
+    currentVersion,
     version: null,
     progressPercent: null,
     bytesPerSecond: null,
@@ -58,6 +86,7 @@ export function createEmptyAutoUpdateSnapshot(): AutoUpdateSnapshot {
     totalBytes: null,
     releaseNotesUrl: null,
     error: null,
+    errorDetails: null,
     recentlyInstalled: null,
   };
 }
@@ -114,7 +143,11 @@ export function compareUpdateVersions(left: string, right: string): number {
 }
 
 function isUpdateCheckResultLike(result: unknown): result is UpdateCheckResultLike {
-  return Boolean(result && typeof result === "object" && "downloadPromise" in result);
+  return Boolean(
+    result
+    && typeof result === "object"
+    && ("downloadPromise" in result || "updateInfo" in result),
+  );
 }
 
 function extractDownloadPromise(result: unknown): Promise<unknown> | null {
@@ -268,6 +301,7 @@ function applyUpdateInfo(
     version: info.version,
     releaseNotesUrl: buildReleaseNotesUrl(info.version, releaseNotesBaseUrl),
     error: null,
+    errorDetails: null,
   };
 }
 
@@ -282,10 +316,16 @@ export function createAutoUpdateService({
   startupDelayMs = 5_000,
   periodicCheckMs = 30 * 60 * 1_000,
   updaterCacheDir,
+  installTargetPath = process.execPath,
+  getDiskSpace = readDiskSpace,
+  installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  nativeHandoffWatchdogMs = DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS,
   autoCheckEnabled = true,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
-  updater.autoDownload = true;
+  // Manual download is required so ADE can preflight the updater cache volume
+  // after discovering the artifact size but before bytes are written.
+  updater.autoDownload = false;
   updater.autoInstallOnAppQuit = false;
   try {
     // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
@@ -328,7 +368,7 @@ export function createAutoUpdateService({
   }
 
   let snapshot: AutoUpdateSnapshot = {
-    ...createEmptyAutoUpdateSnapshot(),
+    ...createEmptyAutoUpdateSnapshot(currentVersion),
     recentlyInstalled: initialState.recentlyInstalled,
   };
   let checkPromise: Promise<unknown> | null = null;
@@ -341,7 +381,14 @@ export function createAutoUpdateService({
   let quitAndInstallPromise: Promise<boolean> | null = null;
   let ignoredDownloadVersion: string | null = null;
   let readyRefreshInProgress = false;
-  let readyRefreshError: string | null = null;
+  const readyRefreshFailure: {
+    current: { error: unknown; phase: AutoUpdatePhase } | null;
+  } = { current: null };
+  let currentPhase: AutoUpdatePhase = "download";
+  let compressedUpdateBytes: number | null = null;
+  let compressedUpdateVersion: string | null = null;
+  let preservedDownloadRetry: PreservedDownloadRetry | null = null;
+  let installWatchdog: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -365,6 +412,152 @@ export function createAutoUpdateService({
     });
   }
 
+  function clearInstallWatchdog(): void {
+    if (!installWatchdog) return;
+    clearTimeout(installWatchdog);
+    installWatchdog = null;
+  }
+
+  function rememberUpdateSize(info: UpdateInfo | null | undefined): void {
+    if (!info) return;
+    const nextSize = updateDownloadBytes(info);
+    if (compressedUpdateVersion !== info.version) {
+      compressedUpdateVersion = info.version;
+      compressedUpdateBytes = nextSize;
+      return;
+    }
+    compressedUpdateBytes = nextSize ?? compressedUpdateBytes;
+  }
+
+  function readReadyRefreshFailure(): { error: unknown; phase: AutoUpdatePhase } | null {
+    return readyRefreshFailure.current;
+  }
+
+  function shouldPreserveDownloadedUpdate(
+    kind: AutoUpdateErrorKind,
+    phase: AutoUpdatePhase,
+  ): boolean {
+    return phase !== "download"
+      && (kind === "insufficient_space" || kind === "disk_full" || kind === "quota" || kind === "permission" || kind === "installer");
+  }
+
+  function setErrorSnapshot(args: {
+    error: unknown;
+    fallbackPhase: AutoUpdatePhase;
+    capacity?: Pick<AutoUpdateErrorDetails, "availableBytes" | "requiredBytes" | "volumePath">;
+    message?: string;
+    preservesDownload?: boolean;
+    preservedUpdate?: PreservedDownloadRetry;
+  }): void {
+    const classified = classifyUpdateError(args.error, args.fallbackPhase);
+    const message = args.message ?? formatErrorMessage(args.error);
+    const preservesDownload = args.preservesDownload
+      ?? shouldPreserveDownloadedUpdate(classified.kind, classified.phase);
+    let capacity = args.capacity;
+    if (
+      !capacity
+      && (classified.kind === "insufficient_space" || classified.kind === "disk_full" || classified.kind === "quota")
+    ) {
+      try {
+        const targetPath = classified.phase === "download"
+          ? updaterCacheDir ?? path.dirname(globalStatePath)
+          : installTargetPath;
+        const disk = getDiskSpace(targetPath);
+        capacity = {
+          availableBytes: disk.availableBytes,
+          requiredBytes: estimateUpdateRequiredBytes(
+            classified.phase === "download" ? "download" : "install",
+            compressedUpdateBytes,
+          ),
+          volumePath: disk.volumePath,
+        };
+      } catch {
+        // Preserve the original updater failure when a follow-up probe fails.
+      }
+    }
+    const details: AutoUpdateErrorDetails = {
+      kind: classified.kind,
+      phase: classified.phase,
+      message,
+      availableBytes: capacity?.availableBytes ?? null,
+      requiredBytes: capacity?.requiredBytes ?? null,
+      volumePath: capacity?.volumePath ?? null,
+      preservesDownload,
+    };
+    if (!preservesDownload) {
+      cleanupUpdaterCacheDir({
+        updaterCacheDir,
+        logger,
+        reason: classified.kind === "verification" || classified.kind === "signature"
+          ? "unsafe_update_error"
+          : "error",
+      });
+    }
+    patchSnapshot({
+      status: "error",
+      error: message,
+      errorDetails: details,
+      progressPercent: null,
+      bytesPerSecond: null,
+      transferredBytes: null,
+      totalBytes: null,
+      ...(args.preservedUpdate ?? {}),
+    });
+  }
+
+  function preservedUpdateForRetryError(error: unknown): PreservedDownloadRetry | null {
+    if (!preservedDownloadRetry || snapshot.status !== "checking") return null;
+    if (
+      snapshot.version
+      && compareUpdateVersions(snapshot.version, preservedDownloadRetry.version) > 0
+    ) {
+      return null;
+    }
+    const { kind } = classifyUpdateError(error, currentPhase);
+    return kind === "signature" || kind === "verification" ? null : preservedDownloadRetry;
+  }
+
+  function preflightSpace(
+    phase: "download" | "install",
+    targetPath: string,
+  ): boolean {
+    const requiredBytes = estimateUpdateRequiredBytes(phase, compressedUpdateBytes);
+    try {
+      const disk = getDiskSpace(targetPath);
+      logger.info("autoUpdate.space_preflight", {
+        phase,
+        targetPath,
+        volumePath: disk.volumePath,
+        availableBytes: disk.availableBytes,
+        requiredBytes,
+        compressedUpdateBytes,
+      });
+      if (disk.availableBytes >= requiredBytes) return true;
+      const error = new Error("Not enough space to update ADE.");
+      setErrorSnapshot({
+        error,
+        fallbackPhase: phase,
+        capacity: {
+          availableBytes: disk.availableBytes,
+          requiredBytes,
+          volumePath: disk.volumePath,
+        },
+        message: "Not enough space to update ADE.",
+        preservesDownload: phase === "install",
+      });
+      return false;
+    } catch (error) {
+      // A failed capacity probe should not block updates. Runtime ENOSPC/EDQUOT
+      // errors remain classified if the updater later encounters them.
+      logger.warn("autoUpdate.space_preflight_failed", {
+        phase,
+        targetPath,
+        message: formatErrorMessage(error),
+      });
+      return true;
+    }
+  }
+
   function isTerminalSnapshotStatus(): boolean {
     return snapshot.status === "ready" || snapshot.status === "installing";
   }
@@ -380,6 +573,7 @@ export function createAutoUpdateService({
         totalBytes: snapshot.totalBytes,
         releaseNotesUrl: snapshot.releaseNotesUrl,
         error: null,
+        errorDetails: null,
       };
     }
     return {
@@ -391,11 +585,13 @@ export function createAutoUpdateService({
       totalBytes: null,
       releaseNotesUrl: null,
       error: null,
+      errorDetails: null,
     };
   }
 
   const onCheckingForUpdate = () => {
     logger.info("autoUpdate.checking");
+    currentPhase = "download";
     patchSnapshot(preservedOrIdlePatch("checking"));
   };
 
@@ -419,18 +615,22 @@ export function createAutoUpdateService({
       });
     }
     ignoredDownloadVersion = null;
+    rememberUpdateSize(info);
     patchSnapshot({
-      status: "downloading",
-      progressPercent: 0,
+      status: "checking",
+      progressPercent: null,
       bytesPerSecond: null,
       transferredBytes: null,
-      totalBytes: null,
+      totalBytes: compressedUpdateBytes,
       ...applyUpdateInfo(info, releaseNotesBaseUrl),
     });
   };
 
   const onDownloadProgress = (info: ProgressInfo) => {
     if (ignoredDownloadVersion) return;
+    currentPhase = "download";
+    compressedUpdateBytes = finitePositive(info.total) ?? compressedUpdateBytes;
+    compressedUpdateVersion = snapshot.version;
     patchSnapshot({
       status: "downloading",
       progressPercent: info.percent,
@@ -438,12 +638,23 @@ export function createAutoUpdateService({
       transferredBytes: info.transferred,
       totalBytes: info.total,
       error: null,
+      errorDetails: null,
     });
   };
 
   const onUpdateDownloaded = (info: UpdateInfo) => {
     logger.info("autoUpdate.update_downloaded", { version: info.version });
+    if (snapshot.version && compareUpdateVersions(info.version, snapshot.version) < 0) {
+      logger.info("autoUpdate.update_downloaded_ignored", {
+        version: info.version,
+        readyVersion: snapshot.version,
+        reason: "older_than_ready_version",
+      });
+      if (ignoredDownloadVersion === info.version) ignoredDownloadVersion = null;
+      return;
+    }
     if (ignoredDownloadVersion === info.version) {
+      rememberUpdateSize(info);
       logger.info("autoUpdate.update_downloaded_ignored", {
         version: info.version,
         readyVersion: snapshot.version,
@@ -452,14 +663,7 @@ export function createAutoUpdateService({
       ignoredDownloadVersion = null;
       return;
     }
-    if (snapshot.version && compareUpdateVersions(info.version, snapshot.version) < 0) {
-      logger.info("autoUpdate.update_downloaded_ignored", {
-        version: info.version,
-        readyVersion: snapshot.version,
-        reason: "older_than_ready_version",
-      });
-      return;
-    }
+    rememberUpdateSize(info);
     patchSnapshot({
       status: "ready",
       progressPercent: 100,
@@ -473,6 +677,8 @@ export function createAutoUpdateService({
   const onUpdateNotAvailable = () => {
     logger.info("autoUpdate.update_not_available");
     if (!isTerminalSnapshotStatus()) {
+      compressedUpdateBytes = null;
+      compressedUpdateVersion = null;
       cleanupUpdaterCacheDir({
         updaterCacheDir,
         logger,
@@ -485,39 +691,45 @@ export function createAutoUpdateService({
   const onUpdateCancelled = (info: UpdateInfo) => {
     logger.warn("autoUpdate.update_cancelled", { version: info.version });
     ignoredDownloadVersion = null;
+    compressedUpdateBytes = null;
+    compressedUpdateVersion = null;
     cleanupUpdaterCacheDir({
       updaterCacheDir,
       logger,
       reason: "cancelled",
     });
     patchSnapshot({
-      ...createEmptyAutoUpdateSnapshot(),
+      ...createEmptyAutoUpdateSnapshot(currentVersion),
       recentlyInstalled: snapshot.recentlyInstalled,
     });
   };
 
   const onError = (err: unknown) => {
     const message = formatErrorMessage(err);
-    logger.warn("autoUpdate.error", { message });
+    const classified = classifyUpdateError(err, currentPhase);
+    logger.warn("autoUpdate.error", {
+      message,
+      kind: classified.kind,
+      phase: classified.phase,
+    });
     ignoredDownloadVersion = null;
     if (readyRefreshInProgress) {
-      readyRefreshError = message;
+      readyRefreshFailure.current = {
+        error: err,
+        phase: snapshot.status === "downloading" ? "download" : "verification",
+      };
       return;
     }
-    if (snapshot.status === "ready") return;
+    clearInstallWatchdog();
     if (snapshot.status === "installing") {
       clearPendingInstallUpdate();
     }
-    cleanupUpdaterCacheDir({
-      updaterCacheDir,
-      logger,
-      reason: "error",
-    });
-    patchSnapshot({
-      ...createEmptyAutoUpdateSnapshot(),
-      status: "error",
-      error: message,
-      recentlyInstalled: snapshot.recentlyInstalled,
+    const preservedUpdate = preservedUpdateForRetryError(err);
+    setErrorSnapshot({
+      error: err,
+      fallbackPhase: currentPhase,
+      preservesDownload: preservedUpdate ? true : undefined,
+      preservedUpdate: preservedUpdate ?? undefined,
     });
   };
 
@@ -542,8 +754,43 @@ export function createAutoUpdateService({
     ) {
       return;
     }
+    const reusableDownloadedVersion = snapshot.status === "error"
+      && snapshot.errorDetails?.preservesDownload
+      ? snapshot.version
+      : null;
+    preservedDownloadRetry = reusableDownloadedVersion
+      ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
+      : null;
     checkPromise = updater.checkForUpdates()
       .then(async (result) => {
+        const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
+        if (
+          updateInfo
+          && (!snapshot.version || compareUpdateVersions(updateInfo.version, snapshot.version) >= 0)
+        ) {
+          rememberUpdateSize(updateInfo);
+        }
+        if (snapshot.status === "ready" || ignoredDownloadVersion) {
+          ignoredDownloadVersion = null;
+          return;
+        }
+        if (snapshot.version) {
+          const downloadTarget = updaterCacheDir ?? path.dirname(globalStatePath);
+          const reusesPreservedDownload = reusableDownloadedVersion === snapshot.version;
+          if (!reusesPreservedDownload && !preflightSpace("download", downloadTarget)) return;
+          currentPhase = "download";
+          patchSnapshot({
+            status: "downloading",
+            progressPercent: 0,
+            totalBytes: compressedUpdateBytes,
+            error: null,
+            errorDetails: null,
+          });
+          if (updater.downloadUpdate) {
+            await updater.downloadUpdate();
+            return;
+          }
+        }
         const downloadPromise = extractDownloadPromise(result);
         if (downloadPromise) {
           await downloadPromise;
@@ -551,12 +798,27 @@ export function createAutoUpdateService({
       })
       .catch((error) => {
         if (readyRefreshInProgress) {
-          readyRefreshError = formatErrorMessage(error);
+          readyRefreshFailure.current = {
+            error,
+            phase: snapshot.status === "downloading" ? "download" : "verification",
+          };
+          return;
         }
-        // `error` is emitted separately by electron-updater.
+        // electron-updater normally emits `error` as well as rejecting. Keep
+        // this fallback so synchronous filesystem failures cannot disappear.
+        if (snapshot.status !== "error") {
+          const preservedUpdate = preservedUpdateForRetryError(error);
+          setErrorSnapshot({
+            error,
+            fallbackPhase: currentPhase,
+            preservesDownload: preservedUpdate ? true : undefined,
+            preservedUpdate: preservedUpdate ?? undefined,
+          });
+        }
       })
       .finally(() => {
         checkPromise = null;
+        preservedDownloadRetry = null;
       });
     await checkPromise;
   }
@@ -570,28 +832,24 @@ export function createAutoUpdateService({
     const readyVersion = snapshot.version;
     logger.info("autoUpdate.refresh_ready_before_install", { version: readyVersion });
     readyRefreshInProgress = true;
-    readyRefreshError = null;
+    readyRefreshFailure.current = null;
     try {
       await runUpdateCheck({ allowReady: true });
     } finally {
       readyRefreshInProgress = false;
     }
-    if (readyRefreshError) {
-      const error = `Could not verify the latest update before installing: ${readyRefreshError}`;
+    const refreshFailure = readReadyRefreshFailure();
+    if (refreshFailure) {
+      const failureMessage = formatErrorMessage(refreshFailure.error);
+      const error = `Could not verify the latest update before installing: ${failureMessage}`;
       logger.warn("autoUpdate.refresh_ready_before_install_failed", {
         version: readyVersion,
-        message: readyRefreshError,
+        message: failureMessage,
       });
-      cleanupUpdaterCacheDir({
-        updaterCacheDir,
-        logger,
-        reason: "latest_refresh_failed",
-      });
-      patchSnapshot({
-        ...createEmptyAutoUpdateSnapshot(),
-        status: "error",
-        error,
-        recentlyInstalled: snapshot.recentlyInstalled,
+      setErrorSnapshot({
+        error: refreshFailure.error,
+        fallbackPhase: refreshFailure.phase,
+        message: error,
       });
       return false;
     }
@@ -602,6 +860,37 @@ export function createAutoUpdateService({
       });
     }
     return snapshot.status === "ready" && Boolean(snapshot.version);
+  }
+
+  async function waitForInstallStep<T>(
+    task: Promise<T>,
+    phase: AutoUpdatePhase,
+    timeoutMessage: string,
+  ): Promise<{ completed: true; value: T } | { completed: false }> {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutResult = new Promise<{ completed: false }>((resolve) => {
+      timeout = setTimeout(() => {
+        logger.warn("autoUpdate.install_step_timed_out", {
+          phase,
+          installWatchdogMs,
+          message: timeoutMessage,
+        });
+        clearPendingInstallUpdate();
+        setErrorSnapshot({
+          error: new Error(timeoutMessage),
+          fallbackPhase: phase,
+          message: timeoutMessage,
+          preservesDownload: true,
+        });
+        resolve({ completed: false });
+      }, installWatchdogMs);
+    });
+    const taskResult = task.then((value) => ({ completed: true as const, value }));
+    try {
+      return await Promise.race([taskResult, timeoutResult]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
 
   function dismissInstalledNotice(): void {
@@ -635,6 +924,7 @@ export function createAutoUpdateService({
       if (quitAndInstallPromise) return quitAndInstallPromise;
       if (snapshot.status !== "ready" || !snapshot.version) return false;
       const run = async (): Promise<boolean> => {
+        currentPhase = "verification";
         const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
         if (!refreshSucceeded) return false;
         // After refresh, snapshot may have been replaced; re-check version
@@ -642,19 +932,24 @@ export function createAutoUpdateService({
         // longer "ready" with a version, but be explicit for the narrowing).
         const installVersion = snapshot.version;
         if (!installVersion) return false;
+        currentPhase = "staging";
+        if (!preflightSpace("install", installTargetPath)) return false;
         try {
-          await beforeQuitAndInstall?.();
+          const prepareResult = await waitForInstallStep(
+            Promise.resolve(beforeQuitAndInstall?.()),
+            "install",
+            "ADE could not prepare to quit for the update. Try again.",
+          );
+          if (!prepareResult.completed) return false;
         } catch (error) {
           const message = formatErrorMessage(error);
           logger.warn("autoUpdate.prepare_quit_and_install_failed", {
             version: installVersion,
             message,
           });
-          patchSnapshot({
-            ...createEmptyAutoUpdateSnapshot(),
-            status: "error",
-            error: message,
-            recentlyInstalled: snapshot.recentlyInstalled,
+          setErrorSnapshot({
+            error,
+            fallbackPhase: "install",
           });
           return false;
         }
@@ -673,9 +968,26 @@ export function createAutoUpdateService({
           status: "installing",
           progressPercent: 100,
           error: null,
+          errorDetails: null,
         });
         try {
+          currentPhase = "install";
           updater.quitAndInstall(false, true);
+          clearInstallWatchdog();
+          installWatchdog = setTimeout(() => {
+            installWatchdog = null;
+            const message = "ADE did not quit for the update. Free space if needed, then try again.";
+            logger.warn("autoUpdate.quit_and_install_stalled", {
+              version: installVersion,
+              nativeHandoffWatchdogMs,
+            });
+            setErrorSnapshot({
+              error: new Error(message),
+              fallbackPhase: "install",
+              message,
+              preservesDownload: true,
+            });
+          }, nativeHandoffWatchdogMs);
           return true;
         } catch (error) {
           const message = formatErrorMessage(error);
@@ -684,16 +996,9 @@ export function createAutoUpdateService({
             message,
           });
           clearPendingInstallUpdate();
-          patchSnapshot({
-            ...createEmptyAutoUpdateSnapshot(),
-            status: "error",
-            error: message,
-            recentlyInstalled: snapshot.recentlyInstalled,
-          });
-          cleanupUpdaterCacheDir({
-            updaterCacheDir,
-            logger,
-            reason: "quit_and_install_failed",
+          setErrorSnapshot({
+            error,
+            fallbackPhase: "install",
           });
           return false;
         }
@@ -706,6 +1011,7 @@ export function createAutoUpdateService({
     dispose() {
       if (startupTimer) clearTimeout(startupTimer);
       if (periodicTimer) clearInterval(periodicTimer);
+      clearInstallWatchdog();
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);
       updater.removeListener("update-available", onUpdateAvailable);

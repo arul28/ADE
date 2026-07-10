@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildGithubReleaseUrl, buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
+import { classifyUpdateError, estimateUpdateRequiredBytes } from "./autoUpdateErrors";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -69,6 +70,35 @@ describe("buildGithubReleaseUrl", () => {
     expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
     expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
     expect(buildGithubReleaseUrl(" ")).toBeNull();
+  });
+});
+
+describe("auto-update error classification", () => {
+  it("classifies read-only filesystem failures as permission errors in each phase", () => {
+    const downloadError = new Error("read-only file system") as NodeJS.ErrnoException;
+    downloadError.code = "EROFS";
+    expect(classifyUpdateError(downloadError, "download")).toEqual({
+      kind: "permission",
+      phase: "download",
+    });
+    expect(classifyUpdateError(new Error("Cannot write: read-only file system"), "install")).toEqual({
+      kind: "permission",
+      phase: "install",
+    });
+  });
+
+  it("recognizes extraction failures as staging failures", () => {
+    const error = new Error("ShipIt could not extract archive: no space left") as NodeJS.ErrnoException;
+    error.code = "ENOSPC";
+    expect(classifyUpdateError(error, "install")).toEqual({
+      kind: "disk_full",
+      phase: "staging",
+    });
+  });
+
+  it("uses conservative compressed-size defaults", () => {
+    expect(estimateUpdateRequiredBytes("download", null)).toBe(1536 * 1024 * 1024);
+    expect(estimateUpdateRequiredBytes("install", null)).toBe(3072 * 1024 * 1024);
   });
 });
 
@@ -309,6 +339,336 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("blocks a download when the updater cache volume has insufficient space", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 200 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      installTargetPath: "/Applications/ADE.app",
+      getDiskSpace: () => ({
+        availableBytes: 128 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        currentVersion: "1.2.2",
+        version: "1.2.3",
+        error: "Not enough space to update ADE.",
+        errorDetails: {
+          kind: "insufficient_space",
+          phase: "download",
+          availableBytes: 128 * 1024 * 1024,
+          requiredBytes: 912 * 1024 * 1024,
+          volumePath: "/Volumes/Test",
+          preservesDownload: false,
+        },
+      });
+    });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+
+    service.dispose();
+  });
+
+  it("preflights the install volume and preserves the verified download when space is low", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const getDiskSpace = vi.fn(() => ({
+      availableBytes: 1024 * 1024 * 1024,
+      volumePath: "/System/Volumes/Data",
+    }));
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      installTargetPath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      getDiskSpace,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 300 * 1024 * 1024, sha512: "test" }],
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+
+    expect(getDiskSpace).toHaveBeenCalledWith("/Applications/ADE.app/Contents/MacOS/ADE");
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      errorDetails: {
+        kind: "insufficient_space",
+        phase: "install",
+        availableBytes: 1024 * 1024 * 1024,
+        requiredBytes: 2012 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+        preservesDownload: true,
+      },
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
+  it("reuses a preserved verified archive after install-space recovery without a download-volume preflight", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const installTargetPath = "/Applications/ADE.app/Contents/MacOS/ADE";
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 300 * 1024 * 1024, sha512: "test" }],
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const getDiskSpace = vi.fn((targetPath: string) => ({
+      availableBytes: targetPath === installTargetPath
+        ? 1024 * 1024 * 1024
+        : 64 * 1024 * 1024,
+      volumePath: targetPath === installTargetPath ? "/System/Volumes/Data" : "/Volumes/Cache",
+    }));
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      installTargetPath,
+      getDiskSpace,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", updateInfo);
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      version: "1.2.3",
+      errorDetails: {
+        kind: "insufficient_space",
+        phase: "install",
+        preservesDownload: true,
+      },
+    });
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    updater.downloadUpdate.mockImplementationOnce(async () => {
+      updater.emit("update-downloaded", updateInfo);
+    });
+
+    service.checkForUpdates();
+    service.checkForUpdates();
+
+    await vi.waitFor(() => expect(service.getSnapshot().status).toBe("ready"));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(getDiskSpace).not.toHaveBeenCalledWith(updaterCacheDir);
+
+    service.dispose();
+  });
+
+  it("preserves a verified archive and recovery metadata when its retry check has a transient feed failure", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 300 * 1024 * 1024, sha512: "test" }],
+    };
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      installTargetPath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      getDiskSpace: () => ({
+        availableBytes: 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", updateInfo);
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot().errorDetails?.preservesDownload).toBe(true);
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      const error = new Error("network unavailable");
+      updater.emit("error", error);
+      throw error;
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        version: "1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        error: "network unavailable",
+        errorDetails: {
+          kind: "network",
+          phase: "download",
+          preservesDownload: true,
+        },
+      });
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
+  it("classifies a synchronous ENOSPC handoff failure and keeps the downloaded update", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    updater.quitAndInstall = vi.fn(() => {
+      const error = new Error("no space left on device") as NodeJS.ErrnoException;
+      error.code = "ENOSPC";
+      throw error;
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      errorDetails: {
+        kind: "disk_full",
+        phase: "install",
+        preservesDownload: true,
+      },
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
+  it("classifies EDQUOT during download separately from generic updater failures", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 100 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    updater.downloadUpdate.mockImplementation(async () => {
+      const error = new Error("disk quota exceeded") as NodeJS.ErrnoException;
+      error.code = "EDQUOT";
+      throw error;
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      getDiskSpace: () => ({
+        availableBytes: 4 * 1024 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        errorDetails: {
+          kind: "quota",
+          phase: "download",
+          preservesDownload: false,
+        },
+      });
+    });
+
+    service.dispose();
+  });
+
+  it("retries after space is freed without creating concurrent downloads", async () => {
+    let availableBytes = 64 * 1024 * 1024;
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 100 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", updateInfo);
+      return { updateInfo };
+    });
+    updater.downloadUpdate.mockImplementation(async () => {
+      updater.emit("update-downloaded", updateInfo);
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      getDiskSpace: () => ({ availableBytes, volumePath: "/Volumes/Test" }),
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    service.checkForUpdates();
+    service.checkForUpdates();
+    await vi.waitFor(() => expect(service.getSnapshot().status).toBe("error"));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+
+    availableBytes = 4 * 1024 * 1024 * 1024;
+    service.checkForUpdates();
+    service.checkForUpdates();
+    await vi.waitFor(() => expect(service.getSnapshot().status).toBe("ready"));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
   it("refreshes a stale ready update before installing so the target is the newest version", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
@@ -371,6 +731,64 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("allows a newer update download to outlive the install watchdog before starting handoff", async () => {
+    vi.useFakeTimers();
+    let finishDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    });
+    const newerUpdate = {
+      version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", size: 100 * 1024 * 1024, sha512: "test" }],
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", newerUpdate);
+      return { updateInfo: newerUpdate };
+    });
+    updater.downloadUpdate.mockImplementationOnce(async () => {
+      await downloadGate;
+      updater.emit("update-downloaded", newerUpdate);
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      installWatchdogMs: 1_000,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    const installPromise = service.quitAndInstall();
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "downloading",
+      version: "1.2.4",
+    });
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+
+    finishDownload();
+    await expect(installPromise).resolves.toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.4",
+    });
+
+    service.dispose();
+  });
+
   it("does not install a ready update when latest-version verification fails", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
@@ -411,7 +829,103 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("does not replace a ready update with an older downloaded event", () => {
+  it("classifies ENOSPC while refreshing to a newer release as a download failure", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    const newerUpdate = {
+      version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", size: 100 * 1024 * 1024, sha512: "test" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", newerUpdate);
+      return { updateInfo: newerUpdate };
+    });
+    updater.downloadUpdate.mockImplementationOnce(async () => {
+      const error = new Error("no space left on device") as NodeJS.ErrnoException;
+      error.code = "ENOSPC";
+      throw error;
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      version: "1.2.4",
+      errorDetails: {
+        kind: "disk_full",
+        phase: "download",
+        preservesDownload: false,
+      },
+    });
+    expectCacheEmpty(updaterCacheDir);
+
+    service.dispose();
+  });
+
+  it("uses the conservative default when a newer release omits archive size", async () => {
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => undefined),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: "/Volumes/Test/ADE-updater",
+      getDiskSpace: () => ({
+        availableBytes: 1024 * 1024 * 1024,
+        volumePath: "/Volumes/Test",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 100 * 1024 * 1024, sha512: "old" }],
+    });
+    const newerUpdateWithoutSize = {
+      version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", sha512: "new" }],
+    };
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", newerUpdateWithoutSize);
+      return { updateInfo: newerUpdateWithoutSize };
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      version: "1.2.4",
+      errorDetails: {
+        kind: "insufficient_space",
+        phase: "download",
+        requiredBytes: 1536 * 1024 * 1024,
+      },
+    });
+
+    service.dispose();
+  });
+
+  it("does not replace a ready update or its size estimate with an older downloaded event", async () => {
     const globalStatePath = makeStatePath();
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({
@@ -420,14 +934,20 @@ describe("createAutoUpdateService", () => {
       globalStatePath,
       startupDelayMs: 60_000,
       periodicCheckMs: 60_000,
+      getDiskSpace: () => ({
+        availableBytes: 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
       updater,
     });
 
     updater.emit("update-downloaded", {
       version: "1.2.4",
+      files: [{ url: "ADE-1.2.4-mac.zip", size: 300 * 1024 * 1024, sha512: "new" }],
     });
     updater.emit("update-available", {
       version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 10 * 1024 * 1024, sha512: "old" }],
     });
     updater.emit("download-progress", {
       percent: 25,
@@ -437,6 +957,7 @@ describe("createAutoUpdateService", () => {
     });
     updater.emit("update-downloaded", {
       version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 10 * 1024 * 1024, sha512: "old" }],
     });
 
     expect(service.getSnapshot()).toMatchObject({
@@ -444,6 +965,18 @@ describe("createAutoUpdateService", () => {
       version: "1.2.4",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
     });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      version: "1.2.4",
+      errorDetails: {
+        kind: "insufficient_space",
+        phase: "install",
+        requiredBytes: 2012 * 1024 * 1024,
+      },
+    });
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
 
     service.dispose();
   });
@@ -505,7 +1038,7 @@ describe("createAutoUpdateService", () => {
       error: "The command is disabled and cannot be executed",
     });
     expect(readState(globalStatePath)).toEqual({});
-    expectCacheEmpty(updaterCacheDir);
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
     expect(logger.warn).toHaveBeenCalledWith(
       "autoUpdate.quit_and_install_failed",
       expect.objectContaining({
@@ -627,9 +1160,64 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot()).toMatchObject({
       status: "error",
       error: "installer failed after launch",
+      errorDetails: {
+        kind: "installer",
+        phase: "install",
+        preservesDownload: true,
+      },
     });
     expect(readState(globalStatePath)).toEqual({});
-    expectCacheEmpty(updaterCacheDir);
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
+  it("allows native handoff to outlive the prepare watchdog before reporting a stall", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      installWatchdogMs: 1_000,
+      nativeHandoffWatchdogMs: 5_000,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    expect(service.getSnapshot().status).toBe("installing");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(service.getSnapshot().status).toBe("installing");
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: { targetVersion: "1.2.3" },
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "ADE did not quit for the update. Free space if needed, then try again.",
+      errorDetails: {
+        kind: "installer",
+        phase: "install",
+        preservesDownload: true,
+      },
+    });
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: { targetVersion: "1.2.3" },
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
     service.dispose();
   });
