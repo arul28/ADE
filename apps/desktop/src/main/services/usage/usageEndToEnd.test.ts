@@ -71,8 +71,10 @@ describe("usage ledger end-to-end accuracy", () => {
       process.env.TZ = "America/New_York";
       const beforeMidnight = new Date(2026, 9, 31, 23, 59, 0, 0);
       const afterMidnight = new Date(2026, 10, 1, 0, 1, 0, 0);
-      const beforeDstChange = new Date(2026, 10, 1, 0, 30, 0, 0);
-      const afterDstChange = new Date(2026, 10, 1, 3, 30, 0, 0);
+      // Use explicit offsets so the DST assertion is portable even when a
+      // test worker cannot apply a runtime TZ change (as on Linux CI).
+      const beforeDstChange = new Date("2026-11-01T00:30:00-04:00");
+      const afterDstChange = new Date("2026-11-01T03:30:00-05:00");
       const today = new Date(2026, 10, 2, 9, 0, 0, 0);
       const now = new Date(2026, 10, 2, 12, 0, 0, 0);
       vi.useFakeTimers();

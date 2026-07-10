@@ -132,12 +132,12 @@ describe("createSyncRemoteCommandService", () => {
     );
     expect(service.getDescriptor("usage.getQuotaSnapshot")).toEqual({
       action: "usage.getQuotaSnapshot",
-      scope: "project",
+      scope: "runtime",
       policy: { viewerAllowed: true },
     });
     expect(service.getDescriptor("usage.refreshQuota")).toEqual({
       action: "usage.refreshQuota",
-      scope: "project",
+      scope: "runtime",
       policy: { viewerAllowed: true },
     });
     await expect(service.execute(makePayload("usage.getQuotaSnapshot"))).resolves.toEqual(quotaSnapshot);
