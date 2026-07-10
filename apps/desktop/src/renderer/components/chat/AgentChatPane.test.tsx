@@ -2725,6 +2725,132 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
+    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      sendError: new Error("turn is already active"),
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:52.000Z",
+            sequence: 1,
+            event: { type: "user_message", text: "Retry the original prompt." },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:52.500Z",
+            sequence: 2,
+            event: { type: "user_message", text: "Do not resend this steer.", steerId: "steer-1" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 3,
+            event: {
+              type: "error",
+              message: "Selected model is at capacity. Please try a different model.",
+              errorInfo: "serverOverloaded",
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.050Z",
+            sequence: 4,
+            event: { type: "status", turnStatus: "failed", turnId: "turn-capacity" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 5,
+            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Retry the original prompt.",
+      }));
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "A turn is already active in this thread. Wait for it to finish before retrying.",
+    );
+  });
+
+  it("does not carry a pending provider-failure model request into another session", async () => {
+    const failedSession = buildSession("session-failed", { status: "idle", awaitingInput: false });
+    const nextSession = buildSession("session-next", { status: "idle", awaitingInput: false });
+    installAdeMocks({
+      sessions: [failedSession, nextSession],
+      eventHistory: ({ sessionId }) => ({
+        sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: sessionId === failedSession.sessionId
+          ? [
+            {
+              sessionId,
+              timestamp: "2026-07-10T18:18:53.000Z",
+              sequence: 1,
+              event: {
+                type: "error",
+                message: "Selected model is at capacity. Please try a different model.",
+                turnId: "turn-capacity",
+                errorInfo: "serverOverloaded",
+              },
+            },
+            {
+              sessionId,
+              timestamp: "2026-07-10T18:18:53.066Z",
+              sequence: 2,
+              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+            },
+          ]
+          : [],
+      }),
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={failedSession.laneId}
+          lockSessionId={failedSession.sessionId}
+          hideSessionTabs
+          initialSessionSummary={failedSession}
+          modelSelectionLocked
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Choose model" }));
+    expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={nextSession.laneId}
+          lockSessionId={nextSession.sessionId}
+          hideSessionTabs
+          initialSessionSummary={nextSession}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
+    });
+  });
+
   it.each([
     ["claude", "claude-sonnet-5", "anthropic/claude-sonnet-5"],
     ["cursor", "composer", "cursor/composer"],

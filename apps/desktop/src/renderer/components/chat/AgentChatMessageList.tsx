@@ -2636,7 +2636,7 @@ function renderEvent(
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
-    onRetryProviderFailure?: (turnId: string | null) => void;
+    onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     onChooseProviderFailureModel?: () => void;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
@@ -3690,7 +3690,7 @@ function renderEvent(
               recovery={recovery}
               disabled={Boolean(options?.sessionTurnActive)}
               onRetry={options?.onRetryProviderFailure
-                ? () => options.onRetryProviderFailure?.(event.turnId ?? null)
+                ? () => options.onRetryProviderFailure!(event.turnId ?? null)
                 : undefined}
               onChooseModel={options?.onChooseProviderFailureModel}
             />
@@ -4162,7 +4162,7 @@ type EventRowProps = {
   turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
-  onRetryProviderFailure?: (turnId: string | null) => void;
+  onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
@@ -4626,7 +4626,7 @@ function AgentChatMessageListMain({
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
-  onRetryProviderFailure?: (turnId: string | null) => void;
+  onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;

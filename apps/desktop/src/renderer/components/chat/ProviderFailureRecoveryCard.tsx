@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { AgentChatEvent } from "../../../shared/types";
 
 export type ProviderFailureRecovery = {
@@ -37,9 +38,25 @@ export function ProviderFailureRecoveryCard({
 }: {
   recovery: ProviderFailureRecovery;
   disabled: boolean;
-  onRetry?: () => void;
+  onRetry?: () => Promise<string | null>;
   onChooseModel?: () => void;
 }) {
+  const [retryPending, setRetryPending] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const retry = async () => {
+    if (!onRetry || retryPending) return;
+    setRetryPending(true);
+    setRetryError(null);
+    try {
+      setRetryError(await onRetry());
+    } catch (error) {
+      setRetryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRetryPending(false);
+    }
+  };
+
   return (
     <div className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/12 bg-amber-400/[0.045] px-3 py-2.5">
       <div className="text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/72">
@@ -48,21 +65,29 @@ export function ProviderFailureRecoveryCard({
       <div className="mt-2 flex flex-wrap gap-1.5">
         <button
           type="button"
-          disabled={disabled || !onRetry}
+          disabled={disabled || retryPending || !onRetry}
           className="rounded-md border border-amber-200/16 bg-amber-300/[0.07] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-50/80 transition-colors hover:border-amber-200/30 hover:bg-amber-300/[0.13] disabled:pointer-events-none disabled:opacity-40"
-          onClick={onRetry}
+          onClick={() => { void retry(); }}
         >
           Retry turn
         </button>
         <button
           type="button"
-          disabled={disabled || !onChooseModel}
+          disabled={disabled || retryPending || !onChooseModel}
           className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40"
-          onClick={onChooseModel}
+          onClick={() => {
+            setRetryError(null);
+            onChooseModel?.();
+          }}
         >
           Choose model
         </button>
       </div>
+      {retryError ? (
+        <div role="alert" className="mt-2 text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-red-200/75">
+          {retryError}
+        </div>
+      ) : null}
     </div>
   );
 }

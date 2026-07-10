@@ -3040,9 +3040,18 @@ export function AgentChatPane({
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
-  const [modelPickerOpenRequestKey, setModelPickerOpenRequestKey] = useState<number | undefined>();
+  const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<{
+    key: number;
+    sessionId: string | null;
+    laneId: string | null;
+  } | undefined>();
+  const modelPickerOpenRequestSessionId = lockSessionId ?? selectedSessionId;
+  const modelPickerOpenRequestKey = modelPickerOpenRequest?.sessionId === modelPickerOpenRequestSessionId
+    && modelPickerOpenRequest.laneId === laneId
+    ? modelPickerOpenRequest.key
+    : undefined;
   const handleModelPickerOpenRequestHandled = useCallback(() => {
-    setModelPickerOpenRequestKey(undefined);
+    setModelPickerOpenRequest(undefined);
   }, []);
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
@@ -6015,6 +6024,7 @@ export function AgentChatPane({
   useEffect(() => {
     setChatActionsOpen(false);
     setHandoffBusy(false);
+    setModelPickerOpenRequest(undefined);
     optimisticOutgoingMessageRef.current = null;
     setOptimisticOutgoingMessage(null);
     // The full composer bucket effect above owns draft/context hydration for
@@ -6713,14 +6723,14 @@ export function AgentChatPane({
   const resendLastUserMessage = useCallback(async (sessionId: string, failedTurnId?: string | null) => {
     if (submitInFlightRef.current) {
       rejectAuthRetry(sessionId);
-      return;
+      return "Another message is already being sent. Wait for it to finish before retrying.";
     }
     const events = selectedEventsForDisplayRef.current;
     let userEvent = failedTurnId ? findUserMessageForTurn(events, failedTurnId) : null;
     if (!failedTurnId) {
       for (let index = events.length - 1; index >= 0; index -= 1) {
         const evt = events[index]?.event;
-        if (evt?.type === "user_message" && typeof evt.text === "string" && evt.text.trim().length > 0) {
+        if (evt?.type === "user_message" && !evt.steerId && typeof evt.text === "string" && evt.text.trim().length > 0) {
           userEvent = evt;
           break;
         }
@@ -6728,7 +6738,7 @@ export function AgentChatPane({
     }
     if (!userEvent) {
       rejectAuthRetry(sessionId);
-      return;
+      return "ADE could not find the original message for this failed turn.";
     }
     const text = userEvent.text;
     const displayText = typeof userEvent.displayText === "string" ? userEvent.displayText : text;
@@ -6751,11 +6761,14 @@ export function AgentChatPane({
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
         rejectAuthRetry(sessionId);
-        return;
+        return "A turn is already active in this thread. Wait for it to finish before retrying.";
       }
       void refreshSessions().catch(() => {});
+      return null;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      return message;
     } finally {
       submitInFlightRef.current = false;
       setBusy(false);
@@ -11143,13 +11156,18 @@ export function AgentChatPane({
                       }}
                       onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
                         window.ade.agentChat.recoverCodexTurn(args)}
-                      onRetryProviderFailure={(failedTurnId) => {
-                        if (!selectedSessionId || turnActive) return;
-                        void resendLastUserMessage(selectedSessionId, failedTurnId);
+                      onRetryProviderFailure={async (failedTurnId) => {
+                        if (!selectedSessionId) return "This chat is no longer selected.";
+                        if (turnActive) return "A turn is already active in this thread. Wait for it to finish before retrying.";
+                        return resendLastUserMessage(selectedSessionId, failedTurnId);
                       }}
                       onChooseProviderFailureModel={() => {
                         if (turnActive) return;
-                        setModelPickerOpenRequestKey((key) => (key ?? 0) + 1);
+                        setModelPickerOpenRequest((request) => ({
+                          key: (request?.key ?? 0) + 1,
+                          sessionId: modelPickerOpenRequestSessionId,
+                          laneId,
+                        }));
                       }}
                       mosaic={subagentView || mainTranscriptView ? undefined : mosaicContext}
                       scrollToRowKeyRequest={subagentView || mainTranscriptView ? null : wakeJumpRequest}
