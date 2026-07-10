@@ -148,7 +148,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // Linear webhook lifecycle mutates account-level state (registers/deletes a
   // webhook against the user's Linear organization), so it stays CTO-only;
   // status/poll/cleanup reads remain open to agents.
-  automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown"],
+  // cancelScheduledCleanup can silently defeat a cleanup policy another
+  // automation scheduled, so it is operator-only like the webhook lifecycle.
+  automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],

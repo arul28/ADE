@@ -2224,9 +2224,10 @@ function migrate(db: MigrationDb) {
       foreign key(project_id) references projects(id)
     )
   `);
-  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
   // Heal databases created while the base migration lacked project_id (the
-  // table shipped nowhere, so dropping any stray rows is safe).
+  // table shipped nowhere, so dropping any stray rows is safe). Must run
+  // BEFORE the index below — it references project_id and would throw on the
+  // legacy shape.
   const scheduledCleanupColumns = db.all<{ name: string }>("pragma table_info(automation_scheduled_cleanups)");
   if (!scheduledCleanupColumns.some((column) => column.name === "project_id")) {
     db.run("drop table automation_scheduled_cleanups");
@@ -2246,8 +2247,8 @@ function migrate(db: MigrationDb) {
         foreign key(project_id) references projects(id)
       )
     `);
-    db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
   }
+  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
 
   // Phase 8+ PR groups (queue / integration).
   db.run(`

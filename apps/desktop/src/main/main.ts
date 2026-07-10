@@ -3191,7 +3191,10 @@ app.whenReady().then(async () => {
       // enabling the first Linear rule impossible).
       automationService?.setLinearIngressAvailable(() => {
         const status = linearIngressService.getStatus();
-        return Boolean(status.webhookId && status.organizationId && !status.lastError);
+        // App-connected workspaces are available before first setup: events
+        // already reach the relay, and enabling the first linear.* rule is
+        // what triggers the self-configuring poll.
+        return Boolean(status.appManaged || (status.webhookId && status.organizationId && !status.lastError));
       });
     }
 
