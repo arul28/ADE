@@ -22981,19 +22981,38 @@ describe("createAgentChatService", () => {
       const result = await service.sendMessage({
         sessionId: session.id,
         text: "Follow up when the active turn finishes",
+        displayText: "Follow up soon",
+        reasoningEffort: "high",
+        executionMode: "subagents",
+        interactionMode: "plan",
       }, { routeActiveToSteer: true });
       expect(result).toMatchObject({ queued: true, steerId: expect.any(String) });
+      // The queued chip shows the display text, not the raw prompt text.
       expect(events.some((event) =>
         event.event.type === "user_message"
-        && event.event.text === "Follow up when the active turn finishes"
+        && event.event.text === "Follow up soon"
         && event.event.deliveryState === "queued"
       )).toBe(true);
 
       finishActiveTurn();
       await activeTurn;
       await vi.waitFor(() => {
+        // The delivered prompt carries the raw text plus the applied execution
+        // and interaction mode directives.
         expect(send).toHaveBeenCalledWith(expect.stringContaining("Follow up when the active turn finishes"));
+        const deliveredPrompt = send.mock.calls
+          .map((call) => String(call[0]))
+          .find((prompt) => prompt.includes("Follow up when the active turn finishes"));
+        expect(deliveredPrompt).toContain("Use Claude subagents");
+        expect(deliveredPrompt).toContain("plan mode for this turn");
       });
+      // The delivered transcript message keeps the display text distinct from
+      // the raw prompt text.
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.deliveryState !== "queued"
+        && (event.event.displayText === "Follow up soon" || event.event.text === "Follow up soon")
+      )).toBe(true);
     });
 
     it("does not steer an empty send during an active turn", async () => {
