@@ -138,6 +138,7 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
@@ -1352,6 +1353,9 @@ declare global {
         getClaudeSessionMessages: (
           args: AgentChatClaudeSessionMessagesArgs,
         ) => Promise<AgentChatClaudeSessionMessage[]>;
+        getMainTranscript: (
+          args: AgentChatMainTranscriptArgs,
+        ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getSubagentTranscript: (
           args: AgentChatSubagentTranscriptArgs,
         ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;

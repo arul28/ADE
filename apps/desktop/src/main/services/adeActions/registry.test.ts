@@ -79,10 +79,12 @@ describe("isAllowedAdeAction", () => {
   });
 
   it("exposes subagent transcript reads through the chat runtime action surface", () => {
+    expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
     expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
@@ -317,6 +319,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
   it("exposes CTO identity session and scan wrappers for runtime-backed CTO views", () => {
     const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(chatActions).toContain("ensureCtoSession");
+    expect(chatActions).toContain("getMainTranscript");
     expect(chatActions).toContain("getSubagentTranscript");
     expect(chatActions).toContain("modelCatalog");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
@@ -919,6 +922,21 @@ describe("runtime session actions", () => {
       sessionId: "chat-1",
       subagentId: "subagent-1",
     });
+  });
+
+  it("forwards remote main transcript reads through chat actions", async () => {
+    const transcript = [{ role: "assistant", content: "main output" }];
+    const getMainTranscript = vi.fn(async () => transcript);
+    const runtime = {
+      agentChatService: { getMainTranscript },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chatService = getAdeActionDomainServices(runtime).chat as {
+      getMainTranscript: (args: { sessionId: string }) => Promise<Array<{ role: string; content: string }>>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("chat", chatService)).toContain("getMainTranscript");
+    await expect(chatService.getMainTranscript({ sessionId: "chat-1" })).resolves.toEqual(transcript);
+    expect(getMainTranscript).toHaveBeenCalledWith({ sessionId: "chat-1" });
   });
 
   it("adds getDelta from the runtime session delta service", () => {

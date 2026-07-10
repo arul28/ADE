@@ -1168,6 +1168,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         pinnedSessionIds={work.pinnedSessionIds}
         gridSessionIds={gridSessionIds}
         onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
+        onSetChatTag={(session, tag) => {
+          setSessionActionError(null);
+          window.ade.agentChat.updateSession({ sessionId: session.id, tag })
+            .then(() => {
+              invalidateSessionListCache();
+              work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+                console.error("[TerminalsPage] refresh after tag failed", { sessionId: session.id, refreshErr });
+              });
+            })
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error("[TerminalsPage] set session tag failed", { sessionId: session.id, err });
+              setSessionActionError(`Set tag failed: ${message}`);
+              window.setTimeout(() => setSessionActionError(null), 6000);
+            });
+        }}
         onRename={(session, newTitle) => {
           setSessionActionError(null);
           const renamePromise = isChatToolType(session.toolType)

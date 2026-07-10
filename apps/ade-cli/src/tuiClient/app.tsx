@@ -56,9 +56,10 @@ import {
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
-	  getContextUsage,
-	  getModelCatalog,
-	  getModelPickerFavorites,
+  getMainTranscript,
+  getContextUsage,
+  getModelCatalog,
+  getModelPickerFavorites,
   getModelPickerRecents,
   pushModelPickerRecent,
   toggleModelPickerFavorite,
@@ -2981,6 +2982,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // keyed by subagent id so a stale fetch never bleeds into a different agent. Null
   // ⇒ fall back to the locally-reconstructed transcript.
   const [realSubagentTranscript, setRealSubagentTranscript] = useState<{ id: string; status: SubagentSnapshot["status"]; envelopes: AgentChatEventEnvelope[] } | null>(null);
+  const [realMainTranscript, setRealMainTranscript] = useState<{ sessionId: string; envelopes: AgentChatEventEnvelope[] } | null>(null);
   const unavailableSubagentTranscriptKeysRef = useRef<Set<string>>(new Set());
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -3972,6 +3974,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [inspectedSubagentId, rightOpen, rightPane.kind, subagentSnapshots]);
   useEffect(() => {
     setInspectedSubagentId(null);
+    setRealMainTranscript(null);
   }, [activeSessionId]);
   const openSubagentsPane = useCallback((): boolean => {
     if (!subagentPaneCommandAvailable) return false;
@@ -4552,6 +4555,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return subagentSnapshots.find((snapshot) => snapshot.id === inspectedSubagentId) ?? null;
   }, [inspectedSubagentId, rightOpen, rightPane.kind, subagentSnapshots]);
   const displayEvents = useMemo(() => {
+    const mainTranscript = realMainTranscript;
+    if (mainTranscript && mainTranscript.sessionId === activeSession?.sessionId) {
+      return mainTranscript.envelopes;
+    }
     if (!selectedAgentSnapshot) return events;
     // Prefer the real daemon-backed child transcript when we've fetched it for
     // THIS subagent (Codex/OpenCode); otherwise reconstruct locally from the
@@ -4560,7 +4567,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return realSubagentTranscript.envelopes;
     }
     return buildSubagentTranscriptEvents({ events, activeSession, snapshot: selectedAgentSnapshot });
-  }, [activeSession, events, realSubagentTranscript, selectedAgentSnapshot]);
+  }, [activeSession, events, realMainTranscript, realSubagentTranscript, selectedAgentSnapshot]);
   const displayPendingSteers = useMemo(
     () => displayEvents === events ? pendingSteers : derivePendingSteers(displayEvents),
     [displayEvents, events, pendingSteers],
@@ -4572,6 +4579,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     ]);
   }, []);
   const inspectSubagentWithTranscriptProbe = useCallback((snapshot: SubagentSnapshot | null) => {
+    setRealMainTranscript(null);
     if (!snapshot) {
       setInspectedSubagentId(null);
       setChatScrollOffset(0);
@@ -4613,6 +4621,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setChatScrollOffset(0);
       });
   }, [addTranscriptProbeNotice, chatInfo.capability.canViewFullTranscript, setChatScrollOffset]);
+  const inspectMainTranscript = useCallback(() => {
+    const conn = connectionRef.current;
+    const sessionId = activeSessionIdRef.current;
+    const chatSession = activeSessionRef.current;
+    if (
+      !conn
+      || !sessionId
+      || chatInfoRef.current.provider !== "claude"
+      || chatSession?.sessionId !== sessionId
+      || chatSession.provider !== "claude"
+    ) {
+      setRealMainTranscript(null);
+      setInspectedSubagentId(null);
+      setChatScrollOffset(0);
+      return;
+    }
+    void getMainTranscript(conn, { sessionId })
+      .then((messages) => {
+        const snapshot: SubagentSnapshot = {
+          id: "main",
+          name: "Full session transcript (SDK)",
+          kind: "subagent",
+          status: "completed",
+          summary: "Provider-fidelity view; ADE-only events are not shown.",
+        };
+        const envelopes = messages && messages.length > 0
+          ? subagentTranscriptMessagesToEvents({ messages, snapshot, sessionId })
+          : [];
+        if (!envelopes.length) {
+          addTranscriptProbeNotice("Full session transcript unavailable.");
+          setRealMainTranscript(null);
+          return;
+        }
+        setInspectedSubagentId(null);
+        setRealSubagentTranscript(null);
+        setRealMainTranscript({ sessionId, envelopes });
+        setChatScrollOffset(0);
+      })
+      .catch((err) => {
+        addTranscriptProbeNotice(`Full session transcript unavailable. ${err instanceof Error ? err.message : String(err)}`);
+        setRealMainTranscript(null);
+      });
+  }, [addTranscriptProbeNotice, setChatScrollOffset]);
   // Fetch the real child transcript for the inspected subagent when the runtime
   // can produce one (Codex app-server threads / OpenCode child sessions). Falls
   // back silently to local reconstruction on null/empty/error.
@@ -13255,6 +13306,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // First Esc unwinds a subagent transcript back to the main chat; the
       // right pane stays focused on the main agent's info, so a second Esc
       // would close the pane normally.
+      if (realMainTranscript) {
+        setRealMainTranscript(null);
+        setChatScrollOffset(0);
+        return;
+      }
       if (
         pane === "details"
         && rightOpen
@@ -13634,9 +13690,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         // Capability gate: only runtimes with a real child transcript
         // (Codex/OpenCode) take over the main chat. Cursor/Droid keep the row
-        // selected with its inline detail shown; selecting "main" always
-        // returns to the parent chat.
+        // selected with its inline detail shown. Claude's main row opens the
+        // alternate provider-fidelity transcript; other main rows return home.
         if (selectedSnapshot && !chatInfoRef.current.capability.canViewFullTranscript) {
+          return;
+        }
+        if (
+          !selectedSnapshot
+          && rightSelectionIndex === resumeOffset
+          && chatInfoRef.current.provider === "claude"
+          && chatInfoRef.current.capability.canViewFullTranscript
+        ) {
+          inspectMainTranscript();
           return;
         }
         inspectSubagentWithTranscriptProbe(selectedSnapshot);

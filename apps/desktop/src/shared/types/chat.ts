@@ -973,6 +973,9 @@ export type AgentChatEvent =
       type: "session_meta_updated";
       title?: string;
       manuallyNamed?: boolean;
+      claudeTag?: string | null;
+      /** Signals that persisted envelope history changed and open views must refetch. */
+      historyInvalidated?: boolean;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -1237,6 +1240,8 @@ export type AgentChatSessionSummary = {
   lastActivityAt: string;
   lastOutputPreview: string | null;
   summary: string | null;
+  /** First tag mirrored from the backing Claude SDK session pointer. */
+  claudeTag?: string | null;
   awaitingInput?: boolean;
   pendingInputItemId?: string | null;
   /** Earliest armed, unpaused schedule for this chat. */
@@ -1456,6 +1461,13 @@ export type AgentChatSubagentTranscriptArgs = {
   /** Optional task id from the legacy `system:task_*` path; the SDK keys on agentId. */
   taskId?: string | null;
   laneId?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+};
+
+export type AgentChatMainTranscriptArgs = {
+  /** ADE chat session id; the service resolves the backing Claude SDK session. */
+  sessionId: string;
   limit?: number | null;
   offset?: number | null;
 };

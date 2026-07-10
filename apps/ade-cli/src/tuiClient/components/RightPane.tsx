@@ -710,11 +710,16 @@ function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number
         <Text color={brand.color} bold>{brand.glyph}</Text>
         <Text color={theme.color.t1}>{` ${endTruncate(info.modelLabel, inner - 2)}`}</Text>
       </Box>
-      {info.laneLabel ? (
+      {info.laneLabel || info.claudeTag ? (
         <Box flexDirection="row">
-          <Text color={theme.color.t4}>lane </Text>
-          <Text color={theme.color.t4} dimColor>· </Text>
-          <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
+          {info.laneLabel ? (
+            <>
+              <Text color={theme.color.t4}>lane </Text>
+              <Text color={theme.color.t4} dimColor>· </Text>
+              <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
+            </>
+          ) : null}
+          {info.claudeTag ? <Text color={theme.color.t4}>{`${info.laneLabel ? "  " : ""}tag:${endTruncate(info.claudeTag, 24)}`}</Text> : null}
         </Box>
       ) : null}
       <Box flexDirection="row" marginTop={1}>

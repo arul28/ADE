@@ -124,6 +124,21 @@ describe("RightPane chat info", () => {
     expect(frame).not.toContain("GOAL");
   });
 
+  it("renders the Claude session tag in the chat info header", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", claudeTag: "review-ready" }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+
+    expect(stripAnsi(result.lastFrame() ?? "")).toContain("tag:review-ready");
+  });
+
   it("shows the main row + a 'no subagents yet' hint when the roster is empty", () => {
     const result = render(
       <RightPane

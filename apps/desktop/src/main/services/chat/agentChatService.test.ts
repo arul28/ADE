@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
-import { getSessionInfo, query, startup } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
@@ -1252,9 +1252,21 @@ function createMockSessionService() {
       }
     }),
     upsertClaudeSessionPointer: vi.fn((pointer: any) => {
-      claudePointers.set(pointer.chatSessionId, pointer);
-      return pointer;
+      const existing = pointer.chatSessionId
+        ? claudePointers.get(pointer.chatSessionId)
+        : Array.from(claudePointers.values()).find((candidate) => candidate.sessionId === pointer.sessionId);
+      const next = {
+        ...existing,
+        ...pointer,
+        title: pointer.title !== undefined ? pointer.title : existing?.title ?? null,
+        tags: pointer.tags !== undefined ? pointer.tags : existing?.tags ?? [],
+      };
+      if (next.chatSessionId) claudePointers.set(next.chatSessionId, next);
+      return next;
     }),
+    getClaudeSessionPointer: vi.fn((sdkSessionId: string) => (
+      Array.from(claudePointers.values()).find((pointer) => pointer.sessionId === sdkSessionId) ?? null
+    )),
     getClaudeSessionPointerByChatSessionId: vi.fn((chatSessionId: string) => claudePointers.get(chatSessionId) ?? null),
     listClaudeSessionPointers: vi.fn(() => Array.from(claudePointers.values())),
   } as any;
@@ -1643,6 +1655,9 @@ beforeEach(() => {
   vi.mocked(claudeSdkResumeSessionCompat).mockReset();
   vi.mocked(query).mockReset();
   vi.mocked(startup).mockReset();
+  vi.mocked(getSessionMessages).mockReset();
+  vi.mocked(getSessionMessages).mockResolvedValue([]);
+  vi.mocked(tagSession).mockClear();
   installClaudeSdkCompatMocks();
   vi.mocked(resolveClaudeCodeExecutable).mockClear();
   vi.mocked(resolveClaudeCodeExecutable).mockReturnValue({ path: "/usr/local/bin/claude", source: "path" });
@@ -6792,6 +6807,42 @@ describe("createAgentChatService", () => {
       expect(summary!.sessionId).toBe(created.id);
       expect(summary!.provider).toBe("opencode");
     });
+
+    it("surfaces and updates the first mirrored Claude SDK tag", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-tag-session", responseText: "unused" });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: created.id,
+        text: "Create the SDK session before tagging.",
+        timeoutMs: 15_000,
+      });
+
+      await service.updateSession({ sessionId: created.id, tag: "review-ready" });
+      expect(tagSession).toHaveBeenCalledWith(expect.any(String), "review-ready", {
+        dir: fs.realpathSync(tmpRoot),
+      });
+      expect(sessionService.getClaudeSessionPointerByChatSessionId(created.id)?.tags).toEqual(["review-ready"]);
+      await expect(service.getSessionSummary(created.id)).resolves.toMatchObject({
+        claudeTag: "review-ready",
+      });
+      expect(events).toContainEqual(expect.objectContaining({
+        event: { type: "session_meta_updated", claudeTag: "review-ready" },
+      }));
+
+      await service.updateSession({ sessionId: created.id, tag: "" });
+      expect(tagSession).toHaveBeenLastCalledWith(expect.any(String), null, {
+        dir: fs.realpathSync(tmpRoot),
+      });
+      await expect(service.getSessionSummary(created.id)).resolves.toMatchObject({ claudeTag: null });
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -6861,6 +6912,41 @@ describe("createAgentChatService", () => {
       const caps = service.getSessionCapabilities({ sessionId: session.id });
       expect(caps.subagent.canList).toBe(true);
       expect(caps.subagent.canViewFullTranscript).toBe(false);
+    });
+  });
+
+  describe("Claude SessionStore reads", () => {
+    it("maps SDK messages and forwards paging plus system-message options", async () => {
+      const { service } = createService();
+      vi.mocked(getSessionMessages).mockResolvedValue([{
+        type: "assistant",
+        uuid: "wire-1",
+        session_id: "sdk-session-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg-1",
+          role: "assistant",
+          content: [{ type: "text", text: "SDK transcript text" }],
+        },
+      }] as any);
+
+      await expect(service.getClaudeSessionMessages({
+        sessionId: "sdk-session-1",
+        laneId: "lane-1",
+        limit: 25,
+        offset: 3,
+        includeSystemMessages: true,
+      })).resolves.toEqual([expect.objectContaining({
+        uuid: "wire-1",
+        sessionId: "sdk-session-1",
+        text: "SDK transcript text",
+      })]);
+      expect(getSessionMessages).toHaveBeenCalledWith("sdk-session-1", {
+        dir: fs.realpathSync(tmpRoot),
+        limit: 25,
+        offset: 3,
+        includeSystemMessages: true,
+      });
     });
   });
 
@@ -21569,6 +21655,159 @@ describe("createAgentChatService", () => {
 
       expect(resumed.id).toBe(session.id);
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
+    });
+
+    it("repairs a spliced dedicated envelope transcript before Claude resume", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-splice-repair", responseText: "unused" });
+      const initial = createService();
+      const session = await initial.service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await initial.service.dispose({ sessionId: session.id });
+
+      const persisted = readPersistedChatState(session.id);
+      writePersistedChatState(session.id, { ...persisted, sdkSessionId: "sdk-splice-repair" });
+      const transcriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      const legacyTranscriptPath = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const fragments = ["Full", " ", "SDK", " ", "answer"];
+      const splicedTranscript = `${fragments.map((text, index) => JSON.stringify({
+        sessionId: session.id,
+        timestamp: "2026-07-10T12:00:00.000Z",
+        sequence: index + 1,
+        event: {
+          type: "text",
+          text,
+          messageId: `wire-${index + 1}`,
+          turnId: "turn-spliced",
+        },
+      })).join("\n")}\n`;
+      fs.writeFileSync(transcriptPath, splicedTranscript, "utf8");
+      fs.writeFileSync(legacyTranscriptPath, splicedTranscript, "utf8");
+      vi.mocked(getSessionMessages).mockResolvedValue([{
+        type: "assistant",
+        uuid: "wire-sdk",
+        session_id: "sdk-splice-repair",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg-stable-sdk",
+          role: "assistant",
+          content: [{ type: "text", text: "Full SDK answer" }],
+        },
+      }] as any);
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => String(raw)
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)));
+      installClaudeResponseFixture({ sdkSessionId: "sdk-splice-repair", responseText: "unused" });
+
+      const repairEvents: AgentChatEventEnvelope[] = [];
+      const resumed = createService({
+        onEvent: (event: AgentChatEventEnvelope) => repairEvents.push(event),
+      });
+      await resumed.service.resumeSession({ sessionId: session.id });
+      await resumed.service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue after resume.",
+        timeoutMs: 15_000,
+      });
+      await vi.waitFor(() => {
+        expect(getSessionMessages).toHaveBeenCalledWith("sdk-splice-repair", { dir: fs.realpathSync(tmpRoot) });
+      });
+      await vi.waitFor(() => {
+        const textEvents = resumed.service.getChatEventHistory(session.id).events
+          .filter((entry) => entry.event.type === "text");
+        expect(textEvents.find((entry) => entry.event.type === "text" && entry.event.messageId === "msg-stable-sdk")?.event).toMatchObject({
+          type: "text",
+          text: "Full SDK answer",
+          messageId: "msg-stable-sdk",
+        });
+      });
+      expect(fs.existsSync(`${transcriptPath}.splice.bak`)).toBe(true);
+      expect(resumed.logger.info).toHaveBeenCalledWith(
+        "agent_chat.envelope_splice_repaired",
+        expect.objectContaining({ sessionId: session.id, repairedTurns: 1 }),
+      );
+      expect(repairEvents).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: { type: "session_meta_updated", historyInvalidated: true },
+      }));
+    });
+
+    it("resolves an ADE chat id to persisted and pointer-backed Claude main transcripts", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-main-transcript", responseText: "unused" });
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.dispose({ sessionId: session.id });
+
+      const persisted = readPersistedChatState(session.id);
+      writePersistedChatState(session.id, { ...persisted, sdkSessionId: "sdk-persisted-main" });
+      vi.mocked(getSessionMessages).mockResolvedValue([{
+        type: "assistant",
+        uuid: "assistant-persisted",
+        session_id: "sdk-persisted-main",
+        parent_tool_use_id: null,
+        message: { id: "msg-persisted", role: "assistant", content: [{ type: "text", text: "Persisted transcript" }] },
+      }] as any);
+
+      expect(await service.getMainTranscript({ sessionId: session.id })).toEqual([
+        expect.objectContaining({ uuid: "assistant-persisted", text: "Persisted transcript" }),
+      ]);
+      expect(getSessionMessages).toHaveBeenLastCalledWith("sdk-persisted-main", expect.objectContaining({
+        dir: fs.realpathSync(tmpRoot),
+        includeSystemMessages: true,
+      }));
+
+      const pointerState = { ...persisted };
+      delete pointerState.sdkSessionId;
+      writePersistedChatState(session.id, pointerState);
+      sessionService.upsertClaudeSessionPointer({
+        sessionId: "sdk-pointer-main",
+        laneId: "lane-1",
+        laneName: "Primary",
+        chatSessionId: session.id,
+        title: null,
+        tags: [],
+        createdAt: "2026-07-10T12:00:00.000Z",
+        updatedAt: "2026-07-10T12:00:00.000Z",
+      });
+      vi.mocked(getSessionMessages).mockResolvedValue([{
+        type: "system",
+        uuid: "system-pointer",
+        session_id: "sdk-pointer-main",
+        parent_tool_use_id: null,
+        message: { role: "system", content: "Pointer transcript" },
+      }] as any);
+
+      expect(await service.getMainTranscript({ sessionId: session.id })).toEqual([
+        expect.objectContaining({ uuid: "system-pointer", type: "system", text: "Pointer transcript" }),
+      ]);
+      expect(getSessionMessages).toHaveBeenLastCalledWith("sdk-pointer-main", expect.objectContaining({
+        includeSystemMessages: true,
+      }));
+    });
+
+    it("gates main transcripts to Claude and byte-bounds the response", async () => {
+      const { service } = createService();
+      const codex = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      expect(await service.getMainTranscript({ sessionId: codex.id })).toBeNull();
+      expect(getSessionMessages).not.toHaveBeenCalled();
+
+      installClaudeResponseFixture({ sdkSessionId: "sdk-bounded-main", responseText: "unused" });
+      const claude = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.dispose({ sessionId: claude.id });
+      const persisted = readPersistedChatState(claude.id);
+      writePersistedChatState(claude.id, { ...persisted, sdkSessionId: "sdk-bounded-main" });
+      const huge = "x".repeat(2_200_000);
+      vi.mocked(getSessionMessages).mockResolvedValue([
+        { type: "assistant", uuid: "old-huge", session_id: "sdk-bounded-main", parent_tool_use_id: null, message: { role: "assistant", content: huge } },
+        { type: "assistant", uuid: "new-huge", session_id: "sdk-bounded-main", parent_tool_use_id: null, message: { role: "assistant", content: huge } },
+      ] as any);
+
+      const result = await service.getMainTranscript({ sessionId: claude.id });
+      expect(result).toHaveLength(1);
+      expect(result?.[0]?.uuid).toBe("new-huge");
     });
 
     it("keeps requested Codex policy and reasoning effort across resume", async () => {

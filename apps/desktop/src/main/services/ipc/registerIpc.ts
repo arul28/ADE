@@ -259,6 +259,7 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatClaudeOutputStyle,
@@ -979,6 +980,7 @@ function projectChatOntoSession(
   const base: TerminalSessionSummary = {
     ...session,
     nextWakeAt: chat.nextWakeAt,
+    ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
     ...(chat.orchestrationRunId
       ? {
           orchestrationRunId: chat.orchestrationRunId,
@@ -6337,6 +6339,14 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeSessionMessages(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetMainTranscript, async (_event, arg: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    if (!arg || typeof arg.sessionId !== "string" || !arg.sessionId.trim().length) {
+      throw new Error("sessionId is required.");
+    }
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getMainTranscript(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetSubagentTranscript, async (_event, arg: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {

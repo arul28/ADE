@@ -193,6 +193,22 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.nextWakeAt).toBe("2026-07-09T12:12:00.000Z");
   });
 
+  it("carries the Claude session tag into the chat info header", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ claudeTag: "review-ready" }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-8",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.claudeTag).toBe("review-ready");
+  });
+
   it("derives todos, plan explanation, and the lane PR rollup", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [

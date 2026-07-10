@@ -1829,6 +1829,40 @@ describe("registerIpc sync bridge", () => {
     expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", { maxEvents: 25 });
   });
 
+  it("validates and forwards main transcript requests", async () => {
+    const transcript = [{ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }];
+    const getMainTranscript = vi.fn(async () => transcript);
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+        agentChatService: { getMainTranscript },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.agentChatGetMainTranscript)?.(
+        eventForSender(),
+        { sessionId: "   " },
+      ),
+    ).rejects.toThrow("sessionId is required");
+    expect(getMainTranscript).not.toHaveBeenCalled();
+
+    const args = { sessionId: " chat-1 ", limit: 100, offset: 5 };
+    await expect(
+      ipcHandlers.get(IPC.agentChatGetMainTranscript)?.(eventForSender(), args),
+    ).resolves.toBe(transcript);
+    expect(getMainTranscript).toHaveBeenCalledWith(args);
+  });
+
   it("disposes a live terminal runtime before deleting the session", async () => {
     const terminalSession = {
       id: "terminal-1",

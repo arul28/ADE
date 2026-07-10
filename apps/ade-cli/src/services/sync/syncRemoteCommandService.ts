@@ -24,6 +24,7 @@ import type {
   AgentChatHandoffArgs,
   AgentChatLaunchArgs,
   AgentChatListArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatModelCatalogArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatModelCatalogMode,
@@ -2077,6 +2078,17 @@ function parseAgentChatSubagentTranscriptArgs(value: Record<string, unknown>): A
   return parsed;
 }
 
+function parseAgentChatMainTranscriptArgs(value: Record<string, unknown>): AgentChatMainTranscriptArgs {
+  const parsed: AgentChatMainTranscriptArgs = {
+    sessionId: requireString(value.sessionId, "chat.getMainTranscript requires sessionId."),
+  };
+  const limit = asOptionalNumber(value.limit);
+  const offset = asOptionalNumber(value.offset);
+  if (limit !== undefined) parsed.limit = limit;
+  if (offset !== undefined) parsed.offset = offset;
+  return parsed;
+}
+
 function parseAgentChatSubagentListArgs(value: Record<string, unknown>): AgentChatSubagentListArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.listSubagents requires sessionId."),
@@ -3618,6 +3630,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSubagentTranscript(
       parseAgentChatSubagentTranscriptArgs(payload),
+    ));
+  register("chat.getMainTranscript", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getMainTranscript(
+      parseAgentChatMainTranscriptArgs(payload),
     ));
   register("chat.listSubagents", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").listSubagents(

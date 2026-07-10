@@ -52,6 +52,7 @@ import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
+import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -223,6 +224,7 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatMainTranscriptArgs,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
@@ -5801,6 +5803,7 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS = 4_000_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+  const envelopeSpliceRepairAttemptedSessionIds = new Set<string>();
 
   const safeJsonChars = (value: unknown): number => {
     try {
@@ -14395,7 +14398,7 @@ export function createAgentChatService(args: {
       if (runtime.interrupted) {
         throw new Error("Claude turn interrupted during warmup.");
       }
-      let sessionQuery = ensureClaudeQuery(managed, runtime);
+      let sessionQuery = await ensureClaudeQuery(managed, runtime);
 
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
@@ -14414,7 +14417,7 @@ export function createAgentChatService(args: {
             error: String(permErr),
           });
           resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
-          sessionQuery = ensureClaudeQuery(managed, runtime);
+          sessionQuery = await ensureClaudeQuery(managed, runtime);
           sessionControl = getClaudeQueryControl(sessionQuery);
           if (typeof sessionControl.setPermissionMode === "function") {
             await sessionControl.setPermissionMode(turnPermissionMode);
@@ -22051,7 +22054,75 @@ export function createAgentChatService(args: {
     }
   };
 
-  const ensureClaudeQuery = (managed: ManagedChatSession, runtime: ClaudeRuntime): ClaudeQuery => {
+  const repairClaudeEnvelopeSplicesBeforeResume = async (
+    managed: ManagedChatSession,
+    sdkSessionId: string,
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    if (envelopeSpliceRepairAttemptedSessionIds.has(sessionId)) return;
+    envelopeSpliceRepairAttemptedSessionIds.add(sessionId);
+
+    let sdkMessages: ClaudeSdkSessionMessage[];
+    try {
+      sdkMessages = await getClaudeSdkSessionMessages(sdkSessionId, {
+        dir: managed.laneWorktreePath,
+      });
+    } catch (error) {
+      logger.debug("agent_chat.envelope_splice_repair_skipped", {
+        sessionId,
+        sdkSessionId,
+        reason: "sdk_messages_unavailable",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const transcriptPaths = [...new Set([
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+      managed.transcriptPath,
+    ].filter((candidate) => candidate.trim().length > 0))];
+    let repairedTurns = 0;
+    let filesChanged = 0;
+    for (const transcriptPath of transcriptPaths) {
+      flushQueuedTranscriptWrite(transcriptPath);
+      const result = repairSplicedEnvelopeFileSync(transcriptPath, sdkMessages, {
+        onSkip: (reason, detail) => {
+          logger.debug("agent_chat.envelope_splice_repair_skipped", {
+            sessionId,
+            sdkSessionId,
+            transcriptPath,
+            reason,
+            ...(reason === "oversize" && typeof detail === "number" ? { fileBytes: detail } : {}),
+          });
+        },
+      });
+      if (result.changed) {
+        filesChanged += 1;
+        // The dedicated and legacy files mirror the same turns. Report the
+        // logical repaired-turn count, not the number of repaired copies.
+        repairedTurns = Math.max(repairedTurns, result.repairedTurns);
+      }
+    }
+
+    if (!filesChanged) {
+      logger.debug("agent_chat.envelope_splice_repair_not_needed", { sessionId, sdkSessionId });
+      return;
+    }
+    eventHistoryBySession.delete(sessionId);
+    transcriptHistoryCacheBySession.delete(sessionId);
+    logger.info("agent_chat.envelope_splice_repaired", {
+      sessionId,
+      sdkSessionId,
+      repairedTurns,
+      filesChanged,
+    });
+    emitTransientChatEnvelope(sessionId, {
+      type: "session_meta_updated",
+      historyInvalidated: true,
+    });
+  };
+
+  const ensureClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     if (runtime.query && runtime.inputPump) return runtime.query;
 
     const pump = new ClaudeInputPump();
@@ -22092,6 +22163,7 @@ export function createAgentChatService(args: {
           at: "resume",
         });
       }
+      await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
     }
 
     let sessionQuery: ClaudeQuery;
@@ -22349,6 +22421,7 @@ export function createAgentChatService(args: {
               at: "prewarm",
             });
           }
+          await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
         }
 
         if (runtime.warmupCancelled) {
@@ -28662,6 +28735,9 @@ export function createAgentChatService(args: {
       : hasPersistedCodexServiceTier
         ? persisted?.codexServiceTier ?? null
         : undefined;
+    const claudeTag = provider === "claude"
+      ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
+      : undefined;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -28743,6 +28819,7 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
+      ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt: (() => {
         const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
         return next == null ? null : new Date(next).toISOString();
@@ -30821,6 +30898,10 @@ export function createAgentChatService(args: {
       mirrorClaudeSessionPointer(managed, managed.runtime.sdkSessionId, {
         tags: normalizedTag && normalizedTag.length ? [normalizedTag] : [],
       });
+      emitTransientChatEnvelope(sessionId, {
+        type: "session_meta_updated",
+        claudeTag: normalizedTag && normalizedTag.length ? normalizedTag : null,
+      });
     }
     // Allow resetting manuallyNamed independently when no title change is provided
     if (manuallyNamed !== undefined && title === undefined) {
@@ -31158,6 +31239,21 @@ export function createAgentChatService(args: {
     };
   };
 
+  const mapClaudeSdkSessionMessage = (
+    message: ClaudeSdkSessionMessage,
+  ): AgentChatClaudeSessionMessage => {
+    const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+    const text = extractClaudeSessionMessageText(message.message);
+    return {
+      type: message.type,
+      uuid: message.uuid,
+      sessionId: message.session_id,
+      parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
+      message: message.message,
+      ...(text ? { text } : {}),
+    };
+  };
+
   const getClaudeSessionMessages = async ({
     sessionId,
     laneId,
@@ -31181,18 +31277,7 @@ export function createAgentChatService(args: {
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
       ...(typeof includeSystemMessages === "boolean" ? { includeSystemMessages } : {}),
     });
-    return messages.map((message: ClaudeSdkSessionMessage) => {
-      const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
-      const text = extractClaudeSessionMessageText(message.message);
-      return {
-        type: message.type,
-        uuid: message.uuid,
-        sessionId: message.session_id,
-        parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
-        message: message.message,
-        ...(text ? { text } : {}),
-      };
-    });
+    return messages.map(mapClaudeSdkSessionMessage);
   };
 
   /**
@@ -31488,6 +31573,48 @@ export function createAgentChatService(args: {
     messages: AgentChatSubagentTranscriptMessage[],
   ): AgentChatSubagentTranscriptMessage[] =>
     keepNewestWithinCharBudget(messages, SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS, safeJsonChars);
+
+  const getMainTranscript = async ({
+    sessionId,
+    limit,
+    offset,
+  }: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+
+    const managed = managedSessions.get(normalizedSessionId) ?? null;
+    const persisted = readPersistedState(normalizedSessionId);
+    const provider = managed?.session.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
+    if (provider !== "claude") return null;
+
+    const pointer = getClaudeSessionPointerForChat(normalizedSessionId);
+    const claudeSessionId = (
+      (managed?.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null)
+      ?? persisted?.sdkSessionId
+      ?? pointer?.sessionId
+      ?? ""
+    ).trim();
+    if (!claudeSessionId) return null;
+
+    const normalizedLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.min(Math.trunc(limit), 500)
+      : undefined;
+    const normalizedOffset = typeof offset === "number" && Number.isFinite(offset) && offset > 0
+      ? Math.trunc(offset)
+      : undefined;
+    const laneFallback = managed?.laneWorktreePath
+      ? { dir: managed.laneWorktreePath }
+      : await resolveClaudeSessionLaneFallback(row.laneId);
+    const messages = await getClaudeSdkSessionMessages(claudeSessionId, {
+      ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
+      ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+      ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+      includeSystemMessages: true,
+    });
+    return boundSubagentTranscriptResponse(messages.map(mapClaudeSdkSessionMessage));
+  };
 
   function mergeSubagentTranscriptMessages(
     left: AgentChatSubagentTranscriptMessage[],
@@ -31945,7 +32072,7 @@ export function createAgentChatService(args: {
     if (runtime.warmupDone) {
       await runtime.warmupDone.catch(() => undefined);
     }
-      const sessionQuery = ensureClaudeQuery(managed, runtime);
+      const sessionQuery = await ensureClaudeQuery(managed, runtime);
       return sessionQuery;
     };
 
@@ -33024,6 +33151,7 @@ export function createAgentChatService(args: {
     listClaudeSessions,
     getClaudeSessionInfo,
     getClaudeSessionMessages,
+    getMainTranscript,
     getSubagentTranscript,
     killDroidWorker,
     getContextUsage,

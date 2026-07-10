@@ -1266,6 +1266,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         (session.toolType ?? "").toLowerCase().includes(needle) ||
         (session.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
         (session.summary ?? "").toLowerCase().includes(needle) ||
+        (session.claudeTag ?? "").toLowerCase().includes(needle) ||
         (session.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });

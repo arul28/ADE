@@ -365,6 +365,17 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {session.claudeTag?.trim() ? (
+                <span
+                  className={cn(
+                    "inline-flex max-w-[96px] shrink-0 truncate rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-mono text-fg/50",
+                    compact ? "text-[8px]" : "text-[9px]",
+                  )}
+                  title={session.claudeTag.trim()}
+                >
+                  {session.claudeTag.trim()}
+                </span>
+              ) : null}
               {attentionBadge ? <AttentionCapsule badge={attentionBadge} compact={compact} /> : null}
               <div className="flex shrink-0 items-center gap-1.5">
                 {importedFrom ? (

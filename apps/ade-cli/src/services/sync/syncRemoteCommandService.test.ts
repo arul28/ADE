@@ -742,6 +742,26 @@ describe("createSyncRemoteCommandService", () => {
     ]);
   });
 
+  it("routes main transcript fetches to the chat service", async () => {
+    const transcript = [
+      { type: "assistant", uuid: "msg-1", sessionId: "sdk-1", parentToolUseId: null, message: {}, text: "main" },
+    ];
+    const getMainTranscript = vi.fn().mockResolvedValue(transcript);
+    const { service } = createService({ agentChatService: { getMainTranscript } });
+
+    expect(service.getDescriptor("chat.getMainTranscript")).toEqual({
+      action: "chat.getMainTranscript",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.getMainTranscript", {
+      sessionId: "chat-1",
+      limit: 50,
+      offset: 2,
+    }))).resolves.toEqual(transcript);
+    expect(getMainTranscript).toHaveBeenCalledWith({ sessionId: "chat-1", limit: 50, offset: 2 });
+  });
+
   it("routes subagent roster fetches to the chat service", async () => {
     const listSubagents = vi.fn().mockReturnValue([
       { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },

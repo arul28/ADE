@@ -3158,6 +3158,7 @@ export function AgentChatPane({
     status: "running" | "completed" | "failed" | "stopped";
     background: boolean;
   } | null>(null);
+  const [mainTranscriptView, setMainTranscriptView] = useState(false);
   const [rewindConfirmDialog, setRewindConfirmDialog] = useState<RewindFilesConfirmDialogState | null>(null);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
   const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
@@ -3781,6 +3782,9 @@ export function AgentChatPane({
   const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
   const [subagentMetadata, setSubagentMetadata] = useState<AgentChatSubagentMetadata | null>(null);
+  const [mainTranscript, setMainTranscript] = useState<AgentChatSubagentTranscriptMessage[] | null>(null);
+  const [mainTranscriptLoading, setMainTranscriptLoading] = useState(false);
+  const [mainTranscriptUnsupported, setMainTranscriptUnsupported] = useState(false);
 
   // Drill-in (subagent takeover) view-model. Computed here, before any early
   // return, so the useMemo below is an unconditional hook (react-hooks rules).
@@ -3825,6 +3829,19 @@ export function AgentChatPane({
     subagentTranscriptUnsupported,
     subagentView,
   ]);
+
+  const mainTranscriptEventsForDisplay = useMemo(() => {
+    if (!mainTranscriptView) return EMPTY_CHAT_EVENTS;
+    return buildSubagentEventHistory({
+      sessionId: selectedSessionId,
+      subagentId: selectedSessionId ?? "main",
+      subagentName: "Full session transcript",
+      prompt: null,
+      messages: mainTranscript,
+      loading: mainTranscriptLoading,
+      unsupported: mainTranscriptUnsupported,
+    });
+  }, [mainTranscript, mainTranscriptLoading, mainTranscriptUnsupported, mainTranscriptView, selectedSessionId]);
 
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
@@ -3886,6 +3903,49 @@ export function AgentChatPane({
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
 
   useEffect(() => {
+    if (!mainTranscriptView || !selectedSessionId) {
+      setMainTranscript(null);
+      setMainTranscriptLoading(false);
+      setMainTranscriptUnsupported(false);
+      return;
+    }
+    const fetchTranscript = window.ade?.agentChat?.getMainTranscript;
+    if (typeof fetchTranscript !== "function") {
+      setMainTranscript(null);
+      setMainTranscriptUnsupported(true);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        setMainTranscriptLoading(true);
+        const result = await fetchTranscript({ sessionId: selectedSessionId });
+        if (cancelled) return;
+        setMainTranscriptUnsupported(result === null);
+        setMainTranscript(result);
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error("agentChat.getMainTranscript failed", error);
+        if (!cancelled) setMainTranscript([]);
+      } finally {
+        if (!cancelled) setMainTranscriptLoading(false);
+      }
+    };
+    void tick();
+    const intervalId = selectedSession?.status === "active"
+      ? window.setInterval(() => { void tick(); }, 1500)
+      : null;
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
+  }, [mainTranscriptView, selectedSession?.status, selectedSessionId]);
+
+  useEffect(() => {
+    setMainTranscriptView(false);
+  }, [selectedSessionId]);
+
+  useEffect(() => {
     if (subagentView && !chatActionsOpen) {
       setSubagentView(null);
     }
@@ -3918,6 +3978,7 @@ export function AgentChatPane({
         status: snapshot.status,
         background: snapshot.background ?? false,
       });
+      setMainTranscriptView(false);
     };
     window.addEventListener("ade:chat:open-info", handler);
     return () => window.removeEventListener("ade:chat:open-info", handler);
@@ -4716,8 +4777,11 @@ export function AgentChatPane({
         tone: "muted",
       });
     }
+    if (selectedSession?.claudeTag?.trim()) {
+      chips.push({ label: selectedSession.claudeTag.trim(), tone: "muted" });
+    }
     return chips;
-  }, [resolvedChips, selectedSessionImportedProvider]);
+  }, [resolvedChips, selectedSession?.claudeTag, selectedSessionImportedProvider]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -6113,8 +6177,12 @@ export function AgentChatPane({
       // chat event since it doesn't represent transcript content.
       if (envelope.event.type === "session_meta_updated") {
         const meta = envelope.event;
+        if (meta.historyInvalidated === true && envelope.sessionId === selectedSessionIdRef.current) {
+          void loadHistory(envelope.sessionId, { force: true });
+        }
         const summaryPatch: Partial<AgentChatSessionSummary> = {};
         if (typeof meta.title === "string" && meta.title.length > 0) summaryPatch.title = meta.title;
+        if (meta.claudeTag !== undefined) summaryPatch.claudeTag = meta.claudeTag;
         if (meta.permissionMode !== undefined) summaryPatch.permissionMode = meta.permissionMode;
         if (meta.interactionMode !== undefined) summaryPatch.interactionMode = meta.interactionMode;
         if (meta.claudePermissionMode !== undefined) summaryPatch.claudePermissionMode = meta.claudePermissionMode;
@@ -6313,7 +6381,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -9324,7 +9392,9 @@ export function AgentChatPane({
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
+  const canViewMainTranscript = selectedSession?.provider === "claude"
+    && selectedSubagentCapability.canViewFullTranscript;
+  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 || canViewMainTranscript ? (
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
@@ -9350,6 +9420,7 @@ export function AgentChatPane({
       variant="pane"
       className="h-full"
       onSelectSubagent={(selection) => {
+        setMainTranscriptView(false);
         setSubagentView({
           taskId: selection.taskId,
           agentId: selection.agentId,
@@ -9359,6 +9430,10 @@ export function AgentChatPane({
         });
       }}
       onClearSelectedSubagent={() => setSubagentView(null)}
+      onViewMainTranscript={canViewMainTranscript ? () => {
+        setSubagentView(null);
+        setMainTranscriptView(true);
+      } : undefined}
       probeSubagentTranscript={probeSubagentTranscript}
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
@@ -10129,14 +10204,16 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
-            inputLockMessage={subagentView
-              ? `Viewing ${subagentMetadata?.label
+            inputLockMessage={mainTranscriptView
+              ? "Viewing full session transcript"
+              : subagentView
+                ? `Viewing ${subagentMetadata?.label
                 ?? subagentMetadata?.agentNickname
                 ?? subagentView.agentType
                 ?? subagentViewSnapshot?.description
                 ?? subagentView.agentId
                 ?? subagentView.taskId}`
-              : null}
+                : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
@@ -10928,16 +11005,37 @@ export function AgentChatPane({
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
                     ) : null}
+                    {mainTranscriptView ? (
+                      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 font-sans">
+                        <div className="min-w-0">
+                          <div className="truncate text-[11px] font-medium text-fg/80">Full session transcript (SDK)</div>
+                          <div className="truncate text-[10px] text-fg/40">Provider-fidelity view — ADE events (approvals, schedules, notices) are not shown.</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setMainTranscriptView(false)}
+                          className="shrink-0 rounded-sm border border-white/[0.08] px-2 py-1 text-[10px] text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80"
+                        >
+                          Return to chat
+                        </button>
+                      </div>
+                    ) : null}
                     {/* Codex chat goal is rendered in the Agents tab via
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
                     <AgentChatMessageList
-                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
-                      events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
-                      showStreamingIndicator={subagentView
-                        ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
-                        : turnActive && selectedSession?.status !== "ended"}
+                      key={mainTranscriptView
+                        ? `main-transcript-${selectedSessionId}`
+                        : subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
+                      events={mainTranscriptView
+                        ? mainTranscriptEventsForDisplay
+                        : subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                      showStreamingIndicator={mainTranscriptView
+                        ? mainTranscriptLoading || selectedSession?.status === "active"
+                        : subagentView
+                          ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
+                          : turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
@@ -10945,15 +11043,17 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       hasOlderHistory={Boolean(
                         !subagentView
+                        && !mainTranscriptView
                         && selectedSessionId
                         && (olderHistoryCursorBySession[selectedSessionId] ?? 0) > 0,
                       )}
                       loadingOlderHistory={Boolean(
                         !subagentView
+                        && !mainTranscriptView
                         && selectedSessionId
                         && olderHistoryLoadingBySession[selectedSessionId],
                       )}
-                      onLoadOlderHistory={!subagentView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
+                      onLoadOlderHistory={!subagentView && !mainTranscriptView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}
@@ -10969,8 +11069,8 @@ export function AgentChatPane({
                       }}
                       onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
                         window.ade.agentChat.recoverCodexTurn(args)}
-                      mosaic={subagentView ? undefined : mosaicContext}
-                      scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                      mosaic={subagentView || mainTranscriptView ? undefined : mosaicContext}
+                      scrollToRowKeyRequest={subagentView || mainTranscriptView ? null : wakeJumpRequest}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">

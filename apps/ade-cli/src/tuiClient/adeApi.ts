@@ -21,6 +21,7 @@ import type {
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
+  AgentChatMainTranscriptArgs,
   AgentChatEventHistoryPage,
   AgentChatFileRef,
   AgentChatInteractionMode,
@@ -696,6 +697,21 @@ export async function getSubagentTranscript(
       agentId: args.agentId,
       ...(args.taskId != null ? { taskId: args.taskId } : {}),
       ...(args.laneId != null ? { laneId: args.laneId } : {}),
+      ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+      ...(typeof args.offset === "number" ? { offset: args.offset } : {}),
+    },
+  );
+}
+
+export async function getMainTranscript(
+  connection: AdeCodeConnection,
+  args: AgentChatMainTranscriptArgs,
+): Promise<AgentChatSubagentTranscriptMessage[] | null> {
+  return await connection.action<AgentChatSubagentTranscriptMessage[] | null>(
+    "chat",
+    "getMainTranscript",
+    {
+      sessionId: args.sessionId,
       ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
       ...(typeof args.offset === "number" ? { offset: args.offset } : {}),
     },

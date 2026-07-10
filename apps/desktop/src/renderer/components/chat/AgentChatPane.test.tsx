@@ -1307,6 +1307,73 @@ describe("AgentChatPane companion drawers", () => {
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
   });
 
+  it("swaps the main chat into the expanded Claude SDK transcript view", async () => {
+    const session = buildSession("session-claude-main", {
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      status: "idle",
+      claudeTag: "review-ready",
+    });
+    installAdeMocks({ sessions: [session], includeClaudeModel: true });
+    const getMainTranscript = vi.fn().mockResolvedValue([{
+      type: "assistant",
+      uuid: "sdk-message-1",
+      sessionId: "sdk-session-1",
+      parentToolUseId: null,
+      message: {
+        id: "msg-stable-1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Provider fidelity answer" },
+          { type: "tool_use", id: "toolu-1", name: "Read", input: { file_path: "src/app.tsx" } },
+        ],
+      },
+    }]);
+    window.ade.agentChat.getMainTranscript = getMainTranscript as any;
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View full session transcript" }));
+
+    expect(await screen.findByText("Full session transcript (SDK)")).toBeTruthy();
+    expect(screen.getByText("Provider-fidelity view — ADE events (approvals, schedules, notices) are not shown.")).toBeTruthy();
+    await waitFor(() => {
+      expect(getMainTranscript).toHaveBeenCalledWith({ sessionId: session.sessionId });
+    });
+    expect(await screen.findByText("Provider fidelity answer")).toBeTruthy();
+    expect(screen.getByText("review-ready")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Return to chat" })).toBeTruthy();
+  });
+
+  it("refetches selected envelope history after a repair invalidation signal", async () => {
+    const session = buildSession("session-repaired", { status: "idle" });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    renderPane(session);
+
+    await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
+    const callsBeforeInvalidation = getEventHistory.mock.calls.length;
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T12:00:00.000Z",
+        event: { type: "session_meta_updated", historyInvalidated: true },
+      });
+    });
+
+    await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(callsBeforeInvalidation));
+  });
+
   it("persists split resize from the real divider on a working panel", async () => {
     renderDrawerPane();
 

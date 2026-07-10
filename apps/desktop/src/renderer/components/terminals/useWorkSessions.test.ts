@@ -1414,6 +1414,41 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.endedFiltered.map((s) => s.id)).toEqual(["session-ended"]);
   });
 
+  it("includes Claude session tags in the Work sidebar search", async () => {
+    const taggedSession = makeSession("session-tagged", "lane-1", {
+      title: "Unrelated title",
+      claudeTag: "customer-ready",
+    });
+    const untaggedSession = makeSession("session-untagged", "lane-1", {
+      title: "Another title",
+    });
+    listSessionsCachedMock.mockResolvedValue([taggedSession, untaggedSession]);
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: {
+        "/fake/project": {
+          openItemIds: [],
+          activeItemId: null,
+          selectedItemId: null,
+          draftKind: "chat",
+          laneFilter: "all",
+          statusFilter: "all",
+          search: "customer-ready",
+          sessionListOrganization: "by-lane",
+          workCollapsedLaneIds: [],
+          workCollapsedTabGroupIds: [],
+          workFocusSessionsHidden: false,
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.filtered.map((session) => session.id)).toEqual(["session-tagged"]);
+    });
+  });
+
   it("reapplies the same stale-session URL filters after navigating to a valid session and back", async () => {
     const session = {
       id: "session-2",

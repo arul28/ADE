@@ -1006,6 +1006,7 @@ export type SyncRemoteCommandAction =
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
   | "chat.getSubagentTranscript"
+  | "chat.getMainTranscript"
   | "chat.create"
   | "chat.send"
   | "chat.interrupt"

@@ -834,6 +834,7 @@ export function ChatSubagentsPanel({
   backgroundItems = [],
   schedulesPaused = false,
   onToggleSchedulesPaused,
+  onViewMainTranscript,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -866,6 +867,8 @@ export function ChatSubagentsPanel({
   schedulesPaused?: boolean;
   /** Pause or resume all durable schedules for this chat. */
   onToggleSchedulesPaused?: () => void;
+  /** Opens the provider-fidelity transcript for the parent Claude session. */
+  onViewMainTranscript?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1505,6 +1508,18 @@ export function ChatSubagentsPanel({
         <div className="px-4 py-6 text-[12px] leading-5 text-fg/40">
           No agent activity for this chat.
           <span className="block pt-0.5 text-fg/25">Single-agent mode.</span>
+        </div>
+      ) : null}
+
+      {onViewMainTranscript ? (
+        <div className="mt-auto border-t border-white/[0.04] px-3 py-2">
+          <button
+            type="button"
+            onClick={onViewMainTranscript}
+            className="text-[10.5px] text-fg/40 transition-colors hover:text-fg/70"
+          >
+            View full session transcript
+          </button>
         </div>
       ) : null}
 
