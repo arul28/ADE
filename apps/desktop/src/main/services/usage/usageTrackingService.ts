@@ -14,9 +14,11 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
   AdeUsageDailyPoint,
+  AdeUsageEstimationKind,
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
+  AdeUsageScope,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
   UsageProvider,
@@ -30,7 +32,7 @@ import type {
   UsageProviderMessage,
   UsageSnapshot,
 } from "../../../shared/types";
-import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset } from "../../../shared/types";
+import { ADE_USAGE_RANGE_PRESETS, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
   decodeOpenCodeRegistryId,
@@ -75,11 +77,13 @@ import {
   scanGeminiLogs,
   scanOpenClawLogs,
   scanOpenCodeLogs,
+  sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
 import {
   collectAdeDatabaseUsageStats,
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
+import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -451,9 +455,12 @@ function parseCodexDailyUsage7d(data: Record<string, unknown>, nowMs = Date.now(
       : null;
   if (!bucketsValue?.length) return null;
   const buckets = new Array<number>(7).fill(0);
-  const todayStart = new Date(nowMs);
-  todayStart.setHours(0, 0, 0, 0);
-  const oldestStart = todayStart.getTime() - 6 * 86_400_000;
+  const today = new Date(nowMs);
+  const bucketByDay = new Map<string, number>();
+  for (let index = 0; index < 7; index += 1) {
+    const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index);
+    bucketByDay.set(localDayKey(day), index);
+  }
   for (const rawBucket of bucketsValue) {
     const bucket = isRecord(rawBucket) ? rawBucket : null;
     if (!bucket) continue;
@@ -470,9 +477,8 @@ function parseCodexDailyUsage7d(data: Record<string, unknown>, nowMs = Date.now(
     if (!dateText || !Number.isFinite(tokens) || tokens <= 0) continue;
     const date = new Date(dateText);
     if (!Number.isFinite(date.getTime())) continue;
-    date.setHours(0, 0, 0, 0);
-    const offset = Math.floor((date.getTime() - oldestStart) / 86_400_000);
-    if (offset < 0 || offset > 6) continue;
+    const offset = bucketByDay.get(localDayKey(date));
+    if (offset == null) continue;
     buckets[offset] += tokens;
   }
   return buckets.some((value) => value > 0) ? buckets : null;
@@ -810,15 +816,16 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
 
 function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
   const buckets = new Array<number>(7).fill(0);
-  const todayStart = new Date(nowMs);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayStartMs = todayStart.getTime();
-  const oldestStart = todayStartMs - 6 * 86_400_000;
+  const today = new Date(nowMs);
+  const bucketByDay = new Map<string, number>();
+  for (let index = 0; index < 7; index += 1) {
+    const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index);
+    bucketByDay.set(localDayKey(day), index);
+  }
   for (const entry of entries) {
-    if (entry.timestamp < oldestStart) continue;
     if (entry.timestamp > nowMs) continue;
-    const dayIndex = Math.floor((entry.timestamp - oldestStart) / 86_400_000);
-    const bucketIndex = Math.min(6, Math.max(0, dayIndex));
+    const bucketIndex = bucketByDay.get(localDayKey(entry.timestamp));
+    if (bucketIndex == null) continue;
     buckets[bucketIndex] += entry.inputTokens + entry.outputTokens + entry.cachedTokens + toNonNegativeInt(entry.cacheWriteTokens);
   }
   return buckets;
@@ -841,13 +848,15 @@ function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry): v
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
-  const date = new Date(entry.timestamp).toISOString().slice(0, 10);
+  const date = localDayKey(entry.timestamp);
+  if (!date) return;
   const tokens = entry.inputTokens + entry.outputTokens + entry.cachedTokens + toNonNegativeInt(entry.cacheWriteTokens);
   breakdown[date] = (breakdown[date] ?? 0) + tokens;
 }
 
 function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry): void {
-  const date = new Date(entry.timestamp).toISOString().slice(0, 10);
+  const date = localDayKey(entry.timestamp);
+  if (!date) return;
   if (!breakdown[date]) breakdown[date] = {};
   addTokenBreakdownEntry(breakdown[date]!, entry);
 }
@@ -876,6 +885,10 @@ function calculateTokenEntryCost(entry: TokenEntry): number {
 function aggregateCosts(
   entries: TokenEntry[],
   provider: string,
+  options: {
+    estimation?: AdeUsageEstimationKind;
+    scopeSupported?: boolean;
+  } = {},
 ): CostSnapshot {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
@@ -902,11 +915,13 @@ function aggregateCosts(
     tokenBreakdown: {} as TokenBreakdown,
     dailyTokens: {} as DailyTokenBreakdown,
     dailyModelTokens: {} as DailyModelTokenBreakdown,
+    adeOriginatedTokens: 0,
   }])) as Record<AdeUsageRangePreset, {
     costUsd: number;
     tokenBreakdown: TokenBreakdown;
     dailyTokens: DailyTokenBreakdown;
     dailyModelTokens: DailyModelTokenBreakdown;
+    adeOriginatedTokens: number;
   }>;
 
   for (const entry of entries) {
@@ -919,10 +934,22 @@ function aggregateCosts(
       addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
       addDailyTokenEntry(accumulator.dailyTokens, entry);
       addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
+      if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
+        accumulator.adeOriginatedTokens += entry.inputTokens
+          + entry.outputTokens
+          + entry.cachedTokens
+          + toNonNegativeInt(entry.cacheWriteTokens);
+      }
     }
   }
 
   const roundedCost = (preset: AdeUsageRangePreset) => Math.round(accumulators[preset].costUsd * 100) / 100;
+
+  const entryEstimations = new Set<AdeUsageEstimationKind>(
+    entries.flatMap((entry) => entry.estimation ? [entry.estimation] : []),
+  );
+  const estimation = options.estimation
+    ?? (entryEstimations.size === 1 ? [...entryEstimations][0] : entryEstimations.size > 1 ? "mixed" : undefined);
 
   return {
     provider,
@@ -933,7 +960,74 @@ function aggregateCosts(
     tokenBreakdownByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].tokenBreakdown])),
     dailyTokenBreakdownByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyModelTokens])),
     dailyTokensByPreset: Object.fromEntries(ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].dailyTokens])),
+    ...(estimation ? { estimation } : {}),
+    ...(options.scopeSupported != null ? { scopeSupported: options.scopeSupported } : {}),
+    adeOriginatedTokensByPreset: Object.fromEntries(
+      ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedTokens]),
+    ),
   };
+}
+
+const PROVIDER_SCOPE_SUPPORT: Readonly<Record<string, boolean>> = {
+  claude: true,
+  codex: true,
+  cursor: false,
+  "cursor-agent": false,
+  openclaw: false,
+  opencode: false,
+  droid: false,
+  copilot: false,
+  gemini: false,
+};
+
+const PROVIDER_ESTIMATION: Readonly<Partial<Record<string, AdeUsageEstimationKind>>> = {
+  cursor: "mixed",
+  "cursor-agent": "chars",
+  droid: "distribution",
+};
+
+type ProviderTokenEntries = Map<string, TokenEntry[]>;
+
+function canonicalProjectRoot(projectRoot: string): string {
+  const resolved = path.resolve(projectRoot);
+  const normalized = resolved.replace(/\\/g, "/");
+  const worktreeMarker = "/.ade/worktrees/";
+  const markerIndex = normalized.indexOf(worktreeMarker);
+  return markerIndex >= 0 ? path.resolve(normalized.slice(0, markerIndex)) : resolved;
+}
+
+function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
+  if (!projectRoot) return false;
+  const root = canonicalProjectRoot(projectRoot);
+  if (entry.projectPath) {
+    const candidate = path.resolve(entry.projectPath);
+    if (candidate === root || candidate.startsWith(`${root}${path.sep}`)) return true;
+  }
+  if (entry.projectKey) {
+    const rootKey = sanitizeClaudeProjectPath(root);
+    if (entry.projectKey === rootKey || entry.projectKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
+  }
+  return false;
+}
+
+function buildCostSnapshots(
+  entriesByProvider: ProviderTokenEntries,
+  scope: AdeUsageScope,
+  projectRoot: string | null | undefined,
+): CostSnapshot[] {
+  const costs: CostSnapshot[] = [];
+  for (const [provider, machineEntries] of entriesByProvider) {
+    const scopeSupported = PROVIDER_SCOPE_SUPPORT[provider] === true;
+    const entries = scope === "project"
+      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, projectRoot)) : []
+      : machineEntries;
+    if (entries.length === 0 && !(scope === "project" && !scopeSupported && machineEntries.length > 0)) continue;
+    costs.push(aggregateCosts(entries, provider, {
+      estimation: PROVIDER_ESTIMATION[provider],
+      scopeSupported,
+    }));
+  }
+  return costs;
 }
 
 // ── Stats Aggregation ────────────────────────────────────────────
@@ -954,20 +1048,19 @@ function toNonNegativeInt(value: unknown): number {
 }
 
 function startOfLocalDayIso(nowMs: number): string {
-  const date = new Date(nowMs);
-  date.setHours(0, 0, 0, 0);
-  return date.toISOString();
+  return localDayOffset(nowMs, 0)?.toISOString() ?? new Date(nowMs).toISOString();
 }
 
 function startOfLocalDayOffsetIso(nowMs: number, daysBack: number): string {
-  const date = new Date(nowMs);
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - Math.max(0, daysBack));
-  return date.toISOString();
+  return localDayOffset(nowMs, -Math.max(0, daysBack))?.toISOString() ?? new Date(nowMs).toISOString();
 }
 
 function normalizePreset(value: unknown): AdeUsageRangePreset {
   return isAdeUsageRangePreset(value) ? value : "7d";
+}
+
+function normalizeScope(value: unknown): AdeUsageScope {
+  return isAdeUsageScope(value) ? value : "machine";
 }
 
 function validIsoOrNull(value: string | null | undefined): string | null {
@@ -1153,6 +1246,28 @@ function addCostSnapshotsProviderUsage(
         : cost.costUsdByPreset?.[range.preset] ??
           (range.preset === "today" ? cost.todayCostUsd : cost.last30dCostUsd),
     ));
+    let providerSummary = aggregation.providers.get(cost.provider);
+    if (!providerSummary) {
+      providerSummary = {
+        provider: cost.provider,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 0,
+        rangeCostUsd: 0,
+        todayCostUsd: 0,
+        last30dCostUsd: 0,
+      };
+      aggregation.providers.set(cost.provider, providerSummary);
+    }
+    if (cost.estimation) providerSummary.estimation = cost.estimation;
+    if (cost.scopeSupported != null) providerSummary.scopeSupported = cost.scopeSupported;
+    const adeOriginatedTokens = Math.min(
+      providerTotalTokens,
+      toNonNegativeInt(cost.adeOriginatedTokensByPreset?.[range.preset]),
+    );
+    providerSummary.adeOriginatedTokens = toNonNegativeInt(providerSummary.adeOriginatedTokens) + adeOriginatedTokens;
+    providerSummary.externalTokens = toNonNegativeInt(providerSummary.externalTokens) + providerTotalTokens - adeOriginatedTokens;
     for (const [model, tokens] of Object.entries(tokenBreakdown)) {
       const modelInput = toNonNegativeInt(tokens.input);
       const modelOutput = toNonNegativeInt(tokens.output);
@@ -1196,11 +1311,41 @@ function sumTokenBreakdownCost(breakdown: Record<string, CostTokenBreakdown>): n
 }
 
 function dateIntersectsRange(date: string, range: ResolvedAdeUsageRange): boolean {
-  const dayStart = Date.parse(`${date}T00:00:00.000Z`);
-  if (!Number.isFinite(dayStart)) return false;
-  const dayEnd = dayStart + 86_400_000 - 1;
+  const start = localDayStart(date);
+  if (!start) return false;
+  const dayStart = start.getTime();
+  const dayEnd = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getTime() - 1;
   if (range.since && dayEnd < Date.parse(range.since)) return false;
   return dayStart <= Date.parse(range.until);
+}
+
+function emptyDailyPoint(date: string): AdeUsageDailyPoint {
+  return {
+    date,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    commits: 0,
+    prs: 0,
+    insertions: 0,
+    deletions: 0,
+    filesChanged: 0,
+    sessions: 0,
+    githubCommits: 0,
+    githubPrs: 0,
+    githubAdditions: 0,
+    githubDeletions: 0,
+  };
+}
+
+function ensureDailyPoint(points: AdeUsageDailyPoint[], byDate: Map<string, AdeUsageDailyPoint>, date: string): AdeUsageDailyPoint {
+  const existing = byDate.get(date);
+  if (existing) return existing;
+  const point = emptyDailyPoint(date);
+  points.push(point);
+  byDate.set(date, point);
+  return point;
 }
 
 function makeDailySkeleton(range: ResolvedAdeUsageRange, nowMs: number): AdeUsageDailyPoint[] {
@@ -1211,28 +1356,20 @@ function makeDailySkeleton(range: ResolvedAdeUsageRange, nowMs: number): AdeUsag
     range.preset === "7d" ? 7 :
     range.preset === "year" || range.preset === "all" ? 365 :
     30;
-  const startMs = range.since
-    ? Math.max(Date.parse(range.since), untilMs - (maxDays - 1) * 86_400_000)
-    : untilMs - (maxDays - 1) * 86_400_000;
-  const start = new Date(startMs);
-  start.setHours(0, 0, 0, 0);
+  const untilDay = localDayOffset(untilMs, 0) ?? localDayOffset(nowMs, 0)!;
+  const windowStart = new Date(
+    untilDay.getFullYear(),
+    untilDay.getMonth(),
+    untilDay.getDate() - (maxDays - 1),
+  );
+  const sinceDay = range.since ? localDayOffset(range.since, 0) : null;
+  const start = sinceDay && sinceDay.getTime() > windowStart.getTime() ? sinceDay : windowStart;
 
   const points: AdeUsageDailyPoint[] = [];
   for (let index = 0; index < maxDays; index += 1) {
-    const date = new Date(start.getTime() + index * 86_400_000);
-    if (date.getTime() > untilMs + 86_400_000) break;
-    points.push({
-      date: date.toISOString().slice(0, 10),
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      commits: 0,
-      prs: 0,
-      insertions: 0,
-      deletions: 0,
-      filesChanged: 0,
-      sessions: 0,
-    });
+    const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
+    if (date.getTime() > untilDay.getTime()) break;
+    points.push(emptyDailyPoint(localDayKey(date)));
   }
   return points;
 }
@@ -1245,18 +1382,37 @@ function mergeSnapshotDailyTokens(
 ): void {
   const byDate = new Map(points.map((point) => [point.date, point]));
   for (const cost of costs) {
-    const dailyTokens = exactRange
+    const dailyBreakdown = exactRange
+      ? cost.dailyTokenBreakdownByPreset?.all
+      : cost.dailyTokenBreakdownByPreset?.[range.preset];
+    if (dailyBreakdown) {
+      for (const [date, models] of Object.entries(dailyBreakdown)) {
+        if (exactRange && !dateIntersectsRange(date, range)) continue;
+        const point = ensureDailyPoint(points, byDate, date);
+        for (const tokens of Object.values(models)) {
+          const input = toNonNegativeInt(tokens.input);
+          const output = toNonNegativeInt(tokens.output);
+          const cached = toNonNegativeInt(tokens.cached) + toNonNegativeInt(tokens.cacheWrite);
+          point.inputTokens += input;
+          point.outputTokens += output;
+          point.cachedTokens = toNonNegativeInt(point.cachedTokens) + cached;
+          point.totalTokens += input + output + cached;
+        }
+      }
+      continue;
+    }
+
+    const legacyDailyTokens = exactRange
       ? cost.dailyTokensByPreset?.all ?? {}
       : cost.dailyTokensByPreset?.[range.preset] ?? {};
-    for (const [date, value] of Object.entries(dailyTokens)) {
+    for (const [date, value] of Object.entries(legacyDailyTokens)) {
       if (exactRange && !dateIntersectsRange(date, range)) continue;
-      const point = byDate.get(date);
-      if (!point) continue;
+      const point = ensureDailyPoint(points, byDate, date);
       const tokens = toNonNegativeInt(value);
-      point.inputTokens += tokens;
       point.totalTokens += tokens;
     }
   }
+  points.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function summarizeObservedProviderUsage(providers: AdeUsageProviderSummary[]): {
@@ -1410,16 +1566,6 @@ function parseGithubViewerLogin(raw: string): string | null {
   return parsed.login.trim();
 }
 
-function parseGithubPullRequestRows(raw: string, viewer: string): GitHubPullRequestRow[] {
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => safeJsonParse<unknown>(line, null))
-    .filter(isRecord)
-    .filter((row) => isRecord(row.author) && row.author.login === viewer) as GitHubPullRequestRow[];
-}
-
 function parseGithubCommitDates(raw: string): string[] {
   return raw
     .split(/\r?\n/)
@@ -1470,7 +1616,64 @@ function dateKeyFromIso(value: string | null | undefined): string | null {
   if (!value) return null;
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return null;
-  return new Date(timestamp).toISOString().slice(0, 10);
+  return localDayKey(timestamp) || null;
+}
+
+type GithubCommandRunner = typeof runBufferedCommand;
+
+async function scanGithubPullRequestPages({
+  projectRoot,
+  repoParts,
+  viewer,
+  range,
+  runCommand = runBufferedCommand,
+}: {
+  projectRoot: string;
+  repoParts: { owner: string; name: string };
+  viewer: string;
+  range: ResolvedAdeUsageRange;
+  runCommand?: GithubCommandRunner;
+}): Promise<GitHubPullRequestRow[]> {
+  const rows: GitHubPullRequestRow[] = [];
+  let endCursor: string | null = null;
+  do {
+    const raw = await runCommand(
+      "gh",
+      [
+        "api",
+        "graphql",
+        "-F",
+        `owner=${repoParts.owner}`,
+        "-F",
+        `name=${repoParts.name}`,
+        ...(endCursor ? ["-F", `endCursor=${endCursor}`] : []),
+        "-f",
+        `query=${githubPullRequestGraphqlQuery()}`,
+        "--jq",
+        ".data.repository.pullRequests",
+      ],
+      { cwd: projectRoot },
+    );
+    const page = safeJsonParse<unknown>(raw.trim(), null);
+    if (!isRecord(page)) break;
+    const nodes = Array.isArray(page.nodes)
+      ? page.nodes.filter(isRecord) as GitHubPullRequestRow[]
+      : [];
+    rows.push(...nodes.filter((row) => isRecord(row.author) && row.author.login === viewer));
+
+    const oldestCreatedAt = nodes
+      .map((row) => typeof row.createdAt === "string" ? Date.parse(row.createdAt) : Number.NaN)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b)[0];
+    if (range.since && oldestCreatedAt != null && oldestCreatedAt < Date.parse(range.since)) break;
+
+    const pageInfo = isRecord(page.pageInfo) ? page.pageInfo : null;
+    const hasNextPage = pageInfo?.hasNextPage === true;
+    endCursor = hasNextPage && typeof pageInfo?.endCursor === "string" && pageInfo.endCursor
+      ? pageInfo.endCursor
+      : null;
+  } while (endCursor);
+  return rows;
 }
 
 function addGithubDaily(
@@ -1505,58 +1708,41 @@ async function scanGithubActivityStats(projectRoot: string | null | undefined, r
     const repo = parseGithubRepoJson(repoRaw);
     if (!repo) return makeEmptyGithubStats("Unable to resolve the GitHub repository.", null);
 
-	    const viewerRaw = await runBufferedCommand("gh", ["api", "user", "--cache", "10m"], {
-	      cwd: projectRoot,
-	      timeoutMs: 10_000,
-	    });
-	    const viewer = parseGithubViewerLogin(viewerRaw);
-	    if (!viewer) return makeEmptyGithubStats("Unable to resolve the GitHub user.", repo);
-	    const repoParts = githubRepoParts(repo);
-	    if (!repoParts) return makeEmptyGithubStats("Unable to resolve the GitHub repository.", repo);
+    const viewerRaw = await runBufferedCommand("gh", ["api", "user", "--cache", "10m"], {
+      cwd: projectRoot,
+      timeoutMs: 10_000,
+    });
+    const viewer = parseGithubViewerLogin(viewerRaw);
+    if (!viewer) return makeEmptyGithubStats("Unable to resolve the GitHub user.", repo);
+    const repoParts = githubRepoParts(repo);
+    if (!repoParts) return makeEmptyGithubStats("Unable to resolve the GitHub repository.", repo);
 
-	    const [prRaw, commitRaw] = await Promise.all([
-	      runBufferedCommand(
-	        "gh",
-	        [
-	          "api",
-	          "graphql",
-	          "--paginate",
-	          "-F",
-	          `owner=${repoParts.owner}`,
-	          "-F",
-	          `name=${repoParts.name}`,
-	          "-f",
-	          `query=${githubPullRequestGraphqlQuery()}`,
-	          "--jq",
-	          ".data.repository.pullRequests.nodes[] | @json",
-	        ],
-	        { cwd: projectRoot },
-	      ),
-	      runBufferedCommand(
-	        "gh",
-	        [
-	          "api",
-	          `repos/${repo}/commits`,
-	          "--method",
-	          "GET",
-	          "--cache",
-	          "10m",
-	          "-F",
-	          `author=${viewer}`,
-	          ...githubCommitDateArgs(range),
-	          "--paginate",
-	          "--jq",
-	          ".[] | [.sha, .commit.author.date] | @tsv",
-	        ],
-	        { cwd: projectRoot },
-	      ),
-	    ]);
+    const [prs, commitRaw] = await Promise.all([
+      scanGithubPullRequestPages({ projectRoot, repoParts, viewer, range }),
+      runBufferedCommand(
+        "gh",
+        [
+          "api",
+          `repos/${repo}/commits`,
+          "--method",
+          "GET",
+          "--cache",
+          "10m",
+          "-F",
+          `author=${viewer}`,
+          ...githubCommitDateArgs(range),
+          "--paginate",
+          "--jq",
+          ".[] | [.sha, .commit.author.date] | @tsv",
+        ],
+        { cwd: projectRoot },
+      ),
+    ]);
 
-	    const dailyByDate = new Map<string, GitHubDailyPoint>();
-	    const prs = parseGithubPullRequestRows(prRaw, viewer);
-	    const mergedPrs = prs.filter((pr) => timestampInRange(pr.mergedAt, range));
-	    const closedPrs = prs.filter((pr) => timestampInRange(pr.closedAt, range));
-	    const prsCreatedInRange = prs.filter((pr) => timestampInRange(pr.createdAt, range));
+    const dailyByDate = new Map<string, GitHubDailyPoint>();
+    const mergedPrs = prs.filter((pr) => timestampInRange(pr.mergedAt, range));
+    const closedPrs = prs.filter((pr) => timestampInRange(pr.closedAt, range));
+    const prsCreatedInRange = prs.filter((pr) => timestampInRange(pr.createdAt, range));
     const commitsInRange = parseGithubCommitDates(commitRaw).filter((date) => timestampInRange(date, range));
     for (const date of commitsInRange) {
       addGithubDaily(dailyByDate, dateKeyFromIso(date), { commits: 1 });
@@ -1602,22 +1788,20 @@ function mergeGithubDaily(points: AdeUsageDailyPoint[], githubStats: GitHubActiv
   if (!githubStats) return;
   const byDate = new Map(points.map((point) => [point.date, point]));
   for (const row of githubStats.daily) {
-    const point = byDate.get(row.date);
-    if (!point) continue;
-    point.commits = Math.max(point.commits, toNonNegativeInt(row.commits));
-    point.prs = Math.max(point.prs, toNonNegativeInt(row.prs));
-    point.insertions = Math.max(point.insertions, toNonNegativeInt(row.insertions));
-    point.deletions = Math.max(point.deletions, toNonNegativeInt(row.deletions));
-    point.filesChanged = Math.max(point.filesChanged, toNonNegativeInt(row.filesChanged));
+    const point = ensureDailyPoint(points, byDate, row.date);
+    point.githubCommits = toNonNegativeInt(point.githubCommits) + toNonNegativeInt(row.commits);
+    point.githubPrs = toNonNegativeInt(point.githubPrs) + toNonNegativeInt(row.prs);
+    point.githubAdditions = toNonNegativeInt(point.githubAdditions) + toNonNegativeInt(row.insertions);
+    point.githubDeletions = toNonNegativeInt(point.githubDeletions) + toNonNegativeInt(row.deletions);
   }
+  points.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function mergeDatabaseDaily(points: AdeUsageDailyPoint[], databaseStats: AdeDatabaseUsageStats | null | undefined): void {
   if (!databaseStats) return;
   const byDate = new Map(points.map((point) => [point.date, point]));
   for (const row of databaseStats.daily) {
-    const point = byDate.get(row.date);
-    if (!point) continue;
+    const point = ensureDailyPoint(points, byDate, row.date);
     // Provider ledgers are the authoritative token source when present. The
     // ADE DB log is a subset of those calls, so use it only as a gap-filler.
     if (point.totalTokens === 0 && toNonNegativeInt(row.totalTokens) > 0) {
@@ -1629,12 +1813,13 @@ function mergeDatabaseDaily(points: AdeUsageDailyPoint[], databaseStats: AdeData
     point.durationMs = toNonNegativeInt(point.durationMs) + toNonNegativeInt(row.durationMs);
     point.interactions = toNonNegativeInt(point.interactions) + toNonNegativeInt(row.interactions);
     point.clients = { ...(point.clients ?? {}), ...(row.clients ?? {}) };
-    point.commits = Math.max(point.commits, toNonNegativeInt(row.commits));
-    point.prs = Math.max(point.prs, toNonNegativeInt(row.prs));
-    point.insertions = Math.max(point.insertions, toNonNegativeInt(row.insertions));
-    point.deletions = Math.max(point.deletions, toNonNegativeInt(row.deletions));
-    point.filesChanged = Math.max(point.filesChanged, toNonNegativeInt(row.filesChanged));
+    point.commits += toNonNegativeInt(row.commits);
+    point.prs += toNonNegativeInt(row.prs);
+    point.insertions += toNonNegativeInt(row.insertions);
+    point.deletions += toNonNegativeInt(row.deletions);
+    point.filesChanged += toNonNegativeInt(row.filesChanged);
   }
+  points.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function collectAdeUsageStats({
@@ -1651,6 +1836,7 @@ function collectAdeUsageStats({
   nowMs?: number;
 }): AdeUsageStats {
   const range = resolveAdeUsageRange(args, nowMs);
+  const scope = normalizeScope(args?.scope);
   const exactProviderRange = Boolean(args?.since || args?.until);
   const providerModelAggregation = createProviderModelAggregation();
   addSnapshotProviderUsage(providerModelAggregation, snapshot, range, exactProviderRange);
@@ -1666,6 +1852,7 @@ function collectAdeUsageStats({
   const totalTokens = fallbackObserved.totalTokens > 0 ? fallbackObserved.totalTokens : trackedAdeTokens;
   const fallback: AdeUsageStats = {
     generatedAt: new Date(nowMs).toISOString(),
+    scope,
     range,
     summary: {
       totalTokens,
@@ -1699,18 +1886,20 @@ function collectAdeUsageStats({
       lanesCreated: toNonNegativeInt(dbSummary?.lanesCreated),
       lanesArchived: toNonNegativeInt(dbSummary?.lanesArchived),
       lanesDeleted: 0,
-      commitsCreated: Math.max(resolvedGithubStats.commitsCreated, toNonNegativeInt(dbSummary?.commitsCreated)),
+      // Legacy code-movement fields are local ADE DB values only. GitHub
+      // activity is exposed through githubActivity and the github* daily fields.
+      commitsCreated: toNonNegativeInt(dbSummary?.commitsCreated),
       pushOperations: toNonNegativeInt(dbSummary?.pushOperations),
-      prLandings: Math.max(resolvedGithubStats.prsMerged, toNonNegativeInt(dbSummary?.prLandings)),
-      prsTracked: Math.max(resolvedGithubStats.prsTracked, toNonNegativeInt(dbSummary?.prLandings)),
+      prLandings: toNonNegativeInt(dbSummary?.prLandings),
+      prsTracked: resolvedGithubStats.prsTracked,
       prsOpen: resolvedGithubStats.prsOpen,
-      prsMerged: Math.max(resolvedGithubStats.prsMerged, toNonNegativeInt(dbSummary?.prLandings)),
+      prsMerged: resolvedGithubStats.prsMerged,
       prsClosed: resolvedGithubStats.prsClosed,
       prAdditions: resolvedGithubStats.prAdditions,
       prDeletions: resolvedGithubStats.prDeletions,
-      filesChanged: Math.max(resolvedGithubStats.filesChanged, toNonNegativeInt(dbSummary?.filesChanged)),
-      insertions: Math.max(resolvedGithubStats.prAdditions, toNonNegativeInt(dbSummary?.insertions)),
-      deletions: Math.max(resolvedGithubStats.prDeletions, toNonNegativeInt(dbSummary?.deletions)),
+      filesChanged: toNonNegativeInt(dbSummary?.filesChanged),
+      insertions: toNonNegativeInt(dbSummary?.insertions),
+      deletions: toNonNegativeInt(dbSummary?.deletions),
       artifactsCaptured: toNonNegativeInt(dbSummary?.artifactsCaptured),
       automationRuns: toNonNegativeInt(dbSummary?.automationRuns),
       workerRuns: toNonNegativeInt(dbSummary?.workerRuns),
@@ -1719,6 +1908,23 @@ function collectAdeUsageStats({
       currentStreakDays: toNonNegativeInt(dbSummary?.currentStreakDays),
       longestStreakDays: toNonNegativeInt(dbSummary?.longestStreakDays),
       longestSessionMs: toNonNegativeInt(dbSummary?.longestSessionMs),
+    },
+    githubActivity: {
+      commits: resolvedGithubStats.commitsCreated,
+      prsTracked: resolvedGithubStats.prsTracked,
+      prsOpen: resolvedGithubStats.prsOpen,
+      prsMerged: resolvedGithubStats.prsMerged,
+      prsClosed: resolvedGithubStats.prsClosed,
+      prAdditions: resolvedGithubStats.prAdditions,
+      prDeletions: resolvedGithubStats.prDeletions,
+    },
+    localActivity: {
+      commits: toNonNegativeInt(dbSummary?.commitsCreated),
+      pushOperations: toNonNegativeInt(dbSummary?.pushOperations),
+      prLandings: toNonNegativeInt(dbSummary?.prLandings),
+      filesChanged: toNonNegativeInt(dbSummary?.filesChanged),
+      insertions: toNonNegativeInt(dbSummary?.insertions),
+      deletions: toNonNegativeInt(dbSummary?.deletions),
     },
     providers,
     models,
@@ -2002,6 +2208,8 @@ export function createUsageTrackingService({
   let lastSnapshot: UsageSnapshot | null = readCachedUsageSnapshot(logger);
   let cachedCosts: CostSnapshot[] = lastSnapshot?.costs ?? [];
   let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
+  let cachedProjectCosts: CostSnapshot[] = [];
+  let projectCostsReady = false;
   const cachedCostTimestampIso = lastSnapshot?.costsLastPolledAt
     ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? lastSnapshot?.lastPolledAt : null);
   const cachedCostTimestampMs = cachedCostTimestampIso ? Date.parse(cachedCostTimestampIso) : Number.NaN;
@@ -2058,7 +2266,7 @@ export function createUsageTrackingService({
 
   async function pollCosts(): Promise<{ costs: CostSnapshot[]; adeCosts: CostSnapshot[] }> {
     const now = Date.now();
-    if (costCacheTimestamp > 0 && now - costCacheTimestamp < COST_CACHE_TTL_MS) {
+    if (costCacheTimestamp > 0 && now - costCacheTimestamp < COST_CACHE_TTL_MS && projectCostsReady) {
       return cachedCostResult();
     }
 
@@ -2119,16 +2327,19 @@ export function createUsageTrackingService({
       }),
     ]);
 
-    const costs: CostSnapshot[] = [];
-    if (claudeEntries.length > 0) costs.push(aggregateCosts(claudeEntries, "claude"));
-    if (codexEntries.length > 0) costs.push(aggregateCosts(codexEntries, "codex"));
-    if (cursorEntries.length > 0) costs.push(aggregateCosts(cursorEntries, "cursor"));
-    if (cursorAgentEntries.length > 0) costs.push(aggregateCosts(cursorAgentEntries, "cursor-agent"));
-    if (openClawEntries.length > 0) costs.push(aggregateCosts(openClawEntries, "openclaw"));
-    if (openCodeEntries.length > 0) costs.push(aggregateCosts(openCodeEntries, "opencode"));
-    if (droidEntries.length > 0) costs.push(aggregateCosts(droidEntries, "droid"));
-    if (copilotEntries.length > 0) costs.push(aggregateCosts(copilotEntries, "copilot"));
-    if (geminiEntries.length > 0) costs.push(aggregateCosts(geminiEntries, "gemini"));
+    const providerEntries: ProviderTokenEntries = new Map([
+      ["claude", claudeEntries],
+      ["codex", codexEntries],
+      ["cursor", cursorEntries],
+      ["cursor-agent", cursorAgentEntries],
+      ["openclaw", openClawEntries],
+      ["opencode", openCodeEntries],
+      ["droid", droidEntries],
+      ["copilot", copilotEntries],
+      ["gemini", geminiEntries],
+    ]);
+    const costs = buildCostSnapshots(providerEntries, "machine", projectRoot);
+    const projectCosts = buildCostSnapshots(providerEntries, "project", projectRoot);
 
     const daily7d: Partial<Record<UsageProvider, number[]>> = {};
     if (claudeEntries.length > 0) daily7d.claude = bucketDaily7d(claudeEntries, now);
@@ -2136,6 +2347,8 @@ export function createUsageTrackingService({
 
     cachedCosts = costs;
     cachedAdeCosts = [];
+    cachedProjectCosts = projectCosts;
+    projectCostsReady = true;
     cachedDaily7d = daily7d;
     costCacheTimestamp = now;
     const durationMs = Date.now() - startedAt;
@@ -2320,6 +2533,8 @@ export function createUsageTrackingService({
 
   async function forceRefresh(): Promise<UsageSnapshot> {
     costCacheTimestamp = 0; // Invalidate cost cache
+    cachedProjectCosts = [];
+    projectCostsReady = false;
     githubStatsCache.clear();
     githubStatsInFlight.clear();
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -2340,12 +2555,18 @@ export function createUsageTrackingService({
 
   async function getAdeUsageStats(args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats> {
     const nowMs = Date.now();
+    const scope = normalizeScope(args.scope);
     const range = resolveAdeUsageRange(args, nowMs);
     const exactRange = Boolean(args.since || args.until);
     const cacheKey = githubStatsCacheKey(range, exactRange);
     const githubCached = githubStatsCache.get(cacheKey)?.stats ?? null;
-    const snapshot = lastSnapshot ?? emptySnapshot();
-    const staleCosts = costCacheTimestamp === 0 || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS;
+    const machineSnapshot = lastSnapshot ?? emptySnapshot();
+    const snapshot = scope === "project"
+      ? { ...machineSnapshot, costs: cachedProjectCosts }
+      : machineSnapshot;
+    const staleCosts = costCacheTimestamp === 0
+      || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS
+      || (scope === "project" && !projectCostsReady);
     const providerNeedsRefresh = staleCosts;
     const githubNeedsRefresh = !githubCached || nowMs - (githubStatsCache.get(cacheKey)?.fetchedAtMs ?? 0) > GITHUB_STATS_CACHE_TTL_MS;
     if (providerNeedsRefresh || githubNeedsRefresh) {
@@ -2360,7 +2581,7 @@ export function createUsageTrackingService({
     });
     stats.freshness = {
       state: providerNeedsRefresh || githubNeedsRefresh ? "refreshing" : "fresh",
-      providerUpdatedAt: snapshot.costsLastPolledAt ?? null,
+      providerUpdatedAt: machineSnapshot.costsLastPolledAt ?? null,
       githubUpdatedAt: githubCached?.fetchedAt ?? null,
     };
     return stats;
@@ -2371,7 +2592,7 @@ export function createUsageTrackingService({
     requested: { provider: boolean; github: boolean },
     exactRange = false,
   ): void {
-    const key = githubStatsCacheKey(range, exactRange);
+    const key = `${githubStatsCacheKey(range, exactRange)}:${requested.provider ? "provider" : "github"}`;
     if (statsRefreshInFlight.has(key)) return;
     const task = (async () => {
       const work: Promise<unknown>[] = [];
@@ -2392,8 +2613,9 @@ export function createUsageTrackingService({
     if (exactRange) {
       return `${range.preset}:${range.since ?? "all"}:${range.until}`;
     }
-    const untilDay = range.until.slice(0, 10);
-    return `${range.preset}:${range.since?.slice(0, 10) ?? "all"}:${untilDay}`;
+    const untilDay = localDayKey(range.until);
+    const sinceDay = range.since ? localDayKey(range.since) : "all";
+    return `${range.preset}:${sinceDay || "all"}:${untilDay}`;
   }
 
   async function getGithubStatsForRange(range: ResolvedAdeUsageRange, exactRange = false): Promise<GitHubActivityStats> {
@@ -2469,6 +2691,11 @@ export const _testing = {
   parseGeminiEntries,
   aggregateCosts,
   bucketDaily7d,
+  localDayKey,
+  makeDailySkeleton,
+  dateIntersectsRange,
+  buildCostSnapshots,
+  scanGithubPullRequestPages,
   collectAdeUsageStats,
   calculatePacing,
   calculatePacingByProvider,

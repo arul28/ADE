@@ -12,7 +12,8 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
-import { UsageActivityCarousel } from "./UsageActivityCarousel";
+import { ActivityModule, WorkActivityModule } from "./ActivityModule";
+import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -95,15 +96,30 @@ function makeQuotaPanelSnapshot(): UsageSnapshot {
   };
 }
 
-function makeActivityStats(): AdeUsageStats {
-  return {
+function makeActivityStats(overrides: Partial<AdeUsageStats> = {}): AdeUsageStats {
+  const base = {
     generatedAt: "2026-07-09T12:00:00.000Z",
     range: { preset: "7d", since: "2026-07-03T00:00:00.000Z", until: "2026-07-09T12:00:00.000Z" },
     summary: {
       totalTokens: 3_000,
+      observedProviderInputTokens: 2_000,
+      observedProviderOutputTokens: 900,
+      observedProviderCachedTokens: 100,
+      observedProviderCostRangeUsd: 0.42,
+      observedProviderCostTodayUsd: 0.12,
+      observedProviderCost30dUsd: 1.4,
       chatSessions: 2,
       terminalSessions: 1,
       trackedAdeDurationMs: 3_600_000,
+      commitsCreated: 2,
+      prsTracked: 1,
+      prsMerged: 1,
+      prsOpen: 0,
+      insertions: 200,
+      deletions: 30,
+      filesChanged: 6,
+      activeDays: 2,
+      currentStreakDays: 0,
     },
     providers: [],
     models: [],
@@ -119,12 +135,29 @@ function makeActivityStats(): AdeUsageStats {
       { client: "mobile", interactions: 2, activeDays: 1, sessions: 1, lastActiveAt: "2026-07-09T11:00:00.000Z" },
     ],
     daily: [
-      { date: "2026-07-08", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, commits: 1, prs: 0, insertions: 80, deletions: 10, filesChanged: 2, sessions: 1, interactions: 4 },
-      { date: "2026-07-09", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, commits: 1, prs: 1, insertions: 120, deletions: 20, filesChanged: 4, sessions: 2, interactions: 6 },
+      { date: "2026-07-08", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, cachedTokens: 200, commits: 1, prs: 0, insertions: 80, deletions: 10, filesChanged: 2, sessions: 1, interactions: 4 },
+      { date: "2026-07-09", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, cachedTokens: 300, commits: 1, prs: 1, insertions: 120, deletions: 20, filesChanged: 4, sessions: 2, interactions: 6 },
     ],
     github: { repo: "ade/ADE", available: true, lastFetchedAt: "2026-07-09T12:00:00.000Z", error: null },
     sourceNotes: [],
-  } as unknown as AdeUsageStats;
+  };
+  return { ...base, ...overrides } as unknown as AdeUsageStats;
+}
+
+function makeEmptyActivityStats(): AdeUsageStats {
+  return makeActivityStats({
+    summary: {
+      totalTokens: 0,
+      chatSessions: 0,
+      terminalSessions: 0,
+      activeDays: 0,
+      currentStreakDays: 0,
+    },
+    clients: [],
+    daily: [
+      { date: "2026-07-08", inputTokens: 0, outputTokens: 0, totalTokens: 0, commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 0, interactions: 0 },
+    ],
+  } as unknown as Partial<AdeUsageStats>);
 }
 
 function makeHeaderUsageSnapshot(): UsageSnapshot {
@@ -501,30 +534,182 @@ describe("usage components", () => {
     });
   });
 
-  describe("UsageActivityCarousel", () => {
+  describe("ActivityModule", () => {
     beforeEach(() => localStorage.clear());
 
-    it("cycles through charts and persists the selected chart", async () => {
-      render(<UsageActivityCarousel stats={makeActivityStats()} preset="7d" />);
-      expect(screen.getByText("ADE activity")).toBeTruthy();
+    it("switches tabs and persists the selection", async () => {
+      render(<ActivityModule stats={makeActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
 
-      fireEvent.click(screen.getByRole("button", { name: "Next activity chart" }));
-      await waitFor(() => expect(screen.getByText("AI token flow")).toBeTruthy());
-      expect(JSON.parse(localStorage.getItem("ade.stats.carousel.v1") ?? "{}")).toMatchObject({
-        slide: "tokens",
-        preset: "7d",
-      });
+      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeTruthy();
+      fireEvent.click(screen.getByRole("tab", { name: "Tokens" }));
+
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Tokens", selected: true })).toBeTruthy());
+      // The tokens chart shows its legend.
+      expect(screen.getByText("Input")).toBeTruthy();
+      expect(screen.getByText("Output")).toBeTruthy();
+      expect(JSON.parse(localStorage.getItem("ade.activity.module.v1") ?? "{}")).toMatchObject({ tab: "tokens" });
     });
 
-    it("switches among the day, week, month, and year contracts", () => {
+    it("uses the unified range vocabulary and reports changes", () => {
       const onPresetChange = vi.fn();
-      render(<UsageActivityCarousel stats={makeActivityStats()} preset="7d" onPresetChange={onPresetChange} />);
+      render(<ActivityModule stats={makeActivityStats()} variant="full" preset="7d" onPresetChange={onPresetChange} />);
+
+      for (const label of ["Today", "7d", "30d", "Year", "All"]) {
+        expect(screen.getByRole("button", { name: label })).toBeTruthy();
+      }
+      // Legacy Day/Week/Month labels are gone.
+      expect(screen.queryByRole("button", { name: "Week" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Month" })).toBeNull();
 
       fireEvent.click(screen.getByRole("button", { name: "Year" }));
       expect(onPresetChange).toHaveBeenCalledWith("year");
-      expect(screen.getByRole("button", { name: "Day" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Week" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Month" })).toBeTruthy();
+    });
+
+    it("shows a day breakdown tooltip when a cell is tapped", () => {
+      const { container } = render(<ActivityModule stats={makeActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
+
+      const grid = container.querySelector('[aria-label="Daily activity heatmap"]');
+      const cell = grid?.querySelector("span");
+      expect(cell).toBeTruthy();
+      fireEvent.click(cell as Element);
+
+      const tooltip = screen.getByRole("tooltip");
+      expect(tooltip.textContent).toContain("Jul 8");
+      expect(tooltip.textContent).toContain("1.5K tokens");
+    });
+
+    it("renders a warm empty state when the range has no activity", () => {
+      render(<ActivityModule stats={makeEmptyActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
+      expect(screen.getByText("Your activity will appear here after your first chat.")).toBeTruthy();
+    });
+
+    it("shows a streak chip once the streak reaches three days", () => {
+      render(<ActivityModule stats={makeActivityStats({ summary: { ...makeActivityStats().summary, currentStreakDays: 5 } })} preset="7d" onPresetChange={vi.fn()} />);
+      expect(screen.getByText("5-day streak")).toBeTruthy();
+    });
+
+    it("shows a lifetime milestone chip on the all-time range", () => {
+      const stats = makeActivityStats({
+        range: { preset: "all", since: null, until: "2026-07-09T12:00:00.000Z" },
+        summary: { ...makeActivityStats().summary, totalTokens: 120_000_000, currentStreakDays: 0 },
+      });
+      render(<ActivityModule stats={stats} preset="all" onPresetChange={vi.fn()} />);
+      expect(screen.getByText("100M lifetime tokens")).toBeTruthy();
+    });
+
+    it("renders bars without motion transitions when reduced motion is preferred", () => {
+      const matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes("reduce"),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        onchange: null,
+        dispatchEvent: vi.fn(),
+      }));
+      Object.defineProperty(window, "matchMedia", { writable: true, configurable: true, value: matchMedia });
+
+      const { container } = render(<ActivityModule stats={makeActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
+      fireEvent.click(screen.getByRole("tab", { name: "Tokens" }));
+
+      const bars = container.querySelectorAll('[role="img"] > div');
+      expect(bars.length).toBeGreaterThan(0);
+      bars.forEach((bar) => expect((bar as HTMLElement).style.transition).toBe(""));
+
+      Reflect.deleteProperty(window, "matchMedia");
+    });
+
+    it("renders a compact range select and a full segmented control", () => {
+      const { unmount } = render(<ActivityModule stats={makeActivityStats()} variant="compact" preset="7d" onPresetChange={vi.fn()} />);
+      // Compact uses a narrow select rather than five buttons.
+      expect(screen.getByLabelText("Time range")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "30d" })).toBeNull();
+      unmount();
+
+      render(<ActivityModule stats={makeActivityStats()} variant="full" preset="7d" onPresetChange={vi.fn()} />);
+      expect(screen.getByRole("button", { name: "30d" })).toBeTruthy();
+    });
+  });
+
+  describe("WorkActivityModule", () => {
+    let onUpdate: ((snapshot: UsageSnapshot) => void) | null;
+
+    beforeEach(() => {
+      localStorage.clear();
+      onUpdate = null;
+      Object.assign(window.ade, {
+        usage: {
+          ...window.ade.usage,
+          getAdeStats: vi.fn(async () => makeActivityStats()),
+          onUpdate: vi.fn((cb: (snapshot: UsageSnapshot) => void) => {
+            onUpdate = cb;
+            return () => {};
+          }),
+        },
+      });
+    });
+
+    it("re-fetches stats when a background usage update lands", async () => {
+      const getAdeStats = vi.mocked(window.ade.usage.getAdeStats);
+      getAdeStats.mockResolvedValueOnce(makeActivityStats({ summary: { ...makeActivityStats().summary, totalTokens: 3_000 } }));
+
+      render(<WorkActivityModule />);
+      expect(await screen.findByText(/3\.0K/)).toBeTruthy();
+
+      getAdeStats.mockResolvedValue(makeActivityStats({ summary: { ...makeActivityStats().summary, totalTokens: 9_000_000 } }));
+      await act(async () => {
+        onUpdate?.(makeEmptySnapshot());
+      });
+
+      expect(await screen.findByText(/9\.0M/)).toBeTruthy();
+    });
+  });
+
+  describe("AdeUsageSection", () => {
+    let getAdeStats: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      localStorage.clear();
+      getAdeStats = vi.fn(async () => makeActivityStats());
+      Object.assign(window.ade, {
+        usage: {
+          ...window.ade.usage,
+          getAdeStats,
+          refresh: vi.fn(async () => makeEmptySnapshot()),
+          onUpdate: vi.fn(() => () => {}),
+        },
+        app: {
+          getProject: vi.fn(async () => ({ rootPath: "/tmp/project" })),
+          onProjectChanged: vi.fn(() => () => {}),
+        },
+      });
+    });
+
+    it("round-trips the scope toggle through getAdeStats and persists it", async () => {
+      render(<AdeUsageSection />);
+
+      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "7d", scope: "project" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+
+      await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "7d", scope: "machine" }));
+      expect(localStorage.getItem("ade.stats.scope.v1")).toBe("machine");
+    });
+
+    it("composes a meta footer from freshness, estimation, and scope", async () => {
+      getAdeStats.mockResolvedValue(makeActivityStats({
+        freshness: { state: "fresh", providerUpdatedAt: new Date(Date.now() - 120_000).toISOString(), githubUpdatedAt: null },
+        providers: [
+          { provider: "cursor", inputTokens: 10, outputTokens: 5, cachedTokens: 0, totalTokens: 15, rangeCostUsd: 0, todayCostUsd: 0, last30dCostUsd: 0, estimation: "chars" },
+        ],
+      }));
+
+      render(<AdeUsageSection />);
+
+      expect(await screen.findByText(/Cursor tokens estimated/)).toBeTruthy();
+      expect(screen.getByText(/Provider totals scoped to this project/)).toBeTruthy();
+      expect(screen.getByText(/Updated .* ago/)).toBeTruthy();
     });
   });
 });
