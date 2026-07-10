@@ -303,9 +303,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       let webhook = matching.find((entry) => entry.id === persisted.webhookId && entry.enabled) ?? null;
       let secret = webhook ? storedSecret : null;
 
+      if (webhook && !secret) {
+        // The persisted hook's signing secret is gone (e.g. credential store
+        // reset). Its secret is unknowable, so rotate instead of failing on
+        // every setup attempt.
+        webhook = null;
+      }
       if (!webhook && matching.length > 0) {
-        // A hook whose id is not our persisted id has an unknowable secret.
-        // Rotate it instead of registering a secret that Linear will not use.
+        // A hook we cannot sign for has an unknowable secret. Rotate it
+        // instead of registering a secret that Linear will not use.
         await Promise.all(matching.map((entry) => client.deleteWebhook(entry.id)));
       }
       if (!webhook) {
@@ -397,9 +403,14 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   const poll = async (): Promise<void> => {
     if (!deps.hasEnabledLinearRules()) return;
     let status = getStatus();
-    if (status.state === "unconfigured" && deps.isAdeAppConnection?.()) {
+    if (
+      deps.isAdeAppConnection?.()
+      && (status.state === "unconfigured" || (status.state === "error" && !status.organizationId))
+    ) {
       // App-connected workspaces need no manual connect step: events already
-      // flow to the relay, only the organization id is missing locally.
+      // flow to the relay, only the organization id is missing locally. A
+      // transient registration failure must keep retrying on later polls —
+      // a successful registration clears the recorded error.
       try {
         status = await setup();
       } catch {
