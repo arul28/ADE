@@ -2414,6 +2414,8 @@ describe("ADE CLI", () => {
       "--personal",
       "--title",
       "Trip planning",
+      "--tag",
+      "review-ready",
       "--reasoning-effort",
       "high",
       "--fast",
@@ -2424,8 +2426,28 @@ describe("ADE CLI", () => {
         args: {
           sessionId: "personal-1",
           title: "Trip planning",
+          tag: "review-ready",
           reasoningEffort: "high",
           fastMode: true,
+        },
+      },
+    });
+
+    // `--tag ""` clears the Claude session tag (empty string is forwarded, not dropped).
+    const clearTag = expectExecutePlan(buildCliPlan([
+      "chat",
+      "update",
+      "personal-1",
+      "--personal",
+      "--tag",
+      "",
+    ]));
+    expect(clearTag.steps[0]).toMatchObject({
+      params: {
+        action: "updateSession",
+        args: {
+          sessionId: "personal-1",
+          tag: "",
         },
       },
     });

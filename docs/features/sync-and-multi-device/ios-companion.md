@@ -1457,7 +1457,11 @@ does not duplicate the full desktop Stats page.
   mirroring `deriveSubagentTimelineRows` in `chatSubagents.ts` so a
   subagent never repaints per tick. `WorkChatRichCardViews` renders those
   rows plus the unified Chat Info sheet, whose ordered Subagents /
-  Background / Schedule sections mirror the desktop Chat Info pane.
+  Background / Schedule sections mirror the desktop Chat Info pane —
+  including the same active caps (12 / 8 / 10), the single `Earlier`
+  disclosure that folds terminal rows without reordering survivors, and
+  the per-session Clear/Restore filter (persisted under
+  `ade.chat.paneCleared.v1:<sessionId>`).
 - **Long Work chats must keep row work and root polling cheap.** The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible

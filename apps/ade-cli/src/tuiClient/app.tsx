@@ -7613,6 +7613,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         });
       }
+      // A backend self-heal/splice-repair rewrote persisted envelope history for
+      // the active chat (session_meta_updated · historyInvalidated). Our in-memory
+      // event buffer is now stale relative to the repaired turns and stays that
+      // way until a reconnect/gap, so refetch history — mirroring desktop
+      // AgentChatPane's loadHistory(force) on the same signal.
+      if (
+        envelope.event.type === "session_meta_updated"
+        && envelope.event.historyInvalidated === true
+        && isActiveSessionEvent
+      ) {
+        void refreshStateRef.current({ hydrateHistory: true }).catch(() => undefined);
+      }
       // A cross-client mode change (iOS/desktop re-moding the session the TUI is
       // viewing) arrives as a transient session_meta_updated carrying the new
       // permission/interaction fields. The composer footer reads modelState, not

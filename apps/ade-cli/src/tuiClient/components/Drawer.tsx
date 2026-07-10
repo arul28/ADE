@@ -630,9 +630,14 @@ function ChatRow({
   // NextWakeChip parity); reserve its width so the title never collides with it.
   const wake = chatNextWakeLabel(session);
   const wakeReserve = wake ? wake.length + 3 : 0;
+  // A tagged Claude chat shows a compact trailing "#tag" marker (desktop
+  // SessionCard claudeTag pill parity); reserve its width like the wake chip so
+  // the title truncates ahead of it instead of colliding.
+  const tag = session.claudeTag?.trim() ? `#${truncate(session.claudeTag.trim(), 16)}` : null;
+  const tagReserve = tag ? tag.length + 1 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
-  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve));
+  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve + tagReserve));
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
   // non-selected lane (dimTitle) than under the focused one.
@@ -647,6 +652,7 @@ function ChatRow({
         {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
         <Text color={exec.color}>{exec.glyph} </Text>
         <Text color={titleColor}>{label}</Text>
+        {tag ? <Text color={theme.color.t4}>{` ${tag}`}</Text> : null}
         {wake ? <Text color={theme.color.t4}>{` ⏰${wake}`}</Text> : null}
         {running ? <Text> <ActiveChatSpin /></Text> : null}
         {session.sessionId === activeSessionId ? (
