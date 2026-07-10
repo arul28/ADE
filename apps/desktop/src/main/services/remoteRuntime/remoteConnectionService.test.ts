@@ -3,6 +3,7 @@ import type {
   RemoteRuntimeConnectResult,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
+import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
 import { RemoteConnectionService } from "./remoteConnectionService";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -48,6 +49,62 @@ function connectResult(
 }
 
 describe("RemoteConnectionService", () => {
+  it("stores structured connect errors with bounded detail and legacy text", async () => {
+    const remote = target("disk-full", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const error = new RemoteRuntimeConnectError({
+      kind: "disk_full",
+      message: "The remote machine is out of disk space. Free up space and try again.",
+      detail: `tar: No space left on device\n${"x".repeat(6_000)}TAIL`,
+      freeBytes: 1024,
+      requiredBytes: 2048,
+    });
+    const pool = {
+      connect: vi.fn(async () => {
+        throw error;
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toBe(error);
+
+    const status = service.snapshot().connections[0]!;
+    expect(status.lastError).toBe(error.message);
+    expect(status.lastErrorInfo).toMatchObject({
+      kind: "disk_full",
+      message: error.message,
+      freeBytes: 1024,
+      requiredBytes: 2048,
+    });
+    expect(status.lastErrorInfo?.detail?.length).toBeLessThanOrEqual(4_000);
+    expect(status.lastErrorInfo?.detail).toContain("truncated");
+    expect(status.lastErrorInfo?.detail).toContain("TAIL");
+  });
+
+  it("caps legacy connection error text at 500 characters", async () => {
+    const remote = target("verbose-error", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => {
+        throw new Error("x".repeat(1_000));
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toThrow();
+    expect(service.snapshot().connections[0]?.lastError?.length).toBe(500);
+  });
+
   it("only autoconnects targets that have connected successfully before", async () => {
     const neverConnected = target("never-connected", null);
     const previouslyConnected = target("previously-connected", 1_700_000_000);

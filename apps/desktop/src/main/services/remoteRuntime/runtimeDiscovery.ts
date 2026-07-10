@@ -190,6 +190,10 @@ export function discoveredRuntimeFromBonjourService(
     tailscaleAddress,
     runtimeKind: firstNonEmpty([txt.runtimeKind]),
     runtimeVersion: firstNonEmpty([txt.runtimeVersion]),
+    ...(firstNonEmpty([txt.platform])
+      ? { os: firstNonEmpty([txt.platform])! }
+      : {}),
+    connectable: true,
     projectIds,
     projectCount,
     lastSeenAt: nowMs,
@@ -225,6 +229,9 @@ export function discoveredRuntimesFromTailscaleStatus(
     const machineName = trimmed(peer.HostName) ?? dnsName ?? tailscaleAddress;
     const hostIdentity = trimmed(peer.ID) ?? trimmed(peerKey);
     const online = peer.Online === true;
+    const os = trimmed(peer.OS);
+    const isWindows = os?.toLowerCase() === "windows";
+    const connectable = online && !isWindows;
     const addresses = uniqueStrings([...tailscaleIps, dnsName]);
     discovered.push({
       id: `tailscale:${hostIdentity ?? tailscaleAddress}`,
@@ -238,6 +245,15 @@ export function discoveredRuntimesFromTailscaleStatus(
       tailscaleAddress,
       runtimeKind: online ? "tailscale-peer" : "tailscale-peer-offline",
       runtimeVersion: null,
+      ...(os ? { os } : {}),
+      connectable,
+      ...(!connectable
+        ? {
+            unsupportedReason: !online
+              ? "Offline"
+              : "Windows machines can't run the ADE remote runtime yet.",
+          }
+        : {}),
       projectIds: [],
       projectCount: null,
       lastSeenAt: nowMs,

@@ -11,6 +11,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
   RemoteRuntimeConnectionStatus,
+  RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimePortForward,
@@ -24,6 +25,10 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+} from "../../../shared/types";
+import {
+  capRemoteRuntimeErrorDetail,
+  RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjects } from "./remoteBootstrap";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
@@ -49,9 +54,51 @@ type RemoteConnectionConnectOptions = {
 };
 
 const AUTOMATIC_RECONNECT_FAILURE_LIMIT = 10;
+const MAX_LAST_ERROR_CHARS = 500;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function capLastError(message: string): string {
+  if (message.length <= MAX_LAST_ERROR_CHARS) return message;
+  return `${message.slice(0, MAX_LAST_ERROR_CHARS - 1)}…`;
+}
+
+function errorInfo(
+  error: unknown,
+  messageOverride?: string,
+): RemoteRuntimeConnectErrorInfo {
+  const structured = error instanceof RemoteRuntimeConnectError
+    ? error.info
+    : null;
+  const rawMessage = messageOverride ?? structured?.message ?? errorMessage(error);
+  const message = capLastError(rawMessage);
+  if (structured) {
+    return {
+      ...structured,
+      message,
+      ...(structured.detail
+        ? { detail: capRemoteRuntimeErrorDetail(structured.detail) }
+        : {}),
+    };
+  }
+  return {
+    kind: "generic",
+    message,
+    detail: capRemoteRuntimeErrorDetail(errorMessage(error)),
+  };
+}
+
+function errorStatusPatch(
+  error: unknown,
+  messageOverride?: string,
+): Pick<RemoteRuntimeConnectionStatus, "lastError" | "lastErrorInfo"> {
+  const info = errorInfo(error, messageOverride);
+  return {
+    lastError: info.message,
+    lastErrorInfo: info,
+  };
 }
 
 function automaticReconnectStoppedMessage(): string {
@@ -114,7 +161,7 @@ export class RemoteConnectionService {
       }
       this.mergeStatus(targetId, {
         state: "error",
-        lastError: errorMessage(error),
+        ...errorStatusPatch(error),
         lastAttemptedAt: Date.now(),
       });
     });
@@ -178,6 +225,7 @@ export class RemoteConnectionService {
             : {}),
           projects: status.projects ?? [],
           lastError: status.lastError ?? null,
+          lastErrorInfo: status.lastErrorInfo ?? null,
           lastAttemptedAt: status.lastAttemptedAt ?? null,
           connectedAt: status.connectedAt ?? target.lastConnectedAt,
         };
@@ -280,7 +328,7 @@ export class RemoteConnectionService {
         : this.recordImplicitFailure(target.id, error);
       this.mergeStatus(target.id, {
         state: "error",
-        lastError,
+        ...errorStatusPatch(error, lastError),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -701,7 +749,10 @@ export class RemoteConnectionService {
     if (!isImplicitConnectionFailure(error)) return;
     this.mergeStatus(targetId, {
       state: "error",
-      lastError: this.recordImplicitFailure(targetId, error),
+      ...errorStatusPatch(
+        error,
+        this.recordImplicitFailure(targetId, error),
+      ),
       lastAttemptedAt: Date.now(),
     });
   }
@@ -749,10 +800,34 @@ export class RemoteConnectionService {
 
   private mergeStatus(targetId: string, patch: StatusPatch): void {
     const current = this.statusById.get(targetId) ?? {};
+    let normalizedPatch = patch;
+    if (Object.prototype.hasOwnProperty.call(patch, "lastError")) {
+      if (patch.lastError == null) {
+        normalizedPatch = { ...patch, lastError: null, lastErrorInfo: null };
+      } else {
+        const lastError = capLastError(patch.lastError);
+        const info = patch.lastErrorInfo ?? {
+          kind: "generic",
+          message: lastError,
+          detail: patch.lastError,
+        };
+        normalizedPatch = {
+          ...patch,
+          lastError,
+          lastErrorInfo: {
+            ...info,
+            message: capLastError(info.message),
+            ...(info.detail
+              ? { detail: capRemoteRuntimeErrorDetail(info.detail) }
+              : {}),
+          },
+        };
+      }
+    }
     this.statusById.set(targetId, {
       ...current,
-      ...patch,
-      state: (patch.state ??
+      ...normalizedPatch,
+      state: (normalizedPatch.state ??
         current.state ??
         "idle") as RemoteRuntimeConnectionState,
     });

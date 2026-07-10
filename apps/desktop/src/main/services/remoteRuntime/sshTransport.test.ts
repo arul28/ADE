@@ -12,6 +12,7 @@ import {
   buildSshConfigCandidates,
   buildSshRouteCandidates,
   buildSshUsernameCandidates,
+  connectSshWithRoute,
   execSsh,
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
@@ -184,6 +185,58 @@ describe("buildSshConfig", () => {
 
     expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
     expect(configs.every((config) => config.host === "203.0.113.10" && config.port === 22)).toBe(true);
+  });
+
+  it("reports the users and resolved identity tried on final authentication failure", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    const keyPath = path.join(homeDir, "id_remote");
+    fs.writeFileSync(keyPath, "PRIVATE KEY", "utf8");
+    const authError = Object.assign(
+      new Error("All configured authentication methods failed"),
+      { level: "client-authentication" },
+    );
+
+    await expect(connectSshWithRoute({
+      ...target,
+      sshUser: null,
+      sshKeyPath: keyPath,
+    }, {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+      knownHostsPath: null,
+      connect: async () => {
+        throw authError;
+      },
+    })).rejects.toMatchObject({
+      info: {
+        kind: "ssh_auth",
+        detail: "All configured authentication methods failed",
+      },
+    });
+
+    let message = "";
+    try {
+      await connectSshWithRoute({
+        ...target,
+        sshUser: null,
+        sshKeyPath: keyPath,
+      }, {
+        env: {},
+        homeDir,
+        sshConfigPath: null,
+        knownHostsPath: null,
+        connect: async () => {
+          throw authError;
+        },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    for (const username of new Set([os.userInfo().username, "admin"])) {
+      expect(message).toContain(`"${username}"`);
+    }
+    expect(message).toContain(`key ${keyPath}`);
   });
 
   it("tries saved route fallbacks and prioritizes the last successful route", () => {

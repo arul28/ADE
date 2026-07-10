@@ -18,6 +18,7 @@ describe("runtimeDiscovery", () => {
           deviceName: "Studio",
           runtimeKind: "daemon",
           runtimeVersion: "0.0.0",
+          platform: "macOS",
           projects: "project-a, project-b",
           projectCount: "2",
           host: "192.168.1.42",
@@ -41,6 +42,8 @@ describe("runtimeDiscovery", () => {
       tailscaleAddress: "100.64.0.10",
       runtimeKind: "daemon",
       runtimeVersion: "0.0.0",
+      os: "macOS",
+      connectable: true,
       projectIds: ["project-a", "project-b"],
       projectCount: 2,
       lastSeenAt: 1234,
@@ -108,6 +111,8 @@ describe("runtimeDiscovery", () => {
       tailscaleAddress: "100.64.0.10",
       runtimeKind: "tailscale-peer",
       runtimeVersion: null,
+      os: "macOS",
+      connectable: true,
       projectIds: [],
       projectCount: null,
       lastSeenAt: 9012,
@@ -141,5 +146,49 @@ describe("runtimeDiscovery", () => {
 
     expect(discovered).toHaveLength(1);
     expect(discovered[0]?.machineName).toBe("studio");
+  });
+
+  it("keeps Windows peers visible but marks them unsupported", () => {
+    const discovered = discoveredRuntimesFromTailscaleStatus({
+      Peer: {
+        "nodekey:windows": {
+          ID: "peer-windows",
+          HostName: "build-pc",
+          DNSName: "build-pc.tail000000.ts.net.",
+          OS: "windows",
+          TailscaleIPs: ["100.64.0.12"],
+          Online: true,
+        },
+      },
+    }, 456);
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      machineName: "build-pc",
+      os: "windows",
+      connectable: false,
+      unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+    });
+  });
+
+  it("marks offline Tailscale peers as unavailable", () => {
+    const discovered = discoveredRuntimesFromTailscaleStatus({
+      Peer: {
+        "nodekey:offline": {
+          ID: "peer-offline",
+          HostName: "sleeping-mac",
+          DNSName: "sleeping-mac.tail000000.ts.net.",
+          OS: "macOS",
+          TailscaleIPs: ["100.64.0.13"],
+          Online: false,
+        },
+      },
+    });
+
+    expect(discovered[0]).toMatchObject({
+      runtimeKind: "tailscale-peer-offline",
+      connectable: false,
+      unsupportedReason: "Offline",
+    });
   });
 });

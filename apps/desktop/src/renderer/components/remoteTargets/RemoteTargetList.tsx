@@ -382,8 +382,11 @@ export function RemoteTargetList({
     [connectionSnapshot, selectedId],
   );
   const selectedConnectionError =
-    selectedConnection?.state === "error" && selectedConnection.lastError
-      ? formatRemoteTargetError(selectedConnection.lastError)
+    selectedConnection?.state === "error"
+      ? selectedConnection.lastErrorInfo?.message ??
+        (selectedConnection.lastError
+          ? formatRemoteTargetError(selectedConnection.lastError)
+          : null)
       : null;
   const selectedCompatibilityWarnings =
     selectedConnection?.compatibilityWarnings ??
@@ -693,6 +696,7 @@ export function RemoteTargetList({
 
   const connectDiscoveredMachine = useCallback(
     async (machine: RemoteRuntimeDiscoveredMachine) => {
+      if (machine.connectable === false) return;
       const input = discoveredTargetInput(machine);
       if (!input) return;
       setBusyId(machine.id);
@@ -898,9 +902,10 @@ export function RemoteTargetList({
             const targetSelected = selectedId === target.id;
             const targetError = targetSelected
               ? (error ?? selectedConnectionError)
-              : targetStatus?.lastError
-                ? formatRemoteTargetError(targetStatus.lastError)
-                : null;
+              : targetStatus?.lastErrorInfo?.message ??
+                (targetStatus?.lastError
+                  ? formatRemoteTargetError(targetStatus.lastError)
+                  : null);
             const targetWarnings = targetSelected
               ? selectedCompatibilityWarnings
               : targetStatus?.compatibilityWarnings ?? [];
@@ -1243,25 +1248,30 @@ export function RemoteTargetList({
                       <div style={helperTextStyle}>
                         Detected · {discoveredRuntimeLabel(machine)} ·{" "}
                         {discoveredProjectLabel(machine)}
+                        {machine.connectable === false && machine.unsupportedReason
+                          ? ` · ${machine.unsupportedReason}`
+                          : ""}
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <button
-                        type="button"
-                        disabled={!route || busyId != null || saving}
-                        onClick={() => void connectDiscoveredMachine(machine)}
-                        style={{
-                          ...primaryButton({
-                            height: 30,
-                            padding: "0 10px",
-                            fontSize: 11,
-                          }),
-                          opacity: route && busyId == null && !saving ? 1 : 0.55,
-                        }}
-                      >
-                        <PlugsConnected size={14} weight="bold" />
-                        {busyId === machine.id ? "Connecting..." : "Connect"}
-                      </button>
+                      {machine.connectable !== false ? (
+                        <button
+                          type="button"
+                          disabled={!route || busyId != null || saving}
+                          onClick={() => void connectDiscoveredMachine(machine)}
+                          style={{
+                            ...primaryButton({
+                              height: 30,
+                              padding: "0 10px",
+                              fontSize: 11,
+                            }),
+                            opacity: route && busyId == null && !saving ? 1 : 0.55,
+                          }}
+                        >
+                          <PlugsConnected size={14} weight="bold" />
+                          {busyId === machine.id ? "Connecting..." : "Connect"}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         aria-controls={`remote-discovered-edit-${machine.id}`}

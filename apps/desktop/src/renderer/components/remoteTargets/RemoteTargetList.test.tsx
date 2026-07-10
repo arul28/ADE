@@ -48,6 +48,7 @@ describe("RemoteTargetList", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    Reflect.deleteProperty(remoteRuntimeMock, "getConnectionSnapshot");
     Reflect.deleteProperty(window, "ade");
   });
 
@@ -67,6 +68,7 @@ describe("RemoteTargetList", () => {
           tailscaleAddress: "studio.tailnet.ts.net",
           runtimeKind: "daemon",
           runtimeVersion: "0.0.0",
+          connectable: true,
           projectIds: ["project-1", "project-2"],
           projectCount: 2,
           lastSeenAt: 1234,
@@ -157,6 +159,97 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
+  });
+
+  it("shows why an unsupported discovered machine cannot connect", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "tailscale:windows-pc",
+          serviceName: "Tailscale peer",
+          machineName: "Windows PC",
+          hostIdentity: "windows-pc",
+          hostName: "windows-pc",
+          port: 22,
+          addresses: ["100.64.0.12"],
+          primaryRoute: "100.64.0.12",
+          tailscaleAddress: "100.64.0.12",
+          runtimeKind: "tailscale-peer",
+          runtimeVersion: null,
+          os: "windows",
+          connectable: false,
+          unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+          projectIds: [],
+          projectCount: null,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() => expect(screen.getByText("Windows PC")).toBeTruthy());
+    expect(screen.getByText(/Windows machines can't run the ADE remote runtime yet/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+  });
+
+  it("prefers the structured connection error message without rewriting it", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: null,
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target,
+            state: "error",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: "All configured authentication methods failed",
+            lastErrorInfo: {
+              kind: "ssh_auth",
+              message:
+                'SSH authentication failed for user(s) "ade" using key /Users/ade/.ssh/id_ed25519.',
+            },
+            lastAttemptedAt: 1234,
+            connectedAt: null,
+          },
+        ],
+        connectedCount: 0,
+        updatedAt: 1234,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    expect(
+      await screen.findByText(
+        'SSH authentication failed for user(s) "ade" using key /Users/ade/.ssh/id_ed25519.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "SSH authentication failed. Check the SSH user, key path, and that this key is allowed on the remote machine.",
+      ),
+    ).toBeNull();
   });
 
   it("connects a saved machine without listing remote projects in the connection manager", async () => {

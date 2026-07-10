@@ -68,7 +68,14 @@ describe("normalizeRemoteArch", () => {
   });
 
   it("rejects unsupported remote ADE service targets instead of guessing", () => {
-    expect(() => normalizeRemoteArch("FreeBSD riscv64")).toThrow(/unsupported remote ade service platform/i);
+    expect(() => normalizeRemoteArch("FreeBSD riscv64")).toThrowError(
+      expect.objectContaining({
+        info: expect.objectContaining({
+          kind: "unsupported_os",
+          detail: "FreeBSD riscv64",
+        }),
+      }),
+    );
     expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote ade service platform/i);
   });
 });
@@ -398,6 +405,13 @@ function resolvedRemotePath(command: string): ReturnType<typeof ok> | null {
 
 function defaultRemoteBootstrapCommand(command: string): ReturnType<typeof ok> {
   if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk();
+  if (/^mkdir -p \$HOME\/\.ade(?:-alpha|-beta)? && df -kP \$HOME\/\.ade(?:-alpha|-beta)?$/u.test(command)) {
+    return ok([
+      "Filesystem 1024-blocks Used Available Capacity Mounted on",
+      "/dev/test 10485760 1 10485759 1% /home/ade",
+      "",
+    ].join("\n"));
+  }
   throw new Error(`Unexpected SSH command: ${command}`);
 }
 
@@ -709,6 +723,179 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
     });
     expect(fakeSsh.end).not.toHaveBeenCalled();
+  });
+
+  it("fails before uploading when the remote install disk preflight is insufficient", async () => {
+    const resources = createTempResources("linux-x64", { nativeDeps: true });
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk();
+      if (command === "mkdir -p $HOME/.ade && df -kP $HOME/.ade") {
+        return ok([
+          "Filesystem 1024-blocks Used Available Capacity Mounted on",
+          "/dev/test 1000 999 1 100% /home/ade",
+          "",
+        ].join("\n"));
+      }
+      return defaultRemoteBootstrapCommand(command);
+    });
+
+    await expect(bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    })).rejects.toMatchObject({
+      info: {
+        kind: "disk_full",
+        freeBytes: 1024,
+        requiredBytes: expect.any(Number),
+      },
+    });
+
+    expect(fakeSsh.sftp).not.toHaveBeenCalled();
+    expect(fakeSsh.exec).not.toHaveBeenCalled();
+    expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
+    expect(fakeSsh.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues uploading when the remote disk preflight command fails", async () => {
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk();
+      if (command === "mkdir -p $HOME/.ade && df -kP $HOME/.ade") {
+        return { stdout: "", stderr: "df unavailable", code: 1 };
+      }
+      if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        command.includes("mv -f $HOME/.ade/bin/ade.upload-")
+      ) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok(`ade ${APP_VERSION}\n`);
+      return defaultRemoteBootstrapCommand(command);
+    });
+
+    await expect(bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    })).resolves.toMatchObject({ result: { version: APP_VERSION } });
+
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.binaryPath,
+      expect.any(String),
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it("maps extract ENOSPC to a bounded disk-full error and removes committed native artifacts", async () => {
+    const resources = createTempResources("linux-x64", { nativeDeps: true });
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    const nativePath = path.join(
+      resources.resourcesPath,
+      "runtime",
+      "ade-linux-x64.native.tar.gz",
+    );
+    const extractDetail = `tar: No space left on device\n${"x".repeat(6_000)}TAIL`;
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: resources.binarySha256,
+          executableVersion: `ade ${APP_VERSION}`,
+        });
+      }
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("ok\n");
+      if (isRemoteRuntimeSupportCommand(command)) {
+        return remoteRuntimeSupportOk({ nativeDepsReady: false });
+      }
+      if (command === "mkdir -p $HOME/.ade/runtime") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/runtime\/ade-linux-x64\.native\.tar\.gz\.upload-.* && umask 077/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/runtime/ade-linux-x64.native.tar.gz.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(nativePath).size}\n`);
+      if (
+        command.includes("mv -f $HOME/.ade/runtime/ade-linux-x64.native.tar.gz.upload-") &&
+        command.includes("tar -xzf $HOME/.ade/runtime/ade-linux-x64.native.tar.gz")
+      ) return { stdout: "", stderr: extractDetail, code: 1 };
+      if (
+        command.startsWith("rm -f $HOME/.ade/runtime/ade-linux-x64.native.tar.gz.upload-") &&
+        command.includes("$HOME/.ade/runtime/ade-linux-x64.native.tar.gz; rm -rf $HOME/.ade/runtime/linux-x64")
+      ) return ok("");
+      return defaultRemoteBootstrapCommand(command);
+    });
+
+    let caught: unknown;
+    try {
+      await bootstrapRemoteRuntime({
+        target: uploadTarget,
+        registry,
+        resourcesPath: resources.resourcesPath,
+        appVersion: APP_VERSION,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      info: {
+        kind: "disk_full",
+        freeBytes: expect.any(Number),
+        requiredBytes: expect.any(Number),
+      },
+    });
+    const detail = (caught as { info: { detail: string } }).info.detail;
+    expect(detail.length).toBeLessThanOrEqual(4_000);
+    expect(detail).toContain("truncated");
+    expect(detail).toContain("TAIL");
+    expect(commands.some((command) =>
+      command.startsWith("rm -f $HOME/.ade/runtime/ade-linux-x64.native.tar.gz.upload-") &&
+      command.includes("$HOME/.ade/runtime/ade-linux-x64.native.tar.gz; rm -rf $HOME/.ade/runtime/linux-x64")
+    )).toBe(true);
   });
 
   it("uploads the PTY host worker and points the remote runtime at it", async () => {
