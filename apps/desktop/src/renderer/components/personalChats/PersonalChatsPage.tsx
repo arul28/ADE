@@ -28,6 +28,7 @@ import { ProjectlessHero } from "./ProjectlessHero";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
+import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
@@ -437,7 +438,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const accentColor = selectedDescriptor?.color ?? "#A78BFA";
   const isRemote = projectBinding?.kind === "remote";
   const machineLabel = isRemote ? projectBinding.runtimeName : "This machine";
-  const providerUnavailable = availableModelIds.length === 0;
+  // Only declare the provider unavailable once the catalog has actually
+  // loaded — an in-flight fetch is not "no provider".
+  const providerUnavailable = catalog !== null && availableModelIds.length === 0;
   const canStartSend = Boolean(selectedSession) || hasValidNewSessionModel;
   // Hero only for a brand-new chat: a selected session docks immediately even
   // while its event history is still loading, so the greeting never flashes.
@@ -458,7 +461,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     <ProjectlessComposer
       variant={heroMode ? "hero" : "docked"}
       appearanceStyle={appearanceStyle}
-      accentColor={accentColor}
+      accentColor={effectiveChatAccent(accentColor, chatChromeTint)}
       draft={draft}
       onDraftChange={setDraft}
       onSubmit={() => void submit()}
@@ -529,7 +532,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         >
           <div data-chat-appearance-root style={appearanceStyle} className="relative flex h-full min-h-0">
             <div className="min-w-0 flex-1">
-              {loading ? (
+              {/* The hero (with its composer) paints immediately during the
+                  initial fetch — the sidebar spinner already signals loading. */}
+              {loading && !heroMode ? (
                 <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
               ) : selectedEvents.length ? (
                 <div className="h-full motion-safe:animate-[ade-chat-dock-in_0.28s_ease-out]">

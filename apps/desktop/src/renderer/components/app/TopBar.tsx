@@ -67,6 +67,7 @@ import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
+import { ShellNavTab } from "./ShellNavTab";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -2221,71 +2222,40 @@ export function TopBar({
               );
             })}
             {personalChatsTabOpen ? (
-              <div
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
-                  "font-semibold transition-[background-color,color,border-color,box-shadow] duration-150",
-                  "cursor-pointer",
-                )}
-                data-state={personalChatsRouteActive ? "active" : undefined}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                onClick={() => {
+              <ShellNavTab
+                active={personalChatsRouteActive}
+                label="Chats"
+                onActivate={() => {
                   if (!personalChatsRouteActive) onNavigate?.("/chats");
                 }}
-                onKeyDown={(event) => {
-                  if (
-                    !personalChatsRouteActive &&
-                    (event.key === "Enter" || event.key === " ")
-                  ) {
-                    event.preventDefault();
-                    onNavigate?.("/chats");
+                onClose={() => {
+                  closePersonalChatsTab();
+                  if (personalChatsRouteActive) {
+                    onNavigate?.("/work", { replace: true });
                   }
                 }}
+                closeTitle="Close chats"
               >
                 <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
-                <button
-                  type="button"
-                  className="ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                  data-variant="ghost"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closePersonalChatsTab();
-                    if (personalChatsRouteActive) {
-                      onNavigate?.("/work", { replace: true });
-                    }
-                  }}
-                  title="Close chats"
-                >
-                  <X size={12} weight="regular" />
-                </button>
-              </div>
+              </ShellNavTab>
             ) : null}
             {isNewTabOpen && (
-              <div
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                  "cursor-pointer font-semibold",
-                )}
-                data-state={!personalChatsRouteActive ? "active" : undefined}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                onClick={() => {
+              <ShellNavTab
+                active={!personalChatsRouteActive}
+                label="New Tab"
+                onActivate={() => {
                   if (personalChatsRouteActive) onNavigate?.("/work");
                 }}
-                onKeyDown={(event) => {
-                  if (
-                    personalChatsRouteActive &&
-                    (event.key === "Enter" || event.key === " ")
-                  ) {
-                    event.preventDefault();
-                    onNavigate?.("/work");
+                onClose={() => {
+                  if (isProjectBusy) return;
+                  cancelNewTab();
+                  if (!hasProject && personalChatsTabOpen) {
+                    onNavigate?.("/chats");
                   }
                 }}
+                closeTitle="Close new tab"
+                closeDisabled={isProjectBusy}
               >
                 {projectTransition?.kind === "opening" ? (
                   <CircleNotch
@@ -2306,27 +2276,7 @@ export function TopBar({
                     ? "Opening…"
                     : "New Tab"}
                 </span>
-                <button
-                  type="button"
-                  className={cn(
-                    "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
-                  )}
-                  data-variant="ghost"
-                  disabled={isProjectBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isProjectBusy) return;
-                    cancelNewTab();
-                    if (!hasProject && personalChatsTabOpen) {
-                      onNavigate?.("/chats");
-                    }
-                  }}
-                  title="Close new tab"
-                >
-                  <X size={11} weight="regular" />
-                </button>
-              </div>
+              </ShellNavTab>
             )}
           </>
         ) : null}

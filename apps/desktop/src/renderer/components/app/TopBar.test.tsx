@@ -227,6 +227,33 @@ async function advancePhoneSyncStartupDelay() {
 
 const resourceUsageMock = vi.fn();
 
+function renderChatsTopBar({
+  personalChatsRouteActive,
+  storeOverrides = {},
+}: {
+  personalChatsRouteActive: boolean;
+  storeOverrides?: Partial<ReturnType<typeof useAppStore.getState>>;
+}) {
+  useAppStore.setState({
+    project: null,
+    projectHydrated: true,
+    showWelcome: true,
+    personalChatsTabOpen: true,
+    ...storeOverrides,
+  } as any);
+  const onNavigate = vi.fn();
+
+  return {
+    onNavigate,
+    ...render(
+      <TopBar
+        personalChatsRouteActive={personalChatsRouteActive}
+        onNavigate={onNavigate}
+      />,
+    ),
+  };
+}
+
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
   const originalWebClientMode = globalThis.window.__adeWebClient;
@@ -361,20 +388,9 @@ describe("TopBar", () => {
   });
 
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
-    useAppStore.setState({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      personalChatsTabOpen: true,
-    } as any);
-    const onNavigate = vi.fn();
-
-    render(
-      <TopBar
-        personalChatsRouteActive
-        onNavigate={onNavigate}
-      />,
-    );
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+    });
 
     expect(screen.getByText("Chats")).toBeTruthy();
     const closeButton = screen.getByTitle("Close chats");
@@ -385,16 +401,9 @@ describe("TopBar", () => {
   });
 
   it("opens and activates New Tab from projectless Chats without closing Chats", () => {
-    useAppStore.setState({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      personalChatsTabOpen: true,
-    } as any);
-    const onNavigate = vi.fn();
-    const { rerender } = render(
-      <TopBar personalChatsRouteActive onNavigate={onNavigate} />,
-    );
+    const { onNavigate, rerender } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+    });
 
     fireEvent.click(screen.getByTitle("Open another project"));
 
@@ -409,16 +418,10 @@ describe("TopBar", () => {
   });
 
   it("navigates to an inactive Chats tab", () => {
-    useAppStore.setState({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      personalChatsTabOpen: true,
-      isNewTabOpen: true,
-    } as any);
-    const onNavigate = vi.fn();
-
-    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
 
     fireEvent.click(screen.getByText("Chats").parentElement!);
 
@@ -427,16 +430,10 @@ describe("TopBar", () => {
   });
 
   it("returns to Chats when the projectless New Tab is closed", () => {
-    useAppStore.setState({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      personalChatsTabOpen: true,
-      isNewTabOpen: true,
-    } as any);
-    const onNavigate = vi.fn();
-
-    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
 
     fireEvent.click(screen.getByTitle("Close new tab"));
 
@@ -446,16 +443,10 @@ describe("TopBar", () => {
   });
 
   it("closes an inactive Chats tab without navigating away from New Tab", () => {
-    useAppStore.setState({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      personalChatsTabOpen: true,
-      isNewTabOpen: true,
-    } as any);
-    const onNavigate = vi.fn();
-
-    render(<TopBar personalChatsRouteActive={false} onNavigate={onNavigate} />);
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
 
     fireEvent.click(screen.getByTitle("Close chats"));
 

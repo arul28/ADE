@@ -125,6 +125,13 @@ export function chatAccentContrast(accentColor?: string | null): string {
   return trimmed && isLightChatAccent(trimmed) ? "#1c1917" : "#ffffff";
 }
 
+/// The accent the surface actually paints for a given chrome tint — neutral
+/// tint swaps `--chat-accent` to gray, so contrast for content on that fill
+/// must be computed from this, not the raw provider color.
+export function effectiveChatAccent(accentColor: string, chromeTint: ChatChromeTint): string {
+  return chromeTint === "neutral" ? NEUTRAL_CHROME_ACCENT : accentColor;
+}
+
 const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
 
