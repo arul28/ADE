@@ -82,10 +82,12 @@ func workUsageActivityScore(
 }
 
 func workUsageDayActivityScore(_ point: MobileAdeUsageDailyPoint) -> Int {
-  // The host sends per-day input/output/cached tokens but not a per-day
-  // totalTokens, so derive the day's token total from the three fields.
-  workUsageActivityScore(
-    tokens: (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0),
+  // Current hosts send per-day input/output/cached tokens; older hosts and
+  // cached payloads may carry only totalTokens. Use whichever is larger so
+  // token-only days from either era count as active.
+  let splitTokens = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
+  return workUsageActivityScore(
+    tokens: max(splitTokens, point.totalTokens ?? 0),
     sessions: point.sessions ?? 0,
     interactions: point.interactions ?? 0,
     commits: point.commits ?? 0,

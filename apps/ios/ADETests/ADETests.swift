@@ -4125,6 +4125,11 @@ final class ADETests: XCTestCase {
     let tokensOnly = try point("""
     { "date": "2026-07-10", "inputTokens": 10, "outputTokens": 5, "cachedTokens": 2 }
     """)
+    // Legacy hosts/cached payloads may send only a per-day totalTokens with
+    // no split fields — must still count as an active day.
+    let legacyTotalOnly = try point("""
+    { "date": "2026-07-10", "totalTokens": 500 }
+    """)
     let empty = try point("""
     { "date": "2026-07-10" }
     """)
@@ -4132,6 +4137,7 @@ final class ADETests: XCTestCase {
     XCTAssertGreaterThan(workUsageDayActivityScore(localGitOnly), 0)
     XCTAssertGreaterThan(workUsageDayActivityScore(githubCommitOnly), 0)
     XCTAssertGreaterThan(workUsageDayActivityScore(tokensOnly), 0)
+    XCTAssertGreaterThan(workUsageDayActivityScore(legacyTotalOnly), 0)
     XCTAssertEqual(workUsageDayActivityScore(empty), 0)
   }
 
