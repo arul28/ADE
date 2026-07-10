@@ -460,7 +460,7 @@ export function collectAdeDatabaseUsageStats(
         select date(d.started_at, 'localtime') active_date
           from session_deltas d
          where ${deltaRange.sql}
-           and (coalesce(d.insertions, 0) > 0 or coalesce(d.deletions, 0) > 0)
+           and (coalesce(d.insertions, 0) > 0 or coalesce(d.deletions, 0) > 0 or coalesce(d.files_changed, 0) > 0)
         union
         select date(occurred_at, 'localtime') active_date
           from usage_events

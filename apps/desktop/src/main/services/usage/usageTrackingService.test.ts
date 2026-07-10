@@ -3802,6 +3802,14 @@ describe("ADE database usage aggregation", () => {
        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ["session-1", "project-1", "lane-1", "2026-07-08T12:00:00.000Z", "2026-07-08T12:30:00.000Z", 3, 120, 20, "[]", "[]", "2026-07-08T12:31:00.000Z"],
     );
+    // Rename/mode-only delta on a different day: files changed but zero line churn.
+    db.run(
+      `insert into session_deltas(
+         session_id, project_id, lane_id, started_at, ended_at, files_changed,
+         insertions, deletions, touched_files_json, failure_lines_json, computed_at
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["session-2", "project-1", "lane-1", "2026-07-07T09:00:00.000Z", "2026-07-07T09:05:00.000Z", 2, 0, 0, "[]", "[]", "2026-07-07T09:06:00.000Z"],
+    );
     db.run(
       `insert into ai_usage_log(id, timestamp, feature, provider, model, input_tokens, output_tokens, duration_ms, success, session_id)
        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -3823,7 +3831,7 @@ describe("ADE database usage aggregation", () => {
     recordUsageInteraction(db, { projectId: "project-1", client: "mobile", action: "git.push", sessionId: "session-1", occurredAt: "2026-07-08T12:21:00.000Z" });
 
     const stats = collectAdeDatabaseUsageStats(db, {
-      since: "2026-07-08T00:00:00.000Z",
+      since: "2026-07-07T00:00:00.000Z",
       until: "2026-07-09T00:00:00.000Z",
     });
 
@@ -3834,11 +3842,13 @@ describe("ADE database usage aggregation", () => {
       chatSessions: 1,
       commitsCreated: 1,
       pushOperations: 1,
-      filesChanged: 3,
+      filesChanged: 5,
       insertions: 120,
       deletions: 20,
       totalInteractions: 2,
-      activeDays: 1,
+      // The file-only (rename/mode) delta day must count as active even with
+      // zero insertions/deletions — it contributes to filesChanged above.
+      activeDays: 2,
       longestSessionMs: 1_800_000,
     });
     expect(stats?.features).toEqual([
@@ -3849,6 +3859,12 @@ describe("ADE database usage aggregation", () => {
       expect.objectContaining({ client: "mobile", interactions: 1 }),
     ]);
     expect(stats?.daily).toEqual([
+      expect.objectContaining({
+        date: "2026-07-07",
+        filesChanged: 2,
+        insertions: 0,
+        deletions: 0,
+      }),
       expect.objectContaining({
         date: "2026-07-08",
         totalTokens: 180,
