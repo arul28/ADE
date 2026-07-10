@@ -3,6 +3,7 @@ import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
 import { FLAGSHIP_TEMPLATES } from "../templates/templateData";
 import { templateIconFor } from "../templates/templateIcons";
+import { accentTint, eventLabel, sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog";
 
 export function AutomationsEmptyState({
   onUseTemplate,
@@ -22,6 +23,9 @@ export function AutomationsEmptyState({
       <div className="mt-3 space-y-2">
         {flagships.map((template) => {
           const Icon = templateIconFor(template.id);
+          const source = sourceForTriggerType(template.triggerType);
+          const sourceDefinition = sourceDef(source);
+          const SourceIcon = sourceDefinition.icon;
           return (
             <button
               key={template.id}
@@ -29,12 +33,27 @@ export function AutomationsEmptyState({
               onClick={() => onUseTemplate(template.draft)}
               className={cn(cardCls, "flex w-full items-start gap-2.5 p-3 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]")}
             >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border"
+                style={{
+                  borderColor: accentTint(source, 0.25),
+                  background: accentTint(source, 0.12),
+                  color: sourceAccent(source),
+                }}
+              >
                 <Icon size={14} weight="regular" />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[12px] font-semibold text-fg">{template.name}</span>
                 <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/70">{template.description}</span>
+                <span
+                  className="mt-1 inline-flex max-w-full items-center gap-1 text-[10.5px]"
+                  style={{ color: accentTint(source, 0.85) }}
+                  title={template.triggerType}
+                >
+                  <SourceIcon size={11} weight="fill" className="shrink-0" />
+                  <span className="truncate">{sourceDefinition.label} · {eventLabel(template.triggerType)}</span>
+                </span>
               </span>
             </button>
           );

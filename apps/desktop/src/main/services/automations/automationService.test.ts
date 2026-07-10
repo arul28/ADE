@@ -360,6 +360,83 @@ describe("automation ingress enable gating", () => {
     expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Connect a GitHub repository/);
   });
 
+  it("reports GitHub relay delivery as ready", () => {
+    const rule = normalizeRuntimeRule({
+      id: "github-relay-delivery",
+      name: "GitHub relay delivery",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "github.issue_labeled" }],
+      trigger: { type: "github.issue_labeled" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:github-relay-delivery",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule, {}, { githubPollingAvailable: () => false });
+
+    service.updateIngressStatus({
+      githubRelay: { configured: true, healthy: true, status: "ready" },
+    });
+
+    expect(service.getIngressStatus().delivery?.github).toEqual({
+      ready: true,
+      via: "github-relay",
+      setupError: null,
+    });
+  });
+
+  it("reports unavailable GitHub delivery and mirrors Linear ingress capability", () => {
+    const rule = normalizeRuntimeRule({
+      id: "ingress-delivery-status",
+      name: "Ingress delivery status",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      trigger: { type: "manual" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: [],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:ingress-delivery-status",
+      actions: [],
+    });
+    let linearAvailable = true;
+    const { service } = createServiceForRule(rule, {}, {
+      githubPollingAvailable: () => false,
+      linearIngressAvailable: () => linearAvailable,
+    });
+
+    const available = service.getIngressStatus().delivery;
+    expect(available?.github).toEqual({
+      ready: false,
+      via: null,
+      setupError: "Connect a GitHub repository, configure the GitHub relay, or start the local webhook server in Automations settings.",
+    });
+    expect(available?.linear).toEqual({
+      ready: true,
+      via: "linear-relay",
+      setupError: null,
+    });
+
+    linearAvailable = false;
+    expect(service.getIngressStatus().delivery?.linear).toEqual({
+      ready: false,
+      via: null,
+      setupError: "Connect Linear events in Automations settings.",
+    });
+  });
+
   it("saves and clears the public gateway URL through the automation runtime", async () => {
     const rule = normalizeRuntimeRule({
       id: "manual-smoke",
@@ -1235,7 +1312,7 @@ describe("automationService integration", () => {
     throw new Error("Timed out waiting for PR merge automation run");
   });
 
-  it("blocks execution when shared config trust is required", async () => {
+  it("runs local-only automations while shared config trust is required", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -1252,6 +1329,8 @@ describe("automationService integration", () => {
     const projectConfigService = {
       get: () => ({
         trust: { requiresSharedTrust: true },
+        shared: { automations: [] },
+        local: { automations: [rule] },
         effective: { automations: [rule], providerMode: "guest" }
       })
     } as any;
@@ -1271,7 +1350,53 @@ describe("automationService integration", () => {
       projectConfigService
     });
 
-    await expect(service.triggerManually({ id: "echo" })).rejects.toThrow(/untrusted/i);
+    await expect(service.triggerManually({ id: "echo" })).resolves.toMatchObject({
+      status: "succeeded",
+      automationId: "echo",
+    });
+  });
+
+  it("blocks shared automations when shared config trust is required", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = "/tmp";
+
+    const rule = {
+      id: "shared-echo",
+      name: "Shared echo",
+      trigger: { type: "manual" as const },
+      actions: [{ type: "run-command" as const, command: "echo hello", timeoutMs: 10_000 }],
+      enabled: true
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: true },
+        shared: { automations: [{ id: rule.id }] },
+        local: {},
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    await expect(service.triggerManually({ id: rule.id })).rejects.toThrow(
+      "Shared project config (.ade/ade.yaml) changed and is untrusted. Review and trust it from the Automations tab to run shared automations.",
+    );
   });
 
   it("simulates manual dry runs without starting automation side effects", async () => {

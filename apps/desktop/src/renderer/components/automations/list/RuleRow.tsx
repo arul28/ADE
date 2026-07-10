@@ -1,11 +1,12 @@
 import { useMemo } from "react";
 import { ClockCounterClockwise, Play, Trash, Warning } from "@phosphor-icons/react";
-import type { AutomationRuleSummary } from "../../../../shared/types";
-import { isWebhookGatewayTriggerType } from "../../../../shared/types";
+import type { AutomationIngressDelivery, AutomationRuleSummary, AutomationTriggerDeliveryStatus } from "../../../../shared/types";
+import { triggerDeliveryKeyForType } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
 import { formatDate } from "../../../lib/format";
 import { buildRuleSentence } from "../automationCopy";
+import { sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog";
 import { RuleSentence } from "./RuleSentence";
 
 function statusDotColor(status: string | null, running: boolean): string {
@@ -22,14 +23,21 @@ function scheduleHint(rule: AutomationRuleSummary): string {
   return "Runs on event";
 }
 
-function needsGateway(rule: AutomationRuleSummary): boolean {
+function blockedDelivery(
+  rule: AutomationRuleSummary,
+  delivery: AutomationIngressDelivery,
+): AutomationTriggerDeliveryStatus | null {
   const triggers = rule.triggers.length ? rule.triggers : rule.trigger ? [rule.trigger] : [];
-  return triggers.some((t) => isWebhookGatewayTriggerType(t.type));
+  for (const trigger of triggers) {
+    const deliveryKey = triggerDeliveryKeyForType(trigger.type);
+    if (deliveryKey && !delivery[deliveryKey].ready) return delivery[deliveryKey];
+  }
+  return null;
 }
 
 export function RuleRow({
   rule,
-  webhookGatewayReady,
+  delivery,
   selected,
   onSelect,
   onToggle,
@@ -38,7 +46,7 @@ export function RuleRow({
   onDelete,
 }: {
   rule: AutomationRuleSummary;
-  webhookGatewayReady: boolean;
+  delivery: AutomationIngressDelivery | null;
   selected: boolean;
   onSelect: () => void;
   onToggle: (enabled: boolean) => void;
@@ -47,8 +55,12 @@ export function RuleRow({
   onDelete: () => void;
 }) {
   const sentence = useMemo(() => buildRuleSentence(rule), [rule]);
-  const waitingForGateway = rule.enabled && needsGateway(rule) && !webhookGatewayReady;
+  const deliveryBlocked = rule.enabled && delivery ? blockedDelivery(rule, delivery) : null;
+  const deliveryBlockedTitle = deliveryBlocked?.setupError ?? "Events for this trigger can't be delivered yet.";
   const lastRun = rule.lastRunStatus;
+  const primaryTrigger = rule.triggers[0] ?? rule.trigger;
+  const primarySource = sourceForTriggerType(primaryTrigger?.type ?? "manual");
+  const SourceIcon = sourceDef(primarySource).icon;
 
   return (
     <div
@@ -75,8 +87,8 @@ export function RuleRow({
             <span className={cn("truncate text-[13px] font-semibold", rule.enabled ? "text-fg" : "text-muted-fg/70")}>
               {rule.name || "Untitled automation"}
             </span>
-            {waitingForGateway ? (
-              <span title="Waiting for the webhook gateway" className="shrink-0 text-amber-300">
+            {deliveryBlocked ? (
+              <span title={deliveryBlockedTitle} className="shrink-0 text-amber-300">
                 <Warning size={12} weight="fill" />
               </span>
             ) : null}
@@ -85,7 +97,12 @@ export function RuleRow({
           <RuleSentence sentence={sentence} className="mt-1 line-clamp-2 text-[11px]" />
 
           <div className="mt-1.5 flex items-center gap-2 text-[10.5px] text-muted-fg/55">
-            <span>{scheduleHint(rule)}</span>
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0" style={{ color: sourceAccent(primarySource), opacity: 0.7 }}>
+                <SourceIcon size={11} weight="fill" />
+              </span>
+              <span>{scheduleHint(rule)}</span>
+            </span>
             <span aria-hidden>·</span>
             <span>Last {formatDate(rule.lastRunAt, "never")}</span>
           </div>

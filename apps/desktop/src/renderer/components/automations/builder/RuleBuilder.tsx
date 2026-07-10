@@ -126,6 +126,7 @@ export function RuleBuilder({
   onSave,
   onSimulate,
   onRunNow,
+  onIngressChanged,
   saving,
   simulating = false,
   running = false,
@@ -144,6 +145,7 @@ export function RuleBuilder({
   onSave: () => void;
   onSimulate?: () => void;
   onRunNow?: () => void;
+  onIngressChanged?: () => void;
   saving: boolean;
   simulating?: boolean;
   running?: boolean;
@@ -295,7 +297,12 @@ export function RuleBuilder({
           </Section>
 
           <Section icon={meta.icon} title="Trigger" hint={meta.hint}>
-            <TriggerCard trigger={primaryTrigger} ingressStatus={ingressStatus} onChange={setTrigger} />
+            <TriggerCard
+              trigger={primaryTrigger}
+              ingressStatus={ingressStatus}
+              onChange={setTrigger}
+              onIngressChanged={onIngressChanged}
+            />
           </Section>
 
           <Section icon={GitBranch} title="Where it runs" hint="Which lane each run works in">

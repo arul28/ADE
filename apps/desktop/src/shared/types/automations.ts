@@ -211,6 +211,37 @@ export type AutomationWebhookGatewayStatus = {
   lastError: string | null;
 };
 
+export type AutomationTriggerDeliveryVia =
+  | "github-relay"
+  | "github-polling"
+  | "local-webhook"
+  | "public-gateway"
+  | "linear-relay";
+
+export type AutomationTriggerDeliveryStatus = {
+  ready: boolean;
+  /** Which path will deliver events when ready; null when not ready. */
+  via: AutomationTriggerDeliveryVia | null;
+  /** Human guidance when not ready; null when ready. */
+  setupError: string | null;
+};
+
+export type AutomationIngressDelivery = {
+  github: AutomationTriggerDeliveryStatus;
+  githubWebhook: AutomationTriggerDeliveryStatus;
+  webhook: AutomationTriggerDeliveryStatus;
+  linear: AutomationTriggerDeliveryStatus;
+};
+
+export function triggerDeliveryKeyForType(type: string): keyof AutomationIngressDelivery | null {
+  // Legacy git.pr_* trigger types alias to github.pr_* (LEGACY_GITHUB_PR_TRIGGER_ALIASES).
+  if (type.startsWith("github.") || type.startsWith("git.pr_")) return "github";
+  if (type.startsWith("linear.")) return "linear";
+  if (type === "github-webhook") return "githubWebhook";
+  if (type === "webhook") return "webhook";
+  return null;
+}
+
 export type AutomationTriggerIssueContext = {
   number: number;
   title: string;
@@ -263,6 +294,8 @@ export type AutomationIngressStatus = {
     lastDeliveryAt: string | null;
     lastError: string | null;
   };
+  /** Optional for compatibility with remote runtimes built before per-trigger delivery reporting. */
+  delivery?: AutomationIngressDelivery;
 };
 
 export type AutomationIngressEventRecord = {

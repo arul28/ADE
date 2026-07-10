@@ -1,9 +1,13 @@
-import { CheckCircle, Warning } from "@phosphor-icons/react";
+import { useState } from "react";
+import { Warning } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import type { AutomationIngressStatus, AutomationTrigger } from "../../../../shared/types";
-import { isWebhookGatewayTriggerType } from "../../../../shared/types";
+import { triggerDeliveryKeyForType } from "../../../../shared/types";
+import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { inputCls, labelCls, recessedCls, selectCls } from "../designTokens";
 import {
+  accentTint,
   defaultTriggerForSource,
   eventLabel,
   sourceDef,
@@ -42,25 +46,78 @@ function SmallField({
   );
 }
 
-function WebhookGatewayCallout({ status }: { status: AutomationIngressStatus["webhookGateway"] | null }) {
-  const ready = status?.ready === true;
-  return (
-    <div
-      className={cn(
-        "flex items-start gap-2 rounded-md border px-3 py-2 text-[11px]",
-        ready
-          ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200"
-          : "border-amber-500/25 bg-amber-500/10 text-amber-200",
-      )}
+type LinearIngressApi = typeof window.ade.automations.linearIngress;
+
+function linearIngressApi(): Partial<LinearIngressApi> | null {
+  return window.ade?.automations?.linearIngress ?? null;
+}
+
+function TriggerDeliveryCallout({
+  deliveryKey,
+  status,
+  onIngressChanged,
+}: {
+  deliveryKey: NonNullable<ReturnType<typeof triggerDeliveryKeyForType>>;
+  status: NonNullable<AutomationIngressStatus["delivery"]>[NonNullable<ReturnType<typeof triggerDeliveryKeyForType>>];
+  onIngressChanged?: () => void;
+}) {
+  const navigate = useNavigate();
+  const [linearPending, setLinearPending] = useState(false);
+  const linearApi = linearIngressApi();
+
+  const setupLinear = async () => {
+    if (!linearApi?.setup) return;
+    setLinearPending(true);
+    try {
+      await linearApi.setup();
+    } catch {
+      // The ingress service records the setup error for the next refresh.
+    } finally {
+      setLinearPending(false);
+      onIngressChanged?.();
+    }
+  };
+
+  const action = deliveryKey === "github" || deliveryKey === "githubWebhook" ? (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="ml-auto shrink-0 text-amber-100"
+      onClick={() => navigate("/settings?tab=general#github-connection")}
     >
-      {ready ? <CheckCircle size={13} weight="fill" className="mt-px shrink-0" /> : <Warning size={13} weight="regular" className="mt-px shrink-0" />}
-      <span className="leading-relaxed">
-        {ready
-          ? status?.publicUrl
-            ? `Events arrive through ${status.publicUrl}.`
-            : "Events can reach this ADE runtime."
-          : "This trigger needs the webhook gateway online to receive events."}
+      Open GitHub settings
+    </Button>
+  ) : deliveryKey === "linear" ? linearApi?.setup ? (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="ml-auto shrink-0 text-amber-100"
+      disabled={linearPending}
+      onClick={() => void setupLinear()}
+    >
+      Connect Linear
+    </Button>
+  ) : (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="ml-auto shrink-0 text-amber-100"
+      onClick={() => navigate("/settings?tab=general#linear-connection")}
+    >
+      Open Linear settings
+    </Button>
+  ) : null;
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+      <Warning size={13} weight="regular" className="shrink-0" />
+      <span className="min-w-0 flex-1 leading-relaxed">
+        {status.setupError ?? "Events for this trigger can't be delivered yet."}
       </span>
+      {action}
     </div>
   );
 }
@@ -127,15 +184,18 @@ export function TriggerCard({
   trigger,
   ingressStatus,
   onChange,
+  onIngressChanged,
 }: {
   trigger: AutomationTrigger;
   ingressStatus: AutomationIngressStatus | null;
   onChange: (next: AutomationTrigger) => void;
+  onIngressChanged?: () => void;
 }) {
   const source = sourceForTriggerType(trigger.type);
   const def = sourceDef(source);
   const events = def.events;
-  const needsGateway = isWebhookGatewayTriggerType(trigger.type);
+  const deliveryKey = triggerDeliveryKeyForType(trigger.type);
+  const delivery = deliveryKey ? ingressStatus?.delivery?.[deliveryKey] : null;
 
   const setSource = (nextSource: TriggerSource) => onChange(defaultTriggerForSource(nextSource));
   const setEvent = (type: string) => onChange({ ...defaultTriggerForSource(source), type: type as AutomationTrigger["type"] });
@@ -148,6 +208,7 @@ export function TriggerCard({
         {TRIGGER_SOURCES.map((s) => {
           const Icon = s.icon;
           const active = s.value === source;
+          const iconWeight = s.value === "github" || active ? "fill" : "regular";
           return (
             <button
               key={s.value}
@@ -157,11 +218,14 @@ export function TriggerCard({
               className={cn(
                 "flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10.5px] font-medium transition-colors",
                 active
-                  ? "border-accent/45 bg-accent/[0.1] text-fg"
+                  ? "text-fg"
                   : "border-white/[0.06] bg-white/[0.02] text-muted-fg/75 hover:border-white/[0.14] hover:text-fg",
               )}
+              style={active ? { borderColor: accentTint(s.value, 0.45), background: accentTint(s.value, 0.1) } : undefined}
             >
-              <Icon size={15} weight={active ? "fill" : "regular"} className={active ? "text-accent" : ""} />
+              <span style={{ color: s.accent, opacity: active ? 1 : 0.8 }}>
+                <Icon size={15} weight={iconWeight} />
+              </span>
               {s.label}
             </button>
           );
@@ -186,7 +250,9 @@ export function TriggerCard({
         </div>
       )}
 
-      {needsGateway ? <WebhookGatewayCallout status={ingressStatus?.webhookGateway ?? null} /> : null}
+      {deliveryKey && delivery && !delivery.ready ? (
+        <TriggerDeliveryCallout deliveryKey={deliveryKey} status={delivery} onIngressChanged={onIngressChanged} />
+      ) : null}
 
       {/* Filters */}
       <div className={cn(recessedCls, "p-3")}>
