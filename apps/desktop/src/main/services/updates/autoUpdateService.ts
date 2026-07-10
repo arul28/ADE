@@ -70,6 +70,11 @@ type ProgressInfo = {
   total: number;
 };
 
+type PreservedDownloadRetry = {
+  version: string;
+  releaseNotesUrl: string | null;
+};
+
 export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSnapshot {
   return {
     status: "idle",
@@ -382,6 +387,7 @@ export function createAutoUpdateService({
   let currentPhase: AutoUpdatePhase = "download";
   let compressedUpdateBytes: number | null = null;
   let compressedUpdateVersion: string | null = null;
+  let preservedDownloadRetry: PreservedDownloadRetry | null = null;
   let installWatchdog: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
@@ -441,6 +447,7 @@ export function createAutoUpdateService({
     capacity?: Pick<AutoUpdateErrorDetails, "availableBytes" | "requiredBytes" | "volumePath">;
     message?: string;
     preservesDownload?: boolean;
+    preservedUpdate?: PreservedDownloadRetry;
   }): void {
     const classified = classifyUpdateError(args.error, args.fallbackPhase);
     const message = args.message ?? formatErrorMessage(args.error);
@@ -494,7 +501,20 @@ export function createAutoUpdateService({
       bytesPerSecond: null,
       transferredBytes: null,
       totalBytes: null,
+      ...(args.preservedUpdate ?? {}),
     });
+  }
+
+  function preservedUpdateForRetryError(error: unknown): PreservedDownloadRetry | null {
+    if (!preservedDownloadRetry || snapshot.status !== "checking") return null;
+    if (
+      snapshot.version
+      && compareUpdateVersions(snapshot.version, preservedDownloadRetry.version) > 0
+    ) {
+      return null;
+    }
+    const { kind } = classifyUpdateError(error, currentPhase);
+    return kind === "signature" || kind === "verification" ? null : preservedDownloadRetry;
   }
 
   function preflightSpace(
@@ -704,9 +724,12 @@ export function createAutoUpdateService({
     if (snapshot.status === "installing") {
       clearPendingInstallUpdate();
     }
+    const preservedUpdate = preservedUpdateForRetryError(err);
     setErrorSnapshot({
       error: err,
       fallbackPhase: currentPhase,
+      preservesDownload: preservedUpdate ? true : undefined,
+      preservedUpdate: preservedUpdate ?? undefined,
     });
   };
 
@@ -734,6 +757,9 @@ export function createAutoUpdateService({
     const reusableDownloadedVersion = snapshot.status === "error"
       && snapshot.errorDetails?.preservesDownload
       ? snapshot.version
+      : null;
+    preservedDownloadRetry = reusableDownloadedVersion
+      ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
       : null;
     checkPromise = updater.checkForUpdates()
       .then(async (result) => {
@@ -781,11 +807,18 @@ export function createAutoUpdateService({
         // electron-updater normally emits `error` as well as rejecting. Keep
         // this fallback so synchronous filesystem failures cannot disappear.
         if (snapshot.status !== "error") {
-          setErrorSnapshot({ error, fallbackPhase: currentPhase });
+          const preservedUpdate = preservedUpdateForRetryError(error);
+          setErrorSnapshot({
+            error,
+            fallbackPhase: currentPhase,
+            preservesDownload: preservedUpdate ? true : undefined,
+            preservedUpdate: preservedUpdate ?? undefined,
+          });
         }
       })
       .finally(() => {
         checkPromise = null;
+        preservedDownloadRetry = null;
       });
     await checkPromise;
   }

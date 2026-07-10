@@ -490,6 +490,58 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("preserves a verified archive and recovery metadata when its retry check has a transient feed failure", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const updateInfo = {
+      version: "1.2.3",
+      files: [{ url: "ADE-1.2.3-mac.zip", size: 300 * 1024 * 1024, sha512: "test" }],
+    };
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      installTargetPath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      getDiskSpace: () => ({
+        availableBytes: 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", updateInfo);
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot().errorDetails?.preservesDownload).toBe(true);
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      const error = new Error("network unavailable");
+      updater.emit("error", error);
+      throw error;
+    });
+
+    service.checkForUpdates();
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        version: "1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        error: "network unavailable",
+        errorDetails: {
+          kind: "network",
+          phase: "download",
+          preservesDownload: true,
+        },
+      });
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
   it("classifies a synchronous ENOSPC handoff failure and keeps the downloaded update", async () => {
     const updaterCacheDir = makeUpdaterCacheDir();
     const updater = new FakeAutoUpdater();
