@@ -15,7 +15,6 @@ export type TabWorkspaceContext = {
   workspaceId: string;
   rootPath: string;
   laneId: string | null;
-  canEdit: boolean;
   canRevealInFinder: boolean;
 };
 

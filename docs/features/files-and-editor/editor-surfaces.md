@@ -35,13 +35,44 @@ The component accepts `preferredLaneId`, `embedded`, and `active`. The
 implementation path.
 
 Module-level caches keep workspaces and root trees warm across route
-remounts:
+remounts. Both are keyed by the **binding identity** — a `bindingKey`
+of `local` or `remote:<targetId>` joined to the project root path as
+`projectCacheKey = "<bindingKey>::<projectRoot>"` — so a local session
+and a remote session for the same on-disk path never pollute each
+other's cached workspace list or tree:
 
-- `workspacesCacheByProject` keyed by project root
-- `rootTreeCacheByKey` keyed by `projectRoot::workspaceId`
+- `workspacesCacheByProject` keyed by `projectCacheKey`
+- `rootTreeCacheByKey` keyed by `projectCacheKey::workspaceId`
 
 Editor state is kept per `filesSessionKey(projectRoot, laneId)` through
-`useEditorGroupsStore`.
+`useEditorGroupsStore`. Editor sessions are keyed by project root
+(not binding), so open tabs and dirty buffers survive a local↔remote
+rebind of the same path; the tab workspace-remap pass (below) repairs
+any stale workspace ids the rebind leaves behind.
+
+`files.listWorkspaces()` is retried on failure with a capped backoff
+(`1s → 2s → 5s → 10s`, then steady at 10s) instead of being swallowed,
+so a Files tab opened before a remote runtime finishes connecting
+recovers its workspace list on its own once the host answers.
+
+### Restored-tab workspace remap
+
+Restored tabs carry the `workspaceId` they were persisted with, but
+those ids are not portable across binding identities: connecting to a
+remote host lists workspaces whose ids are the **host machine's** lane
+UUIDs, so a locally-persisted tab's `workspaceId` is stale against the
+freshly listed set. After every successful `listWorkspaces`, the
+workbench calls `store.remapTabWorkspaces(sessionKey, mapper)`. The
+mapper keeps any tab whose `workspaceId` is still present (or is an
+`external-local:*` id — those are local-only and deliberately
+untouched) and otherwise remaps by `laneId` to the matching host
+workspace, falling back to the primary workspace (or the first host
+workspace). Composite tab ids (`workspaceId::path`) are recomputed;
+collisions with an authoritative tab dedupe to the authoritative copy;
+`activeTabId` and `recentTabIds` are rewritten to the surviving ids.
+The workbench then migrates the live editor state to the new ids:
+Monaco models are moved with `registry.rekey`, and the dirty-tab set,
+per-tab reload tokens, and dirty-buffer revision follow the remap.
 
 ## Workspace Selector
 
@@ -53,8 +84,11 @@ picker chrome and preselects the active lane worktree. Switching workspaces:
 3. Switches the editor-group session key.
 4. Leaves file service and preload contracts unchanged.
 
-The main-process file service remains the source of truth for read-only
-policy, trust checks, and workspace roots.
+The main-process file service remains the source of truth for path
+safety, trust checks, and workspace roots. There is no read-only /
+view-only workspace policy: every resolved workspace is editable, and
+whether a tab shows editable Monaco is decided purely by viewer kind
+(code tabs edit; image/pdf/large-text viewers are naturally read-only).
 
 ## File Explorer Tree
 
@@ -99,14 +133,24 @@ workspace-relative path. Switching tabs calls `editor.setModel(existing)`
 instead of dispose/recreate, preserving tokenization and undo stacks.
 
 Callers dispose models on tab close, rename/delete cleanup, workspace switch,
-and unmount. Do not dispose models on tab switch, theme change, read-only
-toggle, or group move.
+and unmount. Do not dispose models on tab switch, theme change, or group move.
+
+`registry.rekey(oldKey, newKey)` moves a cached model to a new tab id in
+place so the live buffer, undo stack, and dirty baseline follow a tab-id
+remap (see the restored-tab workspace remap above) instead of being
+disposed and reloaded. On a key collision the dirty buffer wins: if the
+incoming entry has unsaved edits and the resident one does not, the
+resident is disposed and replaced; otherwise the incoming entry is
+discarded.
 
 Dirty tracking is based on Monaco alternative version ids. A save writes
 through the files write bridge, updates the model baseline, invalidates the
-content cache, and refreshes git decorations. The group-level save handler
-also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff mode, saving the
-hidden Monaco model without forcing the user back to edit mode.
+content cache, and refreshes git decorations. Every `code`-viewer tab is
+saveable — the save button and the `Cmd+S` / `Ctrl+S` handler are gated on
+`viewerKind === "code"` alone, with no editability check. The group-level
+save handler also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff
+mode, saving the hidden Monaco model without forcing the user back to edit
+mode.
 
 ## Viewers
 

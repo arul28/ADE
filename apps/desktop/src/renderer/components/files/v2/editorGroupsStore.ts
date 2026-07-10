@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../../../../shared/types/files";
 
 /**
  * Editor-groups state for the v2 Files workbench.
@@ -50,6 +51,10 @@ type LegacyEditorTab = Partial<EditorTab> & {
 
 export function editorTabId(workspaceId: string, path: string): string {
   return `${workspaceId}::${path}`;
+}
+
+export function isExternalFilesWorkspaceId(workspaceId: string): boolean {
+  return workspaceId.startsWith(EXTERNAL_FILES_WORKSPACE_ID_PREFIX);
 }
 
 export type EditorGroup = {
@@ -311,6 +316,91 @@ export function cycleTab(state: GroupsState, groupId: string, direction: 1 | -1)
   return activateTab(state, groupId, order[nextIdx]!);
 }
 
+type RemapTabWorkspacesResult = {
+  state: GroupsState;
+  tabIdChanges: Map<string, string>;
+};
+
+/**
+ * Rewrite restored tab workspace identities after the authoritative workspace
+ * list changes (for example, when the same project path is opened remotely).
+ * External-file tabs are local-only and deliberately retain their identities.
+ */
+function remapTabWorkspacesInState(
+  state: GroupsState,
+  mapper: (tab: EditorTab) => string,
+): RemapTabWorkspacesResult {
+  const tabIdChanges = new Map<string, string>();
+  const nextGroups: Record<string, EditorGroup> = {};
+
+  for (const groupId of state.groupOrder) {
+    const group = state.groups[groupId];
+    if (!group) continue;
+
+    const candidates = group.tabs.map((tab) => {
+      if (isExternalFilesWorkspaceId(tab.workspaceId)) {
+        return { tab, workspaceId: tab.workspaceId, id: tab.id, changed: false };
+      }
+      const workspaceId = mapper(tab) || tab.workspaceId;
+      const id = editorTabId(workspaceId, tab.path);
+      return { tab, workspaceId, id, changed: workspaceId !== tab.workspaceId || id !== tab.id };
+    });
+    const existingIds = new Set(
+      candidates
+        .filter((candidate) => !candidate.changed)
+        .map((candidate) => candidate.id),
+    );
+    const keptIds = new Set<string>();
+    const nextTabs: EditorTab[] = [];
+
+    for (const candidate of candidates) {
+      if (candidate.changed) tabIdChanges.set(candidate.tab.id, candidate.id);
+
+      // If the remap collides with a tab that already had the authoritative id,
+      // keep that existing tab and discard the stale restored copy.
+      if ((candidate.changed && existingIds.has(candidate.id)) || keptIds.has(candidate.id)) {
+        continue;
+      }
+
+      keptIds.add(candidate.id);
+      nextTabs.push(
+        candidate.changed
+          ? { ...candidate.tab, workspaceId: candidate.workspaceId, id: candidate.id }
+          : candidate.tab,
+      );
+    }
+
+    const mappedActiveTabId = group.activeTabId
+      ? (tabIdChanges.get(group.activeTabId) ?? group.activeTabId)
+      : null;
+    const activeTabId = mappedActiveTabId && keptIds.has(mappedActiveTabId)
+      ? mappedActiveTabId
+      : nextTabs[nextTabs.length - 1]?.id ?? null;
+    const recentTabIds: string[] = [];
+    for (const tabId of group.recentTabIds) {
+      const mappedTabId = tabIdChanges.get(tabId) ?? tabId;
+      if (keptIds.has(mappedTabId) && !recentTabIds.includes(mappedTabId)) {
+        recentTabIds.push(mappedTabId);
+      }
+    }
+
+    const groupChanged = nextTabs.length !== group.tabs.length
+      || activeTabId !== group.activeTabId
+      || recentTabIds.length !== group.recentTabIds.length
+      || recentTabIds.some((tabId, index) => tabId !== group.recentTabIds[index])
+      || nextTabs.some((tab, index) => tab !== group.tabs[index]);
+    nextGroups[groupId] = groupChanged
+      ? { ...group, tabs: nextTabs, activeTabId, recentTabIds }
+      : group;
+  }
+
+  const changed = state.groupOrder.some((groupId) => nextGroups[groupId] !== state.groups[groupId]);
+  return {
+    state: changed ? { ...state, groups: nextGroups } : state,
+    tabIdChanges,
+  };
+}
+
 /** Upgrade tabs from legacy per-lane sessions that only stored `path`. */
 export function upgradeLegacySession(
   session: GroupsState,
@@ -424,6 +514,7 @@ type EditorGroupsStore = {
   ensureSession: (sessionKey: string) => GroupsState;
   getSession: (sessionKey: string) => GroupsState | undefined;
   apply: (sessionKey: string, reducer: (state: GroupsState) => GroupsState) => void;
+  remapTabWorkspaces: (sessionKey: string, mapper: (tab: EditorTab) => string) => Map<string, string>;
   resetSession: (sessionKey: string) => void;
 };
 
@@ -442,6 +533,14 @@ export const useEditorGroupsStore = create<EditorGroupsStore>((set, get) => ({
       const current = s.sessions[sessionKey] ?? createInitialGroupsState();
       return { sessions: { ...s.sessions, [sessionKey]: reducer(current) } };
     }),
+  remapTabWorkspaces: (sessionKey, mapper) => {
+    const current = get().sessions[sessionKey] ?? createInitialGroupsState();
+    const { state, tabIdChanges } = remapTabWorkspacesInState(current, mapper);
+    if (state !== current) {
+      set((s) => ({ sessions: { ...s.sessions, [sessionKey]: state } }));
+    }
+    return tabIdChanges;
+  },
   resetSession: (sessionKey) =>
     set((s) => ({ sessions: { ...s.sessions, [sessionKey]: createInitialGroupsState() } })),
 }));

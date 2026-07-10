@@ -18,7 +18,6 @@ export type ViewerHostProps = {
   workspaceId: string;
   rootPath: string;
   tab: EditorTab;
-  canEdit: boolean;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   reloadToken?: number;
@@ -48,7 +47,7 @@ export function ViewerHost(props: ViewerHostProps) {
     rootPath: props.rootPath,
     tab,
     content: contentState.content,
-    readOnly: !props.canEdit || tab.viewerKind !== "code",
+    readOnly: tab.viewerKind !== "code",
     theme: props.theme,
     registry: props.registry,
     onDirtyChange: props.onDirtyChange,

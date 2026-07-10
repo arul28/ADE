@@ -128,7 +128,7 @@ export function EditorGroup(props: EditorGroupProps) {
       });
       return;
     }
-    if (!activeContext.canEdit || activeTab.viewerKind !== "code") return;
+    if (activeTab.viewerKind !== "code") return;
     const text = registry.getValue(activeTab.id);
     if (text == null) return;
     void window.ade.files
@@ -143,7 +143,7 @@ export function EditorGroup(props: EditorGroupProps) {
   }, [activeContext, activeTab, onDirtyChange, onError, registry]);
 
   useEffect(() => {
-    if (!props.isActiveGroup || !activeTab || !activeContext?.canEdit || activeTab.viewerKind !== "code") return;
+    if (!props.isActiveGroup || !activeTab || activeTab.viewerKind !== "code") return;
     const onKey = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
       if (!mod || event.shiftKey || event.altKey || (event.key !== "s" && event.key !== "S")) return;
@@ -156,7 +156,7 @@ export function EditorGroup(props: EditorGroupProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeContext?.canEdit, activeTab, props.isActiveGroup, saveActive]);
+  }, [activeTab, props.isActiveGroup, saveActive]);
 
   return (
     <div
@@ -215,7 +215,7 @@ export function EditorGroup(props: EditorGroupProps) {
                 })}
               </div>
             ) : null}
-            {activeTab.viewerKind === "code" && activeContext.canEdit ? (
+            {activeTab.viewerKind === "code" ? (
               <button type="button" onClick={saveActive} title="Save (⌘S)" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>
@@ -235,7 +235,6 @@ export function EditorGroup(props: EditorGroupProps) {
             workspaceId={activeContext.workspaceId}
             rootPath={activeContext.rootPath}
             tab={activeTab}
-            canEdit={activeContext.canEdit}
             theme={props.theme}
             registry={props.registry}
             reloadToken={props.reloadTokensByTabId[activeTab.id] ?? 0}
