@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Gauge } from "@phosphor-icons/react";
+import { ArrowClockwise, Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -14,10 +14,6 @@ import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
-
-// How long cached numbers may sit before opening the popup quietly refreshes
-// them in the background. A failed refresh never clears what's already shown.
-const STALE_REFRESH_THRESHOLD_MS = 60_000;
 
 const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
@@ -168,13 +164,21 @@ function ageMsFromIso(iso: string | undefined, nowMs: number): number {
   return nowMs - parsed;
 }
 
-let lastPanelCostRefreshAttemptAtMs = Number.NEGATIVE_INFINITY;
+function providerSourceLabel(status: UsageProviderStatus | null): string {
+  if (status?.source === "oauth") return "OAuth";
+  if (status?.source === "http") return "HTTP";
+  if (status?.source === "cli") return "CLI";
+  return "Waiting";
+}
 
-function shouldRefreshPanelSnapshot(snapshot: UsageSnapshot | null, nowMs: number): boolean {
-  if (!snapshot) return true;
-  if (ageMsFromIso(snapshot.lastPolledAt, nowMs) > STALE_REFRESH_THRESHOLD_MS) return true;
-  if (ageMsFromIso(snapshot.costsLastPolledAt, nowMs) <= STALE_REFRESH_THRESHOLD_MS) return false;
-  return nowMs - lastPanelCostRefreshAttemptAtMs > STALE_REFRESH_THRESHOLD_MS;
+function providerUpdatedLabel(status: UsageProviderStatus | null, nowMs: number): string {
+  const updatedAt = status?.updatedAt ?? status?.lastSuccessAt;
+  const ageMs = ageMsFromIso(updatedAt ?? undefined, nowMs);
+  if (!Number.isFinite(ageMs)) return "not updated";
+  if (ageMs < 60_000) return "just now";
+  if (ageMs < 3_600_000) return `${Math.max(1, Math.floor(ageMs / 60_000))}m ago`;
+  if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3_600_000)}h ago`;
+  return `${Math.floor(ageMs / 86_400_000)}d ago`;
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -192,14 +196,17 @@ function usePrefersReducedMotion(): boolean {
 export function UsageQuotaPanel({
   className,
   onSnapshotChange,
+  showRefreshControl = false,
 }: {
   className?: string;
   onSnapshotChange?: (snapshot: UsageSnapshot | null) => void;
+  showRefreshControl?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
   const [bridgeMissing, setBridgeMissing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [refreshing, setRefreshing] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
 
   const onSnapshotChangeRef = useRef(onSnapshotChange);
@@ -212,8 +219,9 @@ export function UsageQuotaPanel({
     onSnapshotChangeRef.current?.(nextSnapshot);
   }, []);
 
-  // Render cached numbers instantly, subscribe to live updates, and only kick a
-  // background refresh if the data is stale. A failed refresh changes nothing.
+  // Render cached numbers instantly, subscribe to live updates, and tell the
+  // adaptive scheduler that this surface is active. A failed refresh changes
+  // nothing already shown.
   useEffect(() => {
     if (!window.ade?.usage) {
       setBridgeMissing(true);
@@ -235,14 +243,11 @@ export function UsageQuotaPanel({
       if (cancelled) return;
       if (current) applySnapshot(current);
 
-      if (shouldRefreshPanelSnapshot(current, Date.now())) {
-        try {
-          lastPanelCostRefreshAttemptAtMs = Date.now();
-          const fresh = await bridge.refresh();
-          if (!cancelled && fresh) applySnapshot(fresh);
-        } catch {
-          // Quiet — the service preserves last-good data and marks it stale.
-        }
+      try {
+        const demanded = await bridge.noteDemand?.();
+        if (!cancelled && demanded) applySnapshot(demanded);
+      } catch {
+        // Quiet — demand only schedules a non-interactive provider refresh.
       }
     })();
 
@@ -251,6 +256,19 @@ export function UsageQuotaPanel({
       unsubscribe?.();
     };
   }, [applySnapshot]);
+
+  const refreshNow = useCallback(async () => {
+    if (!window.ade?.usage?.refresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      const next = await window.ade.usage.refresh();
+      if (next) applySnapshot(next);
+    } catch {
+      // The service preserves last-good data and records the provider state.
+    } finally {
+      setRefreshing(false);
+    }
+  }, [applySnapshot, refreshing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -299,6 +317,23 @@ export function UsageQuotaPanel({
 
   return (
     <div className={cn("space-y-3", className)}>
+      {showRefreshControl ? (
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[13px] font-semibold text-fg">Live limits</div>
+            <div className="mt-0.5 text-[10.5px] text-fg/45">Quota refresh never scans local history.</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshNow()}
+            disabled={refreshing}
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-fg/70 hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
+            {refreshing ? "Refreshing" : "Refresh limits"}
+          </button>
+        </div>
+      ) : null}
       {visibleProviders.length === 0 ? (
         <div
           className="flex flex-col items-center justify-center rounded-xl py-9 text-center"
@@ -323,6 +358,8 @@ export function UsageQuotaPanel({
               dailyUsage7d={snapshot?.dailyUsage7d?.[provider] ?? null}
               nowMs={nowMs}
               reducedMotion={reducedMotion}
+              refreshing={refreshing}
+              onRefresh={refreshNow}
             />
           ))}
         </div>
@@ -494,6 +531,8 @@ function ProviderUsageCard({
   dailyUsage7d,
   nowMs,
   reducedMotion,
+  refreshing,
+  onRefresh,
 }: {
   provider: UsageProvider;
   windows: UsageWindow[];
@@ -503,17 +542,32 @@ function ProviderUsageCard({
   dailyUsage7d: number[] | null;
   nowMs: number;
   reducedMotion: boolean;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   const meta = PROVIDER_META[provider];
   const isAuthed = connection?.authAvailable !== false;
   const isUsageUnauthed = status?.state === "unauthed";
 
-  if (!isAuthed || isUsageUnauthed) {
+  if (windows.length === 0 && (!isAuthed || isUsageUnauthed)) {
     return (
-      <div className="rounded-xl px-4 py-3.5 opacity-55" style={CARD_STYLE}>
-        <div className="flex items-center justify-between gap-3">
+      <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
+        <div className="flex items-start justify-between gap-3">
           <ProviderHeading provider={provider} color={meta.color} label={meta.label} dim />
-          <span className="text-[11px] text-fg/45">{status?.message ?? "Not signed in"}</span>
+          <span className="text-right text-[10px] text-fg/40">
+            {providerSourceLabel(status)} · {providerUpdatedLabel(status, nowMs)}
+          </span>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] px-2.5 py-2">
+          <span className="text-[11px] text-amber-100/65">{status?.message ?? "Not signed in"}</span>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+            className="min-h-8 shrink-0 rounded-md border border-white/10 px-2 text-[10.5px] text-fg/70 hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            Reconnect
+          </button>
         </div>
       </div>
     );
@@ -532,14 +586,28 @@ function ProviderUsageCard({
 
   return (
     <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
-      <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="mb-3 flex items-start justify-between gap-3">
         <ProviderHeading provider={provider} color={meta.color} label={meta.label} />
-        {status?.state === "stale" ? (
-          <span className="text-[10px] text-amber-300/70" title={status.message ?? "Showing last reading"}>
-            stale
-          </span>
-        ) : null}
+        <span className="text-right text-[10px] text-fg/40">
+          {providerSourceLabel(status)} · {providerUpdatedLabel(status, nowMs)}
+        </span>
       </div>
+
+      {status && status.state !== "ok" ? (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] px-2.5 py-2">
+          <span className="text-[10.5px] text-amber-100/65">
+            {status.message ?? (status.state === "stale" ? "Showing last known quota" : "Quota is unavailable")}
+          </span>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+            className="min-h-8 shrink-0 rounded-md border border-white/10 px-2 text-[10px] text-fg/70 hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            {status.state === "unauthed" ? "Reconnect" : "Retry"}
+          </button>
+        </div>
+      ) : null}
 
       {windows.length > 0 ? (
         <div className="space-y-3">

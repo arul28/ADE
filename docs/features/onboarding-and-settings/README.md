@@ -244,21 +244,19 @@ Renderer — settings:
   weekly window is present, otherwise `mo`). Percent values are clamped
   to 0-100, color through the green/amber/red thresholds at 75% /
   100%, and show an ellipsis while missing. On mount, the button reads
-  the cached `ade.usage.getSnapshot`, immediately forces
-  `ade.usage.refresh`, ignores a slower cached startup read when a
-  fresher forced refresh has already landed, refreshes every 120 s, and
-  refreshes on window focus when the latest poll is older than 60 s.
+  the cached `ade.usage.getSnapshot` and records quota demand; it does not
+  force a provider request. Explicit refresh calls `ade.usage.refresh`, while
+  adaptive polling tightens to 60 s under demand and backs off when idle.
   Provider detection comes from `ade.ai.getStatus` on mount and every
   5 min; CLIs not detected on the machine are hidden from the header,
   while installed-but-unauthenticated providers stay visible in the
-  panel as "Not signed in". The panel auto-refreshes on open, subscribes
-  to usage `onUpdate`, and drills down into 5-hour, weekly, monthly,
-  and other reset windows, last-poll status, daily 7-day usage, and
-  per-provider messages/error chips. Codex polling keeps the legacy HTTP
-  rate-limit endpoint as the first source for windows, then also asks the
-  Codex app-server via CLI JSON-RPC for `account/usage/read` and
-  `account/workspaceMessages/read` so the panel can show native daily
-  usage and provider workspace messages even when HTTP windows succeed.
+  panel as "Not signed in". The panel subscribes to usage `onUpdate`, and
+  drills down into 5-hour, weekly, monthly, and other reset windows with
+  explicit source, updated time, stale state, and inline provider errors.
+  Claude background polling never prompts Keychain and explicit local refresh
+  can fall back from OAuth to a bounded CLI probe. Codex returns directly when
+  HTTP supplies complete windows and uses a bounded app-server RPC only for
+  auth recovery or a successful but unrecognized response schema.
   Cursor usage polling was removed (it required a team-admin API key that
   desktop users almost never have); only `claude` and `codex` are tracked
   in `TRACKED_PROVIDERS`. Budget
@@ -266,33 +264,72 @@ Renderer — settings:
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
-  — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
-  for today / 7d / 30d / year / all-time stats and calls
-  `window.ade.usage.refresh()` for explicit refresh. The first render is
-  stale-while-revalidate: cached provider/GitHub data and live project-DB
-  aggregates return immediately while expensive provider-ledger and `gh`
-  scans refresh in the background. The dashboard combines deduplicated local
-  provider tokens, ADE AI calls, sessions, lane/code movement, artifacts,
-  automations, workers, GitHub activity, and client-surface activity.
+  — Settings > Usage, split into **Limits** and **Activity** tabs. Limits
+  renders the same live quota contract as the header without starting a local
+  ledger scan. Activity is a sectioned dashboard rather than a single
+  carousel. Its header carries two segmented controls — a **scope** toggle (This
+  project / This machine, persisted to `ade.stats.scope.v1`, default project)
+  and a **range** toggle (Today / 7d / 30d / year / all, default all) — plus
+  a Refresh button. Below the header: an **Overview** row of stat tiles (AI tokens,
+  estimated cost, code movement, pull requests), an **Activity** section that
+  mounts `ActivityModule` (`variant="full"`, `showRangeControl={false}`), and
+  a two-panel row of **AI usage** (deduplicated per-provider token totals and
+  per-model breakdown, with per-provider estimation notes) and **Code & PRs**
+  (GitHub activity and ADE-local activity as separate labeled columns, never
+  max-merged). A meta line at the bottom reports freshness ("refreshing"),
+  estimation caveats, and which scope the provider totals were computed at.
+  It reads `window.ade.usage.getAdeStats({ preset, scope })` and calls
+  `window.ade.usage.refreshHistory()` for explicit Activity refresh; the first render is
+  stale-while-revalidate (cached provider/GitHub data plus live project-DB
+  aggregates return immediately while expensive provider-ledger and `gh` scans
+  refresh in the background). Provider colors come from `providerColor`.
 - `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
-  live quota snapshot plus the retrospective `getAdeUsageStats` projection.
+  live quota snapshot plus the retrospective `getAdeUsageStats(args)`
+  projection. `args.scope` selects `machine` (every session in the provider's
+  local ledgers, codeburn-comparable) or `project` (only sessions attributable
+  to the current project root by cwd match); GitHub and ADE-DB metrics are
+  always project/repo scoped regardless of scope. Provider token totals are
+  deduplicated from the local provider ledgers, all daily buckets and range
+  boundaries key on machine-local calendar days (`localDay.ts`), and GitHub vs
+  local activity are reported as separate labeled groups (never max-merged).
+  Live quota polling is adaptive and coalesced, retains unexpired last-good
+  provider windows with source/freshness metadata, and stays independent from
+  the expensive provider-ledger and GitHub history scans.
   It returns cached provider/GitHub results and current DB aggregates without
-  awaiting expensive scans, exposes freshness metadata, and coalesces stale
-  provider/GitHub revalidation in the background.
+  awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
+  and coalesces stale provider/GitHub revalidation in the background
+  (`refreshStatsInBackground`, single-flight per range + source).
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is
-  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, and paired
-  web commands are attributed as `desktop`, `tui`, `mobile`, and `web`.
-  `usage_events` is local-only (excluded from CRR replication) because every
-  controller action is recorded once on the runtime that executes it.
-- `apps/desktop/src/shared/types/usage.ts` — shared range, daily-point,
-  freshness, aggregate, and client-attribution contracts. Supported presets
-  are today, 7d, 30d, year, and all time.
-- `apps/desktop/src/renderer/components/usage/UsageActivityCarousel.tsx` —
-  reusable animated activity/token/code/client-mix carousel. It persists the
-  selected chart and day/week/month/year range, appears in Settings > Stats,
-  and renders directly below the empty Work composer on desktop and web.
+  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, paired web
+  commands, and API callers are attributed as `desktop`, `tui`, `mobile`,
+  `web`, and `api`. `usage_events` is local-only (excluded from CRR
+  replication) because every controller action is recorded once on the runtime
+  that executes it.
+- `apps/desktop/src/main/services/usage/localDay.ts` — machine-local calendar
+  day helpers (`localDayKey`, `localDayStart`, `localDayOffset`,
+  `localDayOrdinal`) so daily points and range boundaries follow the user's
+  timezone instead of UTC.
+- `apps/desktop/src/shared/types/usage.ts` — shared range, scope, daily-point,
+  freshness, estimation, GitHub-vs-local activity, aggregate, and
+  client-attribution contracts. Supported presets are today, 7d, 30d, year,
+  and all time; scopes are `machine` and `project`; `AdeUsageEstimationKind`
+  (`exact` / `chars` / `distribution` / `mixed`) records how a provider's token
+  counts were obtained.
+- `apps/desktop/src/renderer/components/usage/ActivityModule.tsx` — the
+  tabbed activity/tokens/code/clients module that replaced the old carousel.
+  `ActivityModule` renders `full` and `compact` variants (optional range
+  control) and persists the selected tab and day/week/month/year range to
+  `ade.activity.module.v1` (migrating the retired `ade.stats.carousel.v1`
+  key). `WorkActivityModule` is the self-fetching compact wrapper that reads
+  `usage.getAdeStats` and renders directly below the empty Work composer on
+  desktop and web.
+- `apps/desktop/src/renderer/components/usage/providerColors.ts` — theme-aware
+  brand color palette for usage bars and legends. `providerColor(provider,
+  theme)` returns a per-provider brand color (Claude's rust family, distinct
+  hues for the other providers) with a deterministic hashed fallback for
+  unknown providers.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
@@ -303,59 +340,57 @@ Auto-update (top-bar control, not a settings tab):
 - `apps/desktop/src/main/services/updates/autoUpdateService.ts` —
   electron-updater wrapper that owns the renderer-visible
   `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"
-  | "ready" | "installing" | "error"`, current/target versions,
-  progress, structured failure details, and recently installed notice).
-  It keeps `autoDownload` off, reads the release artifact size, preflights
-  free space on the updater-cache volume, and starts the download only after
-  the check passes. Before install it re-checks the staged version and
-  preflights `process.execPath` so staging/replacement capacity is measured on
-  the installed application's volume. Disk-full, quota, capacity, network,
-  signature, verification, permission, and installer failures retain their
-  phase in the snapshot. Verified downloads are preserved when safe; partial
-  or untrusted cache data is cleared. The install preparation and native
-  handoff are bounded by a watchdog, so `installing` cannot remain stuck
-  indefinitely. On the next launch, `reconcilePersistedUpdateState`
+  | "ready" | "installing" | "error"`, version, progress, recently
+  installed notice). Tracks superseded downloads against the current
+  ready version via `compareUpdateVersions` (a SemVer-aware
+  comparator that handles `v` prefixes, missing patch, and
+  prerelease ordering) so a same-or-older `update-available` while a
+  newer build is already staged is logged and ignored instead of
+  clobbering the staged installer; packaged builds schedule startup and
+  periodic update checks, while dev/source launches leave those timers off
+  to avoid surfacing missing-updater-config errors; if the new build is strictly
+  newer, the cached installer dir is wiped and the snapshot
+  transitions back through `downloading`. `quitAndInstall()` is
+  asynchronous: it gates on the current snapshot being `ready`,
+  re-runs `updater.checkForUpdates()` with `allowReady: true` to
+  confirm the staged installer is still the latest, and only then
+  flips the snapshot to `installing`, persists the
+  `pendingInstallUpdate` global-state row, and calls
+  `updater.quitAndInstall(false, true)`. If the refresh check fails,
+  it surfaces the error, drops the cache, and clears the pending
+  install. On the next launch, `reconcilePersistedUpdateState`
   matches the running version against `pendingInstallUpdate` using
-  a SemVer-aware comparator (so `>=` target counts as installed, even if the
-  running build is one ahead), populates
+  the same SemVer comparator (so `>=` target counts as installed,
+  even if the running build is one ahead), populates
   `recentlyInstalledUpdate` with the actual running version, and
   cleans up the updater cache directory. On packaged launches with a
   recently installed update, the desktop refreshes the per-user runtime
   service so `ade serve` re-execs the updated bundled CLI and clients
   do not fall back to an isolated build-mismatch runtime.
-- `apps/desktop/src/main/services/updates/autoUpdateErrors.ts` — measures
-  available bytes with `statfs`, estimates conservative download/install
-  headroom, extracts artifact size from update metadata, and classifies
-  updater failures into the shared kind/phase contract.
-- `apps/desktop/src/shared/types/core.ts` — `AutoUpdateSnapshot`,
-  `AutoUpdateErrorDetails`, error kinds, and update phases shared across main,
-  preload IPC, and renderer.
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
-  the app-shell top-bar badge. It shows checking, download progress, install,
-  and quit/reopen states. An error snapshot remains visible as an amber
-  **Not enough space to update** or **Update failed** button instead of
-  disappearing.
-- `apps/desktop/src/renderer/components/app/AutoUpdateErrorDialog.tsx` —
-  accessible failure detail and recovery dialog. It shows current/target
-  versions, failed phase, classified cause, capacity estimate and affected
-  path when available, whether the verified download was retained, changelog,
-  and a concurrency-safe **Check again** action.
-
-The post-install dialog is a centered card titled
-"Updated to vX.Y.Z" (the running version) with an X close button and
-click-outside dismiss; it offers a "Changelog" button that opens
-`recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View on GitHub"
-button that opens `recentlyInstalled.githubReleaseUrl` (the GitHub release
-page). Each button is shown only when its URL is present; opening either link
-also dismisses the notice.
+  the small badge in the app shell top bar. Shows "Checking for
+  updates" / "Downloading vX.Y.Z (NN%)" / "Install update vX.Y.Z" /
+  "ADE will quit and reopen" depending on the snapshot. Clicking the
+  install affordance prompts the user, sets a local
+  `installRequested` flag, and calls
+  `window.ade.updateQuitAndInstall()`; if the IPC returns `false`
+  (refresh check failed, no longer ready, etc.) the flag is cleared
+  so the badge falls back to the underlying snapshot. While
+  `installing` (or after the user clicks install but before the main
+  process flips status), the badge animates in fuchsia and is
+  disabled. The post-install dialog is a centered card titled
+  "Updated to vX.Y.Z" (the running version) with an X close button
+  and click-outside dismiss; it offers a "Changelog" button that opens
+  `recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View
+  on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
+  (the GitHub release page). Each button is shown only when its URL is
+  present; opening either link also dismisses the notice.
 
 ## Detail docs
 
 - [configuration-schema.md](./configuration-schema.md) — shape of
   `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
-- [desktop-auto-update.md](./desktop-auto-update.md) — macOS updater cache and
-  staging flow, disk-space estimate, failure timing, and cache policy.
 - [first-run.md](./first-run.md) — the first-run setup dashboard,
   stack detection, existing-lane import, and the UX contract that lets
   users skip optional integrations.
@@ -459,9 +494,9 @@ changing rather than which service backs it:
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus the project-wide **Pause all scheduled work** control for Claude wakeups, cron tasks, and loops. Pausing keeps schedules armed and suppresses `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Stats | `AdeUsageSection.tsx`, `UsageActivityCarousel.tsx` | Fast cached local-provider, project-DB, GitHub, and cross-client activity with animated day/week/month/year charts. Deep links from `?tab=usage` and `?tab=stats` land here. |
+| Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard: overview stat tiles, an activity/tokens/code/clients module, and split AI-usage and GitHub-vs-local Code & PRs panels, with project/machine scope and day/week/month/year/all ranges. Fast cached local-provider, project-DB, GitHub, and cross-client activity. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
-> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`). Settings > Stats is the retrospective cross-client ADE activity dashboard.
+> Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`) and Settings > Usage > Limits. The Activity tab is the retrospective cross-client dashboard.
 
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias

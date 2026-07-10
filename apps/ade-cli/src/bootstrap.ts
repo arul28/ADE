@@ -1300,7 +1300,12 @@ export async function createAdeRuntime(args: {
   });
   const detachPushSources = publishPushEvents
     ? pushPublisherService.attachSources(projectId, {
-        agentChatService: agentChatService ?? null,
+        // The lightweight no-agent headless chat stub intentionally exposes
+        // only its request/response surface. Do not treat it as an event
+        // source unless it implements the full subscription contract.
+        agentChatService: typeof agentChatService?.subscribeToEvents === "function"
+          ? agentChatService
+          : null,
         ptyService,
         subscribePrNotifications: (cb) => {
           pushPrNotificationSubscribers.add(cb);

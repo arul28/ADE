@@ -55,6 +55,9 @@ struct ConnectionSettingsView: View {
           SettingsAppearanceSection()
             .padding(.horizontal, 16)
 
+          SettingsUsageQuotaSection(syncService: syncService)
+            .padding(.horizontal, 16)
+
           SettingsVoiceInputSection()
             .padding(.horizontal, 16)
 
@@ -380,6 +383,144 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     let suffix = trimmed.suffix(4)
     return "\(prefix)…\(suffix)"
   }
+}
+
+private struct SettingsUsageQuotaSection: View {
+  let syncService: SyncService
+
+  @ObservedObject private var store = MobileUsageQuotaStore.shared
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .firstTextBaseline) {
+        SettingsSectionHeader(label: "AI USAGE", hint: "Live limits from your machine")
+        Spacer(minLength: 8)
+        Button {
+          Task { await store.load(using: syncService, refresh: true) }
+        } label: {
+          if store.refreshing {
+            ProgressView().controlSize(.small)
+          } else {
+            Image(systemName: "arrow.clockwise")
+          }
+        }
+        .frame(width: 44, height: 44)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Refresh AI usage limits")
+        .disabled(!syncService.supportsRemoteAction("usage.refreshQuota") || store.refreshing)
+      }
+
+      VStack(spacing: 0) {
+        if let snapshot = store.snapshot {
+          ForEach(["claude", "codex"], id: \.self) { provider in
+            SettingsUsageProviderCard(
+              provider: provider,
+              windows: snapshot.windows.filter { $0.provider == provider },
+              status: snapshot.providerStatus?[provider]
+            )
+            if provider == "claude" { Divider().opacity(0.14) }
+          }
+        } else {
+          Text("Pair with an updated ADE machine to load Claude and Codex limits.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+        }
+      }
+      .background(ADEColor.surfaceBackground.opacity(0.82), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
+
+      if let error = store.errorMessage {
+        Text(error)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.warning)
+      }
+    }
+    .task(id: syncService.connectionState.rawValue) {
+      await store.load(using: syncService)
+    }
+  }
+}
+
+private struct SettingsUsageProviderCard: View {
+  let provider: String
+  let windows: [MobileUsageQuotaWindow]
+  let status: MobileUsageProviderStatus?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text(provider == "claude" ? "Claude" : "Codex")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer()
+        Text("\((status?.source ?? "waiting").uppercased()) · \(mobileUsageSettingsRelativeTime(status?.updatedAt ?? status?.lastSuccessAt))")
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      ForEach(windows) { window in
+        VStack(alignment: .leading, spacing: 5) {
+          HStack {
+            Text(mobileUsageWindowLabel(window.windowType))
+            Spacer()
+            Text("\(Int(max(0, 100 - window.percentUsed)))% left")
+              .fontWeight(.semibold)
+          }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+
+          ProgressView(value: max(0, min(100, 100 - window.percentUsed)), total: 100)
+            .tint(provider == "claude" ? ADEColor.warning : ADEColor.purpleAccent)
+
+          Text("Resets \(mobileUsageSettingsResetLabel(window.resetsAt))")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+
+      if let message = status?.message, status?.state != "ok" {
+        Text(message)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.warning)
+      }
+    }
+    .padding(14)
+    .accessibilityElement(children: .contain)
+  }
+}
+
+private func mobileUsageWindowLabel(_ value: String) -> String {
+  switch value {
+  case "five_hour": return "5-hour"
+  case "weekly": return "Weekly"
+  case "monthly": return "Monthly"
+  case "weekly_oauth_apps": return "OAuth apps"
+  case "weekly_cowork": return "Cowork"
+  default: return value.replacingOccurrences(of: "_", with: " ").capitalized
+  }
+}
+
+private func mobileUsageSettingsDate(_ iso: String?) -> Date? {
+  guard let iso else { return nil }
+  let fractional = ISO8601DateFormatter()
+  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return fractional.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+}
+
+private func mobileUsageSettingsRelativeTime(_ iso: String?) -> String {
+  guard let date = mobileUsageSettingsDate(iso) else { return "not updated" }
+  let seconds = max(0, Int(Date().timeIntervalSince(date)))
+  if seconds < 60 { return "now" }
+  if seconds < 3_600 { return "\(seconds / 60)m ago" }
+  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
+  return "\(seconds / 86_400)d ago"
+}
+
+private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
+  guard let date = mobileUsageSettingsDate(iso) else { return "soon" }
+  return date.formatted(date: .abbreviated, time: .shortened)
 }
 
 private struct SettingsAuroraBackground: View {

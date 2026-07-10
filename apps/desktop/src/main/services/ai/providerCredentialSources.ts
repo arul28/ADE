@@ -10,6 +10,7 @@ const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000;
 const CODEX_TOKEN_REFRESH_DAYS = 8;
+const CLAUDE_CREDENTIAL_MISS_TTL_MS = 60_000;
 
 export type LocalAuthSource =
   | "macos-keychain"
@@ -133,8 +134,15 @@ export function runShellCommand(
   });
 }
 
-export async function readClaudeCredentials(): Promise<ClaudeLocalAuthCredentials | null> {
-  if (process.platform === "darwin") {
+export type ClaudeCredentialReadOptions = {
+  /** Keychain reads can display macOS UI. Automatic/background callers must disable them. */
+  allowKeychain?: boolean;
+};
+
+export async function readClaudeCredentials(
+  options: ClaudeCredentialReadOptions = {},
+): Promise<ClaudeLocalAuthCredentials | null> {
+  if (process.platform === "darwin" && options.allowKeychain !== false) {
     try {
       const result = await runShellCommand(
         "security find-generic-password -s 'Claude Code-credentials' -w",
@@ -215,18 +223,35 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
 }
 
 let cachedClaudeCreds: ClaudeLocalAuthCredentials | null = null;
+let cachedClaudeMissUntilMs = 0;
 
 export function clearClaudeCredentialCache(): void {
   cachedClaudeCreds = null;
+  cachedClaudeMissUntilMs = 0;
 }
 
-export async function readClaudeCredentialsWithRefresh(logger: Logger): Promise<ClaudeLocalAuthCredentials | null> {
+export function cacheClaudeCredentials(credentials: ClaudeLocalAuthCredentials): void {
+  cachedClaudeCreds = credentials;
+  cachedClaudeMissUntilMs = 0;
+}
+
+export async function readClaudeCredentialsWithRefresh(
+  logger: Logger,
+  options: ClaudeCredentialReadOptions = {},
+): Promise<ClaudeLocalAuthCredentials | null> {
   if (cachedClaudeCreds && !isClaudeTokenExpiredOrExpiring(cachedClaudeCreds)) {
     return cachedClaudeCreds;
   }
 
-  const creds = await readClaudeCredentials();
-  if (!creds) return null;
+  const userInitiated = options.allowKeychain !== false;
+  if (!userInitiated && cachedClaudeMissUntilMs > Date.now()) return null;
+
+  const creds = await readClaudeCredentials(options);
+  if (!creds) {
+    cachedClaudeMissUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
+    return null;
+  }
+  cachedClaudeMissUntilMs = 0;
 
   if (!isClaudeTokenExpiredOrExpiring(creds)) {
     cachedClaudeCreds = creds;

@@ -378,7 +378,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   full frame. Protocol version is `1`. Default host port is `8787`.
 - `syncRemoteCommandService.ts` (~4,600 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
-  `usage.getAdeStats`, `prs.getMobileSnapshot`, `lanes.presence.*`,
+  `usage.getAdeStats`, `usage.getQuotaSnapshot`, `usage.refreshQuota`,
+  `prs.getMobileSnapshot`, `lanes.presence.*`,
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
   `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
@@ -404,6 +405,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `usage.getAdeStats` is a viewer-allowed project read backed by the runtime's
   usage tracker; it serves cached provider/GitHub data plus live DB aggregates
   to iOS and web without replicating the local-only raw interaction ledger.
+  `usage.getQuotaSnapshot` reads the cached live Claude/Codex limit snapshot,
+  while `usage.refreshQuota` runs the bounded quota-only provider path with
+  interactive auth disabled. Neither remote quota action starts local provider
+  history scans or sends provider credentials to the controller.
   Lane snapshot commands accept decoration flags so mobile can refresh
   runtime/session buckets without recomputing conflict status, rebase
   suggestions, or auto-rebase status on every light refresh; lane detail

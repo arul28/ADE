@@ -7382,6 +7382,15 @@ describe("ADE CLI", () => {
     expect(polled.kind).toBe("execute");
     if (polled.kind !== "execute") return;
     expect(polled.steps[0]?.params).toEqual(plan.steps[0]?.params);
+
+    const history = buildCliPlan(["usage", "refresh", "--history"]);
+    expect(history.kind).toBe("execute");
+    if (history.kind !== "execute") return;
+    expect(history.label).toBe("usage history refresh");
+    expect(history.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "refreshHistory", args: {} },
+    });
   });
 
   it("usage budget get routes to the budget.getConfig action", () => {

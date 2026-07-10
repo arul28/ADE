@@ -41,12 +41,17 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
   aggregateCosts,
+  localDayKey,
+  makeDailySkeleton,
+  dateIntersectsRange,
+  scanGithubPullRequestPages,
   calculatePacing,
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
   isCodexTokenStale,
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
+  parseClaudeCliUsage,
   parseCodexRateLimitWindows,
   calculatePacingByProvider,
   buildProviderWindows,
@@ -54,6 +59,7 @@ const {
   collectAdeUsageStats,
   pollCodexUsage,
   pollCodexViaCliRpc,
+  readClaudeCredentials,
   resolveTokenPrice,
   resetDynamicTokenPricingForTest,
   setDynamicTokenPricingForTest,
@@ -354,10 +360,140 @@ describe("aggregateCosts", () => {
   });
 });
 
+describe("local daily aggregation", () => {
+  it("daily points carry output and cache split", () => {
+    const now = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const date = localDayKey(now);
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "codex",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokenBreakdownByPreset: {
+            today: {
+              [date]: {
+                "gpt-5.5": { input: 100, output: 40, cached: 25, cacheWrite: 5 },
+              },
+            },
+          },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "today" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === date)).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 40,
+      cachedTokens: 30,
+      totalTokens: 170,
+    });
+  });
+
+  it("legacy daily totals do not masquerade as input tokens", () => {
+    const now = new Date(2026, 4, 29, 12, 0, 0, 0);
+    const date = localDayKey(now);
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "claude",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokensByPreset: { today: { [date]: 55 } },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "today" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === date)).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 55,
+    });
+  });
+
+  it("day keys are local-timezone stable across DST calendar fixtures", () => {
+    expect(localDayKey("2026-03-08")).toBe("2026-03-08");
+    const fixtures = [
+      {
+        timezone: "America/Los_Angeles",
+        start: new Date(2026, 2, 7, 12),
+        until: new Date(2026, 2, 10, 12),
+        expected: ["2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10"],
+      },
+      {
+        timezone: "Pacific/Auckland",
+        start: new Date(2026, 3, 3, 12),
+        until: new Date(2026, 3, 6, 12),
+        expected: ["2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06"],
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const range = {
+        preset: "7d" as const,
+        since: new Date(
+          fixture.start.getFullYear(),
+          fixture.start.getMonth(),
+          fixture.start.getDate(),
+        ).toISOString(),
+        until: fixture.until.toISOString(),
+      };
+      expect(makeDailySkeleton(range, fixture.until.getTime()).map((point) => point.date), fixture.timezone)
+        .toEqual(fixture.expected);
+      expect(dateIntersectsRange(fixture.expected[1]!, range), fixture.timezone).toBe(true);
+    }
+  });
+
+  it("extends the skeleton instead of dropping an observed local day", () => {
+    const now = new Date(2026, 4, 29, 12);
+    const oldDate = "2024-01-02";
+    const stats = collectAdeUsageStats({
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        costs: [{
+          provider: "claude",
+          todayCostUsd: 0,
+          last30dCostUsd: 0,
+          tokenBreakdown: {},
+          dailyTokenBreakdownByPreset: {
+            all: { [oldDate]: { opus: { input: 1, output: 2, cached: 3 } } },
+          },
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        lastPolledAt: now.toISOString(),
+        errors: [],
+      },
+      args: { preset: "all" },
+      nowMs: now.getTime(),
+    } as any);
+
+    expect(stats.daily.find((point) => point.date === oldDate)?.totalTokens).toBe(6);
+  });
+});
+
 // ── collectAdeUsageStats ─────────────────────────────────────────
 
 describe("collectAdeUsageStats", () => {
-  it("uses local runtime scans and GitHub activity without ADE database counting", () => {
+  it("keeps GitHub and local activity separate", () => {
     const nowMs = Date.parse("2026-05-29T12:00:00.000Z");
     const snapshot = {
       windows: [],
@@ -417,6 +553,32 @@ describe("collectAdeUsageStats", () => {
     const stats = collectAdeUsageStats({
       snapshot,
       githubStats,
+      databaseStats: {
+        summary: {
+          commitsCreated: 2,
+          pushOperations: 3,
+          prLandings: 1,
+          filesChanged: 4,
+          insertions: 120,
+          deletions: 20,
+        },
+        providers: [],
+        models: [],
+        agentProviders: [],
+        agentModels: [],
+        features: [],
+        lanes: [],
+        activities: [],
+        clients: [],
+        daily: [{
+          date: "2026-05-29",
+          commits: 2,
+          prs: 1,
+          insertions: 120,
+          deletions: 20,
+          filesChanged: 4,
+        }],
+      } as any,
       args: { preset: "7d" },
       nowMs,
     });
@@ -433,20 +595,105 @@ describe("collectAdeUsageStats", () => {
     expect(stats.summary.prsOpen).toBe(3);
     expect(stats.summary.prsMerged).toBe(6);
     expect(stats.summary.prsClosed).toBe(1);
-    expect(stats.summary.commitsCreated).toBe(9);
+    expect(stats.summary.commitsCreated).toBe(2);
     expect(stats.summary.prAdditions).toBe(9_106);
     expect(stats.summary.prDeletions).toBe(1_313);
     expect(stats.github.repo).toBe("arul28/ADE");
+    expect(stats.githubActivity).toMatchObject({ commits: 9, prsTracked: 7, prAdditions: 9_106 });
+    expect(stats.localActivity).toMatchObject({ commits: 2, prLandings: 1, insertions: 120 });
     expect(stats.providers.map((provider) => provider.provider)).toEqual(["codex"]);
     expect(stats.adeProviders).toEqual([]);
     expect(stats.agentProviders).toEqual([]);
     expect(stats.daily.find((point) => point.date === "2026-05-29")).toMatchObject({
-      commits: 9,
-      prs: 7,
-      insertions: 9_106,
-      deletions: 1_313,
-      filesChanged: 86,
+      commits: 2,
+      prs: 1,
+      insertions: 120,
+      deletions: 20,
+      filesChanged: 4,
+      githubCommits: 9,
+      githubPrs: 7,
+      githubAdditions: 9_106,
+      githubDeletions: 1_313,
     });
+  });
+});
+
+describe("GitHub activity scan", () => {
+  it("stops pull request pagination once a page's oldest update crosses the range start", async () => {
+    const runCommand = vi.fn(async (_command: string, _args: string[]) => JSON.stringify({
+      nodes: [
+        { number: 3, createdAt: "2026-05-29T12:00:00.000Z", updatedAt: "2026-05-29T12:00:00.000Z", author: { login: "arul" } },
+        { number: 2, createdAt: "2026-05-28T12:00:00.000Z", updatedAt: "2026-05-20T12:00:00.000Z", author: { login: "arul" } },
+      ],
+      pageInfo: { hasNextPage: true, endCursor: "next-page" },
+    }));
+
+    const rows = await scanGithubPullRequestPages({
+      projectRoot: "/repo",
+      repoParts: { owner: "arul", name: "ADE" },
+      viewer: "arul",
+      range: {
+        preset: "7d",
+        since: "2026-05-23T00:00:00.000Z",
+        until: "2026-05-29T23:59:59.000Z",
+      },
+      runCommand,
+    });
+
+    expect(rows.map((row) => row.number)).toEqual([3, 2]);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining("field: UPDATED_AT"),
+    ]));
+  });
+
+  it("continues past old creations to count a long-lived PR merged in range", async () => {
+    const pages = [
+      {
+        nodes: [
+          {
+            number: 2,
+            createdAt: "2026-01-10T12:00:00.000Z",
+            updatedAt: "2026-05-29T12:00:00.000Z",
+            author: { login: "arul" },
+          },
+        ],
+        pageInfo: { hasNextPage: true, endCursor: "next-page" },
+      },
+      {
+        nodes: [
+          {
+            number: 1,
+            state: "MERGED",
+            createdAt: "2025-12-01T12:00:00.000Z",
+            updatedAt: "2026-05-28T12:00:00.000Z",
+            mergedAt: "2026-05-28T12:00:00.000Z",
+            author: { login: "arul" },
+          },
+        ],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    ];
+    const runCommand = vi.fn(async () => JSON.stringify(pages.shift()));
+
+    const rows = await scanGithubPullRequestPages({
+      projectRoot: "/repo",
+      repoParts: { owner: "arul", name: "ADE" },
+      viewer: "arul",
+      range: {
+        preset: "7d",
+        since: "2026-05-23T00:00:00.000Z",
+        until: "2026-05-29T23:59:59.000Z",
+      },
+      runCommand,
+    });
+
+    expect(runCommand).toHaveBeenCalledTimes(2);
+    expect(rows).toContainEqual(expect.objectContaining({
+      number: 1,
+      createdAt: "2025-12-01T12:00:00.000Z",
+      mergedAt: "2026-05-28T12:00:00.000Z",
+    }));
   });
 });
 
@@ -717,6 +964,43 @@ describe("parseClaudeWindows", () => {
   });
 });
 
+describe("parseClaudeCliUsage", () => {
+  it("parses Claude's interactive usage panel as a bounded fallback", () => {
+    const windows = parseClaudeCliUsage(`
+Settings: Usage
+Current session
+75% left
+Resets 5pm
+Current week (all models)
+40% used
+Resets Jul 12 at 3pm
+`);
+
+    expect(windows).toHaveLength(2);
+    expect(windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(25);
+    expect(windows.find((window) => window.windowType === "weekly")?.percentUsed).toBe(40);
+    expect(windows.every((window) => Number.isFinite(Date.parse(window.resetsAt)))).toBe(true);
+  });
+});
+
+describe("readClaudeCredentials", () => {
+  it("skips macOS Keychain access for background reads", async () => {
+    const originalPlatform = process.platform;
+    const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    setPlatform("darwin");
+
+    try {
+      await expect(readClaudeCredentials({ allowKeychain: false })).resolves.toBeNull();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    } finally {
+      readFileSpy.mockRestore();
+      setPlatform(originalPlatform);
+    }
+  });
+});
+
 describe("parseCodexRateLimitWindows", () => {
   it("accepts the wham HTTP response shape", () => {
     const result = parseCodexRateLimitWindows({
@@ -942,7 +1226,7 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
-  it("does not spawn the CLI fallback for non-auth Codex 4xx responses", async () => {
+  it.each([403, 409, 429] as const)("does not spawn the CLI fallback for Codex HTTP %s", async (status) => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
@@ -951,7 +1235,7 @@ describe("pollCodexViaCliRpc", () => {
     process.env.CODEX_HOME = tmpDir;
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
-      status: 429,
+      status,
       json: async () => ({}),
     }));
 
@@ -960,7 +1244,8 @@ describe("pollCodexViaCliRpc", () => {
       const result = await pollCodexUsage(logger as any);
 
       expect(result.windows).toEqual([]);
-      expect(result.errors).toEqual(["codex: API returned 429"]);
+      expect(result.errors).toEqual([`codex: API returned ${status}`]);
+      expect(result.errorKind).toBe(status === 403 ? "forbidden" : status === 409 ? "conflict" : "rate_limited");
       expect(mockState.spawn).not.toHaveBeenCalled();
     } finally {
       if (originalCodexHome === undefined) {
@@ -973,7 +1258,98 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
-  it("merges app-server daily usage and workspace messages when HTTP rate-limit windows succeed", async () => {
+  it("falls back to Codex RPC after retryable HTTP server errors", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "ok-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const result = await pollCodexUsage(createLogger() as any);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.windows).toHaveLength(2);
+      expect(result.source).toBe("cli");
+      expect(result.errors).toEqual([]);
+      expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the Codex RPC when a successful HTTP response drifts", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "ok-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ renamed_rate_limit: {} }),
+    }));
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const result = await pollCodexUsage(createLogger() as any);
+
+      expect(result.windows).toHaveLength(2);
+      expect(result.source).toBe("cli");
+      expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not launch app-server when HTTP returns complete rate-limit windows", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
@@ -1031,15 +1407,10 @@ describe("pollCodexViaCliRpc", () => {
 
       expect(result.errors).toEqual([]);
       expect(result.windows).toHaveLength(2);
-      expect(result.dailyUsage7d?.some((value) => value === 123)).toBe(true);
-      expect(result.providerMessages).toEqual([
-        expect.objectContaining({
-          provider: "codex",
-          id: "msg-1",
-          kind: "headline",
-          message: "Native usage ready",
-        }),
-      ]);
+      expect(result.source).toBe("http");
+      expect(result.dailyUsage7d).toBeUndefined();
+      expect(result.providerMessages).toBeUndefined();
+      expect(mockState.spawn).not.toHaveBeenCalled();
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;
@@ -1086,19 +1457,46 @@ describe("createUsageTrackingService", () => {
   it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 
     const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
     service1.start();
-    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
+    expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
     service1.dispose();
 
     const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
     service2.start();
-    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
+    expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
 
-    setIntervalSpy.mockRestore();
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("does not reschedule after stop while the startup poll is in flight", async () => {
+    const logger = createLogger();
+    let resolveClaude!: (result: { windows: never[]; extraUsage: null; errors: never[] }) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      pollClaudeUsage: vi.fn(() => new Promise<Parameters<typeof resolveClaude>[0]>((resolve) => {
+        resolveClaude = resolve;
+      })),
+    };
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    service.start();
+    await Promise.resolve();
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    service.stop();
+    const timeoutCallsAfterStop = setTimeoutSpy.mock.calls.length;
+
+    resolveClaude({ windows: [], extraUsage: null, errors: [] });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(timeoutCallsAfterStop);
+    service.dispose();
+    setTimeoutSpy.mockRestore();
   });
 
   it("calls onUpdate when poll completes", async () => {
@@ -1116,6 +1514,121 @@ describe("createUsageTrackingService", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ lastPolledAt: expect.any(String) }));
 
+    service.dispose();
+  });
+
+  it("notifies onUpdate after a GitHub-only background refresh completes", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    let resolveGithub!: (stats: {
+      repo: string;
+      available: boolean;
+      fetchedAt: string;
+      error: null;
+      commitsCreated: number;
+      prsTracked: number;
+      prsOpen: number;
+      prsMerged: number;
+      prsClosed: number;
+      prAdditions: number;
+      prDeletions: number;
+      filesChanged: number;
+      daily: never[];
+    }) => void;
+    const scanGitHubStats = vi.fn(() => new Promise<Parameters<typeof resolveGithub>[0]>((resolve) => {
+      resolveGithub = resolve;
+    }));
+    const service = createUsageTrackingService({
+      logger,
+      onUpdate,
+      dependencies: {
+        ...createFastDependencies(),
+        scanGitHubStats,
+      },
+    });
+
+    await service.poll();
+    await service.refreshHistory();
+    onUpdate.mockClear();
+
+    await service.getAdeUsageStats({ preset: "7d" });
+    await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(1));
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    resolveGithub({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: "2026-05-29T12:00:00.000Z",
+      error: null,
+      commitsCreated: 1,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    });
+
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+    service.dispose();
+  });
+
+  it("notifies again when GitHub finishes after a combined background refresh", async () => {
+    const logger = createLogger();
+    const onUpdate = vi.fn();
+    let resolveClaude!: (entries: never[]) => void;
+    let resolveGithub!: (stats: {
+      repo: string;
+      available: boolean;
+      fetchedAt: string;
+      error: null;
+      commitsCreated: number;
+      prsTracked: number;
+      prsOpen: number;
+      prsMerged: number;
+      prsClosed: number;
+      prAdditions: number;
+      prDeletions: number;
+      filesChanged: number;
+      daily: never[];
+    }) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(() => new Promise<never[]>((resolve) => {
+        resolveClaude = resolve;
+      })),
+      scanGitHubStats: vi.fn(() => new Promise<Parameters<typeof resolveGithub>[0]>((resolve) => {
+        resolveGithub = resolve;
+      })),
+    };
+    const service = createUsageTrackingService({ logger, onUpdate, dependencies });
+
+    await service.getAdeUsageStats({ preset: "7d" });
+    await vi.waitFor(() => expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+
+    resolveClaude([]);
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+
+    resolveGithub({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: "2026-05-29T12:00:00.000Z",
+      error: null,
+      commitsCreated: 1,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    });
+
+    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     service.dispose();
   });
 
@@ -1161,12 +1674,12 @@ describe("createUsageTrackingService", () => {
     expect(pacing?.codex?.status).toBe("far-ahead");
   });
 
-  it("forceRefresh invalidates cost cache and re-polls", async () => {
+  it("refreshHistory invalidates cost cache without coupling it to quota refresh", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
     const service = createUsageTrackingService({ logger, dependencies });
 
-    const s1 = await service.forceRefresh();
+    const s1 = await service.refreshHistory();
     expect(s1).toBeDefined();
     expect(s1.lastPolledAt).toBeTruthy();
     expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
@@ -1179,6 +1692,43 @@ describe("createUsageTrackingService", () => {
     expect(dependencies.scanCopilotLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanGeminiLogs).toHaveBeenCalledTimes(1);
 
+    service.dispose();
+  });
+
+  it("keeps an explicit quota refresh responsive while a large history scan is pending", async () => {
+    const logger = createLogger();
+    let resolveSlowScan!: (entries: never[]) => void;
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(() => new Promise<never[]>((resolve) => {
+        resolveSlowScan = resolve;
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    const historyRefresh = service.refreshHistory();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(service.forceRefresh()).resolves.toBeDefined();
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    expect(dependencies.pollCodexUsage).toHaveBeenCalledTimes(1);
+
+    resolveSlowScan([]);
+    await expect(historyRefresh).resolves.toBeDefined();
+    service.dispose();
+  });
+
+  it("does not scan provider ledgers during an explicit quota-only refresh", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    await service.forceRefresh();
+
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCodexLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanCursorLogs).not.toHaveBeenCalled();
+    expect(dependencies.scanGeminiLogs).not.toHaveBeenCalled();
     service.dispose();
   });
 
@@ -1216,7 +1766,7 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("waits for a startup no-cost poll before running an explicit cost refresh", async () => {
+  it("runs an explicit history scan independently from a pending startup quota poll", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
     let resolveStartupPoll!: (value: { windows: never[]; extraUsage: null; errors: never[] }) => void;
@@ -1231,16 +1781,16 @@ describe("createUsageTrackingService", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
 
-    const refresh = service.forceRefresh();
+    const refresh = service.refreshHistory();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
-
-    resolveStartupPoll({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
     await expect(refresh).resolves.toBeDefined();
-
-    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(2);
     expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
     expect(dependencies.scanCodexLogs).toHaveBeenCalledTimes(1);
+
+    resolveStartupPoll({ windows: [] as never[], extraUsage: null, errors: [] as never[] });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });
@@ -1297,8 +1847,8 @@ describe("createUsageTrackingService", () => {
 
     expect(firstLoading.freshness?.state).toBe("refreshing");
     expect(secondLoading.freshness?.state).toBe("refreshing");
-    expect(first.summary.commitsCreated).toBe(10);
-    expect(second.summary.commitsCreated).toBe(11);
+    expect(first.githubActivity?.commits).toBe(10);
+    expect(second.githubActivity?.commits).toBe(11);
     expect(scanGitHubStats).toHaveBeenCalledTimes(2);
 
     service.dispose();
@@ -1372,10 +1922,25 @@ describe("createUsageTrackingService", () => {
           timestamp: now,
         },
       ] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
     };
     const service = createUsageTrackingService({ logger, dependencies });
 
-    const snapshot = await service.forceRefresh();
+    const snapshot = await service.refreshHistory();
 
     expect(snapshot.costs.find((cost) => cost.provider === "codex")?.tokenBreakdownByPreset?.today?.["gpt-5.5"]).toMatchObject({
       input: 150,
@@ -1383,6 +1948,148 @@ describe("createUsageTrackingService", () => {
       cached: 60,
     });
     expect(snapshot.adeCosts).toEqual([]);
+    expect(snapshot.costs.find((cost) => cost.provider === "codex")?.adeOriginatedTokensByPreset?.today).toBe(80);
+    const stats = await service.getAdeUsageStats({ preset: "today" });
+    expect(stats.providers.find((provider) => provider.provider === "codex")).toMatchObject({
+      adeOriginatedTokens: 80,
+      externalTokens: 160,
+    });
+
+    service.dispose();
+  });
+
+  it("project scope filters ledgers without rescanning and excludes unsupported totals", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(async () => [
+        {
+          messageId: "project",
+          model: "claude-opus-4-6",
+          projectPath: "/repo/.ade/worktrees/lane-a",
+          adeOriginated: true,
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedTokens: 0,
+          timestamp: now,
+        },
+        {
+          messageId: "other",
+          model: "claude-opus-4-6",
+          projectPath: "/other/repo",
+          inputTokens: 20,
+          outputTokens: 10,
+          cachedTokens: 0,
+          timestamp: now,
+        },
+      ] as any),
+      scanCursorLogs: vi.fn(async () => [{
+        messageId: "cursor-machine-only",
+        model: "cursor-auto",
+        inputTokens: 30,
+        outputTokens: 10,
+        cachedTokens: 0,
+        timestamp: now,
+      }] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies, projectRoot: "/repo" });
+    await service.refreshHistory();
+
+    const machine = await service.getAdeUsageStats({ preset: "today", scope: "machine" });
+    const project = await service.getAdeUsageStats({ preset: "today", scope: "project" });
+
+    expect(machine.scope).toBe("machine");
+    expect(machine.summary.observedProviderTokens).toBe(85);
+    expect(machine.providers.find((provider) => provider.provider === "claude")).toMatchObject({
+      totalTokens: 45,
+      adeOriginatedTokens: 15,
+      externalTokens: 30,
+      scopeSupported: true,
+    });
+    expect(project.scope).toBe("project");
+    expect(project.summary.observedProviderTokens).toBe(15);
+    expect(project.providers.find((provider) => provider.provider === "claude")).toMatchObject({
+      totalTokens: 15,
+      adeOriginatedTokens: 15,
+      externalTokens: 0,
+      scopeSupported: true,
+    });
+    expect(project.providers.find((provider) => provider.provider === "cursor")).toMatchObject({
+      totalTokens: 0,
+      scopeSupported: false,
+      estimation: "mixed",
+    });
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+    expect(dependencies.scanCursorLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
+  it("sets estimation flags on provider snapshots and summaries", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const tokenEntry = (messageId: string, model: string, estimation?: "chars" | "mixed" | "distribution") => ({
+      messageId,
+      model,
+      inputTokens: 8,
+      outputTokens: 2,
+      cachedTokens: 0,
+      timestamp: now,
+      ...(estimation ? { estimation } : {}),
+    });
+    const dependencies = {
+      ...createFastDependencies(),
+      scanClaudeLogs: vi.fn(async () => [tokenEntry("claude", "claude-opus-4-6")] as any),
+      scanCursorLogs: vi.fn(async () => [tokenEntry("cursor", "cursor-auto")] as any),
+      scanCursorAgentLogs: vi.fn(async () => [tokenEntry("cursor-agent", "cursor-agent-auto", "chars")] as any),
+      scanDroidLogs: vi.fn(async () => [tokenEntry("droid", "droid-auto", "distribution")] as any),
+      scanCopilotLogs: vi.fn(async () => [tokenEntry("copilot", "copilot-auto", "chars")] as any),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+    const snapshot = await service.refreshHistory();
+    const snapshotFlags = Object.fromEntries(snapshot.costs.map((cost) => [cost.provider, cost.estimation]));
+    expect(snapshotFlags).toMatchObject({
+      cursor: "mixed",
+      "cursor-agent": "chars",
+      droid: "distribution",
+      copilot: "chars",
+    });
+    expect(snapshotFlags.claude).toBeUndefined();
+
+    const stats = await service.getAdeUsageStats({ preset: "today" });
+    const summaryFlags = Object.fromEntries(stats.providers.map((provider) => [provider.provider, provider.estimation]));
+    expect(summaryFlags).toMatchObject(snapshotFlags);
 
     service.dispose();
   });
@@ -1515,6 +2222,100 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("deduplicates Claude message ids across files", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const assistant = (timestamp: string) => JSON.stringify({
+        type: "assistant",
+        timestamp,
+        cwd: "/repo",
+        message: {
+          id: "msg-shared",
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 10, output_tokens: 2 },
+        },
+      });
+      fs.writeFileSync(path.join(projectDir, "session-a.jsonl"), `${assistant("2026-05-29T12:00:00.000Z")}\n`);
+      fs.writeFileSync(path.join(projectDir, "session-b.jsonl"), `${assistant("2026-05-29T12:01:00.000Z")}\n`);
+
+      const entries = await scanClaudeLogs([projectDir]);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.messageId).toBe("msg-shared");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the last Claude streaming partial at the first timestamp", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const firstTimestamp = "2026-05-29T12:00:00.000Z";
+      fs.writeFileSync(
+        path.join(projectDir, "session.jsonl"),
+        [
+          JSON.stringify({
+            type: "assistant",
+            timestamp: firstTimestamp,
+            cwd: "/repo",
+            message: { id: "msg-stream", model: "claude-opus-4-6", usage: { input_tokens: 10, output_tokens: 2 } },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            timestamp: "2026-05-29T12:00:03.000Z",
+            cwd: "/repo",
+            message: { id: "msg-stream", model: "claude-opus-4-6", usage: { input_tokens: 25, output_tokens: 8 } },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanClaudeLogs([projectDir]);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ inputTokens: 25, outputTokens: 8 });
+      expect(entries[0]?.timestamp).toBe(Date.parse(firstTimestamp));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes Claude sessions launched from ADE worktrees", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo--ade-worktrees-lane");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      fs.writeFileSync(
+        path.join(projectDir, "session.jsonl"),
+        `${JSON.stringify({
+          type: "assistant",
+          timestamp: new Date().toISOString(),
+          cwd: "/repo/.ade/worktrees/lane",
+          message: {
+            id: "msg-ade",
+            model: "claude-opus-4-6",
+            usage: { input_tokens: 10, output_tokens: 2 },
+          },
+        })}\n`,
+      );
+
+      const entries = await scanClaudeLogs([projectDir]);
+      const cost = aggregateCosts(entries, "claude");
+
+      expect(entries[0]).toMatchObject({
+        projectPath: "/repo/.ade/worktrees/lane",
+        adeOriginated: true,
+      });
+      expect(cost.adeOriginatedTokensByPreset?.today).toBe(12);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("scanCodexLogs", () => {
@@ -1575,9 +2376,10 @@ describe("scanCodexLogs", () => {
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({
         model: "gpt-5.5",
-        inputTokens: 1200,
+        inputTokens: 900,
         billableInputTokens: 900,
-        outputTokens: 100,
+        outputTokens: 80,
+        billableOutputTokens: 100,
         cachedTokens: 300,
         billableCachedTokens: 300,
       });
@@ -1591,7 +2393,116 @@ describe("scanCodexLogs", () => {
     }
   });
 
-  it("counts Codex-owned session files while skipping ADE-originated launcher files", async () => {
+  it("reconciles lifetime totals with Codex Desktop's read-only thread index", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionDir, "session-1.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2026-05-29T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "session-1", originator: "Codex Desktop", cwd: "/repo", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-05-29T12:00:01.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+                last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
+      db.exec(`
+        create table threads (
+          id text primary key,
+          tokens_used integer not null,
+          model text,
+          cwd text,
+          source text,
+          thread_source text,
+          created_at integer,
+          updated_at integer
+        );
+        insert into threads values (
+          'session-1', 100, 'gpt-5.5', '/repo', 'Codex Desktop',
+          'Codex Desktop', 1770000000, 1770000100
+        );
+      `);
+      db.close();
+
+      const entries = await scanCodexLogs();
+      const total = entries.reduce((sum, entry) => (
+        sum + entry.inputTokens + entry.outputTokens + entry.cachedTokens + (entry.cacheWriteTokens ?? 0)
+      ), 0);
+
+      expect(total).toBe(100);
+      expect(entries).toContainEqual(expect.objectContaining({
+        messageId: "session-1:state-total-remainder",
+        model: "gpt-5.5",
+        estimation: "distribution",
+        costOverrideUsd: 0,
+      }));
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes Codex archived session ledgers in lifetime usage", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const archivedDir = path.join(tmpDir, "archived_sessions");
+      fs.mkdirSync(archivedDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(archivedDir, "archived.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2025-08-01T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "archived-1", originator: "codex_cli_rs", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2025-08-01T12:00:01.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 },
+                last_token_usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanCodexLogs();
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ inputTokens: 20, outputTokens: 3 });
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes Codex ADE sessions and attributes their origin", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
     try {
@@ -1629,14 +2540,79 @@ describe("scanCodexLogs", () => {
 
       const entries = await scanCodexLogs();
 
-      expect(entries).toHaveLength(2);
-      expect(entries.map((entry) => entry.originator).sort()).toEqual(["Codex Desktop", "codex_cli_rs"]);
+      expect(entries).toHaveLength(4);
+      expect(entries.filter((entry) => entry.adeOriginated)).toHaveLength(2);
+      expect(entries.map((entry) => entry.originator).sort()).toEqual([
+        "Codex Desktop",
+        "ade",
+        "ade_desktop",
+        "codex_cli_rs",
+      ]);
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;
       } else {
         process.env.CODEX_HOME = originalCodexHome;
       }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores Codex fork replay while preserving genuine cumulative deltas", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "05", "29");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const usageEvent = (timestamp: string, totalInput: number, totalOutput: number, lastInput: number, lastOutput: number) => JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: totalInput,
+              output_tokens: totalOutput,
+              total_tokens: totalInput + totalOutput,
+            },
+            last_token_usage: {
+              input_tokens: lastInput,
+              output_tokens: lastOutput,
+              total_tokens: lastInput + lastOutput,
+            },
+          },
+        },
+      });
+      fs.writeFileSync(
+        path.join(sessionDir, "parent.jsonl"),
+        [
+          JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: "/repo", originator: "codex_cli_rs" } }),
+          usageEvent("2026-05-29T12:00:00.000Z", 10, 2, 10, 2),
+          "",
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(sessionDir, "fork.jsonl"),
+        [
+          JSON.stringify({
+            type: "session_meta",
+            payload: { id: "fork", forked_from_id: "parent", cwd: "/repo", originator: "codex_cli_rs" },
+          }),
+          usageEvent("2026-05-29T12:01:00.000Z", 10, 2, 10, 2),
+          usageEvent("2026-05-29T12:02:00.000Z", 15, 2, 5, 0),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanCodexLogs();
+
+      expect(entries).toHaveLength(2);
+      expect(entries.reduce((sum, entry) => sum + entry.inputTokens, 0)).toBe(15);
+      expect(entries.reduce((sum, entry) => sum + entry.outputTokens, 0)).toBe(2);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1671,7 +2647,7 @@ describe("scanCodexLogs", () => {
           "",
         ].join("\n"),
       );
-      fs.truncateSync(filePath, 40 * 1024 * 1024);
+      fs.truncateSync(filePath, 769 * 1024 * 1024);
 
       await expect(scanCodexLogs()).resolves.toEqual([]);
     } finally {
@@ -2140,9 +3116,20 @@ describe("buildProviderWindows", () => {
 
   it("marks ok and stamps lastSuccessAt when fresh windows arrive", () => {
     const fresh = [win(10)];
-    const result = buildProviderWindows("claude", fresh, [], [], null, "2026-06-07T00:00:00Z");
+    const result = buildProviderWindows(
+      "claude",
+      fresh,
+      [],
+      [],
+      null,
+      "2026-06-07T00:00:00Z",
+      "oauth",
+    );
     expect(result.status.state).toBe("ok");
     expect(result.status.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.updatedAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.lastAttemptAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.status.source).toBe("oauth");
     expect(result.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
     expect(result.windows).toBe(fresh);
   });
@@ -2228,8 +3215,23 @@ describe("buildProviderWindows", () => {
 
   it("frames a 401/expired-token failure as reconnect, not unreachable", () => {
     const result = buildProviderWindows("claude", [], ["claude: API returned 401"], [], null, "t");
-    expect(result.status.state).toBe("error");
+    expect(result.status.state).toBe("unauthed");
     expect(result.status.message).toMatch(/sign-in expired|reconnect/i);
+  });
+
+  it("preserves a forbidden error kind while showing reconnect guidance", () => {
+    const result = buildProviderWindows(
+      "claude",
+      [],
+      ["claude: API returned 403"],
+      [],
+      null,
+      "t",
+      "oauth",
+      "forbidden",
+    );
+    expect(result.status.state).toBe("unauthed");
+    expect(result.status.errorKind).toBe("forbidden");
   });
 });
 
@@ -2266,12 +3268,12 @@ describe("usage reliability: non-destructive merge", () => {
       },
     });
 
-    const first = await service.poll({ includeCosts: false });
+    const first = await service.poll();
     expect(first.windows.filter((w) => w.provider === "claude")).toHaveLength(1);
     expect(first.extraUsage).toEqual([claudeExtraUsage]);
     expect(first.providerStatus?.claude?.state).toBe("ok");
 
-    const second = await service.poll({ includeCosts: false });
+    const second = await service.poll();
     const claudeWindows = second.windows.filter((w) => w.provider === "claude");
     expect(claudeWindows).toHaveLength(1);
     expect(claudeWindows[0]?.percentUsed).toBe(40);
@@ -2301,7 +3303,7 @@ describe("usage reliability: non-destructive merge", () => {
       },
     });
 
-    const snap = await service.poll({ includeCosts: false });
+    const snap = await service.poll();
     const five = snap.windows.find((w) => w.windowType === "five_hour");
     const weekly = snap.windows.find((w) => w.windowType === "weekly");
     expect(five?.pacing).toBeDefined();
@@ -2349,6 +3351,20 @@ describe("fetchJsonWithRetry", () => {
 
     const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
     expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves Retry-After metadata for provider backoff", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "120" : null },
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.retryAfterMs).toBe(120_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -2414,6 +3430,167 @@ describe("ADE database usage aggregation", () => {
     );
     return db;
   }
+
+  const createDatabaseServiceDependencies = () => ({
+    pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+    pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+    scanClaudeLogs: vi.fn(async () => [] as never[]),
+    scanCodexLogs: vi.fn(async () => [] as never[]),
+    scanCursorLogs: vi.fn(async () => [] as never[]),
+    scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+    scanOpenClawLogs: vi.fn(async () => [] as never[]),
+    scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+    scanDroidLogs: vi.fn(async () => [] as never[]),
+    scanCopilotLogs: vi.fn(async () => [] as never[]),
+    scanGeminiLogs: vi.fn(async () => [] as never[]),
+    scanGitHubStats: vi.fn(async () => ({
+      repo: null,
+      available: false,
+      fetchedAt: null,
+      error: null,
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    })),
+  });
+
+  it("prod context wires db aggregates into the usage service", async () => {
+    const db = await createStatsDb();
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      ["op-prod", "project-1", "lane-1", "git_commit", "2026-07-08T12:00:00.000Z", "2026-07-08T12:00:01.000Z", "succeeded"],
+    );
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      db,
+      projectRoot: "/repo",
+      dependencies: createDatabaseServiceDependencies(),
+    });
+
+    const stats = await service.getAdeUsageStats({
+      preset: "all",
+      until: "2026-07-09T00:00:00.000Z",
+    });
+
+    expect(stats.localActivity?.commits).toBe(1);
+    expect(stats.summary.commitsCreated).toBe(1);
+    expect(stats.daily.find((point) => point.date === "2026-07-08")?.commits).toBe(1);
+    service.dispose();
+  });
+
+  it("without db yields null database stats and zero local aggregates", async () => {
+    const range = { since: "2026-07-08T00:00:00.000Z", until: "2026-07-09T00:00:00.000Z" };
+    expect(collectAdeDatabaseUsageStats(undefined, range)).toBeNull();
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      dependencies: createDatabaseServiceDependencies(),
+    });
+
+    const stats = await service.getAdeUsageStats({ preset: "all", ...range });
+
+    expect(stats.localActivity).toMatchObject({
+      commits: 0,
+      pushOperations: 0,
+      prLandings: 0,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+    service.dispose();
+  });
+
+  it("buckets database timestamps by the local calendar day", async () => {
+    const db = await createStatsDb();
+    const localInstant = new Date(2026, 0, 15, 0, 30, 0, 0);
+    const expectedDay = localDayKey(localInstant);
+    db.run(
+      `insert into ai_usage_log(id, timestamp, feature, provider, model, input_tokens, output_tokens, duration_ms, success)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["ai-local-day", localInstant.toISOString(), "chat", "claude", "opus", 4, 2, 10, 1],
+    );
+
+    const stats = collectAdeDatabaseUsageStats(db, {
+      since: new Date(2026, 0, 15, 0, 0, 0, 0).toISOString(),
+      until: new Date(2026, 0, 15, 23, 59, 59, 999).toISOString(),
+    });
+
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: expectedDay,
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
+    }));
+  });
+
+  it("caps raw daily bucket scans newest-first without throwing", async () => {
+    const db = await createStatsDb();
+    const logger = createLogger();
+    const originalAll = db.all.bind(db);
+    const newestRow = {
+      timestamp: "2026-07-08T12:00:00.000Z",
+      input_tokens: 1,
+      output_tokens: 0,
+      duration_ms: 0,
+    };
+    const oldestRow = {
+      ...newestRow,
+      timestamp: "2026-07-07T12:00:00.000Z",
+    };
+    const rowsBeyondCap = Array(250_001).fill(newestRow);
+    rowsBeyondCap[0] = oldestRow;
+    let checkedClientQuery = false;
+    let checkedOperationQuery = false;
+    let checkedAiQuery = false;
+    const cappedDb: AdeDb = {
+      ...db,
+      all: ((sql: string, params = []) => {
+        const normalized = sql.replace(/\s+/g, " ").trim();
+        if (normalized.startsWith("select occurred_at, client_surface")) {
+          expect(normalized).toContain("order by occurred_at desc limit ?");
+          checkedClientQuery = true;
+        }
+        if (normalized.startsWith("select started_at, kind")) {
+          expect(normalized).toContain("order by started_at desc limit ?");
+          checkedOperationQuery = true;
+        }
+        if (normalized.startsWith("select timestamp,")) {
+          expect(normalized).toContain("order by timestamp desc limit ?");
+          const limit = Number(params.at(-1));
+          expect(rowsBeyondCap.length).toBeGreaterThan(limit);
+          checkedAiQuery = true;
+          return rowsBeyondCap.slice(1, limit + 1);
+        }
+        return originalAll(sql, params);
+      }) as AdeDb["all"],
+    };
+
+    const stats = collectAdeDatabaseUsageStats(cappedDb, {
+      since: null,
+      until: "2026-07-09T00:00:00.000Z",
+    }, logger);
+
+    expect(checkedClientQuery).toBe(true);
+    expect(checkedOperationQuery).toBe(true);
+    expect(checkedAiQuery).toBe(true);
+    expect(stats?.daily).toContainEqual(expect.objectContaining({
+      date: "2026-07-08",
+      inputTokens: 250_000,
+      totalTokens: 250_000,
+    }));
+    expect(stats?.daily.some((point) => point.date === "2026-07-07")).toBe(false);
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledWith("usage.daily_bucket_scan_capped", {
+      maxRows: 250_000,
+      sources: ["ai_usage_log"],
+    });
+  });
 
   it("combines successful ADE operations, sessions, tokens, and client activity without double-counting", async () => {
     const db = await createStatsDb();

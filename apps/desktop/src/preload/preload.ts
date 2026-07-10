@@ -4299,10 +4299,12 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   usage: {
-    getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> =>
-      callProjectRuntimeActionOr("usage", "getAdeUsageStats", { args }, () =>
-        ipcRenderer.invoke(IPC.usageGetAdeStats, args),
-      ),
+    getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> => {
+      const normalizedArgs: GetAdeUsageStatsArgs = { ...args, scope: args.scope ?? "machine" };
+      return callProjectRuntimeActionOr("usage", "getAdeUsageStats", { args: normalizedArgs }, () =>
+        ipcRenderer.invoke(IPC.usageGetAdeStats, normalizedArgs),
+      );
+    },
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
       callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),
@@ -4310,6 +4312,14 @@ contextBridge.exposeInMainWorld("ade", {
     refresh: async (): Promise<UsageSnapshot | null> =>
       callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
+      ),
+    refreshHistory: async (): Promise<UsageSnapshot | null> =>
+      callProjectRuntimeActionOr("usage", "refreshHistory", {}, () =>
+        ipcRenderer.invoke(IPC.usageRefreshHistory),
+      ),
+    noteDemand: async (): Promise<UsageSnapshot | null> =>
+      callProjectRuntimeActionOr("usage", "noteQuotaDemand", {}, () =>
+        ipcRenderer.invoke(IPC.usageNoteDemand),
       ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>

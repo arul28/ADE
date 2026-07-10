@@ -59,6 +59,7 @@
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
+		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
@@ -402,6 +403,7 @@
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
+		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
 		B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteProjectAddSheet.swift; path = ADE/App/RemoteProjectAddSheet.swift; sourceTree = "<group>"; };
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
@@ -786,6 +788,7 @@
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
 				AE00000000000000000000A3 /* LiveActivityService.swift */,
 				AF00000000000000000000A1 /* DpopKeyService.swift */,
@@ -1203,6 +1206,7 @@
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
+				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
 				E20000000000000000000042 /* FilesModels.swift in Sources */,
 				E20000000000000000000043 /* FilesHelpers.swift in Sources */,

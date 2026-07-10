@@ -4216,9 +4216,11 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
+    const db = await openKvDb(adePaths.dbPath, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const usageTrackingService = createUsageTrackingService({
       logger,
+      db,
       pollIntervalMs: 120_000,
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
@@ -4234,6 +4236,7 @@ app.whenReady().then(async () => {
     });
     return {
       ...shellContext,
+      db,
       logger,
       project,
       projectId: runtimeProject.projectId,

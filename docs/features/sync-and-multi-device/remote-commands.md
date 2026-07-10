@@ -153,6 +153,14 @@ over the wire. A controller only invokes an action the host advertises in
   desktop Stats: provider tokens, project-DB activity, daily points, and
   `desktop` / `mobile` / `tui` / `web` / `api` client attribution. It does
   not replicate or return raw `usage_events` rows.
+- `getQuotaSnapshot` — viewer-allowed project read of the runtime's cached
+  Claude/Codex quota snapshot. It returns provider windows plus source,
+  freshness, retry, and stale/error state without starting provider or ledger
+  work.
+- `refreshQuota` — viewer-allowed project refresh of Claude/Codex quota only.
+  The host disables interactive auth for this remote path, so it never opens a
+  Keychain prompt or a bare CLI/TUI login flow on behalf of the controller.
+  Local history scanners remain behind the separate desktop/CLI Activity path.
 
 **Lanes** (`lanes.*`)
 - `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`,
