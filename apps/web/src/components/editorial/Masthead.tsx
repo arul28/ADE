@@ -40,7 +40,7 @@ export function Masthead() {
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
           >
-            Web client <span aria-hidden>&nearr;</span>
+            Web client <span aria-hidden>↗</span>
           </a>
           <a
             href={LINKS.releasesLatest}
@@ -48,7 +48,7 @@ export function Masthead() {
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
           >
-            Mac <span aria-hidden>&darr;</span>
+            Mac <span aria-hidden>↓</span>
           </a>
           <a
             href={LINKS.testflight}
@@ -56,7 +56,7 @@ export function Masthead() {
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
           >
-            iOS <span aria-hidden>&darr;</span>
+            iOS <span aria-hidden>↓</span>
           </a>
         </nav>
       </div>

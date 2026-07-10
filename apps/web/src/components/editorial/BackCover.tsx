@@ -51,7 +51,7 @@ export function BackCover() {
           >
             The last AI coding app{" "}
             <em className="italic text-[color:var(--color-violet-bright)]">
-              you&rsquo;ll download.
+              you’ll download.
             </em>
           </motion.h2>
 
@@ -109,9 +109,9 @@ export function BackCover() {
               className="font-serif italic text-[color:var(--color-cream-faint)]"
               style={{ fontSize: "13.5px", lineHeight: 1.55 }}
             >
-              Colophon &middot; Set in Instrument Serif &amp; Inter Tight.
+              Colophon · Set in Instrument Serif & Inter Tight.
               Printed to the web from a single <code className="not-italic">git push</code>.
-              &copy; ADE, 2026. Free forever. Source on GitHub.
+              © ADE, 2026. Free forever. Source on GitHub.
             </p>
             <div className="mt-4 flex gap-4 text-[12px] text-[color:var(--color-cream-faint)]">
               <Link className="underline-offset-4 hover:text-[color:var(--color-cream)] hover:underline" to="/privacy">

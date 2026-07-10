@@ -196,6 +196,23 @@ Runtime support files outside `services/sync/`:
   validates personal session ownership and exposes the durable transcript path
   and active-turn state used by `chatScope: "personal"` subscriptions.
 
+Desktop pairing UI:
+
+- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
+  Settings uses the default `variant="all"`; the top-bar sheets use the
+  focused `"phone"` and `"web"` variants. When a configured PIN is available
+  only as its at-rest PBKDF2 hash after a runtime restart, the web pairing card
+  can generate and set a new six-digit PIN instead of leaving copy disabled.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` — Mobile and Web
+  connection chips, connected-peer summaries, and mutually exclusive pairing
+  sheets. Browser peers are identified by `deviceType === "browser"`.
+- `apps/desktop/src/renderer/components/app/HeaderSheet.tsx` — shared portaled
+  sheet and dialog focus-trap scaffold for the Mobile and Web panels.
+- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`
+  and `apps/desktop/src/renderer/components/app/TopBar.test.tsx` — focused
+  pairing variants, hidden-PIN generation, QR/copy interactions, web-peer chip,
+  and sheet dismissal coverage.
+
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
@@ -694,8 +711,9 @@ is not supported.
   it (or after legacy migration), so after a restart the host can verify
   pairings with the existing digits if the user still knows them. It
   cannot display or copy those digits until the user generates or sets a
-  new PIN. The phone enters the same digits the user
-  typed in the machine's Settings > Sync > Phone pairing sheet.
+  new PIN. The desktop Settings view and top-bar Web sheet expose the
+  generate-new-PIN recovery path; the phone enters the same digits shown in
+  the machine's Settings view or top-bar Mobile/Web pairing sheets.
   Failed PIN attempts increment a per-IP counter; after 5 failures
   the runtime rejects further attempts from that IP for 10 minutes
   (`PAIR_FAILURE_THRESHOLD = 5`, `PAIR_COOLDOWN_MS = 10 * 60_000` in

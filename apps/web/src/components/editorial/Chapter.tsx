@@ -39,9 +39,9 @@ export function Chapter({
       <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(24px,3vw,52px)]">
         {/* running head */}
         <div className="mb-6 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-3 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
-          <span>ADE &middot; {EDITORIAL_ISSUE.shortMonthYear}</span>
+          <span>ADE · {EDITORIAL_ISSUE.shortMonthYear}</span>
           <span className="hidden sm:block">The Agentic Development Environment</span>
-          <span>{EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; {pageNumber}</span>
+          <span>{EDITORIAL_ISSUE.volume} · {EDITORIAL_ISSUE.version} · {pageNumber}</span>
         </div>
 
         {/* folio */}
@@ -132,7 +132,7 @@ export function Byline({
             : "bg-[color:var(--color-hairline-strong)]"
         )}
       />
-      {author} &middot; {date}
+      {author} · {date}
     </div>
   );
 }
