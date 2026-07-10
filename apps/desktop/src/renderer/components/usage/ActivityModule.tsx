@@ -301,12 +301,12 @@ function ChartFrame({
 
 function ActivityHeatmap({
   points,
-  cellPx,
+  height,
   reduced,
   tooltip,
 }: {
   points: AdeUsageDailyPoint[];
-  cellPx: number;
+  height: number;
   reduced: boolean;
   tooltip: ReturnType<typeof useDayTooltip>;
 }) {
@@ -316,31 +316,52 @@ function ActivityHeatmap({
     return ordered.map((point) => ({ point, intensity: Math.max(0, Math.min(1, dayValue(point) / max)) }));
   }, [points]);
 
+  // Fill the chart box instead of leaving it mostly blank: a short range lays out
+  // as one tall row of large cells; longer ranges use a 7-row calendar-style grid
+  // (columns = weeks) whose cells stretch to fill the available width and height.
+  const rows = cells.length <= 7 ? 1 : 7;
+  const cols = Math.max(1, Math.ceil(cells.length / rows));
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col justify-center">
-      <div
-        className="grid w-full justify-start gap-[3px]"
-        style={{ gridAutoFlow: "column", gridTemplateRows: `repeat(7, ${cellPx}px)`, gridAutoColumns: `${cellPx}px` }}
-        aria-label="Daily activity heatmap"
-      >
-        {cells.map(({ point, intensity }) => (
-          <span
-            key={point.date}
-            className="rounded-[2px]"
-            style={{
-              background:
-                intensity === 0
-                  ? "color-mix(in srgb, var(--color-fg) 7%, transparent)"
-                  : `color-mix(in srgb, ${HEATMAP_HUE} ${Math.round(24 + intensity * 68)}%, var(--color-card))`,
-              transition: reduced ? undefined : "background 120ms ease",
-              cursor: "default",
-            }}
-            onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-            onPointerLeave={tooltip.hide}
-            onClick={(event) => tooltip.toggle(point, event.currentTarget)}
-          />
-        ))}
-      </div>
+    <div
+      className="grid min-h-0 w-full flex-1 gap-[3px]"
+      style={{
+        height,
+        gridAutoFlow: "column",
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+      }}
+      role="img"
+      aria-label="Daily activity heatmap"
+      data-heatmap-rows={rows}
+    >
+      {cells.map(({ point, intensity }) => (
+        <span
+          key={point.date}
+          className="rounded-[2px]"
+          style={{
+            background:
+              intensity === 0
+                ? "color-mix(in srgb, var(--color-fg) 7%, transparent)"
+                : `color-mix(in srgb, ${HEATMAP_HUE} ${Math.round(24 + intensity * 68)}%, var(--color-card))`,
+            transition: reduced ? undefined : "background 120ms ease",
+            cursor: "default",
+          }}
+          onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
+          onPointerLeave={tooltip.hide}
+          onClick={(event) => tooltip.toggle(point, event.currentTarget)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Muted, centered hint for a tab whose own series is empty while the module
+ * has data on other tabs (so the global warm-empty state does not apply). */
+function TabEmptyHint({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center text-center text-[11px] text-muted-fg">
+      {message}
     </div>
   );
 }
@@ -358,8 +379,12 @@ function TokenBars({
 }) {
   const max = Math.max(1, ...points.map((p) => p.totalTokens));
   const anyCache = points.some((p) => (p.cachedTokens ?? 0) > 0);
+  const anyTokens = points.some((p) => p.totalTokens > 0);
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-end gap-2">
+      {!anyTokens ? (
+        <TabEmptyHint message="No token usage in this range." />
+      ) : (
       <ChartFrame height={height} ariaLabel="Token usage by day, split by input, output, and cache">
         {points.map((point) => {
           const total = Math.max(0, point.inputTokens + point.outputTokens + (point.cachedTokens ?? 0));
@@ -381,6 +406,7 @@ function TokenBars({
           );
         })}
       </ChartFrame>
+      )}
       <Legend
         items={[
           { color: TOKEN_COLORS.input, label: "Input" },
@@ -409,8 +435,12 @@ function CodeBars({
     ? Math.max(1, ...points.map((p) => (p.githubAdditions ?? 0) + (p.githubDeletions ?? 0)))
     : 1;
   const max = Math.max(localMax, githubMax);
+  const anyCode = points.some((p) => p.insertions + p.deletions > 0) || anyGithub;
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-end gap-2">
+      {!anyCode ? (
+        <TabEmptyHint message="No code changes in this range." />
+      ) : (
       <ChartFrame height={height} ariaLabel="Code changes by day, additions and deletions">
         {points.map((point) => {
           const total = Math.max(0, point.insertions + point.deletions);
@@ -443,6 +473,7 @@ function CodeBars({
           );
         })}
       </ChartFrame>
+      )}
       <Legend
         items={[
           { color: CODE_COLORS.insertions, label: "Added" },
@@ -463,6 +494,9 @@ function ClientMix({ stats }: { stats: AdeUsageStats }) {
     if (client === "web") return <Globe size={12} />;
     return <Monitor size={12} />;
   };
+  if (clients.length === 0) {
+    return <TabEmptyHint message="No client activity in this range." />;
+  }
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-center gap-3">
       <div className="flex h-3 overflow-hidden rounded-full" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
@@ -748,7 +782,6 @@ export function ActivityModule({
 
   const compactMode = variant === "compact";
   const chartHeight = compactMode ? 84 : 132;
-  const cellPx = compactMode ? 8 : 11;
   const maxBars = compactMode ? 40 : 64;
   const chartPoints = useChartPoints(stats?.daily ?? [], maxBars);
   const hasActivity = (stats?.daily ?? []).some(dayHasActivity);
@@ -770,7 +803,7 @@ export function ActivityModule({
   } else if (!hasActivity) {
     chart = <WarmEmpty height={chartHeight} />;
   } else if (tab === "activity") {
-    chart = <ActivityHeatmap points={stats.daily} cellPx={cellPx} reduced={reduced} tooltip={tooltip} />;
+    chart = <ActivityHeatmap points={stats.daily} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
   } else if (tab === "tokens") {
     chart = <TokenBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
   } else if (tab === "code") {

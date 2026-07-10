@@ -645,6 +645,50 @@ describe("usage components", () => {
       render(<ActivityModule stats={makeActivityStats()} variant="full" preset="7d" onPresetChange={vi.fn()} />);
       expect(screen.getByRole("button", { name: "30d" })).toBeTruthy();
     });
+
+    it("scales the heatmap to fill the box: one row for short ranges, seven for long", () => {
+      const short = makeActivityStats();
+      const { rerender, container } = render(<ActivityModule stats={short} preset="7d" onPresetChange={vi.fn()} />);
+      const grid1 = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      expect(grid1.getAttribute("data-heatmap-rows")).toBe("1");
+      expect(grid1.children.length).toBe(short.daily.length);
+
+      const long = makeActivityStats({
+        daily: Array.from({ length: 30 }, (_, i) => ({
+          date: `2026-06-${String(i + 1).padStart(2, "0")}`,
+          inputTokens: 100 * i, outputTokens: 50 * i, totalTokens: 150 * i, cachedTokens: 0,
+          commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 1, interactions: 1,
+        })),
+      } as unknown as Partial<AdeUsageStats>);
+      rerender(<ActivityModule stats={long} preset="30d" onPresetChange={vi.fn()} />);
+      const grid2 = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      expect(grid2.getAttribute("data-heatmap-rows")).toBe("7");
+      expect(grid2.children.length).toBe(30);
+    });
+
+    it("shows a per-tab hint when the active tab is empty but the module has data", () => {
+      const stats = makeActivityStats({
+        daily: [
+          { date: "2026-07-08", inputTokens: 1000, outputTokens: 500, totalTokens: 1500, cachedTokens: 0, commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 1, interactions: 2 },
+          { date: "2026-07-09", inputTokens: 1000, outputTokens: 500, totalTokens: 1500, cachedTokens: 0, commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 1, interactions: 2 },
+        ],
+        clients: [],
+      } as unknown as Partial<AdeUsageStats>);
+      render(<ActivityModule stats={stats} preset="7d" onPresetChange={vi.fn()} />);
+
+      // Global warm-empty must NOT show — the module has token activity.
+      expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
+
+      // Code tab: zeroed code series → hint, but the legend stays.
+      fireEvent.click(screen.getByRole("tab", { name: "Code" }));
+      expect(screen.getByText("No code changes in this range.")).toBeTruthy();
+      expect(screen.getByText("Added")).toBeTruthy();
+      expect(screen.getByText("Removed")).toBeTruthy();
+
+      // Clients tab: no client interactions → hint.
+      fireEvent.click(screen.getByRole("tab", { name: "Clients" }));
+      expect(screen.getByText("No client activity in this range.")).toBeTruthy();
+    });
   });
 
   describe("WorkActivityModule", () => {
