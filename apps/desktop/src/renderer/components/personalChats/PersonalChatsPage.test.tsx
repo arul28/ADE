@@ -205,8 +205,10 @@ describe("PersonalChatsPage", () => {
     await screen.findByText("What can I help with?");
     const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
     expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
-    // Light provider accent on colored tint → dark glyph for contrast.
-    expect(sendButton.style.color).toBe("rgb(28, 25, 23)");
+    // Light provider accent on colored tint → dark glyph for contrast. The
+    // glyph color lands only after the catalog load resolves the fallback
+    // modelId, so wait rather than asserting the first paint.
+    await waitFor(() => expect(sendButton.style.color).toBe("rgb(28, 25, 23)"));
   });
 
   it("keeps the hero and composer visible while the initial fetch is still loading", async () => {
@@ -271,7 +273,7 @@ describe("PersonalChatsPage", () => {
     const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
     // Neutral tint paints the fill gray (#52525b), so the glyph must stay white
     // even though the provider accent alone would demand a dark glyph.
-    expect(sendButton.style.color).toBe("rgb(255, 255, 255)");
+    await waitFor(() => expect(sendButton.style.color).toBe("rgb(255, 255, 255)"));
     expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
   });
 });
