@@ -119,8 +119,11 @@ private struct WorkUsageVisualBucket: Identifiable {
   var githubDeletions: Int
   var sessions: Int
   var interactions: Int
+  /// Legacy hosts send only per-day totalTokens; this carries the portion not
+  /// covered by the input/output/cache split so total-only days still render.
+  var unsplitTokens: Int
 
-  var tokens: Int { inputTokens + outputTokens + cachedTokens }
+  var tokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
   var githubCode: Int { githubAdditions + githubDeletions }
   var activity: Int {
@@ -173,7 +176,11 @@ private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: In
       githubAdditions: chunk.reduce(0) { $0 + ($1.githubAdditions ?? 0) },
       githubDeletions: chunk.reduce(0) { $0 + ($1.githubDeletions ?? 0) },
       sessions: chunk.reduce(0) { $0 + ($1.sessions ?? 0) },
-      interactions: chunk.reduce(0) { $0 + ($1.interactions ?? 0) }
+      interactions: chunk.reduce(0) { $0 + ($1.interactions ?? 0) },
+      unsplitTokens: chunk.reduce(0) { sum, point in
+        let split = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
+        return sum + max(0, (point.totalTokens ?? 0) - split)
+      }
     )
   }
 }
@@ -684,6 +691,8 @@ private struct WorkUsageBars: View {
     if mode == .tokens {
       let total = CGFloat(max(1, bucket.tokens))
       VStack(spacing: 0) {
+        Rectangle().fill(WorkUsageColors.tokenCache.opacity(0.45))
+          .frame(height: barHeight * CGFloat(bucket.unsplitTokens) / total)
         Rectangle().fill(WorkUsageColors.tokenCache)
           .frame(height: barHeight * CGFloat(bucket.cachedTokens) / total)
         Rectangle().fill(WorkUsageColors.tokenOutput)
