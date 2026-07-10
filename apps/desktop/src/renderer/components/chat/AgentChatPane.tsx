@@ -3041,6 +3041,9 @@ export function AgentChatPane({
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
   const [modelPickerOpenRequestKey, setModelPickerOpenRequestKey] = useState<number | undefined>();
+  const handleModelPickerOpenRequestHandled = useCallback(() => {
+    setModelPickerOpenRequestKey(undefined);
+  }, []);
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
@@ -10231,7 +10234,7 @@ export function AgentChatPane({
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             modelPickerOpenRequestKey={modelPickerOpenRequestKey}
-            onModelPickerOpenRequestHandled={() => setModelPickerOpenRequestKey(undefined)}
+            onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             availableModelIds={effectiveAvailableModelIds}
             constrainModelSelection={modelSelectionConstrained}
             modelUnavailableMessage={constrainedModelSelectionError ?? undefined}
