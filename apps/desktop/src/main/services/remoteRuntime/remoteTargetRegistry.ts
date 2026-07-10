@@ -5,6 +5,7 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
+  RemoteRuntimePairedMachineReference,
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTargetRouteSource,
 } from "../../../shared/types/remoteRuntime";
@@ -109,7 +110,29 @@ function defaultName(input: RemoteRuntimeTargetInput): string {
   return input.name?.trim() || input.hostname.trim();
 }
 
+function normalizePairedMachineReference(
+  value: unknown,
+): RemoteRuntimePairedMachineReference | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const hostIdentity = typeof record.hostIdentity === "string"
+    ? record.hostIdentity.trim()
+    : "";
+  if (!hostIdentity) return null;
+  const machineKey = typeof record.machineKey === "string" && record.machineKey.trim()
+    ? record.machineKey.trim()
+    : null;
+  return { hostIdentity, machineKey };
+}
+
 function stableTargetId(input: RemoteRuntimeTargetInput): string {
+  const pairedMachine = normalizePairedMachineReference(input.pairedMachine);
+  if (input.transport === "paired" && pairedMachine) {
+    return createHash("sha256")
+      .update(`paired:${pairedMachine.hostIdentity}`)
+      .digest("hex")
+      .slice(0, 24);
+  }
   const sshUser = input.sshUser?.trim() ?? "";
   const port = normalizePort(input.port) ?? "";
   return createHash("sha256")
@@ -124,11 +147,21 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
   const hostname = typeof record.hostname === "string" ? record.hostname.trim() : "";
   const sshUser = typeof record.sshUser === "string" && record.sshUser.trim() ? record.sshUser.trim() : null;
   if (!hostname) return null;
-  const fallbackInput: RemoteRuntimeTargetInput = { hostname, sshUser, port: normalizePort(typeof record.port === "number" ? record.port : null) };
+  const transport = record.transport === "paired" ? "paired" : "ssh";
+  const pairedMachine = normalizePairedMachineReference(record.pairedMachine);
+  const fallbackInput: RemoteRuntimeTargetInput = {
+    hostname,
+    transport,
+    pairedMachine,
+    sshUser,
+    port: normalizePort(typeof record.port === "number" ? record.port : null),
+  };
   return {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : stableTargetId(fallbackInput),
     name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : hostname,
     hostname,
+    transport,
+    pairedMachine: transport === "paired" ? pairedMachine : null,
     sshUser,
     port: normalizePort(typeof record.port === "number" ? record.port : null),
     sshKeyPath: typeof record.sshKeyPath === "string" && record.sshKeyPath.trim() ? record.sshKeyPath.trim() : null,
@@ -157,8 +190,13 @@ export class RemoteTargetRegistry {
 
   save(input: RemoteRuntimeTargetInput): RemoteRuntimeTarget {
     const hostname = input.hostname.trim();
-    const sshUser = input.sshUser?.trim() || null;
+    const transport = input.transport === "paired" ? "paired" : "ssh";
+    const pairedMachine = normalizePairedMachineReference(input.pairedMachine);
+    const sshUser = transport === "paired" ? null : input.sshUser?.trim() || null;
     if (!hostname) throw new Error("Remote hostname is required.");
+    if (transport === "paired" && !pairedMachine) {
+      throw new Error("Paired remote targets require a paired-machine reference.");
+    }
     const file = this.read();
     const id = stableTargetId(input);
     const existing = file.targets.find((target) => target.id === id) ?? null;
@@ -166,9 +204,11 @@ export class RemoteTargetRegistry {
       id,
       name: defaultName(input),
       hostname,
+      transport,
+      pairedMachine: transport === "paired" ? pairedMachine : null,
       sshUser,
       port: normalizePort(input.port),
-      sshKeyPath: input.sshKeyPath?.trim() || null,
+      sshKeyPath: transport === "paired" ? null : input.sshKeyPath?.trim() || null,
       routes: normalizeRemoteTargetRoutes({
         hostname,
         port: input.port,

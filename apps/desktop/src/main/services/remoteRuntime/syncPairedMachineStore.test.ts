@@ -144,5 +144,17 @@ describe("DesktopPairedMachineStore", () => {
     expect(fs.statSync(store.path).mode & 0o777).toBe(0o600);
     expect(new DesktopPairedMachineStore().get("mac-studio-host")).toEqual(paired);
     expect(new DesktopPairedMachineStore().get("machine-123")).toEqual(paired);
+
+    const marked = store.markEndpointSucceeded(
+      "mac-studio-host",
+      "wss://relay.example/connect/machine-123",
+      1_700_000_000_000,
+    );
+    expect(marked.endpointStates).toContainEqual({
+      endpoint: "wss://relay.example/connect/machine-123",
+      lastSucceededAt: 1_700_000_000_000,
+    });
+    expect(new DesktopPairedMachineStore().get("mac-studio-host"))
+      .toEqual(marked);
   });
 });

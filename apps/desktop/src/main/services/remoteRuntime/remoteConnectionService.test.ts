@@ -49,6 +49,97 @@ function connectResult(
 }
 
 describe("RemoteConnectionService", () => {
+  it("upgrades a discovered ADE sync machine to a paired-first target", () => {
+    const savedCredentials = {
+      version: 1 as const,
+      hostIdentity: {
+        deviceId: "host-1",
+        siteId: "site-1",
+        name: "Studio",
+        platform: "macOS" as const,
+        deviceType: "desktop" as const,
+      },
+      deviceId: "desktop-1",
+      siteId: "desktop-site-1",
+      deviceName: "Laptop",
+      secret: "secret",
+      dpopPrivateKey: "private",
+      dpopPublicKey: "public",
+      endpoints: ["wss://relay.example/connect/machine-1"],
+      machineKey: "machine-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const registry = {
+      list: vi.fn(() => []),
+      get: vi.fn(() => null),
+      save: vi.fn((input) => ({
+        id: "paired-target-1",
+        ...input,
+        sshUser: input.sshUser ?? null,
+        port: input.port ?? null,
+        sshKeyPath: input.sshKeyPath ?? null,
+        lastSeenArch: null,
+        runtimeBinaryVersion: null,
+        lastConnectedAt: null,
+      })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      get: vi.fn(() => savedCredentials),
+      save: vi.fn((value) => value),
+    };
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      {},
+      pairedStore as any,
+    );
+
+    const target = service.saveTarget({
+      name: "Studio",
+      hostname: "studio.example.ts.net",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [],
+    }, {
+      id: "host-1::service",
+      serviceName: "ADE Sync Studio",
+      machineName: "Studio",
+      hostIdentity: "host-1",
+      hostName: "studio.local",
+      port: 8787,
+      addresses: ["192.168.1.20", "100.70.0.2"],
+      primaryRoute: "192.168.1.20",
+      tailscaleAddress: "100.70.0.2",
+      runtimeKind: "brain",
+      runtimeVersion: "1.0.0",
+      connectable: true,
+      projectIds: [],
+      projectCount: 0,
+      lastSeenAt: 1,
+    });
+
+    expect(target).toMatchObject({
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: "host-1",
+        machineKey: "machine-1",
+      },
+    });
+    expect(pairedStore.save).toHaveBeenCalledWith(expect.objectContaining({
+      endpoints: [
+        "ws://192.168.1.20:8787/",
+        "ws://100.70.0.2:8787/",
+        "ws://studio.local:8787/",
+        "wss://relay.example/connect/machine-1",
+      ],
+    }));
+  });
+
   it("stores structured connect errors with bounded detail and legacy text", async () => {
     const remote = target("disk-full", null);
     const registry = {
@@ -84,6 +175,35 @@ describe("RemoteConnectionService", () => {
     expect(status.lastErrorInfo?.detail?.length).toBeLessThanOrEqual(4_000);
     expect(status.lastErrorInfo?.detail).toContain("truncated");
     expect(status.lastErrorInfo?.detail).toContain("TAIL");
+  });
+
+  it("publishes the transport route and connect latency in connection status", async () => {
+    const remote = target("route-status", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => ({
+        ...connectResult(remote),
+        route: {
+          kind: "tailnet" as const,
+          endpoint: "ws://100.70.0.2:8787/",
+          latencyMs: 12,
+        },
+      })),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(remote.id, { explicit: true });
+
+    expect(service.snapshot().connections[0]?.route).toEqual({
+      kind: "tailnet",
+      endpoint: "ws://100.70.0.2:8787/",
+      latencyMs: 12,
+    });
   });
 
   it("caps legacy connection error text at 500 characters", async () => {

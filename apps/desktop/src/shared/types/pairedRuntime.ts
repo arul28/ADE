@@ -115,8 +115,17 @@ export type DesktopPairedMachineCredentials = {
   /** Base64 X9.63 uncompressed P-256 public key. */
   dpopPublicKey: string;
   endpoints: string[];
+  /** Relay endpoint advertised by the host, when one is available. */
+  relayUrl?: string | null;
+  /** Per-endpoint route history used to prefer recently successful routes. */
+  endpointStates?: DesktopPairedMachineEndpointState[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type DesktopPairedMachineEndpointState = {
+  endpoint: string;
+  lastSucceededAt: number | null;
 };
 
 export type DesktopPairedMachinesFile = {

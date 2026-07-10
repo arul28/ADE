@@ -23,9 +23,14 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeDoctorResult,
   RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeLocalPairingInfo,
+  RemoteRuntimePairWithMachineArgs,
+  RemoteRuntimePairWithMachineResult,
+  RemoteRuntimeParsedPairingInput,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
@@ -36,12 +41,15 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+  SyncWebPairingInfo,
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
 import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionService";
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
+import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
+import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
@@ -319,13 +327,17 @@ export function registerRuntimeBridge({
   localRuntimeConnectionPool,
 }: RuntimeBridgeArgs): void {
   const remoteTargetRegistry = new RemoteTargetRegistry();
+  const pairedMachineStore = new DesktopPairedMachineStore();
   const remoteConnectionPool = new RemoteConnectionPool(
     remoteTargetRegistry,
     appVersion,
+    pairedMachineStore,
   );
   const remoteConnectionService = new RemoteConnectionService(
     remoteTargetRegistry,
     remoteConnectionPool,
+    { appVersion },
+    pairedMachineStore,
   );
   const runtimeEventSubscriptions = new Map<
     number,
@@ -334,6 +346,7 @@ export function registerRuntimeBridge({
   const runtimeEventWatchedSenders = new Set<number>();
   const remoteOpenProjectGenerations = new Map<string, number>();
   let remoteOpenProjectGeneration = 0;
+  let lastDiscoveredMachines: RemoteRuntimeDiscoveryResult["machines"] = [];
 
   remoteConnectionService.onSnapshotChanged((snapshot) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -545,7 +558,73 @@ export function registerRuntimeBridge({
   ipcMain.handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
-      return discoverLanRuntimes();
+      const result = await discoverLanRuntimes();
+      lastDiscoveredMachines = result.machines;
+      remoteConnectionService.rememberDiscoveredMachines(result.machines);
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeParsePairingInput,
+    async (_event, arg: { text?: string }): Promise<RemoteRuntimeParsedPairingInput> => {
+      return parseRemoteRuntimePairingInput(
+        typeof arg?.text === "string" ? arg.text : "",
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimePairWithMachine,
+    async (
+      _event,
+      arg: RemoteRuntimePairWithMachineArgs,
+    ): Promise<RemoteRuntimePairWithMachineResult> => {
+      return await remoteConnectionService.pairWithMachine({
+        input: typeof arg?.input === "string" ? arg.input : "",
+        pin: typeof arg?.pin === "string" ? arg.pin : "",
+        deviceName: typeof arg?.deviceName === "string" ? arg.deviceName : "",
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetLocalPairingInfo,
+    async (): Promise<RemoteRuntimeLocalPairingInfo> => {
+      if (!localRuntimeConnectionPool) {
+        throw new Error("Local ADE runtime connection is not available.");
+      }
+      const info = await localRuntimeConnectionPool.callSync<SyncWebPairingInfo>(
+        "sync.getWebPairingInfo",
+      );
+      const url = typeof info?.pairingUrl === "string" ? info.pairingUrl.trim() : "";
+      const machineName = typeof info?.machineName === "string"
+        ? info.machineName.trim()
+        : "";
+      if (!url || !machineName) {
+        throw new Error("Local ADE runtime did not return pairing information.");
+      }
+      return {
+        url,
+        pin: typeof info.code === "string" && info.code.trim()
+          ? info.code.trim()
+          : null,
+        machineName,
+        relayAvailable: info.relayEnabled === true || info.hasRelayCandidate === true,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeRunDoctor,
+    async (_event, arg: { id?: string }): Promise<RemoteRuntimeDoctorResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const discovered = lastDiscoveredMachines.find((machine) =>
+        machine.id === id || machine.hostIdentity === id) ?? null;
+      return await remoteConnectionService.runDoctor(
+        id,
+        discovered,
+      );
     },
   );
 
@@ -555,7 +634,11 @@ export function registerRuntimeBridge({
       _event,
       arg: RemoteRuntimeTargetInput,
     ): Promise<RemoteRuntimeTarget> => {
-      return remoteConnectionService.saveTarget(arg);
+      const discovered = remoteConnectionService.findDiscoveredTargetInputMatch(
+        lastDiscoveredMachines,
+        arg,
+      );
+      return remoteConnectionService.saveTarget(arg, discovered);
     },
   );
 

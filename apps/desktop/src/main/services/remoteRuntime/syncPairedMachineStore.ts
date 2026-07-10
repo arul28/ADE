@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type {
+  DesktopPairedMachineEndpointState,
   DesktopPairedMachineCredentials,
   DesktopPairedMachinesFile,
   PairedRuntimeHelloOkPayload,
@@ -92,6 +93,8 @@ function coerceMachine(value: unknown): DesktopPairedMachineCredentials | null {
         }
       }))]
     : [];
+  const relayUrl = requiredString(value.relayUrl);
+  const endpointStates = coerceEndpointStates(value.endpointStates, endpoints);
   if (
     !hostIdentity
     || !deviceId
@@ -115,9 +118,55 @@ function coerceMachine(value: unknown): DesktopPairedMachineCredentials | null {
     dpopPrivateKey,
     dpopPublicKey,
     endpoints,
+    relayUrl,
+    endpointStates,
     createdAt,
     updatedAt,
   };
+}
+
+function coerceEndpointStates(
+  value: unknown,
+  endpoints: string[],
+): DesktopPairedMachineEndpointState[] {
+  const successByEndpoint = new Map<string, number | null>();
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!isRecord(entry)) continue;
+      const rawEndpoint = requiredString(entry.endpoint);
+      if (!rawEndpoint) continue;
+      let endpoint: string;
+      try {
+        endpoint = normalizeSyncEndpoint(rawEndpoint);
+      } catch {
+        continue;
+      }
+      const lastSucceededAt = typeof entry.lastSucceededAt === "number"
+        && Number.isFinite(entry.lastSucceededAt)
+        ? entry.lastSucceededAt
+        : null;
+      const current = successByEndpoint.get(endpoint) ?? null;
+      if (lastSucceededAt != null && (current == null || lastSucceededAt > current)) {
+        successByEndpoint.set(endpoint, lastSucceededAt);
+      } else if (!successByEndpoint.has(endpoint)) {
+        successByEndpoint.set(endpoint, null);
+      }
+    }
+  }
+  for (const endpoint of endpoints) {
+    if (!successByEndpoint.has(endpoint)) successByEndpoint.set(endpoint, null);
+  }
+  return [...successByEndpoint].map(([endpoint, lastSucceededAt]) => ({
+    endpoint,
+    lastSucceededAt,
+  }));
+}
+
+function mergeEndpointStates(
+  endpoints: string[],
+  ...stateLists: Array<DesktopPairedMachineEndpointState[] | null | undefined>
+): DesktopPairedMachineEndpointState[] {
+  return coerceEndpointStates(stateLists.flat(), endpoints);
 }
 
 function hostIdentityFromPeer(
@@ -219,7 +268,13 @@ export class DesktopPairedMachineStore {
       createdAt: existing?.createdAt ?? machine.createdAt,
       updatedAt: nowIso(),
       endpoints: uniqueEndpoints(...machine.endpoints, ...(existing?.endpoints ?? [])),
+      relayUrl: machine.relayUrl ?? existing?.relayUrl ?? null,
     };
+    saved.endpointStates = mergeEndpointStates(
+      saved.endpoints,
+      machine.endpointStates,
+      existing?.endpointStates,
+    );
     this.write({
       version: 1,
       machines: [
@@ -243,6 +298,26 @@ export class DesktopPairedMachineStore {
     if (machines.length === file.machines.length) return false;
     this.write({ version: 1, machines });
     return true;
+  }
+
+  markEndpointSucceeded(
+    hostDeviceIdOrMachineKey: string,
+    endpointValue: string,
+    nowMs = Date.now(),
+  ): DesktopPairedMachineCredentials {
+    const machine = this.get(hostDeviceIdOrMachineKey);
+    if (!machine) throw new Error("Paired machine was not found.");
+    const endpoint = normalizeSyncEndpoint(endpointValue);
+    const endpoints = uniqueEndpoints(endpoint, ...machine.endpoints);
+    return this.save({
+      ...machine,
+      endpoints,
+      endpointStates: mergeEndpointStates(
+        endpoints,
+        machine.endpointStates,
+        [{ endpoint, lastSucceededAt: nowMs }],
+      ),
+    });
   }
 
   async pairWithMachine(
@@ -366,6 +441,11 @@ export class DesktopPairedMachineStore {
         machineKey: provisional.machineKey
           ?? (hello.cloudRelayWssUrl ? machineKeyFromEndpoint(hello.cloudRelayWssUrl) : null),
         endpoints,
+        relayUrl: hello.cloudRelayWssUrl ?? null,
+        endpointStates: endpoints.map((candidate) => ({
+          endpoint: candidate,
+          lastSucceededAt: candidate === endpoint ? Date.now() : null,
+        })),
       });
     } finally {
       connection.close(1000, "Desktop pairing finished.");

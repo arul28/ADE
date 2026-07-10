@@ -20,10 +20,20 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isRetryableRemoteAction } from "./retryableRemoteActions";
+import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
+import { PairedRuntimeTransportUnavailableError } from "./pairedRuntimeErrors";
+import {
+  DesktopPairedMachineStore,
+} from "./syncPairedMachineStore";
+import type { SyncPortForwardClient } from "./syncPortForwardClient";
+import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
 
 type PoolEntry = {
   client: RuntimeRpcClient;
-  ssh: Client;
+  transport: "ssh" | "paired";
+  ssh?: Client;
+  pairedTransport?: SyncRuntimeTransport;
+  pairedPortForwardClient?: SyncPortForwardClient;
   result: RemoteRuntimeConnectResult;
   dispose?: (closeClient: boolean, notify?: boolean) => void | Promise<void>;
 };
@@ -37,18 +47,23 @@ function closePoolEntryResources(
   closeClient: boolean,
   forceSshDestroy = false,
 ): void {
+  try {
+    entry.pairedPortForwardClient?.dispose(false);
+  } catch {}
   if (closeClient) {
     try {
       entry.client.close();
     } catch {}
   }
-  try {
-    entry.ssh.end();
-  } catch {}
-  if (forceSshDestroy) {
+  if (entry.ssh) {
     try {
-      (entry.ssh as unknown as { destroy?: () => void }).destroy?.();
+      entry.ssh.end();
     } catch {}
+    if (forceSshDestroy) {
+      try {
+        (entry.ssh as unknown as { destroy?: () => void }).destroy?.();
+      } catch {}
+    }
   }
 }
 
@@ -262,6 +277,7 @@ export class RemoteConnectionPool {
   constructor(
     private readonly registry: RemoteTargetRegistry,
     private readonly appVersion: string,
+    private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {}
 
   async connect(
@@ -292,15 +308,25 @@ export class RemoteConnectionPool {
     } else {
       this.assertConnectNotBackingOff(target.id);
     }
-    const pending = bootstrapRemoteRuntime({
-      target,
-      registry: this.registry,
-      resourcesPath: process.resourcesPath ?? app.getAppPath(),
-      appVersion: this.appVersion,
-    });
+    const pending = this.bootstrapTarget(target);
     let entryPromise: Promise<PoolEntry>;
-    entryPromise = pending.then(({ client, ssh, result }) => {
-      const entry = { client, ssh, result };
+    entryPromise = pending.then(async (entry) => {
+      if (entry.result.route && entry.result.route.latencyMs == null) {
+        const startedAt = Date.now();
+        try {
+          await entry.client.call("ping", {}, { timeoutMs: 5_000 });
+          entry.result = {
+            ...entry.result,
+            route: {
+              ...entry.result.route,
+              latencyMs: Math.max(0, Date.now() - startedAt),
+            },
+          };
+        } catch {
+          // Latency is optional. Connection lifecycle listeners below still
+          // evict the entry if the probe exposed a dead transport.
+        }
+      }
       this.clearUnsupportedOptionalActionsForTarget(target.id);
       this.connectFailureBackoffByTargetId.delete(target.id);
       this.resolvedEntryPromises.add(entryPromise);
@@ -317,6 +343,43 @@ export class RemoteConnectionPool {
       this.noteConnectFailure(target.id, error);
       throw error;
     }
+  }
+
+  private async bootstrapTarget(target: RemoteRuntimeTarget): Promise<PoolEntry> {
+    if (target.transport === "paired") {
+      try {
+        const paired = await bootstrapPairedRuntime({
+          target,
+          registry: this.registry,
+          pairedStore: this.pairedStore,
+          appVersion: this.appVersion,
+        });
+        return {
+          client: paired.client,
+          transport: "paired",
+          pairedTransport: paired.transport,
+          pairedPortForwardClient: paired.portForwardClient,
+          result: paired.result,
+        };
+      } catch (error) {
+        if (!(error instanceof PairedRuntimeTransportUnavailableError)) {
+          throw error;
+        }
+      }
+    }
+
+    const ssh = await bootstrapRemoteRuntime({
+      target,
+      registry: this.registry,
+      resourcesPath: process.resourcesPath ?? app.getAppPath(),
+      appVersion: this.appVersion,
+    });
+    return {
+      client: ssh.client,
+      transport: "ssh",
+      ssh: ssh.ssh,
+      result: ssh.result,
+    };
   }
 
   async projects(targetId: string): Promise<unknown> {
@@ -393,6 +456,27 @@ export class RemoteConnectionPool {
   ): Promise<RemoteRuntimePortForward> {
     const remoteHost = normalizeForwardRemoteHost(request.remoteHost);
     const remotePort = normalizeForwardPort(request.remotePort);
+    const activeEntry = await this.requireEntry(targetId);
+    if (activeEntry.transport === "paired") {
+      const forwardClient = activeEntry.pairedPortForwardClient;
+      if (!forwardClient) {
+        throw new Error("The paired runtime port-forward client is unavailable.");
+      }
+      const forward = await forwardClient.ensureForward(remoteHost, remotePort);
+      return {
+        targetId,
+        remoteHost: forward.remoteHost,
+        remotePort: forward.remotePort,
+        localHost: forward.localHost,
+        localPort: forward.localPort,
+        localUrl: forward.localUrl,
+        label: typeof request.label === "string" && request.label.trim()
+          ? request.label.trim()
+          : null,
+        createdAt: forward.createdAt,
+        lastUsedAt: forward.lastUsedAt,
+      };
+    }
     const key = portForwardKey(targetId, remoteHost, remotePort);
     const existing = this.localPortForwards.get(key);
     if (existing) {
@@ -431,6 +515,10 @@ export class RemoteConnectionPool {
             socket,
             error instanceof Error ? error : new Error(String(error)),
           );
+          return;
+        }
+        if (!activeEntry.ssh) {
+          destroyAcceptedSocket(socket, new Error("The active SSH transport is unavailable."));
           return;
         }
         activeEntry.ssh.forwardOut(
@@ -928,8 +1016,8 @@ export class RemoteConnectionPool {
     };
 
     entry.client.onDisconnect((error) => evict(false, true, error));
-    entry.ssh.once("close", () => evict(true));
-    entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
+    entry.ssh?.once("close", () => evict(true));
+    entry.ssh?.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
     entry.dispose = evict;
   }
 

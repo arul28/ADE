@@ -1,4 +1,14 @@
 import type { ProjectIcon } from "./core";
+import type { SyncPairingHostIdentity } from "./sync";
+
+export type RemoteRuntimeTransportKind = "ssh" | "paired";
+
+export type RemoteRuntimePairedMachineReference = {
+  /** Stable host device id in the desktop paired-machine credential store. */
+  hostIdentity: string;
+  /** Optional tunnel-relay machine key for lookup after relay-only pairing. */
+  machineKey?: string | null;
+};
 
 export type RemoteRuntimeTargetRouteSource =
   | "manual"
@@ -16,6 +26,9 @@ export type RemoteRuntimeTarget = {
   id: string;
   name: string;
   hostname: string;
+  /** Missing on older records means SSH. */
+  transport?: RemoteRuntimeTransportKind;
+  pairedMachine?: RemoteRuntimePairedMachineReference | null;
   sshUser: string | null;
   port: number | null;
   sshKeyPath: string | null;
@@ -29,6 +42,8 @@ export type RemoteRuntimeTarget = {
 export type RemoteRuntimeTargetInput = {
   name?: string | null;
   hostname: string;
+  transport?: RemoteRuntimeTransportKind | null;
+  pairedMachine?: RemoteRuntimePairedMachineReference | null;
   sshUser?: string | null;
   port?: number | null;
   sshKeyPath?: string | null;
@@ -88,6 +103,7 @@ export type RemoteRuntimeConnectResult = {
   target: RemoteRuntimeTarget;
   arch: string;
   version: string | null;
+  route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
@@ -142,6 +158,14 @@ export type RemoteRuntimeConnectionState =
   | "connecting"
   | "connected"
   | "error";
+
+export type RemoteRuntimeRouteKind = "lan" | "tailnet" | "relay" | "ssh";
+
+export type RemoteRuntimeConnectionRoute = {
+  kind: RemoteRuntimeRouteKind;
+  endpoint: string;
+  latencyMs?: number;
+};
 
 export type RemoteRuntimeConnectErrorInfo = {
   kind: "disk_full" | "ssh_auth" | "unsupported_os" | "generic";
@@ -203,6 +227,7 @@ export type RemoteRuntimeConnectionStatus = {
   state: RemoteRuntimeConnectionState;
   arch: string | null;
   version: string | null;
+  route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
@@ -210,6 +235,43 @@ export type RemoteRuntimeConnectionStatus = {
   lastErrorInfo?: RemoteRuntimeConnectErrorInfo | null;
   lastAttemptedAt: number | null;
   connectedAt: number | null;
+};
+
+export type RemoteRuntimeParsedPairingInput = {
+  hostIdentity: SyncPairingHostIdentity;
+  machineName?: string;
+  endpoints: string[];
+  relayUrl?: string;
+  requiresPin: true;
+};
+
+export type RemoteRuntimePairWithMachineArgs = {
+  input: string;
+  pin: string;
+  deviceName: string;
+};
+
+export type RemoteRuntimePairWithMachineResult = {
+  targetId: string;
+};
+
+export type RemoteRuntimeLocalPairingInfo = {
+  url: string;
+  pin: string | null;
+  machineName: string;
+  relayAvailable: boolean;
+};
+
+export type RemoteRuntimeDoctorCheck = {
+  route: RemoteRuntimeRouteKind;
+  endpoint: string;
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+};
+
+export type RemoteRuntimeDoctorResult = {
+  checks: RemoteRuntimeDoctorCheck[];
 };
 
 export type RemoteRuntimeMachineProjectCapability =

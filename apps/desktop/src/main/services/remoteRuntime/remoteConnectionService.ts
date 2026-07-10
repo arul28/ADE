@@ -13,6 +13,10 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectResult,
+  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDoctorResult,
+  RemoteRuntimePairWithMachineArgs,
+  RemoteRuntimePairWithMachineResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
@@ -26,6 +30,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
+import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import {
   capRemoteRuntimeErrorDetail,
   RemoteRuntimeConnectError,
@@ -33,6 +38,15 @@ import {
 import { coerceProjects } from "./remoteBootstrap";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
+import { parseRemoteRuntimePairingInput } from "./pairingInput";
+import {
+  findDiscoveredRuntimeForTargetInput,
+  sshRoutesForDiscoveredRuntime,
+  sshRoutesForPairedEndpoints,
+  syncEndpointsForDiscoveredRuntime,
+} from "./discoveredPairedRuntime";
+import { runRemoteRuntimeDoctor } from "./connectionDoctor";
 import {
   getSshHostKeyTrustForTarget,
   trustSshHostKeyForTarget,
@@ -43,6 +57,7 @@ type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 type RemoteConnectionServiceOptions = {
   autoconnectIntervalMs?: number;
   pingTimeoutMs?: number;
+  appVersion?: string;
 };
 
 type RemoteConnectionDisconnectOptions = {
@@ -107,7 +122,7 @@ function automaticReconnectStoppedMessage(): string {
 
 function isImplicitConnectionFailure(error: unknown): boolean {
   const message = errorMessage(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
+  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|sync (?:connection|websocket|endpoint).*(?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
     message,
   );
 }
@@ -144,6 +159,7 @@ export class RemoteConnectionService {
   >();
   private readonly automaticReconnectPausedTargetIds = new Set<string>();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
+  private readonly latencyProbeTargetIds = new Set<string>();
   private readonly listeners = new Set<
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
@@ -153,6 +169,7 @@ export class RemoteConnectionService {
     private readonly registry: RemoteTargetRegistry,
     private readonly pool: RemoteConnectionPool,
     private readonly options: RemoteConnectionServiceOptions = {},
+    private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
     this.pool.onEntryEvicted((targetId, error) => {
       const current = this.statusById.get(targetId);
@@ -175,10 +192,152 @@ export class RemoteConnectionService {
     return this.registry.get(targetId);
   }
 
-  saveTarget(input: RemoteRuntimeTargetInput): RemoteRuntimeTarget {
-    const target = this.registry.save(input);
+  saveTarget(
+    input: RemoteRuntimeTargetInput,
+    discoveredMachine?: RemoteRuntimeDiscoveredMachine | null,
+  ): RemoteRuntimeTarget {
+    let normalizedInput = input;
+    if (discoveredMachine?.hostIdentity) {
+      const paired = this.pairedStore.get(discoveredMachine.hostIdentity);
+      const discoveredEndpoints = syncEndpointsForDiscoveredRuntime(discoveredMachine);
+      if (paired && discoveredEndpoints.length > 0) {
+        const saved = discoveredEndpoints.some((endpoint) => !paired.endpoints.includes(endpoint))
+          ? this.pairedStore.save({
+              ...paired,
+              endpoints: [...discoveredEndpoints, ...paired.endpoints],
+            })
+          : paired;
+        normalizedInput = {
+          ...input,
+          transport: "paired",
+          pairedMachine: {
+            hostIdentity: saved.hostIdentity.deviceId,
+            machineKey: saved.machineKey ?? null,
+          },
+        };
+      }
+    }
+    const target = this.registry.save(normalizedInput);
     this.mergeStatus(target.id, { state: "idle", lastError: null });
     return target;
+  }
+
+  rememberDiscoveredMachines(machines: RemoteRuntimeDiscoveredMachine[]): void {
+    for (const machine of machines) {
+      if (!machine.hostIdentity) continue;
+      const paired = this.pairedStore.get(machine.hostIdentity);
+      if (!paired) continue;
+      const endpoints = syncEndpointsForDiscoveredRuntime(machine);
+      if (endpoints.length === 0) continue;
+      if (endpoints.every((endpoint) => paired.endpoints.includes(endpoint))) {
+        continue;
+      }
+      this.pairedStore.save({
+        ...paired,
+        endpoints: [...endpoints, ...paired.endpoints],
+      });
+    }
+  }
+
+  findDiscoveredTargetInputMatch(
+    machines: RemoteRuntimeDiscoveredMachine[],
+    input: RemoteRuntimeTargetInput,
+  ): RemoteRuntimeDiscoveredMachine | null {
+    return findDiscoveredRuntimeForTargetInput(machines, input);
+  }
+
+  async pairWithMachine(
+    args: RemoteRuntimePairWithMachineArgs,
+  ): Promise<RemoteRuntimePairWithMachineResult> {
+    const parsed = parseRemoteRuntimePairingInput(args.input);
+    let paired: DesktopPairedMachineCredentials | null = null;
+    const failures: string[] = [];
+    for (const endpoint of parsed.endpoints) {
+      try {
+        paired = await this.pairedStore.pairWithMachine(
+          endpoint,
+          args.pin,
+          args.deviceName,
+          { appVersion: this.options.appVersion },
+        );
+        if (paired.hostIdentity.deviceId !== parsed.hostIdentity.deviceId) {
+          this.pairedStore.remove(paired.hostIdentity.deviceId);
+          throw new Error(
+            `Pairing endpoint identity mismatch (expected ${parsed.hostIdentity.deviceId}, received ${paired.hostIdentity.deviceId}).`,
+          );
+        }
+        break;
+      } catch (error) {
+        paired = null;
+        failures.push(`${endpoint}: ${errorMessage(error)}`);
+      }
+    }
+    if (!paired) {
+      throw new Error(`Could not pair with the ADE machine. ${failures.join("; ")}`);
+    }
+    paired = this.pairedStore.save({
+      ...paired,
+      endpoints: [...parsed.endpoints, ...paired.endpoints],
+      relayUrl: parsed.relayUrl ?? paired.relayUrl ?? null,
+    });
+    const sshRoutes = sshRoutesForPairedEndpoints(parsed.endpoints);
+    const fallbackHostname = (() => {
+      try {
+        return new URL(parsed.endpoints[0]!).hostname;
+      } catch {
+        return parsed.hostIdentity.name;
+      }
+    })();
+    const target = this.saveTarget({
+      name: parsed.machineName ?? paired.hostIdentity.name,
+      hostname: sshRoutes[0]?.hostname ?? fallbackHostname,
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: paired.hostIdentity.deviceId,
+        machineKey: paired.machineKey ?? null,
+      },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: sshRoutes,
+    });
+    return { targetId: target.id };
+  }
+
+  async runDoctor(
+    targetIdOrMachineId: string,
+    discoveredMachine?: RemoteRuntimeDiscoveredMachine | null,
+  ): Promise<RemoteRuntimeDoctorResult> {
+    const id = targetIdOrMachineId.trim();
+    if (!id) throw new Error("A remote target or paired machine id is required.");
+    const savedTarget = this.registry.get(id);
+    const discoveredRoutes = discoveredMachine
+      ? sshRoutesForDiscoveredRuntime(discoveredMachine)
+      : [];
+    const target: RemoteRuntimeTarget | null = savedTarget ?? (discoveredMachine && discoveredRoutes[0]
+      ? {
+          id: discoveredMachine.id,
+          name: discoveredMachine.machineName,
+          hostname: discoveredRoutes[0].hostname,
+          sshUser: null,
+          port: discoveredRoutes[0].port,
+          sshKeyPath: null,
+          routes: discoveredRoutes,
+          lastSeenArch: null,
+          runtimeBinaryVersion: discoveredMachine.runtimeVersion,
+          lastConnectedAt: null,
+        }
+      : null);
+    const credentials = target?.pairedMachine
+      ? this.pairedStore.get(target.pairedMachine.hostIdentity)
+        ?? (target.pairedMachine.machineKey
+          ? this.pairedStore.get(target.pairedMachine.machineKey)
+          : null)
+      : this.pairedStore.get(discoveredMachine?.hostIdentity ?? id);
+    if (!target && !credentials) {
+      throw new Error("Remote target or paired machine was not found.");
+    }
+    return await runRemoteRuntimeDoctor({ target, credentials });
   }
 
   removeTarget(targetId: string): boolean {
@@ -194,7 +353,20 @@ export class RemoteConnectionService {
   async getSshHostKeyTrust(
     targetId: string,
   ): Promise<RemoteRuntimeSshHostKeyTrustStatus> {
-    return await getSshHostKeyTrustForTarget(this.requireTarget(targetId));
+    const target = this.requireTarget(targetId);
+    // Paired targets attempt authenticated WebSocket RPC first. Avoid asking
+    // for SSH trust before that path is known to be unavailable.
+    const pairedReference = target.pairedMachine;
+    const hasPairedCredentials = pairedReference
+      ? this.pairedStore.get(pairedReference.hostIdentity)
+        ?? (pairedReference.machineKey
+          ? this.pairedStore.get(pairedReference.machineKey)
+          : null)
+      : null;
+    if (target.transport === "paired" && hasPairedCredentials) {
+      return { state: "trusted" };
+    }
+    return await getSshHostKeyTrustForTarget(target);
   }
 
   async trustSshHostKey(
@@ -219,6 +391,7 @@ export class RemoteConnectionService {
           state: status.state ?? (target.lastConnectedAt ? "idle" : "idle"),
           arch: status.arch ?? target.lastSeenArch,
           version: status.version ?? target.runtimeBinaryVersion,
+          ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
             ? { compatibilityWarnings: status.compatibilityWarnings }
@@ -310,6 +483,7 @@ export class RemoteConnectionService {
         state: "connected",
         arch: connectedResult.arch,
         version: connectedResult.version,
+        route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
         projects: connectedResult.projects,
@@ -642,6 +816,7 @@ export class RemoteConnectionService {
   dispose(): void {
     this.stopAutoconnect();
     this.pool.dispose();
+    this.latencyProbeTargetIds.clear();
     this.listeners.clear();
   }
 
@@ -655,6 +830,9 @@ export class RemoteConnectionService {
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
+        if (this.latencyProbeTargetIds.has(target.id)) continue;
+        this.latencyProbeTargetIds.add(target.id);
+        const startedAt = Date.now();
         try {
           await this.pool.callMachineForTarget(
             target,
@@ -664,6 +842,15 @@ export class RemoteConnectionService {
               timeoutMs: options.pingTimeoutMs,
             },
           );
+          const currentRoute = this.statusById.get(target.id)?.route;
+          if (currentRoute) {
+            this.mergeStatus(target.id, {
+              route: {
+                ...currentRoute,
+                latencyMs: Math.max(0, Date.now() - startedAt),
+              },
+            });
+          }
           continue;
         } catch {
           this.pool.disconnect(target.id);
@@ -671,6 +858,8 @@ export class RemoteConnectionService {
             state: "error",
             lastError: "Remote ADE service connection was interrupted.",
           });
+        } finally {
+          this.latencyProbeTargetIds.delete(target.id);
         }
       }
       void this.connect(target.id).catch(() => {});

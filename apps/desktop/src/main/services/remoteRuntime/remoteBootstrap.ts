@@ -1769,6 +1769,16 @@ export async function bootstrapRemoteRuntime(args: {
         target: updated,
         arch: arch.label,
         version: initializeInfo.version ?? runtimeVersion,
+        route: {
+          kind: "ssh",
+          endpoint: (() => {
+            const host = connectedRoute.hostname.includes(":")
+              && !connectedRoute.hostname.startsWith("[")
+              ? `[${connectedRoute.hostname}]`
+              : connectedRoute.hostname;
+            return `${host}:${connectedRoute.port ?? args.target.port ?? 22}`;
+          })(),
+        },
         capabilities: initializeInfo.capabilities,
         compatibilityWarnings,
         projects,

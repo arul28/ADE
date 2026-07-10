@@ -100,4 +100,39 @@ describe("RemoteTargetRegistry", () => {
       manuallyDisconnectedAt: 1_700_000_100,
     });
   });
+
+  it("round-trips paired targets without SSH credentials", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
+    process.env.ADE_HOME = adeHome;
+
+    const registry = new RemoteTargetRegistry();
+    const target = registry.save({
+      name: "Studio",
+      hostname: "studio.local",
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: "host-device-1",
+        machineKey: "relay-machine-1",
+      },
+      sshUser: "ignored",
+      sshKeyPath: "/ignored/key",
+      routes: [{
+        hostname: "studio.local",
+        port: null,
+        source: "bonjour",
+        lastSucceededAt: null,
+      }],
+    });
+
+    expect(target).toMatchObject({
+      transport: "paired",
+      pairedMachine: {
+        hostIdentity: "host-device-1",
+        machineKey: "relay-machine-1",
+      },
+      sshUser: null,
+      sshKeyPath: null,
+    });
+    expect(new RemoteTargetRegistry().get(target.id)).toEqual(target);
+  });
 });

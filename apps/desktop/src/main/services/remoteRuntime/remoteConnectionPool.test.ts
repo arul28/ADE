@@ -9,6 +9,7 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 
 const bootstrapRemoteRuntimeMock = vi.hoisted(() => vi.fn());
+const bootstrapPairedRuntimeMock = vi.hoisted(() => vi.fn());
 const ensureRemoteProjectMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
@@ -22,7 +23,12 @@ vi.mock("./remoteBootstrap", () => ({
   ensureRemoteProject: ensureRemoteProjectMock,
 }));
 
+vi.mock("./pairedRuntimeBootstrap", () => ({
+  bootstrapPairedRuntime: bootstrapPairedRuntimeMock,
+}));
+
 import { RemoteConnectionPool } from "./remoteConnectionPool";
+import { PairedRuntimeTransportUnavailableError } from "./pairedRuntimeErrors";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -55,6 +61,17 @@ const target: RemoteRuntimeTarget = {
   lastSeenArch: null,
   runtimeBinaryVersion: null,
   lastConnectedAt: null,
+};
+
+const pairedTarget: RemoteRuntimeTarget = {
+  ...target,
+  id: "paired-target-1",
+  transport: "paired",
+  pairedMachine: {
+    hostIdentity: "host-1",
+    machineKey: "machine-1",
+  },
+  sshUser: null,
 };
 
 function connectResult(version: string): RemoteRuntimeConnectResult {
@@ -192,7 +209,100 @@ function closeServer(server: net.Server): Promise<void> {
 describe("RemoteConnectionPool", () => {
   beforeEach(() => {
     bootstrapRemoteRuntimeMock.mockReset();
+    bootstrapPairedRuntimeMock.mockReset();
     ensureRemoteProjectMock.mockReset();
+  });
+
+  it("uses and disposes a port-forward client on the paired transport connection", async () => {
+    const client = createClient();
+    const ensureForward = vi.fn(async () => ({
+      remoteHost: "127.0.0.1",
+      remotePort: 4173,
+      localHost: "127.0.0.1" as const,
+      localPort: 43111,
+      localUrl: "http://127.0.0.1:43111",
+      createdAt: 10,
+      lastUsedAt: 11,
+    }));
+    const dispose = vi.fn();
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client,
+      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      portForwardClient: { ensureForward, dispose },
+      result: {
+        ...connectResult("1.0.0"),
+        target: pairedTarget,
+        route: {
+          kind: "lan",
+          endpoint: "ws://studio.local:8787/",
+          latencyMs: 2,
+        },
+      },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await pool.connect(pairedTarget);
+    await expect(pool.ensureLocalPortForward(pairedTarget.id, {
+      remotePort: 4173,
+      label: "Preview",
+    })).resolves.toEqual({
+      targetId: pairedTarget.id,
+      remoteHost: "127.0.0.1",
+      remotePort: 4173,
+      localHost: "127.0.0.1",
+      localPort: 43111,
+      localUrl: "http://127.0.0.1:43111",
+      label: "Preview",
+      createdAt: 10,
+      lastUsedAt: 11,
+    });
+
+    await pool.disconnect(pairedTarget.id);
+    expect(ensureForward).toHaveBeenCalledWith("127.0.0.1", 4173);
+    expect(dispose).toHaveBeenCalledWith(false);
+  });
+
+  it("falls back to SSH when the paired host lacks rpcChannel support", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError(
+        "The paired machine does not advertise runtime RPC support.",
+      ),
+    );
+    const client = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedTarget },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      target: { id: pairedTarget.id },
+      version: "1.0.0",
+    });
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to SSH when every paired WebSocket dial fails", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeTransportUnavailableError(
+        "Failed to connect to sync endpoint: ECONNREFUSED.",
+      ),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedTarget },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      target: { id: pairedTarget.id },
+    });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ target: pairedTarget }),
+    );
   });
 
   it("evicts cached entries after the RPC client disconnects", async () => {
