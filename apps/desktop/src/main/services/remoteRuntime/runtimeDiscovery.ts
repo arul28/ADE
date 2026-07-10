@@ -174,6 +174,8 @@ export function discoveredRuntimeFromBonjourService(
   const projectCount =
     parsePositiveInteger(txt.projectCount) ??
     (projectIds.length > 0 ? projectIds.length : null);
+  const os = firstNonEmpty([txt.platform]);
+  const isWindows = os?.toLowerCase() === "windows";
 
   return {
     id: hostIdentity ? `${hostIdentity}::${serviceKey}` : serviceKey,
@@ -187,10 +189,11 @@ export function discoveredRuntimeFromBonjourService(
     tailscaleAddress,
     runtimeKind: firstNonEmpty([txt.runtimeKind]),
     runtimeVersion: firstNonEmpty([txt.runtimeVersion]),
-    ...(firstNonEmpty([txt.platform])
-      ? { os: firstNonEmpty([txt.platform])! }
+    ...(os ? { os } : {}),
+    connectable: !isWindows,
+    ...(isWindows
+      ? { unsupportedReason: "Windows machines can't run the ADE remote runtime yet." }
       : {}),
-    connectable: true,
     projectIds,
     projectCount,
     lastSeenAt: nowMs,

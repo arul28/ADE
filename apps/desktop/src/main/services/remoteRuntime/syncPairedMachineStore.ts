@@ -264,7 +264,10 @@ export class DesktopPairedMachineStore {
       ?? (ref.machineKey ? this.get(ref.machineKey) : null);
   }
 
-  save(credentials: DesktopPairedMachineCredentials): DesktopPairedMachineCredentials {
+  save(
+    credentials: DesktopPairedMachineCredentials,
+    options: { replaceConnectionMetadata?: boolean } = {},
+  ): DesktopPairedMachineCredentials {
     const machine = coerceMachine(credentials);
     if (!machine) throw new Error("Desktop paired machine credentials are invalid.");
     const file = this.read();
@@ -276,13 +279,21 @@ export class DesktopPairedMachineStore {
       ...machine,
       createdAt: existing?.createdAt ?? machine.createdAt,
       updatedAt: nowIso(),
-      endpoints: uniqueEndpoints(...machine.endpoints, ...(existing?.endpoints ?? [])),
-      relayUrl: machine.relayUrl ?? existing?.relayUrl ?? null,
+      endpoints: options.replaceConnectionMetadata
+        ? uniqueEndpoints(...machine.endpoints)
+        : uniqueEndpoints(...machine.endpoints, ...(existing?.endpoints ?? [])),
+      relayUrl: options.replaceConnectionMetadata
+        ? machine.relayUrl ?? null
+        : machine.relayUrl ?? existing?.relayUrl ?? null,
     };
     saved.endpointStates = mergeEndpointStates(
       saved.endpoints,
-      machine.endpointStates,
-      existing?.endpointStates,
+      options.replaceConnectionMetadata
+        ? machine.endpointStates?.filter((state) =>
+            saved.endpoints.includes(state.endpoint)
+          )
+        : machine.endpointStates,
+      options.replaceConnectionMetadata ? undefined : existing?.endpointStates,
     );
     this.write({
       version: 1,

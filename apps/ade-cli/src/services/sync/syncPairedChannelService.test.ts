@@ -36,6 +36,7 @@ class FakeForwardSocket extends EventEmitter {
   paused = false;
   destroyed = false;
   readonly writes: Buffer[] = [];
+  readonly timeoutValues: number[] = [];
 
   constructor(private readonly echoWrites = false) {
     super();
@@ -56,6 +57,11 @@ class FakeForwardSocket extends EventEmitter {
 
   resume(): this {
     this.paused = false;
+    return this;
+  }
+
+  setTimeout(timeoutMs: number): this {
+    this.timeoutValues.push(timeoutMs);
     return this;
   }
 
@@ -92,6 +98,7 @@ function createHarness(options: {
   bufferedAmount?: () => number;
   forwardPendingBytes?: number;
   backpressurePollMs?: number;
+  forwardConnectTimeoutMs?: number;
   connectForward?: () => FakeForwardSocket;
 } = {}) {
   const sent: SentEnvelope[] = [];
@@ -101,6 +108,7 @@ function createHarness(options: {
     getBufferedAmount: options.bufferedAmount ?? (() => 0),
     forwardPendingBytes: options.forwardPendingBytes,
     backpressurePollMs: options.backpressurePollMs,
+    forwardConnectTimeoutMs: options.forwardConnectTimeoutMs,
     connectForward: options.connectForward
       ? () => options.connectForward!() as unknown as net.Socket
       : undefined,
@@ -268,6 +276,7 @@ describe("createSyncPairedChannelService", () => {
       port: 4173,
     }, true, true);
     socket.connect();
+    expect(socket.timeoutValues).toEqual([10_000, 0]);
     await service.handleEnvelope(peer, "fwd_data", {
       forwardId: "fwd-echo",
       data: Buffer.from("hello over sync", "utf8").toString("base64"),
@@ -291,6 +300,32 @@ describe("createSyncPairedChannelService", () => {
     );
     expect(sent.find((envelope) => envelope.type === "fwd_close")?.payload).toMatchObject({
       forwardId: "fwd-echo",
+    });
+    service.dispose();
+  });
+
+  it("closes a loopback forward when its TCP connection times out", async () => {
+    const socket = new FakeForwardSocket();
+    const { service, sent, peer } = createHarness({
+      connectForward: () => socket,
+      forwardConnectTimeoutMs: 25,
+    });
+
+    await service.handleEnvelope(peer, "fwd_open", {
+      forwardId: "fwd-timeout",
+      host: "127.0.0.1",
+      port: 4173,
+    }, true, true);
+    socket.emit("timeout");
+
+    expect(socket.timeoutValues).toEqual([25]);
+    expect(socket.destroyed).toBe(true);
+    expect(sent).toContainEqual({
+      type: "fwd_close",
+      payload: {
+        forwardId: "fwd-timeout",
+        reason: "Remote TCP connection timed out.",
+      },
     });
     service.dispose();
   });

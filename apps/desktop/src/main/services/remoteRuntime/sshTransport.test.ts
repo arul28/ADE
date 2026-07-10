@@ -239,6 +239,51 @@ describe("buildSshConfig", () => {
     expect(message).toContain(`key ${keyPath}`);
   });
 
+  it("reports only configs that actually failed SSH authentication", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-config-"));
+    const configPath = path.join(dir, "config");
+    fs.writeFileSync(configPath, [
+      "Host unavailable-route",
+      "  User transport-user",
+      "Host auth-route",
+      "  User auth-user",
+    ].join("\n"), "utf8");
+    const authError = Object.assign(
+      new Error("All configured authentication methods failed"),
+      { level: "client-authentication" },
+    );
+
+    let message = "";
+    try {
+      await connectSshWithRoute({
+        ...target,
+        hostname: "unavailable-route",
+        sshUser: null,
+        routes: [{
+          hostname: "auth-route",
+          port: 22,
+          source: "manual",
+          lastSucceededAt: null,
+        }],
+      }, {
+        env: {},
+        sshConfigPath: configPath,
+        knownHostsPath: null,
+        connect: async (config) => {
+          if (config.host === "unavailable-route") {
+            throw Object.assign(new Error("Connection refused"), { code: "ECONNREFUSED" });
+          }
+          throw authError;
+        },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain('"auth-user"');
+    expect(message).not.toContain("transport-user");
+  });
+
   it("tries saved route fallbacks and prioritizes the last successful route", () => {
     const configs = buildSshConfigCandidates({
       ...target,

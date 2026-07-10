@@ -373,10 +373,7 @@ export class RemoteConnectionService {
     // for SSH trust before that path is known to be unavailable.
     const pairedReference = target.pairedMachine;
     const hasPairedCredentials = pairedReference
-      ? this.pairedStore.get(pairedReference.hostIdentity)
-        ?? (pairedReference.machineKey
-          ? this.pairedStore.get(pairedReference.machineKey)
-          : null)
+      ? this.pairedStore.getForReference(pairedReference)
       : null;
     if (target.transport === "paired" && hasPairedCredentials) {
       return { state: "trusted" };

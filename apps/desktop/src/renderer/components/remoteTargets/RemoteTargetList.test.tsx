@@ -68,6 +68,28 @@ describe("RemoteTargetList", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
+  it("does not report copied pairing data when the clipboard bridge is unavailable", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+    Object.defineProperty(window.ade, "app", {
+      configurable: true,
+      value: {},
+    });
+
+    render(<RemoteTargetList />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+    const copyButton = await screen.findByRole("button", { name: "Copy code" });
+    fireEvent.click(copyButton);
+
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
+  });
+
   it("lists a discovered ADE machine under Available and connects via its route", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({

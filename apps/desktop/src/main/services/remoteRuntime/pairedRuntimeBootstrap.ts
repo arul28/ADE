@@ -183,13 +183,16 @@ export async function bootstrapPairedRuntime(args: {
         const endpointsWithoutPreviousRelay = routeUpdatedCredentials.endpoints.filter(
           (endpoint) => endpoint !== credentials.relayUrl,
         );
-        args.pairedStore.save({
-          ...routeUpdatedCredentials,
-          relayUrl: learnedRelay,
-          endpoints: learnedRelay
-            ? [learnedRelay, ...endpointsWithoutPreviousRelay]
-            : endpointsWithoutPreviousRelay,
-        });
+        args.pairedStore.save(
+          {
+            ...routeUpdatedCredentials,
+            relayUrl: learnedRelay,
+            endpoints: learnedRelay
+              ? [learnedRelay, ...endpointsWithoutPreviousRelay]
+              : endpointsWithoutPreviousRelay,
+          },
+          { replaceConnectionMetadata: true },
+        );
       }
       const portForwardClient = createSyncPortForwardClient(transport.connection);
       return {

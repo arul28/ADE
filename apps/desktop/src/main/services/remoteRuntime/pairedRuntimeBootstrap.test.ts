@@ -186,10 +186,13 @@ describe("bootstrapPairedRuntime", () => {
       options: { openTransport: vi.fn(async () => connectedTransport) },
     });
 
-    expect(pairedStore.save).toHaveBeenCalledWith(expect.objectContaining({
-      relayUrl: cloudRelayWssUrl,
-      endpoints,
-    }));
+    expect(pairedStore.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relayUrl: cloudRelayWssUrl,
+        endpoints,
+      }),
+      { replaceConnectionMetadata: true },
+    );
   });
 
   it("surfaces initialize incompatibility with an SSH update suggestion", async () => {

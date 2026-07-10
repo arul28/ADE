@@ -23,6 +23,7 @@ import {
 } from "./syncProtocol";
 
 const DEFAULT_FORWARD_PENDING_BYTES = 4 * 1024 * 1024;
+const DEFAULT_FORWARD_CONNECT_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_REASON_CHARS = 300;
 // Per-peer resource caps. Each RPC channel spins a full JSON-RPC handler with
 // its own (up to 64 MiB) line buffer, and each forward holds a live loopback
@@ -119,6 +120,7 @@ export type SyncPairedChannelServiceArgs<TPeer extends object> = {
   peerBackpressureBytes?: number;
   forwardPendingBytes?: number;
   backpressurePollMs?: number;
+  forwardConnectTimeoutMs?: number;
   /** Test seam for an in-process TCP socket pair; production uses net.connect. */
   connectForward?: (options: net.NetConnectOpts) => net.Socket;
 };
@@ -155,6 +157,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
   const backpressurePollMs = Math.max(
     1,
     Math.floor(args.backpressurePollMs ?? BACKPRESSURE_POLL_MS),
+  );
+  const forwardConnectTimeoutMs = Math.max(
+    1,
+    Math.floor(args.forwardConnectTimeoutMs ?? DEFAULT_FORWARD_CONNECT_TIMEOUT_MS),
   );
   const peers = new Map<TPeer, PeerChannels>();
 
@@ -458,10 +464,18 @@ export function createSyncPairedChannelService<TPeer extends object>(
     };
     channelsFor(peer).forwards.set(forwardId, forward);
 
+    socket.setTimeout(forwardConnectTimeoutMs);
+    socket.once("timeout", () => {
+      const current = peers.get(peer)?.forwards.get(forwardId);
+      if (current !== forward || forward.connected) return;
+      closeForward(peer, forwardId, "Remote TCP connection timed out.", true);
+    });
+
     socket.once("connect", () => {
       const current = peers.get(peer)?.forwards.get(forwardId);
       if (current !== forward) return;
       forward.connected = true;
+      socket.setTimeout(0);
       for (const chunk of forward.inboundBeforeConnect) {
         socket.write(chunk);
       }

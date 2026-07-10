@@ -1,18 +1,21 @@
 import type { RemoteRuntimeSshHostKeyTrustStatus } from "../../../shared/types/remoteRuntime";
 
+function assignCause(target: Error, cause: unknown): void {
+  if (cause === undefined) return;
+  Object.defineProperty(target, "cause", {
+    configurable: true,
+    enumerable: false,
+    value: cause,
+  });
+}
+
 export class PairedRuntimeTransportUnavailableError extends Error {
   readonly code = "PAIRED_RUNTIME_TRANSPORT_UNAVAILABLE" as const;
 
   constructor(message: string, cause?: unknown) {
     super(message);
     this.name = "PairedRuntimeTransportUnavailableError";
-    if (cause !== undefined) {
-      Object.defineProperty(this, "cause", {
-        configurable: true,
-        enumerable: false,
-        value: cause,
-      });
-    }
+    assignCause(this, cause);
   }
 }
 
@@ -22,13 +25,7 @@ export class PairedRuntimeCompatibilityError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message);
     this.name = "PairedRuntimeCompatibilityError";
-    if (cause !== undefined) {
-      Object.defineProperty(this, "cause", {
-        configurable: true,
-        enumerable: false,
-        value: cause,
-      });
-    }
+    assignCause(this, cause);
   }
 }
 

@@ -960,10 +960,9 @@ export async function connectSshWithRoute(
   const { connect = connectSshWithConfig, ...buildOptions } = options;
   const configs = buildSshConnectionCandidates(target, buildOptions);
   let lastError: unknown = null;
-  const attemptedConfigs: typeof configs = [];
+  const authFailedConfigs: typeof configs = [];
   for (let index = 0; index < configs.length; index += 1) {
     const candidate = configs[index]!;
-    attemptedConfigs.push(candidate);
     try {
       const client = await connect(candidate.config);
       return {
@@ -974,6 +973,9 @@ export async function connectSshWithRoute(
       };
     } catch (error) {
       lastError = error;
+      if (isSshAuthenticationFailure(error)) {
+        authFailedConfigs.push(candidate);
+      }
       if (index >= configs.length - 1) break;
       if (!isSshAuthenticationFailure(error)) {
         while (
@@ -987,10 +989,10 @@ export async function connectSshWithRoute(
   }
   if (isSshAuthenticationFailure(lastError)) {
     const users = uniqueStrings(
-      attemptedConfigs.map((candidate) => candidate.openSshConfig.username),
+      authFailedConfigs.map((candidate) => candidate.openSshConfig.username),
     );
     const identities = uniqueStrings(
-      attemptedConfigs.flatMap((candidate) => {
+      authFailedConfigs.flatMap((candidate) => {
         const methods: string[] = [];
         if (candidate.openSshConfig.identityFile) {
           methods.push(`key ${candidate.openSshConfig.identityFile}`);

@@ -7,6 +7,7 @@ import type { WebSocket } from "ws";
 import type { SyncDpopVerification } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import { verifySyncDpopProof } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import type { SyncDpopProof } from "../../../shared/types/sync";
+import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "../sync/syncProtocol";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 
@@ -168,5 +169,65 @@ describe("DesktopPairedMachineStore", () => {
     });
     expect(new DesktopPairedMachineStore().get("mac-studio-host"))
       .toEqual(marked);
+  });
+
+  it("replaces stale relay connection metadata only when explicitly requested", () => {
+    const filePath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-pairing-store-")),
+      "paired.json",
+    );
+    const store = new DesktopPairedMachineStore({ filePath });
+    const credentials: DesktopPairedMachineCredentials = {
+      version: 1,
+      hostIdentity: {
+        deviceId: "host-1",
+        siteId: "host-site-1",
+        name: "Studio",
+        platform: "macOS",
+        deviceType: "desktop",
+      },
+      machineKey: "machine-1",
+      deviceId: "desktop-1",
+      siteId: "desktop-site-1",
+      deviceName: "Laptop",
+      secret: "secret",
+      dpopPrivateKey: "private",
+      dpopPublicKey: "public",
+      endpoints: [
+        "ws://studio.local:8787",
+        "wss://relay.example/connect/old",
+      ],
+      relayUrl: "wss://relay.example/connect/old",
+      endpointStates: [{
+        endpoint: "wss://relay.example/connect/old",
+        lastSucceededAt: 123,
+      }],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    store.save(credentials);
+
+    const merged = store.save({
+      ...credentials,
+      endpoints: ["ws://studio.local:8787"],
+      relayUrl: null,
+    });
+    expect(merged.endpoints).toContain("wss://relay.example/connect/old");
+    expect(merged.relayUrl).toBe("wss://relay.example/connect/old");
+
+    const replaced = store.save(
+      {
+        ...credentials,
+        endpoints: ["ws://studio.local:8787"],
+        relayUrl: null,
+      },
+      { replaceConnectionMetadata: true },
+    );
+    expect(replaced.endpoints).toEqual(["ws://studio.local:8787/"]);
+    expect(replaced.relayUrl).toBeNull();
+    expect(replaced.endpointStates).toEqual([{
+      endpoint: "ws://studio.local:8787/",
+      lastSucceededAt: null,
+    }]);
   });
 });

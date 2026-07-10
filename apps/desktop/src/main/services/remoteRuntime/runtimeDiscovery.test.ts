@@ -131,6 +131,27 @@ describe("runtimeDiscovery", () => {
     });
   });
 
+  it("keeps Windows Bonjour hosts visible but marks them unsupported", () => {
+    const discovered = discoveredRuntimeFromBonjourService({
+      name: "ADE Sync Build PC",
+      host: "build-pc.local",
+      port: 8787,
+      addresses: ["192.168.1.50"],
+      txt: {
+        deviceId: "windows-host",
+        deviceName: "Build PC",
+        platform: "windows",
+      },
+    });
+
+    expect(discovered).toMatchObject({
+      machineName: "Build PC",
+      os: "windows",
+      connectable: false,
+      unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+    });
+  });
+
   it("turns Tailscale peers into SSH discovery targets", () => {
     const discovered = discoveredRuntimesFromTailscaleStatus(
       {

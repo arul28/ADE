@@ -78,7 +78,9 @@ export function ShareMachineCard() {
 
   const copy = useCallback(async (value: string, which: "pin" | "link") => {
     try {
-      await window.ade?.app?.writeClipboardText?.(value);
+      const writeClipboardText = window.ade?.app?.writeClipboardText;
+      if (!writeClipboardText) return;
+      await writeClipboardText(value);
       setCopied(which);
       window.setTimeout(() => setCopied((c) => (c === which ? null : c)), 1500);
     } catch {
