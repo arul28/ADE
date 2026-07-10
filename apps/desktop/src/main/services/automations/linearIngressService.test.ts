@@ -104,7 +104,7 @@ function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch; a
       get: (source) => cursorBySource.get(source) ?? null,
       set: ({ source, cursor }) => cursorBySource.set(source, cursor),
     },
-    dispatch: (record) => dispatched.push(record),
+    dispatch: (record) => { dispatched.push(record); },
     logger: createLogger(),
     hasEnabledLinearRules: () => options.enabled !== false,
     ...(options.adeApp ? { isAdeAppConnection: () => true } : {}),

@@ -1134,16 +1134,19 @@ export async function createAdeRuntime(args: {
           return credentials.getStatus().authMode === "oauth"
             && credentials.getOAuthClientSource() === "ade-app";
         },
-        dispatch: (record) => {
+        dispatch: async (record) => {
           if (!automationService) return;
-          for (const dispatch of buildLinearAutomationDispatches(record)) {
-            void automationService.dispatchIngressTrigger(dispatch).catch((error) => {
+          // Rule dispatch is awaited so the relay cursor only advances once
+          // every trigger for the delivery has been handed to the engine; a
+          // failing rule logs and never wedges polling.
+          await Promise.all(buildLinearAutomationDispatches(record).map((dispatch) =>
+            automationService!.dispatchIngressTrigger(dispatch).catch((error) => {
               logger.warn("automations.linear_relay_dispatch_failed", {
                 eventId: record.eventId,
                 error: error instanceof Error ? error.message : String(error),
               });
-            });
-          }
+            }),
+          ));
         },
         logger,
       })

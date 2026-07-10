@@ -138,7 +138,7 @@ function makeEnv(): RelayEnv & { DB: FakeLinearD1Database } {
   } as unknown as RelayEnv & { DB: FakeLinearD1Database };
 }
 
-function stubLinearViewer(tokens: Record<string, string>) {
+function stubLinearViewer(tokens: Record<string, string>, options: { webhookAuthority?: boolean } = {}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     expect(String(input)).toBe("https://linear.test/graphql");
     const headers = new Headers(init?.headers);
@@ -147,6 +147,19 @@ function stubLinearViewer(tokens: Record<string, string>) {
     if (!organizationId) {
       return new Response(JSON.stringify({ errors: [{ message: "Authentication required" }] }), {
         status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const query = String(JSON.parse(String(init?.body ?? "{}")).query ?? "");
+    if (query.includes("webhooks(")) {
+      if (options.webhookAuthority === false) {
+        return new Response(JSON.stringify({ errors: [{ message: "admin scope required" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ data: { webhooks: { nodes: [] } } }), {
+        status: 200,
         headers: { "content-type": "application/json" },
       });
     }
@@ -221,7 +234,16 @@ describe("Linear webhook relay", () => {
       org_id: "org-1",
       webhook_secret: "linear-webhook-secret",
     })]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Registration performs two probes: viewer org + webhook authority.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects registration from a token without webhook authority", async () => {
+    const env = makeEnv();
+    stubLinearViewer({ "lin_api_member": "org-1" }, { webhookAuthority: false });
+    const response = await registerOrganization(env, { token: "lin_api_member" });
+    expect(response.status).toBe(403);
+    expect(env.DB.organizations).toHaveLength(0);
   });
 
   it("rejects a bad Linear token during registration", async () => {
@@ -386,7 +408,7 @@ describe("Linear webhook relay", () => {
       cursorExpired: true,
       nextCursor: "seq:3",
     }));
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("accepts OAuth-app-signed deliveries without per-org registration", async () => {

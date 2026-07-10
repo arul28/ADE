@@ -96,7 +96,8 @@ export type LinearIngressServiceDeps = {
   /** Raw API key or an OAuth value already prefixed with `Bearer `. */
   getLinearAccessToken: () => string | null | Promise<string | null>;
   cursorStore: LinearIngressCursorStore;
-  dispatch: (record: LinearIngressEventRecord) => void;
+  /** Awaited before the cursor advances past the delivery. */
+  dispatch: (record: LinearIngressEventRecord) => void | Promise<void>;
   logger: Logger;
   hasEnabledLinearRules: () => boolean;
   /**
@@ -464,7 +465,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         // A replay (at-least-once relay, cursor reset) must not re-trigger
         // automations: dispatch only deliveries persisted for the first time.
         if (!persistRecord(record)) continue;
-        deps.dispatch(record);
+        await deps.dispatch(record);
         if (!newestEventAt || Date.parse(record.createdAt) > Date.parse(newestEventAt)) {
           newestEventAt = record.createdAt;
         }

@@ -1530,10 +1530,50 @@ async function handleRepoStatus(request: Request, env: RelayEnv, repo: { project
   });
 }
 
+// Only workspace admins (or OAuth tokens carrying the admin scope) may read
+// webhooks in Linear. Probing that read is how registration proves the caller
+// has webhook authority — without it, any workspace member's token could
+// overwrite the org's signing secret and silently break ingest verification.
+async function verifyLinearWebhookAuthority(
+  request: Request,
+  env: RelayEnv,
+): Promise<{ authorized: true } | { authorized: false; response: Response }> {
+  const authorization = readAuthorizationHeader(request);
+  let response: Response;
+  try {
+    response = await fetch(linearGraphqlUrl(env), {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "query { webhooks(first: 1) { nodes { id } } }" }),
+    });
+  } catch {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Unable to verify Linear webhook authority" }, { status: 502 }),
+    };
+  }
+  const payload = await response.json().catch(() => null) as { data?: { webhooks?: unknown }; errors?: unknown[] } | null;
+  if (!response.ok || !payload || Array.isArray(payload.errors) && payload.errors.length > 0 || payload.data?.webhooks == null) {
+    return {
+      authorized: false,
+      response: json(
+        { ok: false, error: "Linear webhook authority required (workspace admin or admin-scoped token)" },
+        { status: 403 },
+      ),
+    };
+  }
+  return { authorized: true };
+}
+
 async function handleLinearOrganizationRegister(request: Request, env: RelayEnv): Promise<Response> {
   if (request.method !== "POST") return text("method not allowed", 405);
   const auth = await verifyLinearViewerOrganization(request, env);
   if (!auth.authorized) return auth.response;
+  const authority = await verifyLinearWebhookAuthority(request, env);
+  if (!authority.authorized) return authority.response;
   if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_REGISTRATION_BODY_BYTES)) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
