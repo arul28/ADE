@@ -77,6 +77,9 @@ function isRemoteRuntimeConnectionError(error: unknown): boolean {
 }
 
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  ["chat.suggestLaneNameFromPrompt", 120_000],
+]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
 const LOCAL_FORWARD_HOST = "127.0.0.1";
@@ -123,6 +126,10 @@ function shouldRetryRemoteRuntimeAction(
 function remoteRuntimeActionCallOptions(
   request: RemoteRuntimeActionRequest,
 ): { timeoutMs?: number } | undefined {
+  const timeoutMs = LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(
+    `${request.domain}.${request.action}`,
+  );
+  if (timeoutMs !== undefined) return { timeoutMs };
   return shouldRetryRemoteRuntimeAction(request)
     ? { timeoutMs: RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS }
     : undefined;

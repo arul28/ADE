@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
-import { query, startup } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, query, startup } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
 import { openKvDb } from "../state/kvDb";
@@ -7087,7 +7087,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("flags task_type=background as background and propagates taskType through the lifecycle", async () => {
+    it("routes a background shell command to background_task scheduled_work rows, not subagent events", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -7104,12 +7104,13 @@ describe("createAgentChatService", () => {
           return;
         }
         // Bash run_in_background-style task: no Task tool; SDK directly emits
-        // task_started with task_type: "background".
+        // task_started with task_type: "background" and no subagent agentType.
         yield {
           type: "system",
           subtype: "task_started",
           task_id: "task-bg-1",
           description: "Launch dev desktop with desktop RPC socket enabled",
+          command: "npm run dev:desktop",
           task_type: "background",
         };
         yield {
@@ -7118,6 +7119,7 @@ describe("createAgentChatService", () => {
           task_id: "task-bg-1",
           status: "completed",
           summary: "Process exited",
+          usage: { duration_ms: 4200 },
         };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -7149,22 +7151,127 @@ describe("createAgentChatService", () => {
         text: "Kick off a background task.",
       });
 
-      await waitForEvent(
+      // A running background_task scheduled_work row appears immediately on spawn.
+      const runningRow = await waitForEvent(
         events,
         (e): e is AgentChatEventEnvelope =>
-          e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-1",
+          e.event.type === "scheduled_work_update"
+          && (e.event as any).id === "background:task-bg-1"
+          && (e.event as any).status === "running",
       );
+      expect((runningRow.event as any).kind).toBe("background_task");
+      expect((runningRow.event as any).title).toBe("Launch dev desktop with desktop RPC socket enabled");
 
-      const startEnvelope = events.find(
-        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-bg-1",
+      // Terminal background_task row (with duration) on notification.
+      const doneRow = await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "scheduled_work_update"
+          && (e.event as any).id === "background:task-bg-1"
+          && ((e.event as any).status === "completed" || (e.event as any).status === "done"),
       );
-      const resultEnvelope = events.find(
-        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-1",
-      );
+      expect((doneRow.event as any).summary).toContain("4200ms");
 
-      expect((startEnvelope?.event as any)?.background).toBe(true);
-      expect((startEnvelope?.event as any)?.taskType).toBe("background");
-      expect((resultEnvelope?.event as any)?.taskType).toBe("background");
+      // Crucially: NO subagent_* events were emitted for the background shell.
+      const subagentEvents = events.filter((e) =>
+        (e.event.type === "subagent_started"
+          || e.event.type === "subagent_progress"
+          || e.event.type === "subagent_result")
+        && (e.event as any).taskId === "task-bg-1",
+      );
+      expect(subagentEvents).toEqual([]);
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("keeps emitting subagent_* events for a real subagent (Task tool with agentType)", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-real-sub-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-real-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_real_1",
+                name: "Task",
+                input: { subagent_type: "Explore", description: "Explore the repo", prompt: "Look around." },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-real-1",
+          parent_tool_use_id: "toolu_real_1",
+          description: "Explore the repo",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-real-1",
+          parent_tool_use_id: "toolu_real_1",
+          status: "completed",
+          summary: "Explored",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-real-sub-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn an Explore subagent.",
+      });
+
+      const startEnvelope = await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_started" && (e.event as any).taskId === "task-real-1",
+      );
+      expect((startEnvelope.event as any).agentType).toBe("Explore");
+      // A real subagent must NOT produce a background_task scheduled row.
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:task-real-1",
+      )).toBe(false);
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -7253,6 +7360,425 @@ describe("createAgentChatService", () => {
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // claude background_task terminal statuses + restart reconciliation
+  // --------------------------------------------------------------------------
+
+  describe("claude background task lifecycle", () => {
+    async function bootClaudeHooks(sessionId: string) {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () { return; }),
+        close: vi.fn(),
+        sessionId,
+      } as any);
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.SubagentStop?.[0]?.hooks[0];
+      expect(stopHook).toBeDefined();
+      const fireSnapshot = async (backgroundTasks: unknown[]) => {
+        await stopHook!(
+          {
+            hook_event_name: "SubagentStop",
+            agent_id: `agent-${randomSuffix()}`,
+            agent_type: "reviewer",
+            last_assistant_message: "",
+            background_tasks: backgroundTasks,
+          } as any,
+          undefined as any,
+          { signal: new AbortController().signal } as any,
+        );
+      };
+      return { service, session, events, fireSnapshot };
+    }
+
+    function randomSuffix() {
+      return Math.random().toString(36).slice(2, 8);
+    }
+
+    it("emits a terminal background_task row exactly once when a hook snapshot drops an id", async () => {
+      const { events, fireSnapshot } = await bootClaudeHooks("sdk-bg-diff-1");
+
+      // Snapshot A contains id X (running); snapshot B omits it.
+      await fireSnapshot([{ id: "bg-X", type: "shell", status: "running", command: "sleep 5" }]);
+      await fireSnapshot([]);
+
+      const bgXEvents = events.filter(
+        (e) => e.event.type === "scheduled_work_update" && (e.event as any).id === "background:bg-X",
+      );
+      const runningCount = bgXEvents.filter((e) => (e.event as any).status === "running").length;
+      const terminalCount = bgXEvents.filter((e) =>
+        (e.event as any).status === "completed" || (e.event as any).status === "stopped",
+      ).length;
+      expect(runningCount).toBe(1);
+      expect(terminalCount).toBe(1);
+    });
+
+    it("converges hook diff-close with a task_notification terminal (no duplicate distinct terminal events)", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-converge", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-conv",
+          description: "background convergence",
+          command: "npm run watch",
+          task_type: "background",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "bg-conv",
+          status: "completed",
+          summary: "watcher stopped",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-converge", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "watch" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-conv"
+        && ((e.event as any).status === "completed" || (e.event as any).status === "stopped"));
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+
+      // The signature-dedupe means the same terminal (completed) is emitted once.
+      const terminalStatuses = events
+        .filter((e) => e.event.type === "scheduled_work_update" && (e.event as any).id === "background:bg-conv")
+        .map((e) => (e.event as any).status)
+        .filter((s) => s === "completed" || s === "stopped");
+      // Exactly one distinct terminal status survives (last-write-wins converges).
+      const distinctTerminal = new Set(terminalStatuses);
+      expect(distinctTerminal.size).toBeLessThanOrEqual(1);
+      expect(terminalStatuses.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("stops still-open background ids at turn end when the notification never arrives", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-sweep", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Background shell starts but never reports a notification this turn.
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-orphan",
+          description: "long lived background",
+          command: "tail -f log",
+          task_type: "background",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-sweep", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start bg" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-orphan"
+        && (e.event as any).status === "running");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+
+      // The turn-end sweep must settle the orphan as stopped.
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-orphan"
+        && (e.event as any).status === "stopped");
+      // And no subagent_result leaked for the background shell.
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "bg-orphan")).toBe(false);
+    });
+
+    it("does not cross-wire finalSummary between two concurrent subagents on an empty task_notification", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let stopHooksFired: (() => void) | null = null;
+      const stopHooksFiredPromise = new Promise<void>((resolve) => { stopHooksFired = resolve; });
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-crosswire", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Two concurrent Task-tool subagents, A (task-A / agent-A) and B.
+        yield { type: "assistant", message: { id: "m-cw", content: [
+          { type: "tool_use", id: "toolu_A", name: "Task", input: { subagent_type: "reviewer", description: "review A", prompt: "a" } },
+          { type: "tool_use", id: "toolu_B", name: "Task", input: { subagent_type: "reviewer", description: "review B", prompt: "b" } },
+        ], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: "system", subtype: "task_started", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", description: "review A" };
+        yield { type: "system", subtype: "task_started", task_id: "task-B", agent_id: "agent-B", parent_tool_use_id: "toolu_B", description: "review B" };
+        // The SubagentStop hooks fire out-of-band (below). Wait for them, then
+        // deliver an EMPTY-summary notification for A.
+        await stopHooksFiredPromise;
+        yield { type: "system", subtype: "task_notification", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", status: "completed", summary: "" };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-crosswire", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.SubagentStop?.[0]?.hooks[0];
+      expect(stopHook).toBeDefined();
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "spawn A and B" });
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "task-B");
+
+      const sig = { signal: new AbortController().signal } as any;
+      // B finishes with a distinctive final message; A finishes with none.
+      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-B", agent_type: "reviewer", last_assistant_message: "B-SECRET-RESULT" } as any, undefined as any, sig);
+      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-A", agent_type: "reviewer", last_assistant_message: "" } as any, undefined as any, sig);
+      stopHooksFired!();
+
+      // A's empty-summary notification must NOT surface B's finalSummary.
+      const aResult = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "task-A");
+      expect(JSON.stringify(aResult.event)).not.toContain("B-SECRET-RESULT");
+      expect((aResult.event as any).summary ?? "").not.toContain("B-SECRET-RESULT");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("reconciles orphaned background rows + open subagents after an ADE restart with one system_notice", async () => {
+      // Process 1: run a completed turn so the SDK session id + a real transcript
+      // are persisted to disk. (The turn's content is irrelevant; we inject the
+      // orphaned tail via the transcript parser mock below.)
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-restart-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-restart-1", setPermissionMode,
+      } as any);
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      await service.runSessionTurn({ sessionId: session.id, text: "seed the transcript" });
+
+      // The persisted metadata now carries an sdkSessionId — the reconciler is
+      // gated on a recovered SDK session id (any non-empty value triggers it).
+      const persisted = readPersistedChatState(session.id);
+      expect(typeof persisted.sdkSessionId).toBe("string");
+      expect(persisted.sdkSessionId.length).toBeGreaterThan(0);
+
+      // Process 2 (fresh host): a NEW service instance re-binds the persisted
+      // session. Inject an orphaned transcript tail: one still-"running"
+      // background_task row and one still-open real subagent from the previous
+      // process. deriveBackgroundItems / subagentSnapshotsFromEvents read these.
+      const orphanTail: AgentChatEventEnvelope[] = [
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 1, event: {
+          type: "scheduled_work_update", id: "background:bg-restart", kind: "background_task",
+          status: "running", origin: "background_task", title: "npm run serve", summary: "shell",
+          sourceTaskId: "bg-restart", turnId: "turn-old",
+        } as any },
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 2, event: {
+          type: "subagent_started", taskId: "sub-restart", agentId: "sub-restart",
+          agentType: "Explore", parentToolUseId: "toolu_sub_r", description: "look", turnId: "turn-old",
+        } as any },
+      ];
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(orphanTail);
+
+      const events2: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () { return; }),
+        close: vi.fn(),
+        sessionId: "sdk-restart-1",
+      } as any);
+      const { service: service2 } = createService({ onEvent: (event: AgentChatEventEnvelope) => events2.push(event) });
+      await service2.resumeSession({ sessionId: session.id });
+
+      // Background_task row settled as stopped with the restart marker.
+      const bgStopped = events2.find((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-restart"
+        && (e.event as any).status === "stopped");
+      expect(bgStopped).toBeTruthy();
+
+      // Open subagent closed as stopped (interrupt-path parity).
+      const subStopped = events2.find((e) =>
+        e.event.type === "subagent_result"
+        && (e.event as any).taskId === "sub-restart"
+        && (e.event as any).status === "stopped");
+      expect(subStopped).toBeTruthy();
+
+      // Exactly one compact reconciliation system_notice, counting background tasks.
+      const notices = events2.filter((e) =>
+        e.event.type === "system_notice"
+        && typeof (e.event as any).message === "string"
+        && (e.event as any).message.startsWith("Reconciled after restart:"));
+      expect(notices).toHaveLength(1);
+      expect((notices[0]!.event as any).message).toBe("Reconciled after restart: 1 background task stopped");
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // claude SDK session title adoption
+  // --------------------------------------------------------------------------
+
+  describe("claude SDK session title adoption", () => {
+    async function runClaudeTurnWithSessionInfo(args: {
+      sessionId: string;
+      info: { summary?: string; customTitle?: string; firstPrompt?: string } | null;
+      firstPrompt?: string;
+      manuallyName?: boolean;
+      turns?: number;
+    }) {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: args.sessionId, slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "assistant", message: { id: `m-${streamCall}`, content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: args.sessionId, setPermissionMode,
+      } as any);
+      vi.mocked(getSessionInfo).mockResolvedValue(args.info as any);
+
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      if (args.manuallyName) {
+        await service.updateSession({ sessionId: session.id, title: "Manual Title", manuallyNamed: true });
+      }
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const turns = args.turns ?? 1;
+      for (let i = 0; i < turns; i += 1) {
+        await service.runSessionTurn({ sessionId: session.id, text: args.firstPrompt ?? "Fix update modal flow" });
+      }
+      return { service, sessionService, session, events };
+    }
+
+    it("adopts the SDK summary as the title when the chat still has the default name", async () => {
+      const { sessionService, session } = await runClaudeTurnWithSessionInfo({
+        sessionId: "sdk-title-1",
+        info: { summary: "Fix update modal flow", firstPrompt: "please help with something entirely different here" },
+        firstPrompt: "please help with something entirely different here",
+      });
+      await waitForSessionTitle(sessionService, session.id, "Fix update modal flow");
+    });
+
+    it("does not adopt when the summary is just the first-prompt echo", async () => {
+      const prompt = "Fix update modal flow";
+      const { sessionService, session } = await runClaudeTurnWithSessionInfo({
+        sessionId: "sdk-title-2",
+        info: { summary: prompt, firstPrompt: prompt },
+        firstPrompt: prompt,
+      });
+      // Give the fire-and-forget adopt a beat, then confirm the title stayed default.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sessionService.get(session.id)?.title).toBe("Claude Chat");
+    });
+
+    it("does not adopt when the session is manually named", async () => {
+      const { sessionService, session } = await runClaudeTurnWithSessionInfo({
+        sessionId: "sdk-title-3",
+        info: { summary: "Runtime Suggested Title", firstPrompt: "unrelated first prompt" },
+        manuallyName: true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sessionService.get(session.id)?.title).toBe("Manual Title");
+    });
+
+    it("only queries getSessionInfo once — stops after the title is adopted", async () => {
+      vi.mocked(getSessionInfo).mockClear();
+      const { sessionService, session } = await runClaudeTurnWithSessionInfo({
+        sessionId: "sdk-title-4",
+        info: { summary: "Adopted Investigation", firstPrompt: "totally different opening prompt text" },
+        firstPrompt: "totally different opening prompt text",
+        turns: 2,
+      });
+      await waitForSessionTitle(sessionService, session.id, "Adopted Investigation");
+      // Even across two turns, the adopt path stops after success.
+      expect(vi.mocked(getSessionInfo).mock.calls.length).toBeLessThanOrEqual(1);
     });
   });
 

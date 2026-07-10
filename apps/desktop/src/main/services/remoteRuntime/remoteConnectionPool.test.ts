@@ -769,6 +769,56 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
+  it("extends remote lane naming actions without adding a timeout to unrelated mutations", async () => {
+    const client = createClient();
+    client.call.mockResolvedValue({
+      ok: true,
+      domain: "chat",
+      action: "suggestLaneNameFromPrompt",
+      result: { name: "update-modal-flow" },
+      statusHints: {},
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await pool.callActionForTarget(target, "project-1", {
+      domain: "chat",
+      action: "suggestLaneNameFromPrompt",
+      args: { prompt: "Fix update modal flow" },
+    });
+    await pool.callActionForTarget(target, "project-1", {
+      domain: "chat",
+      action: "deleteSession",
+      args: { sessionId: "chat-1" },
+    });
+
+    expect(client.call).toHaveBeenNthCalledWith(
+      1,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "suggestLaneNameFromPrompt",
+        }),
+      }),
+      { timeoutMs: 120_000 },
+    );
+    expect(client.call).toHaveBeenNthCalledWith(
+      2,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "deleteSession",
+        }),
+      }),
+    );
+  });
+
   it("retries read-only project actions once after ECONNRESET", async () => {
     const firstClient = createClient();
     const firstSsh = createSsh();
