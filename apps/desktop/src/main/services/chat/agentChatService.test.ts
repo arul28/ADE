@@ -2701,8 +2701,12 @@ describe("createAgentChatService", () => {
       });
 
       // The stale warm query was discarded and a fresh query built with xhigh.
-      const efforts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
-        .map((call) => (call[0] as { effort?: string } | undefined)?.effort)
+      const efforts = [
+        ...vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+          .map((call) => (call[0] as { effort?: string } | undefined)?.effort),
+        ...vi.mocked(claudeSdkResumeSessionCompat).mock.calls
+          .map((call) => (call[1] as { effort?: string } | undefined)?.effort),
+      ]
         .filter((value): value is string => typeof value === "string");
       expect(efforts).toContain("xhigh");
       expect(session.id).toBeDefined();
@@ -2757,8 +2761,12 @@ describe("createAgentChatService", () => {
         timeoutMs: 15_000,
       });
 
-      const appended = vi.mocked(claudeSdkCreateSessionCompat).mock.calls
-        .map((call) => (call[0] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? "")
+      const appended = [
+        ...vi.mocked(claudeSdkCreateSessionCompat).mock.calls
+          .map((call) => (call[0] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? ""),
+        ...vi.mocked(claudeSdkResumeSessionCompat).mock.calls
+          .map((call) => (call[1] as { systemPrompt?: { append?: string } } | undefined)?.systemPrompt?.append ?? ""),
+      ]
         .join("\n");
       expect(appended).toContain("Linear-tracked work");
       expect(appended).toContain("ADE-123");
