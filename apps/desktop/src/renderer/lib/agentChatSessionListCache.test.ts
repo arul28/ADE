@@ -87,6 +87,51 @@ describe("agentChatSessionListCache", () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves the last-good value and its original expiry when a forced refresh fails", async () => {
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_000);
+    let rejectRefresh: (error: Error) => void = () => {};
+    const refreshPending = new Promise<AgentChatSessionSummary[]>((_, reject) => {
+      rejectRefresh = reject;
+    });
+    const list = vi.mocked(window.ade.agentChat.list);
+    list
+      .mockResolvedValueOnce([session("last-good-session")])
+      .mockReturnValueOnce(refreshPending as any)
+      .mockResolvedValueOnce([session("recovered-session")]);
+
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }, { ttlMs: 100 }),
+    ).resolves.toEqual([session("last-good-session")]);
+
+    now.mockReturnValue(1_050);
+    const forcedRefresh = listAgentChatSessionsCached(
+      { laneId: "lane-1" },
+      { force: true, ttlMs: 100 },
+    );
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }, { ttlMs: 100 }),
+    ).resolves.toEqual([session("last-good-session")]);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    rejectRefresh(new Error("temporary list failure"));
+    await expect(
+      forcedRefresh,
+    ).rejects.toThrow("temporary list failure");
+
+    now.mockReturnValue(1_060);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }, { ttlMs: 100 }),
+    ).resolves.toEqual([session("last-good-session")]);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    now.mockReturnValue(1_101);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }, { ttlMs: 100 }),
+    ).resolves.toEqual([session("recovered-session")]);
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
   it("starts a fresh read after invalidating an in-flight request", async () => {
     let resolveFirst: (rows: AgentChatSessionSummary[]) => void = () => {};
     const firstPending = new Promise<AgentChatSessionSummary[]>((resolve) => {

@@ -44,10 +44,10 @@ export async function listAgentChatSessionsCached(
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const cached = chatSessionListCache.get(key);
 
-  if (!options?.force && cached?.promise) return cached.promise;
   if (!options?.force && cached?.value !== undefined && cached.expiresAt > now) {
     return cached.value;
   }
+  if (!options?.force && cached?.promise) return cached.promise;
 
   const normalized = normalizeArgs(args);
   const promise = window.ade.agentChat.list(normalized).then((value) => {
@@ -61,13 +61,23 @@ export async function listAgentChatSessionsCached(
     return value;
   }).catch((error) => {
     const current = chatSessionListCache.get(key);
-    if (current?.promise === promise) chatSessionListCache.delete(key);
+    if (current?.promise === promise) {
+      if (current.value !== undefined) {
+        chatSessionListCache.set(key, {
+          value: current.value,
+          expiresAt: current.expiresAt,
+        });
+      } else {
+        chatSessionListCache.delete(key);
+      }
+    }
     throw error;
   });
 
   chatSessionListCache.set(key, {
+    ...(cached?.value !== undefined ? { value: cached.value } : {}),
     promise,
-    expiresAt: now + ttlMs,
+    expiresAt: cached?.expiresAt ?? now + ttlMs,
   });
   return promise;
 }
