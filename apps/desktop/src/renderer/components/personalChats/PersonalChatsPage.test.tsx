@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 
+// Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
+// colored path (dark glyph) apart from the neutral-tint path (white glyph).
 const FAKE_MODEL = {
   id: "fake-model",
   shortId: "fake",
   displayName: "Fake Model",
   family: "claude",
-  color: "#D97706",
+  color: "#E7E5E4",
   capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
 } as unknown as ModelDescriptor;
 
@@ -47,18 +49,17 @@ vi.mock("./PersonalTerminalPanel", () => ({
   PersonalTerminalPanel: () => <div data-testid="terminal-panel" />,
 }));
 
-vi.mock("../../state/appStore", () => {
-  const state = {
-    projectBinding: null,
-    chatFontSizePx: 13,
-    chatTranscriptDensity: "comfortable",
-    chatChromeTint: "colored",
-    chatShellGeometry: "default",
-  };
-  return {
-    useAppStore: (selector: (s: typeof state) => unknown) => selector(state),
-  };
-});
+const storeState = vi.hoisted(() => ({
+  projectBinding: null as unknown,
+  chatFontSizePx: 13,
+  chatTranscriptDensity: "comfortable",
+  chatChromeTint: "colored",
+  chatShellGeometry: "default",
+}));
+
+vi.mock("../../state/appStore", () => ({
+  useAppStore: (selector: (s: typeof storeState) => unknown) => selector(storeState),
+}));
 
 function makeSession(overrides: Partial<AgentChatSessionSummary>): AgentChatSessionSummary {
   return {
@@ -124,6 +125,7 @@ describe("PersonalChatsPage", () => {
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
+    storeState.chatChromeTint = "colored";
     installBridge();
   });
 
@@ -201,7 +203,58 @@ describe("PersonalChatsPage", () => {
     await renderPage();
 
     await screen.findByText("What can I help with?");
-    const sendButton = screen.getByLabelText("Send message");
+    const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
+    expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
+    // Light provider accent on colored tint → dark glyph for contrast.
+    expect(sendButton.style.color).toBe("rgb(28, 25, 23)");
+  });
+
+  it("keeps the hero and composer visible while the initial fetch is still loading", async () => {
+    let resolveList: (rows: AgentChatSessionSummary[]) => void = () => {};
+    const pendingList = new Promise<AgentChatSessionSummary[]>((resolve) => { resolveList = resolve; });
+    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
+    installBridge();
+    bridge.ade.personalChats.call.mockImplementation(async ({ action }: CallArgs) => {
+      if (action === "list") return { result: await pendingList };
+      if (action === "modelCatalog") return { result: await pendingList.then(() => ({ groups: [], fetchedAt: "", available: true })) };
+      return { result: undefined };
+    });
+    await renderPage();
+
+    // Composer paints immediately; an in-flight catalog is not "no provider".
+    expect(await screen.findByText("What can I help with?")).toBeTruthy();
+    expect(screen.getByLabelText("Message an ADE agent")).toBeTruthy();
+    expect(screen.queryByText(/No connected agent is available/)).toBeNull();
+
+    resolveList([]);
+    await waitFor(() => expect(screen.getByText(/No chats yet/)).toBeTruthy());
+  });
+
+  it("docks (not hero) when selecting a session whose events have not loaded yet", async () => {
+    state.sessions = [makeSession({ title: "Empty chat" })];
+    state.historyEvents = [];
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Empty chat"));
+
+    await waitFor(() => {
+      const textarea = screen.getByLabelText("Message an ADE agent");
+      expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("docked");
+    });
+    expect(screen.queryByText("What can I help with?")).toBeNull();
+    // Exactly one composer instance — the hero variant must not linger alongside the docked one.
+    expect(screen.getAllByLabelText("Message an ADE agent")).toHaveLength(1);
+  });
+
+  it("computes the send glyph contrast from the tint-resolved accent in neutral chrome", async () => {
+    storeState.chatChromeTint = "neutral";
+    await renderPage();
+
+    await screen.findByText("What can I help with?");
+    const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
+    // Neutral tint paints the fill gray (#52525b), so the glyph must stay white
+    // even though the provider accent alone would demand a dark glyph.
+    expect(sendButton.style.color).toBe("rgb(255, 255, 255)");
     expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
   });
 });

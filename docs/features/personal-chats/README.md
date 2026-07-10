@@ -18,8 +18,13 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts. |
 | `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes a local/no-project window to the local brain and a remotely bound project window to that remote machine's personal-chat scope. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface and neutral provider guidance/environment. |
-| `apps/desktop/src/renderer/components/personalChats/` | Desktop conversation list, transcript, composer, and compact tool controls. |
-| `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, standalone top tab, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, `TabNav.tsx`, and `TopBar.tsx`. |
+| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: conversation load/stream, the hero-vs-docked composer switch once a session is selected, transcript, and compact Browser/Terminal tool panels. |
+| `apps/desktop/src/renderer/components/personalChats/ProjectlessHero.tsx` | Empty-state hero shown before a session is picked — heading, verb-first suggestion chips that prefill the draft, and the docked composer slot. |
+| `apps/desktop/src/renderer/components/personalChats/ProjectlessComposer.tsx` | Shared composer rendered in `hero` or `docked` variant, with model/reasoning/permission controls, send/interrupt, and provider-accent send button (`chatAccentContrast`). |
+| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: recency-grouped, searchable session list with new-chat and per-session selection state. |
+| `apps/desktop/src/renderer/components/personalChats/sessionHelpers.ts` | Pure helpers for session title/preview, relative timestamps, and provider→tool-logo mapping shared by the page and sidebar. |
+| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider-accent theming for the surface, including `effectiveChatAccent` (accounts for the neutral chrome tint) and `chatAccentContrast` (readable glyph on the `--chat-accent` fill). |
+| `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, `TabNav.tsx` (sidebar Chats entry), and `TopBar.tsx`. The Chats top tab is a machine-level tab backed by `personalChatsTabOpen` in `state/appStore.ts` and rendered through the reusable `ShellNavTab.tsx` (shared by the Chats and New Tab shell tabs). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Explicit global browser profile used by personal chat so project cookies, tabs, and storage never bleed into it. |
 | `apps/desktop/src/renderer/webclient/adapter/personalChats.ts` | Hosted-web adapter over runtime-scoped sync commands. |
 | `apps/desktop/src/renderer/webclient/shell/` | Projectless Chats entry and shell routing without choosing an active project in `WebClientRoot.tsx`, `WebShell.tsx`, and `ProjectPicker.tsx`. |
@@ -92,12 +97,16 @@ follow-up actions through the personal scope. A missing project id alone must
 never mean "personal": older project chat paths treat an unscoped subscription
 as the active project.
 
-On desktop, `/chats` is a global route. It can be opened as a standalone
-machine tab from the welcome screen or as a global sidebar surface while a
-project remains selected. In the latter case the window's existing project
-binding is intentionally retained so a remote-bound window addresses the
-remote machine's personal chats. Returning to a project route does not require
-reopening the project.
+On desktop, `/chats` is a global route surfaced through a real machine-level
+**Chats** top tab rather than a route-derived pseudo-tab. Its existence is held
+in session-only `personalChatsTabOpen` app state (set the first time the
+projectless shell lands on `/chats`); its active-ness is derived from the
+current route. The tab is a plain clickable tab: clicking it navigates to
+`/chats`, and it can sit alongside project tabs and the New Tab as an inactive
+tab. Opening it as a global sidebar surface while a project remains selected
+keeps the window's existing project binding, so a remote-bound window still
+addresses the remote machine's personal chats. Returning to a project route
+does not require reopening the project.
 
 The ADE CLI uses the same machine endpoint through explicit `--personal`
 commands, for example:
@@ -129,7 +138,7 @@ domains into the hidden runtime.
 
 | Surface | Entry and behavior |
 |---|---|
-| Desktop | **Chats** sits above the profile control and stays enabled with no project selected. The welcome screen has a **Start a chat** action. A standalone `/chats` visit gets a machine-level top tab; visiting from an open project keeps that project tab/binding. The page has a searchable recency-grouped conversation rail, shared model/reasoning/permission controls, transcript/approval handling, and compact Browser and Terminal buttons. |
+| Desktop | **Chats** sits above the profile control and stays enabled with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface itself is a hero empty state — heading plus verb-first suggestion chips — whose composer docks to the bottom once a session is selected, alongside a stateful searchable recency-grouped conversation rail, shared model/reasoning/permission controls, provider-accent send button, transcript/approval handling, and compact Browser and Terminal buttons. |
 | ADE Browser | Personal chat uses the explicit global browser profile (`profileScope: "global"`). It is isolated from every project's persistent browser partition, tabs, cookies, and local storage. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
 | iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Personal summaries are cached per paired host for offline list display; create requires a live host, while sends may queue. |
