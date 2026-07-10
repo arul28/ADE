@@ -1021,7 +1021,15 @@ function buildCostSnapshots(
     const entries = scope === "project"
       ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, projectRoot)) : []
       : machineEntries;
-    if (entries.length === 0 && !(scope === "project" && !scopeSupported && machineEntries.length > 0)) continue;
+    if (entries.length === 0) {
+      if (scope === "project" && !scopeSupported && machineEntries.length > 0) {
+        costs.push(aggregateCosts([], provider, {
+          estimation: PROVIDER_ESTIMATION[provider],
+          scopeSupported,
+        }));
+      }
+      continue;
+    }
     costs.push(aggregateCosts(entries, provider, {
       estimation: PROVIDER_ESTIMATION[provider],
       scopeSupported,
@@ -1467,6 +1475,7 @@ type GitHubPullRequestRow = {
   number?: number;
   state?: string | null;
   createdAt?: string | null;
+  updatedAt?: string | null;
   closedAt?: string | null;
   mergedAt?: string | null;
   additions?: number | null;
@@ -1600,10 +1609,10 @@ function githubPullRequestGraphqlQuery(): string {
   return [
     "query($owner: String!, $name: String!, $endCursor: String) {",
     "  repository(owner: $owner, name: $name) {",
-    "    pullRequests(first: 100, after: $endCursor, orderBy: { field: CREATED_AT, direction: DESC }) {",
+    "    pullRequests(first: 100, after: $endCursor, orderBy: { field: UPDATED_AT, direction: DESC }) {",
     "      pageInfo { hasNextPage endCursor }",
     "      nodes {",
-    "        number state createdAt closedAt mergedAt additions deletions changedFiles",
+    "        number state createdAt updatedAt closedAt mergedAt additions deletions changedFiles",
     "        author { login }",
     "      }",
     "    }",
@@ -1661,11 +1670,11 @@ async function scanGithubPullRequestPages({
       : [];
     rows.push(...nodes.filter((row) => isRecord(row.author) && row.author.login === viewer));
 
-    const oldestCreatedAt = nodes
-      .map((row) => typeof row.createdAt === "string" ? Date.parse(row.createdAt) : Number.NaN)
+    const oldestUpdatedAt = nodes
+      .map((row) => typeof row.updatedAt === "string" ? Date.parse(row.updatedAt) : Number.NaN)
       .filter(Number.isFinite)
       .sort((a, b) => a - b)[0];
-    if (range.since && oldestCreatedAt != null && oldestCreatedAt < Date.parse(range.since)) break;
+    if (range.since && oldestUpdatedAt != null && oldestUpdatedAt < Date.parse(range.since)) break;
 
     const pageInfo = isRecord(page.pageInfo) ? page.pageInfo : null;
     const hasNextPage = pageInfo?.hasNextPage === true;
@@ -2246,7 +2255,7 @@ export function createUsageTrackingService({
   const scanGitHubStatsForRange = dependencies?.scanGitHubStats
     ?? ((range: ResolvedAdeUsageRange) => scanGithubActivityStats(projectRoot, range));
   const collectDatabaseStatsForRange = dependencies?.collectDatabaseStats
-    ?? ((range: ResolvedAdeUsageRange) => collectAdeDatabaseUsageStats(db, range));
+    ?? ((range: ResolvedAdeUsageRange) => collectAdeDatabaseUsageStats(db, range, logger));
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -2259,6 +2268,14 @@ export function createUsageTrackingService({
     lastPolledAt: nowIso(),
     errors: [],
   });
+
+  function emitUpdate(snapshot: UsageSnapshot): void {
+    try {
+      onUpdate?.(snapshot);
+    } catch {
+      // Never crash on callback error
+    }
+  }
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
     return { costs: cachedCosts, adeCosts: cachedAdeCosts };
@@ -2474,11 +2491,7 @@ export function createUsageTrackingService({
         lastSnapshot = snapshot;
         void writeCachedUsageSnapshot(snapshot, logger);
 
-        try {
-          onUpdate?.(snapshot);
-        } catch {
-          // Never crash on callback error
-        }
+        emitUpdate(snapshot);
 
         logger.debug("usage.poll.complete", {
           windowCount: allWindows.length,
@@ -2597,8 +2610,9 @@ export function createUsageTrackingService({
     const task = (async () => {
       const work: Promise<unknown>[] = [];
       if (requested.provider) work.push(poll({ includeCosts: true }));
-      if (requested.github) work.push(getGithubStatsForRange(range, exactRange));
+      if (requested.github) work.push(getGithubStatsForRange(range, exactRange, true));
       await Promise.allSettled(work);
+      if (requested.github) emitUpdate(lastSnapshot ?? emptySnapshot());
     })().finally(() => {
       statsRefreshInFlight.delete(key);
     });
@@ -2618,7 +2632,11 @@ export function createUsageTrackingService({
     return `${range.preset}:${sinceDay || "all"}:${untilDay}`;
   }
 
-  async function getGithubStatsForRange(range: ResolvedAdeUsageRange, exactRange = false): Promise<GitHubActivityStats> {
+  async function getGithubStatsForRange(
+    range: ResolvedAdeUsageRange,
+    exactRange = false,
+    waitForComplete = false,
+  ): Promise<GitHubActivityStats> {
     const cacheKey = githubStatsCacheKey(range, exactRange);
     const cached = githubStatsCache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAtMs < GITHUB_STATS_CACHE_TTL_MS) {
@@ -2637,6 +2655,8 @@ export function createUsageTrackingService({
         });
       githubStatsInFlight.set(cacheKey, inFlight);
     }
+
+    if (waitForComplete) return await inFlight;
 
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const loadingFallback = new Promise<GitHubActivityStats>((resolve) => {

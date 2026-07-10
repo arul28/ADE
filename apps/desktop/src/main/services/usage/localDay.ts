@@ -4,12 +4,16 @@ function padCalendarComponent(value: number): string {
   return String(value).padStart(2, "0");
 }
 
+function toDate(value: Date | string | number): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
 /** Returns the machine-local calendar day for an instant, or an empty string when invalid. */
 export function localDayKey(value: Date | string | number): string {
   if (typeof value === "string" && LOCAL_DAY_KEY.test(value)) {
     return localDayStart(value) ? value : "";
   }
-  const date = value instanceof Date ? value : new Date(value);
+  const date = toDate(value);
   if (!Number.isFinite(date.getTime())) return "";
   return `${date.getFullYear()}-${padCalendarComponent(date.getMonth() + 1)}-${padCalendarComponent(date.getDate())}`;
 }
@@ -33,9 +37,12 @@ export function localDayStart(dayKey: string): Date | null {
 }
 
 export function localDayOffset(value: Date | string | number, days: number): Date | null {
-  const date = typeof value === "string" && LOCAL_DAY_KEY.test(value)
-    ? localDayStart(value)
-    : value instanceof Date ? value : new Date(value);
+  let date: Date | null;
+  if (typeof value === "string" && LOCAL_DAY_KEY.test(value)) {
+    date = localDayStart(value);
+  } else {
+    date = toDate(value);
+  }
   if (!date) return null;
   if (!Number.isFinite(date.getTime())) return null;
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days, 0, 0, 0, 0);

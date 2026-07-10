@@ -34,7 +34,7 @@ const TAB_LABELS: Record<ActivityTab, string> = {
   clients: "Clients",
 };
 
-const RANGE_OPTIONS: Array<{ preset: AdeUsageRangePreset; label: string }> = [
+export const RANGE_OPTIONS: Array<{ preset: AdeUsageRangePreset; label: string }> = [
   { preset: "today", label: "Today" },
   { preset: "7d", label: "7d" },
   { preset: "30d", label: "30d" },
@@ -136,6 +136,10 @@ function dayHasActivity(point: AdeUsageDailyPoint): boolean {
     point.sessions > 0 ||
     point.insertions > 0 ||
     point.deletions > 0 ||
+    (point.githubCommits ?? 0) > 0 ||
+    (point.githubPrs ?? 0) > 0 ||
+    (point.githubAdditions ?? 0) > 0 ||
+    (point.githubDeletions ?? 0) > 0 ||
     (point.interactions ?? 0) > 0
   );
 }

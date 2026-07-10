@@ -21,18 +21,10 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { useAppStore } from "../../state/appStore";
-import { ActivityModule } from "../usage/ActivityModule";
+import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
-
-const RANGE_OPTIONS: Array<{ preset: AdeUsageRangePreset; label: string }> = [
-  { preset: "today", label: "Today" },
-  { preset: "7d", label: "7d" },
-  { preset: "30d", label: "30d" },
-  { preset: "year", label: "Year" },
-  { preset: "all", label: "All" },
-];
 
 const PANEL_STYLE: React.CSSProperties = {
   background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
