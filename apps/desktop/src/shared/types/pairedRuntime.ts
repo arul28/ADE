@@ -89,10 +89,14 @@ export type PairedRuntimeSyncEnvelope =
   | PairedRuntimeForwardCloseEnvelope;
 
 export type PairedRuntimeFeatureFlags = {
-  /** Full newline-delimited runtime JSON-RPC over rpc_* envelopes. */
-  rpcChannel: true;
-  /** Loopback-only host TCP forwarding over fwd_* envelopes. */
-  portForward: true;
+  /**
+   * Full newline-delimited runtime JSON-RPC over rpc_* envelopes. Advertised
+   * `true` only to desktop runtime-host peers; non-desktop paired devices
+   * (phones/browsers) receive `false` and clients must not attempt the channel.
+   */
+  rpcChannel: boolean;
+  /** Loopback-only host TCP forwarding over fwd_* envelopes. Desktop-only, as above. */
+  portForward: boolean;
 };
 
 export type PairedRuntimeHelloOkPayload = Omit<SyncHelloOkPayload, "features"> & {

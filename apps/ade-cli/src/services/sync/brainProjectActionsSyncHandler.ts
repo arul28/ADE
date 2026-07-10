@@ -50,6 +50,7 @@ import {
 import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
+  isRuntimeHostDeviceType,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -472,6 +473,8 @@ export function createBrainProjectActionsSyncHandler(
         envelope.type,
         envelope.payload,
         peer.authKind === "paired",
+        // Runtime RPC channel + port-forward are desktop-runtime-host only.
+        peer.authKind === "paired" && isRuntimeHostDeviceType(peer.metadata),
       );
       return;
     }
@@ -966,6 +969,10 @@ export function createBrainProjectActionsSyncHandler(
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+            // Advertise the runtime RPC channel + port-forward only to paired
+            // desktop runtime-hosts (phones/browsers stay on the allowlist).
+            runtimeChannelEnabled:
+              auth?.kind === "paired" && isRuntimeHostDeviceType(hello.peer),
           }), envelope.requestId);
           return;
         }

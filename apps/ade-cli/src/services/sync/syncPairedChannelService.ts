@@ -21,6 +21,14 @@ const RPC_DATA_CHUNK_BYTES = 256 * 1024;
 const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
 const MAX_CHANNEL_ID_CHARS = 128;
 const MAX_CLOSE_REASON_CHARS = 300;
+// Per-peer resource caps. Each RPC channel spins a full JSON-RPC handler with
+// its own (up to 64 MiB) line buffer, and each forward holds a live loopback
+// socket fd, so an authenticated peer that opened unbounded channels could
+// exhaust file descriptors / memory on the host. These ceilings are far above
+// any legitimate desktop client's needs (one RPC channel + a handful of port
+// forwards) while capping abuse.
+const MAX_RPC_CHANNELS_PER_PEER = 32;
+const MAX_FORWARDS_PER_PEER = 64;
 
 export type SyncRuntimeRpcHandler = JsonRpcHandler & {
   dispose?: () => void;
@@ -342,6 +350,15 @@ export function createSyncPairedChannelService<TPeer extends object>(
   const openRpc = (peer: TPeer, payload: PairedRuntimeRpcOpenPayload): void => {
     const channelId = normalizedId(payload.channelId);
     if (!channelId) return;
+    const existingRpc = peers.get(peer)?.rpc;
+    if (
+      existingRpc
+      && !existingRpc.has(channelId)
+      && existingRpc.size >= MAX_RPC_CHANNELS_PER_PEER
+    ) {
+      sendRpcClose(peer, channelId, "Too many open runtime channels.");
+      return;
+    }
     const factory = args.createRpcHandler ?? getSyncRuntimeRpcHandlerFactory();
     if (!factory) {
       sendRpcClose(peer, channelId, "Runtime RPC channel is unavailable.");
@@ -424,6 +441,15 @@ export function createSyncPairedChannelService<TPeer extends object>(
   ): void => {
     const forwardId = normalizedId(payload.forwardId);
     if (!forwardId) return;
+    const existingForwards = peers.get(peer)?.forwards;
+    if (
+      existingForwards
+      && !existingForwards.has(forwardId)
+      && existingForwards.size >= MAX_FORWARDS_PER_PEER
+    ) {
+      sendForwardClose(peer, forwardId, "Too many open port forwards.");
+      return;
+    }
     const host = allowedForwardHost(payload.host);
     const port = allowedForwardPort(payload.port);
     if (!host || port == null) {
@@ -516,6 +542,12 @@ export function createSyncPairedChannelService<TPeer extends object>(
       type: PairedRuntimeSyncEnvelope["type"],
       payload: unknown,
       authenticatedWithPairing: boolean,
+      // Whether the paired peer is a desktop runtime-host. The full runtime
+      // JSON-RPC registry (~44 domains) and loopback port-forwarding are far
+      // beyond the mobile command allowlist, so they are gated to desktop
+      // clients even after successful pairing. Defaults to false so callers
+      // must opt in explicitly.
+      authorizedForRuntimeHost = false,
     ): Promise<boolean> {
       const value = payload && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -528,6 +560,14 @@ export function createSyncPairedChannelService<TPeer extends object>(
           sendRpcClose(peer, id, "Paired device authentication is required.");
         } else {
           sendForwardClose(peer, id, "Paired device authentication is required.");
+        }
+        return true;
+      }
+      if (!authorizedForRuntimeHost) {
+        if (type.startsWith("rpc_")) {
+          sendRpcClose(peer, id, "Runtime channel is only available to desktop clients.");
+        } else {
+          sendForwardClose(peer, id, "Runtime channel is only available to desktop clients.");
         }
         return true;
       }

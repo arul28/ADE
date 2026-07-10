@@ -28,7 +28,10 @@ vi.mock("./pairedRuntimeBootstrap", () => ({
 }));
 
 import { RemoteConnectionPool } from "./remoteConnectionPool";
-import { PairedRuntimeTransportUnavailableError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeCompatibilityError,
+  PairedRuntimeTransportUnavailableError,
+} from "./pairedRuntimeErrors";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -282,6 +285,55 @@ describe("RemoteConnectionPool", () => {
     });
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-throws a paired compatibility error when the target has no SSH routes", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeCompatibilityError(
+        "The paired machine runs an older ADE runtime.",
+      ),
+    );
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedTarget)).rejects.toBeInstanceOf(
+      PairedRuntimeCompatibilityError,
+    );
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to SSH on a paired compatibility error when the target has usable SSH routes", async () => {
+    const pairedWithSshRoutes: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "paired-ssh-target-1",
+      routes: [
+        {
+          hostname: "studio.local",
+          port: 22,
+          source: "manual",
+          lastSucceededAt: null,
+        },
+      ],
+    };
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeCompatibilityError(
+        "The paired machine runs an older ADE runtime.",
+      ),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedWithSshRoutes },
+    });
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(pairedWithSshRoutes)).resolves.toMatchObject({
+      target: { id: pairedWithSshRoutes.id },
+    });
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ target: pairedWithSshRoutes }),
+    );
   });
 
   it("falls back to SSH when every paired WebSocket dial fails", async () => {

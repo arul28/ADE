@@ -103,6 +103,31 @@ Desktop sync Settings IPC first talks to the active runtime for status, discover
 
 The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound runtimes reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the ADE runtime as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
 
+## Paired transport & relay trust boundary
+
+Besides SSH, a remote target can use the **paired** transport: after PIN + DPoP
+pairing, the full runtime JSON-RPC rides the sync WebSocket as newline-delimited
+frames inside `rpc_*` envelopes, and loopback TCP previews ride `fwd_*`
+envelopes (host-side connect restricted to `127.0.0.1`). Both are gated to
+desktop runtime-host peers: the host only opens the RPC channel / port-forward
+for a peer that authenticated with `kind: "paired"` **and** advertised
+`deviceType: "desktop"`. Paired phones and browsers stay on the mobile command
+allowlist — a non-desktop paired peer that sends `rpc_open`/`fwd_open` gets the
+channel closed with "Runtime channel is only available to desktop clients", and
+`hello_ok` advertises `features.rpcChannel`/`features.portForward` as `false`
+for them. The host also caps concurrent channels per peer (32 RPC channels, 64
+forwards) so an authenticated peer cannot exhaust file descriptors or memory.
+
+**Relay trust boundary.** The sync WebSocket can reach the host over a direct
+LAN/tailnet route or through the cloud tunnel-relay. The relay is a plaintext
+byte pipe: TLS terminates *at* the relay and there is no end-to-end encryption
+between the two ADE machines. Over a relay route the relay operator can read all
+runtime RPC payloads and the paired `secret` that transits in the `hello`.
+Direct LAN/tailnet routes do not transit the relay and are not exposed to it.
+DPoP proof-of-possession protects against host impersonation only when a stored
+enclave key exists for the target; without one, DPoP cannot be asserted. Treat
+relay routes as trusted-operator paths, not confidential channels.
+
 ## Local runtime routing
 
 Local desktop windows go through the runtime binding. `callProjectRuntimeActionOr` and `callProjectRuntimeSyncOr` in `apps/desktop/src/preload/preload.ts` call the active local or remote runtime when a binding exists; legacy Electron IPC handlers are used only when no runtime route is bound or for desktop-only side effects. File actions are strict once a local or remote runtime is bound, which prevents a failed runtime-bound file write/read from being retried against the desktop's local filesystem when the bound project is owned by a daemon or remote host. Usage and budget reads use the remote runtime only for remote-bound windows; local-bound windows keep using desktop usage IPC. During `project.switchToPath`, preload temporarily binds local runtime calls to the requested root and main-process `runtimeBridge.ts` honors the explicit `rootPath` over the window session binding for local action, sync, and event-stream calls. During `remoteRuntime.openProject`, preload clears the binding while the switch is in flight; mutating runtime actions and mutating sync calls fail with the "Project is switching" message instead of refreshing or writing through a stale binding, while read-only project calls can wait for the active remote open and retry against the new binding.

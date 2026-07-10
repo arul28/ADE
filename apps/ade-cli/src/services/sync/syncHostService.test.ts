@@ -225,8 +225,10 @@ describe("buildSyncHostHelloOkPayload", () => {
     expect(payload.features.fileAccess).toBe(true);
     expect(payload.features.terminalStreaming).toBe(true);
     expect(payload.features.chatStreaming).toEqual({ enabled: true });
-    expect(payload.features.rpcChannel).toBe(true);
-    expect(payload.features.portForward).toBe(true);
+    // Phone peer without runtimeChannelEnabled: runtime channel + port-forward
+    // must NOT be advertised as available.
+    expect(payload.features.rpcChannel).toBe(false);
+    expect(payload.features.portForward).toBe(false);
     expect(payload.features.commandRouting).toEqual({
       mode: "allowlisted",
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
@@ -242,6 +244,46 @@ describe("buildSyncHostHelloOkPayload", () => {
     });
     // No relay URL supplied → field omitted for backward-compatible payloads.
     expect("cloudRelayWssUrl" in payload).toBe(false);
+  });
+
+  it("advertises the runtime RPC channel + port-forward only when the peer is an authorized desktop host", () => {
+    const desktop = {
+      deviceId: "mac-studio-1",
+      deviceName: "Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "desktop-site-1",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const base = {
+      brain: desktop,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    const enabled = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: desktop,
+      runtimeChannelEnabled: true,
+    });
+    expect(enabled.features.rpcChannel).toBe(true);
+    expect(enabled.features.portForward).toBe(true);
+
+    const disabled = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: desktop,
+      runtimeChannelEnabled: false,
+    });
+    expect(disabled.features.rpcChannel).toBe(false);
+    expect(disabled.features.portForward).toBe(false);
   });
 
   it("advertises the cloud relay connect URL so already-paired phones learn the off-LAN route", () => {

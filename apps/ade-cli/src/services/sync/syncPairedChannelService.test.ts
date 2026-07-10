@@ -127,7 +127,7 @@ describe("createSyncPairedChannelService", () => {
     });
     const { service, sent, peer } = createHarness({ createRpcHandler });
 
-    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-1" }, true);
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-1" }, true, true);
     const initialize = `${JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
@@ -139,11 +139,11 @@ describe("createSyncPairedChannelService", () => {
     await service.handleEnvelope(peer, "rpc_data", {
       channelId: "rpc-1",
       data: bytes.subarray(0, 17).toString("base64"),
-    }, true);
+    }, true, true);
     await service.handleEnvelope(peer, "rpc_data", {
       channelId: "rpc-1",
       data: bytes.subarray(17).toString("base64"),
-    }, true);
+    }, true, true);
 
     await waitFor(() => rpcText(sent, "rpc-1").split("\n").filter(Boolean).length === 2, "RPC responses");
     const responses = rpcText(sent, "rpc-1")
@@ -156,7 +156,7 @@ describe("createSyncPairedChannelService", () => {
     ]);
     expect(createRpcHandler).toHaveBeenCalledTimes(1);
 
-    await service.handleEnvelope(peer, "rpc_close", { channelId: "rpc-1", reason: "done" }, true);
+    await service.handleEnvelope(peer, "rpc_close", { channelId: "rpc-1", reason: "done" }, true, true);
     expect(disposed).toHaveBeenCalledTimes(1);
     expect(sent.some((envelope) => envelope.type === "rpc_close")).toBe(false);
     service.dispose();
@@ -199,18 +199,18 @@ describe("createSyncPairedChannelService", () => {
       createRpcHandler: () => async () => null,
       connectForward: () => socket,
     });
-    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-owner" }, true);
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-owner" }, true, true);
     await service.handleEnvelope(peer, "fwd_open", {
       forwardId: "fwd-owned",
       host: "127.0.0.1",
       port: 4173,
-    }, true);
+    }, true, true);
     socket.connect();
 
     await service.handleEnvelope(peer, "rpc_close", {
       channelId: "rpc-owner",
       reason: "runtime closed",
-    }, true);
+    }, true, true);
 
     expect(socket.destroyed).toBe(true);
     expect(sent).toContainEqual({
@@ -231,7 +231,7 @@ describe("createSyncPairedChannelService", () => {
       forwardId: "fwd-public",
       host: "192.0.2.10",
       port: 443,
-    }, true);
+    }, true, true);
 
     expect(connectForward).not.toHaveBeenCalled();
     expect(sent).toContainEqual({
@@ -252,12 +252,12 @@ describe("createSyncPairedChannelService", () => {
       forwardId: "fwd-echo",
       host: "localhost",
       port: 4173,
-    }, true);
+    }, true, true);
     socket.connect();
     await service.handleEnvelope(peer, "fwd_data", {
       forwardId: "fwd-echo",
       data: Buffer.from("hello over sync", "utf8").toString("base64"),
-    }, true);
+    }, true, true);
 
     await waitFor(
       () => sent.some((envelope) => envelope.type === "fwd_data"),
@@ -294,7 +294,7 @@ describe("createSyncPairedChannelService", () => {
       forwardId: "fwd-pressure",
       host: "127.0.0.1",
       port: 4173,
-    }, true);
+    }, true, true);
     socket.connect();
     socket.push("queued");
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -309,6 +309,90 @@ describe("createSyncPairedChannelService", () => {
       String(sent.find((envelope) => envelope.type === "fwd_data")?.payload.data),
       "base64",
     ).toString("utf8")).toBe("queued");
+    service.dispose();
+  });
+
+  it("rejects runtime and forward opens from a paired but non-desktop peer", async () => {
+    const createRpcHandler = vi.fn();
+    const connectForward = vi.fn(() => new FakeForwardSocket());
+    const { service, sent, peer } = createHarness({ createRpcHandler, connectForward });
+
+    // authenticatedWithPairing = true, authorizedForRuntimeHost = false
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-phone" }, true, false);
+    await service.handleEnvelope(peer, "fwd_open", {
+      forwardId: "fwd-phone",
+      host: "127.0.0.1",
+      port: 4173,
+    }, true, false);
+
+    expect(createRpcHandler).not.toHaveBeenCalled();
+    expect(connectForward).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      {
+        type: "rpc_close",
+        payload: {
+          channelId: "rpc-phone",
+          reason: "Runtime channel is only available to desktop clients.",
+        },
+      },
+      {
+        type: "fwd_close",
+        payload: {
+          forwardId: "fwd-phone",
+          reason: "Runtime channel is only available to desktop clients.",
+        },
+      },
+    ]);
+    service.dispose();
+  });
+
+  it("caps concurrent RPC channels per peer", async () => {
+    const createRpcHandler = vi.fn(() => (async () => null) as SyncRuntimeRpcHandler);
+    const { service, sent, peer } = createHarness({ createRpcHandler });
+
+    // MAX_RPC_CHANNELS_PER_PEER = 32
+    for (let i = 0; i < 32; i += 1) {
+      await service.handleEnvelope(peer, "rpc_open", { channelId: `rpc-${i}` }, true, true);
+    }
+    expect(createRpcHandler).toHaveBeenCalledTimes(32);
+
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-over" }, true, true);
+    expect(createRpcHandler).toHaveBeenCalledTimes(32);
+    expect(sent).toContainEqual({
+      type: "rpc_close",
+      payload: { channelId: "rpc-over", reason: "Too many open runtime channels." },
+    });
+
+    // Re-opening an already-open channel id replaces it, not exceeding the cap.
+    await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-0" }, true, true);
+    expect(createRpcHandler).toHaveBeenCalledTimes(33);
+    service.dispose();
+  });
+
+  it("caps concurrent forwards per peer", async () => {
+    const connectForward = vi.fn(() => new FakeForwardSocket());
+    const { service, sent, peer } = createHarness({ connectForward });
+
+    // MAX_FORWARDS_PER_PEER = 64
+    for (let i = 0; i < 64; i += 1) {
+      await service.handleEnvelope(peer, "fwd_open", {
+        forwardId: `fwd-${i}`,
+        host: "127.0.0.1",
+        port: 4173,
+      }, true, true);
+    }
+    expect(connectForward).toHaveBeenCalledTimes(64);
+
+    await service.handleEnvelope(peer, "fwd_open", {
+      forwardId: "fwd-over",
+      host: "127.0.0.1",
+      port: 4173,
+    }, true, true);
+    expect(connectForward).toHaveBeenCalledTimes(64);
+    expect(sent).toContainEqual({
+      type: "fwd_close",
+      payload: { forwardId: "fwd-over", reason: "Too many open port forwards." },
+    });
     service.dispose();
   });
 });

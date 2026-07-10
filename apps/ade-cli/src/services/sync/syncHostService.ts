@@ -186,6 +186,18 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
 }
 
+/**
+ * Whether the peer's advertised device type is a desktop ADE runtime-host.
+ * The paired runtime RPC channel and loopback port-forwarding expose the full
+ * (~44 domain) runtime action registry, well beyond the mobile allowlist, so
+ * they are additionally gated to desktop clients on top of successful pairing.
+ */
+export function isRuntimeHostDeviceType(
+  metadata: SyncPeerMetadata | null | undefined,
+): boolean {
+  return metadata?.deviceType === "desktop";
+}
+
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
@@ -910,7 +922,15 @@ export function buildSyncHostHelloOkPayload(args: {
   compressionThresholdBytes?: number;
   maxProjectCatalogEnvelopeBytes?: number;
   cloudRelayWssUrl?: string | null;
+  /**
+   * Whether this peer is authorized to use the paired runtime RPC channel and
+   * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
+   * false so non-desktop paired devices (phones/browsers) never see the
+   * feature advertised as available.
+   */
+  runtimeChannelEnabled?: boolean;
 }): PairedRuntimeHelloOkPayload {
+  const runtimeChannelEnabled = args.runtimeChannelEnabled === true;
   const actions = [
     ...args.remoteCommandDescriptors,
     ...args.localCommandDescriptors,
@@ -968,8 +988,8 @@ export function buildSyncHostHelloOkPayload(args: {
         requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
         missingActions: mobileCompatibility.missingActions,
       },
-      rpcChannel: true,
-      portForward: true,
+      rpcChannel: runtimeChannelEnabled,
+      portForward: runtimeChannelEnabled,
     },
   };
   const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
@@ -4589,6 +4609,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         compressionThresholdBytes,
         maxProjectCatalogEnvelopeBytes,
         cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+        // Runtime RPC channel + port-forward are desktop-runtime-host only,
+        // even after successful pairing (phones/browsers stay on the mobile
+        // command allowlist).
+        runtimeChannelEnabled:
+          auth.kind === "paired" && isRuntimeHostDeviceType(hello.peer),
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
@@ -4602,6 +4627,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         envelope.type,
         envelope.payload,
         peer.authKind === "paired",
+        // Gate the runtime RPC channel + port-forward to desktop runtime-host
+        // peers; paired phones/browsers get the channel closed with a clear
+        // reason instead of reaching the full runtime action registry.
+        peer.authKind === "paired" && isRuntimeHostDeviceType(peer.metadata),
       );
       return;
     }

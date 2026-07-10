@@ -21,7 +21,10 @@ import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isRetryableRemoteAction } from "./retryableRemoteActions";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
-import { PairedRuntimeTransportUnavailableError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeCompatibilityError,
+  PairedRuntimeTransportUnavailableError,
+} from "./pairedRuntimeErrors";
 import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
@@ -158,6 +161,16 @@ function normalizeForwardPort(value: unknown): number {
 
 function portForwardKey(targetId: string, remoteHost: string, remotePort: number): string {
   return `${targetId}\0${remoteHost}\0${remotePort}`;
+}
+
+/**
+ * Whether the target carries SSH connection details we can fall back to when a
+ * paired bootstrap fails. Paired targets created through the registry force
+ * `sshUser` to null, so their only SSH signal is discovered `routes`; older or
+ * dual records may still carry an explicit `sshUser`.
+ */
+function targetHasUsableSshRoutes(target: RemoteRuntimeTarget): boolean {
+  return Boolean(target.sshUser?.trim()) || (target.routes?.length ?? 0) > 0;
 }
 
 function destroyAcceptedSocket(socket: net.Socket, error: Error): void {
@@ -362,7 +375,18 @@ export class RemoteConnectionPool {
           result: paired.result,
         };
       } catch (error) {
-        if (!(error instanceof PairedRuntimeTransportUnavailableError)) {
+        // Transport-unavailable (host doesn't advertise the runtime channel, or
+        // every WebSocket dial failed) always falls through to SSH. A
+        // compatibility failure (the remote runtime is too old for the paired
+        // protocol) only falls back when the target also carries usable SSH
+        // routes — otherwise there is nothing to fall back to and the clear
+        // compatibility error must reach the caller instead of a confusing SSH
+        // failure.
+        const canFallBackToSsh =
+          error instanceof PairedRuntimeTransportUnavailableError
+          || (error instanceof PairedRuntimeCompatibilityError
+            && targetHasUsableSshRoutes(target));
+        if (!canFallBackToSsh) {
           throw error;
         }
       }
