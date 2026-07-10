@@ -60,6 +60,11 @@ export function ShellNavTab({
           event.stopPropagation();
           onClose();
         }}
+        onKeyDown={(event) => {
+          // Enter/Space on the focused close button must not bubble into the
+          // wrapper's activate handler.
+          event.stopPropagation();
+        }}
         title={closeTitle}
       >
         <X size={12} weight="regular" />

@@ -246,6 +246,22 @@ describe("PersonalChatsPage", () => {
     expect(screen.getAllByLabelText("Message an ADE agent")).toHaveLength(1);
   });
 
+  it("does not submit when Enter confirms an IME composition", async () => {
+    await renderPage();
+
+    await screen.findByText("What can I help with?");
+    const textarea = screen.getByLabelText("Message an ADE agent");
+    fireEvent.change(textarea, { target: { value: "こんにちは" } });
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+
+    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
+    const sendish = bridge.ade.personalChats.call.mock.calls.filter(
+      ([{ action }]: [CallArgs]) => action === "create" || action === "send",
+    );
+    expect(sendish).toHaveLength(0);
+    expect((textarea as HTMLTextAreaElement).value).toBe("こんにちは");
+  });
+
   it("computes the send glyph contrast from the tint-resolved accent in neutral chrome", async () => {
     storeState.chatChromeTint = "neutral";
     await renderPage();

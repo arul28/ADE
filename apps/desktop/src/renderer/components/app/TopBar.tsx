@@ -1351,6 +1351,10 @@ export function TopBar({
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
+      // Clicking a project tab while the Chats machine tab is foreground must
+      // leave /chats, or ProjectTabHost's route replay (which skips personal
+      // chats routes) never surfaces the project.
+      if (personalChatsRouteActive) onNavigate?.("/work", { replace: true });
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
@@ -1360,6 +1364,8 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
+      onNavigate,
+      personalChatsRouteActive,
       project?.rootPath,
       remoteBinding,
       switchProjectToPath,
@@ -1369,6 +1375,7 @@ export function TopBar({
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
+      if (personalChatsRouteActive) onNavigate?.("/work", { replace: true });
       if (remoteBinding?.key === binding.key) {
         cancelNewTab();
         return;
@@ -1378,6 +1385,8 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
+      onNavigate,
+      personalChatsRouteActive,
       remoteBinding?.key,
       switchRemoteProject,
     ],

@@ -455,6 +455,35 @@ describe("TopBar", () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
+  it("does not activate a tab when the close button is pressed via keyboard", () => {
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: false,
+      storeOverrides: { isNewTabOpen: true },
+    });
+
+    fireEvent.keyDown(screen.getByTitle("Close chats"), { key: "Enter" });
+
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("routes back to the project when its tab is clicked while Chats is foreground", () => {
+    const root = "/Users/arul/ADE";
+    const { onNavigate } = renderChatsTopBar({
+      personalChatsRouteActive: true,
+      storeOverrides: {
+        project: { rootPath: root, name: "ADE" },
+        showWelcome: false,
+        openProjectTabRoots: [root],
+        projectInfoByRoot: { [root]: { rootPath: root, displayName: "ADE" } },
+      } as any,
+    });
+
+    fireEvent.click(screen.getByText("ADE", { selector: "span" }).closest('[role="button"]')!);
+
+    expect(onNavigate).toHaveBeenCalledWith("/work", { replace: true });
+    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
+  });
+
   it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
     const root = "/Users/arul/ADE";
     renderChatsTopBar({

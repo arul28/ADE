@@ -89,7 +89,9 @@ export function ProjectlessComposer({
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            // isComposing: Enter confirms an in-progress IME composition
+            // (CJK input) and must not send the message.
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               onSubmit();
             }

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Archive, DotsThree, House, MagnifyingGlass, Plus, SpinnerGap, Trash } from "@phosphor-icons/react";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -36,6 +37,20 @@ export function ProjectlessSidebar({
   onToggleMenu: (id: string | null) => void;
   onRemove: (id: string, action: "archive" | "delete") => void;
 }) {
+  useEffect(() => {
+    if (!menuId) return;
+    const close = () => onToggleMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onToggleMenu(null);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuId, onToggleMenu]);
+
   return (
     <aside className={cn(
       "relative w-[286px] shrink-0 border-r border-white/[0.06] bg-black/[0.12]",
@@ -92,11 +107,11 @@ export function ProjectlessSidebar({
                         </span>
                         <span className="mt-0.5 shrink-0 font-sans text-[9px] tabular-nums text-muted-fg/35 group-hover:hidden">{relativeTime(session.lastActivityAt)}</span>
                       </button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); onToggleMenu(menuId === session.sessionId ? null : session.sessionId); }} className="absolute right-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md text-muted-fg/45 hover:bg-white/[0.08] hover:text-fg group-hover:flex" aria-label={`More actions for ${sessionTitle(session)}`}><DotsThree size={15} weight="bold" /></button>
+                      <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleMenu(menuId === session.sessionId ? null : session.sessionId); }} className="absolute right-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md text-muted-fg/45 hover:bg-white/[0.08] hover:text-fg group-hover:flex" aria-label={`More actions for ${sessionTitle(session)}`} aria-haspopup="menu" aria-expanded={menuId === session.sessionId}><DotsThree size={15} weight="bold" /></button>
                       {menuId === session.sessionId ? (
-                        <div className="absolute right-2 top-9 z-30 w-32 rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl">
-                          <button type="button" onClick={() => onRemove(session.sessionId, "archive")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-white/[0.06]"><Archive size={12} />Archive</button>
-                          <button type="button" onClick={() => onRemove(session.sessionId, "delete")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-rose-300/75 hover:bg-rose-500/10"><Trash size={12} />Delete</button>
+                        <div role="menu" onMouseDown={(event) => event.stopPropagation()} className="absolute right-2 top-9 z-30 w-32 rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl">
+                          <button type="button" role="menuitem" onClick={() => onRemove(session.sessionId, "archive")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-fg/65 hover:bg-white/[0.06]"><Archive size={12} />Archive</button>
+                          <button type="button" role="menuitem" onClick={() => onRemove(session.sessionId, "delete")} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-rose-300/75 hover:bg-rose-500/10"><Trash size={12} />Delete</button>
                         </div>
                       ) : null}
                     </div>

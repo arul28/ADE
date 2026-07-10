@@ -499,7 +499,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         onQueryChange={setQuery}
         selectedId={selectedId}
         onSelect={setSelectedId}
-        onNewChat={() => { setSelectedId(null); setDraft(""); setMobileListOpen(false); }}
+        onNewChat={() => { setSelectedId(null); setDraft(""); setMobileListOpen(false); setMenuId(null); }}
         onBack={() => navigate("/work")}
         mobileListOpen={mobileListOpen}
         menuId={menuId}
