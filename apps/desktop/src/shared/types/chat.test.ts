@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { inferAttachmentType, mergeAttachments, type AgentChatFileRef } from "./chat";
+import {
+  inferAttachmentType,
+  mergeAttachments,
+  type AgentChatFileRef,
+  type AgentChatModelsArgs,
+} from "./chat";
+
+describe("AgentChatModelsArgs", () => {
+  it("allows typed callers to request the aggregated model catalog", () => {
+    const args: AgentChatModelsArgs = {};
+    expect(args).toEqual({});
+  });
+});
 
 describe("inferAttachmentType", () => {
   it("returns 'image' for image MIME types", () => {

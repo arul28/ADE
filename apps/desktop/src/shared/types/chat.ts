@@ -1886,7 +1886,7 @@ export type AgentChatRespondToInputArgs = {
 };
 
 export type AgentChatModelsArgs = {
-  provider: AgentChatProvider;
+  provider?: AgentChatProvider;
   activateRuntime?: boolean;
   cursorSource?: AgentChatCursorModelSource;
 };
