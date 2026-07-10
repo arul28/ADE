@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.19] - 2026-07-10
+
+### Added
+
+- Remote sync between paired desktops so lanes, chats, and actions stay in step across machines.
+- Automations engine with Linear/GitHub webhook ingress, a lane lifecycle engine, production unlock, and a rebuilt Automations tab.
+- Projectless personal chats across desktop, CLI, and iOS.
+- GPT-5.6 model family and Codex 0.144 support across chat, CLI, and background AI.
+- Cross-client ADE stats and activity charts, including an iOS usage/activity carousel.
+
+### Changed
+
+- Overhauled the Claude chat lifecycle: two-row subagent transcripts, honest schedule reporting, durable wakeups that survive restarts, and refined iOS Work chat composer/timeline/message surfaces.
+- Simplified and centered the post-update modal.
+
+### Fixed
+
+- Fixed a chat streaming text-splice bug in the Claude chat lifecycle.
+- Fixed imported CLI sessions resolving to the Primary project.
+- Rescued web-client pairing and marketing surfaces.
+
 ## [1.2.18] - 2026-07-09
 
 ### Changed
@@ -634,7 +655,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.18...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.19...HEAD
+[1.2.19]: https://github.com/arul28/ADE/compare/v1.2.18...v1.2.19
 [1.2.18]: https://github.com/arul28/ADE/compare/v1.2.17...v1.2.18
 [1.2.17]: https://github.com/arul28/ADE/compare/v1.2.16...v1.2.17
 [1.2.16]: https://github.com/arul28/ADE/compare/v1.2.15...v1.2.16
