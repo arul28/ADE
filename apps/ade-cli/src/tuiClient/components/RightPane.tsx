@@ -843,7 +843,9 @@ function ChatInfoRoster({
   const selected = Math.max(-1, Math.min(selectedIndex, totalSelectable - 1));
   const mainSelected = selected === 0;
   const showingMain = !info.inspectedSubagentId;
-  const hint = snapshotRows.length === 0
+  // Gate on the full uncleared snapshot list, not the visible rows — a
+  // collapsed section empties snapshotRows while agents are still running.
+  const hint = countedSnapshots.length === 0
     ? "0 live"
     : [
         `${runCount} live`,
@@ -868,6 +870,7 @@ function ChatInfoRoster({
     selected,
     SUBAGENT_PANE_ROSTER_CAPACITY,
   );
+  const rosterIndexByKey = new Map(snapshotRows.map((row, index) => [row.key, index]));
 
   return (
     <Box flexDirection="column">
@@ -906,7 +909,7 @@ function ChatInfoRoster({
             if (row.kind === "restore-cleared") {
               return <Text key={row.key} color={theme.color.t4} dimColor>{`  restore (${row.count})`}</Text>;
             }
-            const rosterIndex = snapshotRows.findIndex((candidate) => candidate.key === row.key);
+            const rosterIndex = rosterIndexByKey.get(row.key) ?? -1;
             const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
             const kind = subagentAgentKind(row.snapshot.status);
             // Background rows get a cyan glyph tint so the eye can sort them out

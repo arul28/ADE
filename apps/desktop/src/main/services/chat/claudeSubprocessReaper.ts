@@ -237,7 +237,10 @@ export function createClaudeSubprocessReaper(args: {
     reason: string,
   ): void => {
     const child = entry.process;
-    if (child.killed || child.exitCode !== null || entry.killTimer) return;
+    // `child.killed` only means "a signal was sent", not "the process exited" —
+    // gate on exit/signal codes so a hung child still gets the SIGKILL escalation.
+    const exited = () => child.exitCode !== null || (child as { signalCode?: string | null }).signalCode != null;
+    if (exited() || entry.killTimer) return;
     logger.warn("agent_chat.claude_subprocess_terminate", {
       pid,
       sessionId: entry.record.sessionId,
@@ -249,7 +252,7 @@ export function createClaudeSubprocessReaper(args: {
       // Best effort; the process may already be gone.
     }
     entry.killTimer = setTimer(() => {
-      if (!child.killed && child.exitCode === null) {
+      if (!exited()) {
         logger.warn("agent_chat.claude_subprocess_kill", {
           pid,
           sessionId: entry.record.sessionId,

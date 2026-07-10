@@ -88,13 +88,14 @@ function findSdkMatch(
     let combined = "";
     for (let end = start; end < messages.length; end += 1) {
       combined = normalizeText(`${combined}${messages[end]!.normalizedText}`);
-      if (combined === normalizedRun || combined.startsWith(normalizedRun)) {
+      // Only an EXACT match may rebuild. A superset match (SDK text merely
+      // starting with the run) could splice content the ADE transcript never
+      // showed into history; a partial match (SDK covering only a prefix of
+      // the run) would drop the run's uncovered tail. Both fall back to the
+      // caller's lossless local merge instead.
+      if (combined === normalizedRun) {
         return { messages: messages.slice(start, end + 1), nextIndex: end + 1 };
       }
-      // Partial coverage (SDK text is only a prefix of the run) must NOT win:
-      // rebuilding from it would drop the run's uncovered tail. Keep scanning
-      // while the SDK side could still complete the run, otherwise move on and
-      // let the caller fall back to the lossless local merge.
       if (normalizedRun.startsWith(combined)) continue;
       break;
     }

@@ -179,6 +179,31 @@ describe("createClaudeSubprocessReaper", () => {
     expect(otherChild.killedWith).toEqual([]);
   });
 
+  it("escalates to SIGKILL for a hung child even though killed=true after SIGTERM", () => {
+    // Node sets child.killed as soon as ANY signal is delivered — it does NOT
+    // mean the process exited. A hung child must still get the escalation.
+    vi.useFakeTimers();
+    const logger = createLogger();
+    const child = createProcess(9911);
+    child.kill = vi.fn((signal: NodeJS.Signals) => {
+      child.killedWith.push(signal);
+      child.killed = true; // Node-faithful: true after the first delivered signal.
+      return true;
+    });
+    const reaper = createClaudeSubprocessReaper({ logger, killGraceMs: 25 });
+    reaper.register(child, {
+      sessionId: "chat-hung",
+      laneId: "lane-1",
+      cwd: "/tmp/lane-1",
+    }, "claude", []);
+
+    reaper.reapForSession("chat-hung", "ended_session");
+    expect(child.killedWith).toEqual(["SIGTERM"]);
+
+    vi.advanceTimersByTime(25);
+    expect(child.killedWith).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+
   it("reaps subprocesses left behind by a crashed ADE owner", () => {
     vi.useFakeTimers();
     const logger = createLogger();

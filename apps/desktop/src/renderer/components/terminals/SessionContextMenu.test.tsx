@@ -69,8 +69,27 @@ describe("SessionContextMenu Claude tags", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("submits a non-empty tag for the session", () => {
+    const session = makeSession();
+    const { onClose, onSetChatTag } = renderMenu(session);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set tag…" }));
+    const input = screen.getByRole("textbox", { name: "Set Claude session tag" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "review-ready" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSetChatTag).toHaveBeenCalledWith(session, "review-ready");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("does not offer SDK tags for non-Claude chat sessions", () => {
     renderMenu(makeSession({ toolType: "codex-chat" }));
+    expect(screen.queryByRole("button", { name: "Set tag…" })).toBeNull();
+  });
+
+  it("does not offer SDK tags for ended Claude sessions", () => {
+    // Tag writes need a live Claude SDK runtime; the menu gates on running.
+    renderMenu(makeSession({ status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
     expect(screen.queryByRole("button", { name: "Set tag…" })).toBeNull();
   });
 });

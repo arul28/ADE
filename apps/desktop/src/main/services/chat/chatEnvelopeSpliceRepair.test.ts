@@ -158,6 +158,19 @@ describe("repairSplicedEnvelopeLines", () => {
     expect(twice).toEqual({ lines: once.lines, changed: false, repairedTurns: 0 });
   });
 
+  it("falls back to a local merge when SDK text extends beyond the run", () => {
+    // The SDK message is a superset ("Hello from the SDK, and more") of the
+    // run's text. Rebuilding from it would splice content the ADE transcript
+    // never showed into history — the repair must keep the exact ADE text.
+    const input = splicedRun();
+    const result = repairSplicedEnvelopeLines(input, [assistantMessage("msg-super", "Hello from the SDK, and more")]);
+    expect(result.lines).toHaveLength(1);
+    expect(JSON.parse(result.lines[0]!).event).toMatchObject({
+      text: "Hello from the SDK",
+      messageId: "wire-1",
+    });
+  });
+
   it("falls back to a local merge when SDK messages cover only a prefix of the run", () => {
     // The SDK transcript is missing the run's tail (" the SDK"). A rebuild from
     // the partial SDK match would silently drop that tail — the repair must
