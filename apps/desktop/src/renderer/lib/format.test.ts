@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import { relativeTimeCompact } from "./format";
+import { formatSubagentDurationMs, relativeTimeCompact } from "./format";
 
 describe("relativeTimeCompact", () => {
   beforeEach(() => {
@@ -44,5 +44,14 @@ describe("relativeTimeCompact", () => {
 
   it("treats future timestamps as 'now' (delta clamped to 0)", () => {
     expect(relativeTimeCompact("2026-04-09T13:00:00.000Z")).toBe("now");
+  });
+});
+
+describe("formatSubagentDurationMs", () => {
+  it("routes seconds that round to 60 through the minute formatter", () => {
+    expect(formatSubagentDurationMs(59_499)).toBe("59s");
+    expect(formatSubagentDurationMs(59_500)).toBe("1m");
+    expect(formatSubagentDurationMs(59_999)).toBe("1m");
+    expect(formatSubagentDurationMs(60_000)).toBe("1m");
   });
 });

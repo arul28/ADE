@@ -202,6 +202,9 @@ struct WorkChatSessionView: View {
   var selectedSubagentTaskId: String? = nil
   var onOpenChatInfo: (() -> Void)? = nil
   var onOpenSubagents: (() -> Void)? = nil
+  /// Tapping a subagent spawn/result timeline row opens the same detail surface
+  /// the Chat Info roster row opens (full transcript takeover or expanded row).
+  var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +

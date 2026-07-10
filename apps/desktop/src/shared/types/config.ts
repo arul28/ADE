@@ -1330,6 +1330,8 @@ export type AiChatConfig = {
    * redundant tool-approval prompt. Defaults to true.
    */
   autoAllowAskUser?: boolean;
+  /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
+  scheduledWorkPaused?: boolean;
 };
 export type AiConfig = {
   mode?: ProviderMode;

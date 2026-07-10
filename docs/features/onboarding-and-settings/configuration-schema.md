@@ -307,6 +307,12 @@ type AiConfig = {
 behavior. Legacy `providers.mode` migration is still in the service
 but idempotent.
 
+`AiChatConfig.scheduledWorkPaused?: boolean` is the project-runtime-wide
+pause for durable Claude wakeups, cron tasks, and `/loop`. It suppresses
+fires and `nextWakeAt` without deleting schedule records. Clearing the pause
+causes each overdue schedule to catch up once; recurring cron work then
+continues from its next normal occurrence.
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

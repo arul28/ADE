@@ -184,8 +184,12 @@ export type ChatInfoSnapshot = {
   planStreamingText: string | null;
   /** Latest todo_update snapshot (desktop ChatTasksPanel parity). */
   todos: ChatInfoTodoItem[];
-  /** Latest scheduled/background wakeups surfaced by Claude Agent SDK events. */
+  /** Schedule kinds only (wakeup/cron/loop/remote_trigger). */
   scheduledWork: ChatScheduledWorkSnapshot[];
+  /** Earliest armed, unpaused wake reported by the active chat session. */
+  nextWakeAt?: string | null;
+  /** Background command tasks (kind background_task). */
+  backgroundWork: ChatScheduledWorkSnapshot[];
   /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */
   pr: ChatInfoPrSummary | null;
   snapshots: SubagentSnapshot[];

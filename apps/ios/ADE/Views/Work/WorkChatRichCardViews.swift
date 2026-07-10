@@ -2564,30 +2564,79 @@ func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> I
   }
 }
 
+/// Unified Chat Info sheet: three ordered sections — Subagents, Background,
+/// Schedule. Mirrors the desktop chat-info pane (`buildSubagentPaneRows` +
+/// `deriveScheduleItems` / `deriveBackgroundItems`). Empty sections are hidden;
+/// a shared empty state renders only when all three are empty.
 struct WorkChatInfoDetailsSheet: View {
+  let subagentSnapshots: [WorkSubagentSnapshot]
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
+  let provider: String?
+  let selectedTaskId: String?
+  let probingTaskId: String?
+  @Binding var expandedTaskIds: Set<String>
+  let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
 
-  private var activeCount: Int {
-    workScheduledWorkActiveCount(scheduledWorkSnapshots)
+  /// Real subagents only (command-shaped historical snapshots are classified
+  /// out via the shared background-shell predicate), foreground + background
+  /// merged into one list; running agents sort first.
+  private var subagents: [WorkSubagentSnapshot] {
+    let real = workChatInfoSubagents(subagentSnapshots)
+    return real.sorted { lhs, rhs in
+      let lhsWeight = lhs.status == .running ? 0 : 1
+      let rhsWeight = rhs.status == .running ? 0 : 1
+      return lhsWeight < rhsWeight
+    }
+  }
+
+  private var backgroundItems: [WorkScheduledWorkSnapshot] {
+    workChatInfoBackgroundItems(scheduledWorkSnapshots)
+  }
+
+  private var scheduleItems: [WorkScheduledWorkSnapshot] {
+    workChatInfoScheduleItems(scheduledWorkSnapshots)
+  }
+
+  private var isEmpty: Bool {
+    subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty
   }
 
   var body: some View {
     NavigationStack {
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 14) {
-          if scheduledWorkSnapshots.isEmpty {
+        LazyVStack(alignment: .leading, spacing: 16) {
+          if isEmpty {
             ADEEmptyStateView(
               symbol: "info.circle",
               title: "No chat info",
-              message: "Scheduled wakeups and background work will appear here."
+              message: "Subagents, background commands, and scheduled work will appear here."
             )
             .padding(.top, 24)
           } else {
-            summaryHeader
-            section(title: "Schedule", count: scheduledWorkSnapshots.count) {
-              VStack(spacing: 8) {
-                ForEach(scheduledWorkSnapshots) { item in
-                  WorkScheduledWorkRow(item: item)
+            if !subagents.isEmpty {
+              section(title: "Subagents", count: subagents.count) {
+                VStack(spacing: 6) {
+                  ForEach(subagents) { snapshot in
+                    subagentRow(snapshot)
+                  }
+                }
+              }
+            }
+            if !backgroundItems.isEmpty {
+              section(title: "Background", count: backgroundItems.count) {
+                VStack(spacing: 8) {
+                  ForEach(backgroundItems) { item in
+                    WorkBackgroundWorkRow(item: item)
+                  }
+                }
+              }
+            }
+            if !scheduleItems.isEmpty {
+              section(title: "Schedule", count: scheduleItems.count) {
+                VStack(spacing: 8) {
+                  ForEach(scheduleItems) { item in
+                    WorkScheduledWorkRow(item: item)
+                  }
                 }
               }
             }
@@ -2602,28 +2651,14 @@ struct WorkChatInfoDetailsSheet: View {
     }
   }
 
-  private var summaryHeader: some View {
-    HStack(spacing: 10) {
-      Image(systemName: "clock")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 30, height: 30)
-        .background(ADEColor.accent.opacity(0.12), in: Circle())
-      VStack(alignment: .leading, spacing: 2) {
-        Text("\(scheduledWorkSnapshots.count) scheduled item\(scheduledWorkSnapshots.count == 1 ? "" : "s")")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(activeCount == 0 ? "No active scheduled work" : "\(activeCount) active")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      Spacer(minLength: 0)
-    }
-    .padding(12)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.5), lineWidth: 0.6)
+  @ViewBuilder
+  private func subagentRow(_ snapshot: WorkSubagentSnapshot) -> some View {
+    WorkChatInfoSubagentRow(
+      snapshot: snapshot,
+      selected: selectedTaskId == snapshot.taskId,
+      probing: probingTaskId == snapshot.taskId,
+      expanded: expandedTaskIds.contains(snapshot.taskId),
+      onSelect: { Task { await onSelect(snapshot) } }
     )
   }
 
@@ -2642,6 +2677,203 @@ struct WorkChatInfoDetailsSheet: View {
       }
       content()
     }
+  }
+}
+
+/// A single subagent roster row inside Chat Info. Reuses the drawer row shape
+/// (glyph, name, subtitle, status chip, expandable detail). Background agents
+/// get a small "background" chip.
+private struct WorkChatInfoSubagentRow: View {
+  let snapshot: WorkSubagentSnapshot
+  let selected: Bool
+  let probing: Bool
+  let expanded: Bool
+  let onSelect: () -> Void
+
+  private var elapsed: String? { workSubagentElapsedLabel(snapshot) }
+  private var detailText: String? {
+    if let summary = filteredDetail(snapshot.latestSummary) { return summary }
+    return filteredDetail(snapshot.description)
+  }
+  private var lastToolName: String? { trimmedNonEmpty(snapshot.lastToolName) }
+  private var showsDisclosure: Bool {
+    snapshot.status == .running || detailText != nil || lastToolName != nil
+  }
+
+  var body: some View {
+    Button(action: onSelect) {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 10) {
+          WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(workSubagentMeaningfulName(snapshot))
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(titleColor)
+              .lineLimit(1)
+              .truncationMode(.tail)
+            if let subtitle {
+              Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+          }
+          if snapshot.background {
+            WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
+          }
+          Spacer(minLength: 0)
+          HStack(spacing: 8) {
+            if probing {
+              ProgressView().controlSize(.small)
+            }
+            WorkSubagentStatusChip(status: snapshot.status)
+            if showsDisclosure {
+              Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+        }
+
+        if expanded, detailText != nil || lastToolName != nil {
+          VStack(alignment: .leading, spacing: 5) {
+            if let detailText {
+              Text(detailText)
+            }
+            if let tool = lastToolName {
+              Text("last: \(tool)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, 34)
+        }
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 9)
+      .background(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+
+  private var subtitle: String? {
+    var parts: [String] = []
+    if let elapsed { parts.append(elapsed) }
+    if let runtime = workSubagentRuntimeLabel(snapshot) { parts.append(runtime) }
+    if let detailText { parts.append(truncated(detailText, limit: 58)) }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  private var titleColor: Color {
+    switch snapshot.status {
+    case .running: return ADEColor.accent
+    case .failed: return ADEColor.danger
+    case .succeeded: return ADEColor.textPrimary
+    case .stopped: return ADEColor.textMuted
+    }
+  }
+
+  private func filteredDetail(_ value: String?) -> String? {
+    guard let trimmed = trimmedNonEmpty(value) else { return nil }
+    switch trimmed.lowercased() {
+    case "agent closed", "agent stopped", "subagent closed", "subagent stopped":
+      return nil
+    default:
+      return trimmed
+    }
+  }
+
+  private func trimmedNonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    return trimmed
+  }
+
+  private func truncated(_ value: String, limit: Int) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count > limit, limit > 1 else { return trimmed }
+    return String(trimmed.prefix(limit - 1)) + "…"
+  }
+}
+
+/// A background_task scheduled snapshot rendered as `$ <smart label>` with a
+/// status chip; tapping expands to the full command in monospaced text with a
+/// dim cwd chip when the command carried a leading `cd <path> &&`.
+private struct WorkBackgroundWorkRow: View {
+  let item: WorkScheduledWorkSnapshot
+
+  @State private var expanded = false
+
+  private var command: String { workBackgroundCommandSource(item) }
+  private var presentation: WorkBackgroundCommandPresentation {
+    workBackgroundCommandPresentation(command)
+  }
+  private var status: String {
+    item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+  private var tint: Color { workScheduledWorkStatusTint(status) }
+
+  var body: some View {
+    Button {
+      withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+    } label: {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
+          Text("$")
+            .font(.caption.monospaced().weight(.bold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(presentation.label.isEmpty ? item.title : presentation.label)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(expanded ? nil : 1)
+            .truncationMode(.middle)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Text(workScheduledWorkStatusLabel(status))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+        }
+        if expanded {
+          VStack(alignment: .leading, spacing: 6) {
+            Text(command)
+              .font(.caption2.monospaced())
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .textSelection(.enabled)
+            if let cwd = presentation.cwd {
+              Text(cwd)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(ADEColor.textMuted.opacity(0.10), in: Capsule(style: .continuous))
+            }
+          }
+        }
+      }
+      .padding(12)
+      .background(ADEColor.cardBackground.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(tint.opacity(0.18), lineWidth: 0.8)
+      )
+    }
+    .buttonStyle(.plain)
   }
 }
 
@@ -2716,6 +2948,8 @@ private struct WorkScheduledWorkRow: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(tint.opacity(0.18), lineWidth: 0.8)
     )
+    // Paused schedules read as inactive (matches desktop's dimmed row).
+    .opacity(workScheduledWorkIsPaused(status) ? 0.55 : 1)
   }
 }
 
@@ -2742,9 +2976,16 @@ private func workScheduledWorkKindLabel(_ raw: String) -> String {
 }
 
 private func workScheduledWorkStatusLabel(_ raw: String) -> String {
-  switch raw {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fired":
     return "Fired"
+  case "paused":
+    return "Paused"
+  case "missed":
+    return "Missed"
+  case "completed":
+    // Desktop labels a completed one-shot schedule "done".
+    return "Done"
   default:
     return raw.replacingOccurrences(of: "_", with: " ").capitalized
   }
@@ -2760,6 +3001,7 @@ private func workScheduledWorkStatusTint(_ status: String) -> Color {
     return ADEColor.success
   case "failed", "missed":
     return ADEColor.danger
+  // `paused`, `cancelled`, `stopped`, and any unknown status read as muted.
   default:
     return ADEColor.textMuted
   }
@@ -2775,6 +3017,8 @@ private func workScheduledWorkStatusSymbol(_ status: String) -> String {
     return "checkmark.circle.fill"
   case "failed", "missed":
     return "xmark.circle.fill"
+  case "paused":
+    return "pause.circle.fill"
   case "cancelled", "stopped":
     return "stop.circle"
   default:
@@ -2782,203 +3026,10 @@ private func workScheduledWorkStatusSymbol(_ status: String) -> String {
   }
 }
 
-struct WorkSubagentDrawerSheet: View {
-  let snapshots: [WorkSubagentSnapshot]
-  let provider: String?
-  let selectedTaskId: String?
-  let probingTaskId: String?
-  @Binding var expandedTaskIds: Set<String>
-  let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
-
-  private var foreground: [WorkSubagentSnapshot] {
-    snapshots.filter { !$0.background }
-  }
-
-  private var background: [WorkSubagentSnapshot] {
-    snapshots.filter(\.background)
-  }
-
-  var body: some View {
-    NavigationStack {
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 16) {
-          if !foreground.isEmpty {
-            section(title: "Subagents", snapshots: foreground)
-          }
-          if !background.isEmpty {
-            section(title: "Background", snapshots: background)
-          }
-          if snapshots.isEmpty {
-            ADEEmptyStateView(
-              symbol: "person.2",
-              title: "No subagents",
-              message: "This chat has not started any subagents yet."
-            )
-            .padding(.top, 24)
-          }
-        }
-        .padding(16)
-      }
-      .scrollIndicators(.hidden)
-      .background(workChatCanvasBackground.ignoresSafeArea())
-      .navigationTitle("Subagents")
-      .navigationBarTitleDisplayMode(.inline)
-    }
-  }
-
-  @ViewBuilder
-  private func section(title: String, snapshots: [WorkSubagentSnapshot]) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .textCase(.uppercase)
-      VStack(spacing: 6) {
-        ForEach(snapshots) { snapshot in
-          row(snapshot)
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func row(_ snapshot: WorkSubagentSnapshot) -> some View {
-    let selected = selectedTaskId == snapshot.taskId
-    let expanded = expandedTaskIds.contains(snapshot.taskId)
-    let elapsed = workSubagentElapsedLabel(snapshot)
-    let detailText = drawerDetailText(snapshot)
-    let lastToolName = trimmedNonEmpty(snapshot.lastToolName)
-    let subtitle = drawerSubtitleText(snapshot, elapsed: elapsed, detailText: detailText)
-    let showsDisclosure = snapshot.status == .running || detailText != nil || lastToolName != nil
-    Button {
-      Task { await onSelect(snapshot) }
-    } label: {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 10) {
-          WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-          VStack(alignment: .leading, spacing: 2) {
-            Text(workSubagentMeaningfulName(snapshot))
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(rowTitleColor(snapshot))
-              .lineLimit(1)
-              .truncationMode(.tail)
-            if let subtitle {
-              Text(subtitle)
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(1)
-            }
-          }
-          Spacer(minLength: 0)
-          HStack(spacing: 8) {
-            if probingTaskId == snapshot.taskId {
-              ProgressView()
-                .controlSize(.small)
-            }
-            WorkSubagentStatusChip(status: snapshot.status)
-            if showsDisclosure {
-              Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-        }
-
-        if expanded, detailText != nil || lastToolName != nil {
-          VStack(alignment: .leading, spacing: 5) {
-            if let detailText {
-              Text(detailText)
-            }
-            if let tool = lastToolName {
-              Text("last: \(tool)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.leading, 34)
-        }
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 9)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
-      )
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func drawerDetailText(_ snapshot: WorkSubagentSnapshot) -> String? {
-    if let summary = filteredSubagentDetail(snapshot.latestSummary) {
-      return summary
-    }
-
-    return filteredSubagentDetail(snapshot.description)
-  }
-
-  private func drawerSubtitleText(
-    _ snapshot: WorkSubagentSnapshot,
-    elapsed: String?,
-    detailText: String?
-  ) -> String? {
-    var parts: [String] = []
-    if let elapsed {
-      parts.append(elapsed)
-    }
-    if snapshot.background {
-      parts.append("background")
-    }
-    if let runtime = workSubagentRuntimeLabel(snapshot) {
-      parts.append(runtime)
-    }
-    if let detailText {
-      parts.append(truncatedDrawerText(detailText, limit: 58))
-    }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
-  }
-
-  private func filteredSubagentDetail(_ value: String?) -> String? {
-    guard let trimmed = trimmedNonEmpty(value) else {
-      return nil
-    }
-    switch trimmed.lowercased() {
-    case "agent closed", "agent stopped", "subagent closed", "subagent stopped":
-      return nil
-    default:
-      return trimmed
-    }
-  }
-
-  private func trimmedNonEmpty(_ value: String?) -> String? {
-    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-      return nil
-    }
-    return trimmed
-  }
-
-  private func truncatedDrawerText(_ value: String, limit: Int) -> String {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.count > limit, limit > 1 else {
-      return trimmed
-    }
-    return String(trimmed.prefix(limit - 1)) + "…"
-  }
-
-  private func rowTitleColor(_ snapshot: WorkSubagentSnapshot) -> Color {
-    switch snapshot.status {
-    case .running: return ADEColor.accent
-    case .failed: return ADEColor.danger
-    case .succeeded: return ADEColor.textPrimary
-    case .stopped: return ADEColor.textMuted
-    }
-  }
+/// A paused schedule is dimmed on desktop (opacity 0.45). Mirror that so the
+/// mobile Schedule section reads paused rows as inactive at a glance.
+func workScheduledWorkIsPaused(_ status: String) -> Bool {
+  status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "paused"
 }
 
 private struct WorkSubagentStatusChip: View {
@@ -3108,3 +3159,230 @@ private let workSubagentIsoFallbackFormatter: ISO8601DateFormatter = {
   formatter.formatOptions = [.withInternetDateTime]
   return formatter
 }()
+
+// MARK: - Subagent timeline rows
+
+/// Compact in-transcript rows for subagent lifecycle. Mirrors the desktop
+/// spawn/result/background-chip rows produced by `deriveSubagentTimelineRows`
+/// (chatSubagents.ts). Live activity still rides `WorkSubagentStrip`; these rows
+/// are hard timeline boundaries anchored where the subagent started and ended.
+struct WorkSubagentTimelineRowView: View {
+  let row: WorkSubagentTimelineRow
+  /// Tapping a real spawn/result row opens the subagent detail/transcript, the
+  /// same surface the Chat Info roster row opens. Background chips are inert.
+  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+
+  var body: some View {
+    switch row.kind {
+    case .backgroundCommand:
+      WorkSubagentBackgroundChipRow(row: row)
+    case .spawn:
+      tappable { WorkSubagentSpawnRow(row: row) }
+    case .result:
+      tappable { WorkSubagentResultRow(row: row) }
+    }
+  }
+
+  @ViewBuilder
+  private func tappable<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    if let onOpen {
+      Button {
+        Task { await onOpen(row.snapshot) }
+      } label: {
+        content()
+      }
+      .buttonStyle(.plain)
+    } else {
+      content()
+    }
+  }
+}
+
+private struct WorkSubagentSpawnRow: View {
+  let row: WorkSubagentTimelineRow
+
+  private var snapshot: WorkSubagentSnapshot { row.snapshot }
+
+  private var agentTypeChip: String? {
+    guard let raw = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty else { return nil }
+    let generic: Set<String> = ["subagent", "opencode-subagent", "background"]
+    return generic.contains(raw.lowercased()) ? nil : raw
+  }
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+      Text(workSubagentMeaningfulName(snapshot))
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      if let agentTypeChip {
+        WorkSubagentTinyChip(text: agentTypeChip, tint: ADEColor.accent)
+      }
+      if snapshot.background {
+        WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
+      }
+      Spacer(minLength: 6)
+      WorkSubagentStatusChip(status: snapshot.status)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .adeGlassCard(cornerRadius: 12, padding: 0)
+    .contentShape(Rectangle())
+  }
+}
+
+private struct WorkSubagentResultRow: View {
+  let row: WorkSubagentTimelineRow
+
+  private var snapshot: WorkSubagentSnapshot { row.snapshot }
+
+  private var tint: Color {
+    switch snapshot.status {
+    case .running: return ADEColor.accent
+    case .succeeded: return ADEColor.success
+    case .failed: return ADEColor.danger
+    // Stopped is an interruption, not a hard failure — amber, never a red block.
+    case .stopped: return ADEColor.warning
+    }
+  }
+
+  private var statusLine: String {
+    switch snapshot.status {
+    case .stopped: return "stopped — interrupted"
+    case .failed: return "failed"
+    case .succeeded: return "completed"
+    case .running: return "running"
+    }
+  }
+
+  private var durationLabel: String? {
+    workSubagentDurationLabel(snapshot)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 10) {
+        WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+        Text(workSubagentMeaningfulName(snapshot))
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 6)
+        WorkSubagentStatusChip(status: snapshot.status)
+      }
+      HStack(spacing: 6) {
+        Text(statusLine)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+        if let durationLabel {
+          Text("· \(durationLabel)")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      if let summary = workSubagentResultSummaryText(row) {
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(snapshot.status == .failed ? ADEColor.danger : ADEColor.textSecondary)
+          .lineLimit(2)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .adeGlassCard(cornerRadius: 12, padding: 0)
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(tint.opacity(0.16), lineWidth: 0.8)
+    )
+    .contentShape(Rectangle())
+  }
+}
+
+private struct WorkSubagentBackgroundChipRow: View {
+  let row: WorkSubagentTimelineRow
+
+  private var succeeded: Bool {
+    row.snapshot.status == .succeeded
+  }
+
+  private var glyph: String {
+    succeeded ? "checkmark" : "xmark"
+  }
+
+  private var tint: Color {
+    succeeded ? ADEColor.success : ADEColor.warning
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: glyph)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(tint)
+      Text(row.commandLabel ?? "Background command")
+        .font(.caption.monospaced())
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      if let exitLabel = row.exitLabel {
+        Text("· \(exitLabel)")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if let duration = workSubagentDurationLabel(row.snapshot) {
+        Text("· \(duration)")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .adeGlassCard(cornerRadius: 10, padding: 0)
+  }
+}
+
+private struct WorkSubagentTinyChip: View {
+  let text: String
+  let tint: Color
+
+  var body: some View {
+    Text(text)
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(tint)
+      .lineLimit(1)
+      .fixedSize(horizontal: true, vertical: false)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(tint.opacity(0.12), in: Capsule(style: .continuous))
+  }
+}
+
+/// Result-row summary preview with placeholder summaries suppressed (mirrors
+/// the desktop `SUBAGENT_PLACEHOLDER_SUMMARY` filter). `row.summary` is already
+/// placeholder-filtered by the builder, but keep the local guard defensive so a
+/// stray "Status: …"/"Task updated" line never leaks into the timeline.
+private func workSubagentResultSummaryText(_ row: WorkSubagentTimelineRow) -> String? {
+  guard let summary = row.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !summary.isEmpty,
+        !isWorkSubagentPlaceholderSummary(summary)
+  else { return nil }
+  return summary
+}
+
+/// Compact elapsed label for a settled subagent/background snapshot. Reuses the
+/// same start/end derivation as the drawer's elapsed label.
+func workSubagentDurationLabel(_ snapshot: WorkSubagentSnapshot) -> String? {
+  guard let startedAt = snapshot.startedAt,
+        let start = parseWorkTimestampForSubagent(startedAt),
+        let updatedAt = snapshot.updatedAt,
+        let end = parseWorkTimestampForSubagent(updatedAt)
+  else { return nil }
+  let seconds = Int(max(0, end.timeIntervalSince(start)))
+  guard seconds > 0 else { return nil }
+  return WorkActivityIndicator.formatElapsedSeconds(seconds)
+}

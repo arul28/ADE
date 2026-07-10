@@ -843,6 +843,7 @@ async function summarizeChatSessionForRemote(
     lastActivityAt: session.lastActivityAt,
     lastOutputPreview: null,
     summary: null,
+    nextWakeAt: null,
     ...(session.threadId ? { threadId: session.threadId } : {}),
     ...(session.requestedCwd !== undefined ? { requestedCwd: session.requestedCwd } : {}),
   };

@@ -121,6 +121,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let logicalItemId = eventDict["logicalItemId"] as? String
       let stableToolItemId = workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId)
       let parentItemId = eventDict["parentItemId"] as? String
+      let subagentTaskType = optionalString(eventDict["taskType"])
+        ?? optionalString(eventDict["task_type"])
+      let subagentCommand = optionalString(eventDict["command"])
       let event: WorkChatEvent
 
       switch type {
@@ -592,14 +595,16 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .unknown(type: type)
       }
 
-      return WorkChatEnvelope(sessionId: sessionId, timestamp: timestamp, sequence: sequence, event: event)
+      return WorkChatEnvelope(
+        sessionId: sessionId,
+        timestamp: timestamp,
+        sequence: sequence,
+        event: event,
+        subagentTaskType: subagentTaskType,
+        subagentCommand: subagentCommand
+      )
     }
-    .sorted { lhs, rhs in
-      if lhs.timestamp == rhs.timestamp {
-        return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
-      }
-      return lhs.timestamp < rhs.timestamp
-    }
+    .sorted(by: workChatEnvelopeOrderedBefore)
 }
 
 private func parseAgentChatFileRefs(from value: Any?) -> [AgentChatFileRef]? {

@@ -75,6 +75,368 @@ function textField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function subagentAgentKey(event: { agentId?: string | null; taskId?: string | null }): string | null {
+  return textField(event.agentId) ?? textField(event.taskId);
+}
+
+export const SUBAGENT_PLACEHOLDER_SUMMARY = /^(status:\s|task updated$)/i;
+
+export function preferSubagentSummary(
+  existing: string | null | undefined,
+  incoming: string | null | undefined,
+): string | null {
+  const current = textField(existing);
+  const next = textField(incoming);
+  if (!current) return next;
+  if (!next) return current;
+
+  const currentIsPlaceholder = SUBAGENT_PLACEHOLDER_SUMMARY.test(current);
+  const nextIsPlaceholder = SUBAGENT_PLACEHOLDER_SUMMARY.test(next);
+  if (currentIsPlaceholder !== nextIsPlaceholder) {
+    return currentIsPlaceholder ? next : current;
+  }
+  if (currentIsPlaceholder) return next;
+  return next.length >= current.length ? next : current;
+}
+
+type SubagentClassificationInput = {
+  taskType?: string | null;
+  agentType?: string | null;
+  command?: string | null;
+  description?: string | null;
+};
+
+export function isBackgroundShellCommand(input: SubagentClassificationInput): boolean {
+  const taskType = textField(input.taskType);
+  const agentType = textField(input.agentType);
+  return taskType === "background" && (!agentType || agentType === "background");
+}
+
+export function isRealSubagent(input: SubagentClassificationInput): boolean {
+  if (isBackgroundShellCommand(input)) return false;
+  const taskType = textField(input.taskType);
+  const agentType = textField(input.agentType);
+  return Boolean(
+    (agentType && agentType !== "background")
+      || taskType === "subagent"
+      || taskType === "local_workflow",
+  );
+}
+
+type SubagentTimelineStatus = "running" | "completed" | "stopped" | "failed";
+type SubagentTimelineTerminalStatus = Exclude<SubagentTimelineStatus, "running">;
+
+export type SubagentTimelineRow =
+  | {
+      kind: "spawn";
+      agentKey: string;
+      description: string;
+      agentType: string | null;
+      background: boolean;
+      status: SubagentTimelineStatus;
+      statusLine: string | null;
+      lastToolName: string | null;
+      toolCount: number | null;
+      startedAtEventIndex: number;
+    }
+  | {
+      kind: "result";
+      agentKey: string;
+      status: SubagentTimelineTerminalStatus;
+      summary: string | null;
+      resultAtEventIndex: number;
+    }
+  | {
+      kind: "background_chip";
+      agentKey: string;
+      label: string;
+      status: SubagentTimelineTerminalStatus;
+      settledAtEventIndex: number;
+    };
+
+type SubagentTimelineSpawnRow = Extract<SubagentTimelineRow, { kind: "spawn" }>;
+type SubagentTimelineResultRow = Extract<SubagentTimelineRow, { kind: "result" }>;
+type SubagentTimelineBackgroundRow = Extract<SubagentTimelineRow, { kind: "background_chip" }>;
+
+type SubagentTimelineState = {
+  agentKey: string;
+  aliases: Set<string>;
+  firstSeenEventIndex: number;
+  firstLifecycleEventIndex: number | null;
+  description: string | null;
+  agentType: string | null;
+  taskType: string | null;
+  command: string | null;
+  background: boolean;
+  progressSummary: string | null;
+  lastProgressEventIndex: number;
+  lastResultEventIndex: number;
+  lastSettledEventIndex: number;
+  spawn: SubagentTimelineSpawnRow | null;
+  result: SubagentTimelineResultRow | null;
+  backgroundChip: SubagentTimelineBackgroundRow | null;
+};
+
+export function longerSubagentText(existing: string | null, incoming: string | null): string | null {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return incoming.length > existing.length ? incoming : existing;
+}
+
+export function preferredSubagentAgentType(
+  existing: string | null,
+  incoming: string | null,
+): string | null {
+  if (!incoming) return existing;
+  if (!existing || (existing === "background" && incoming !== "background")) return incoming;
+  return existing;
+}
+
+function removeTimelineRow(rows: SubagentTimelineRow[], row: SubagentTimelineRow | null): void {
+  if (!row) return;
+  const index = rows.indexOf(row);
+  if (index >= 0) rows.splice(index, 1);
+}
+
+export function deriveSubagentTimelineRows(events: AgentChatEvent[]): SubagentTimelineRow[] {
+  const rows: SubagentTimelineRow[] = [];
+  const statesByAlias = new Map<string, SubagentTimelineState>();
+
+  const setAgentKey = (state: SubagentTimelineState, agentKey: string): void => {
+    state.agentKey = agentKey;
+    if (state.spawn) state.spawn.agentKey = agentKey;
+    if (state.result) state.result.agentKey = agentKey;
+    if (state.backgroundChip) state.backgroundChip.agentKey = agentKey;
+  };
+
+  const mergeStates = (
+    left: SubagentTimelineState,
+    right: SubagentTimelineState,
+  ): SubagentTimelineState => {
+    if (left === right) return left;
+    const primary = left.firstSeenEventIndex <= right.firstSeenEventIndex ? left : right;
+    const secondary = primary === left ? right : left;
+    primary.firstSeenEventIndex = Math.min(primary.firstSeenEventIndex, secondary.firstSeenEventIndex);
+    if (secondary.firstLifecycleEventIndex != null) {
+      primary.firstLifecycleEventIndex = primary.firstLifecycleEventIndex == null
+        ? secondary.firstLifecycleEventIndex
+        : Math.min(primary.firstLifecycleEventIndex, secondary.firstLifecycleEventIndex);
+    }
+    primary.description = longerSubagentText(primary.description, secondary.description);
+    primary.agentType = preferredSubagentAgentType(primary.agentType, secondary.agentType);
+    primary.taskType = primary.taskType ?? secondary.taskType;
+    primary.command = longerSubagentText(primary.command, secondary.command);
+    primary.background = primary.background || secondary.background;
+    primary.progressSummary = preferSubagentSummary(primary.progressSummary, secondary.progressSummary);
+
+    if (!primary.spawn && secondary.spawn) {
+      primary.spawn = secondary.spawn;
+    } else if (primary.spawn && secondary.spawn) {
+      primary.spawn.description = longerSubagentText(primary.spawn.description, secondary.spawn.description) ?? "Subagent task";
+      primary.spawn.agentType = preferredSubagentAgentType(primary.spawn.agentType, secondary.spawn.agentType);
+      primary.spawn.background = primary.spawn.background || secondary.spawn.background;
+      primary.spawn.startedAtEventIndex = Math.min(
+        primary.spawn.startedAtEventIndex,
+        secondary.spawn.startedAtEventIndex,
+      );
+      if (secondary.lastProgressEventIndex > primary.lastProgressEventIndex) {
+        primary.spawn.lastToolName = secondary.spawn.lastToolName;
+        primary.spawn.toolCount = secondary.spawn.toolCount;
+      }
+      removeTimelineRow(rows, secondary.spawn);
+    }
+    if (!primary.result && secondary.result) {
+      primary.result = secondary.result;
+    } else if (primary.result && secondary.result) {
+      primary.result.summary = preferSubagentSummary(primary.result.summary, secondary.result.summary);
+      primary.result.resultAtEventIndex = Math.min(
+        primary.result.resultAtEventIndex,
+        secondary.result.resultAtEventIndex,
+      );
+      if (secondary.lastResultEventIndex > primary.lastResultEventIndex) {
+        primary.result.status = secondary.result.status;
+      }
+      removeTimelineRow(rows, secondary.result);
+    }
+    if (!primary.backgroundChip && secondary.backgroundChip) {
+      primary.backgroundChip = secondary.backgroundChip;
+    } else if (primary.backgroundChip && secondary.backgroundChip) {
+      primary.backgroundChip.label = longerSubagentText(
+        primary.backgroundChip.label,
+        secondary.backgroundChip.label,
+      ) ?? "Background command";
+      primary.backgroundChip.settledAtEventIndex = Math.min(
+        primary.backgroundChip.settledAtEventIndex,
+        secondary.backgroundChip.settledAtEventIndex,
+      );
+      if (secondary.lastSettledEventIndex > primary.lastSettledEventIndex) {
+        primary.backgroundChip.status = secondary.backgroundChip.status;
+      }
+      removeTimelineRow(rows, secondary.backgroundChip);
+    }
+
+    primary.lastProgressEventIndex = Math.max(primary.lastProgressEventIndex, secondary.lastProgressEventIndex);
+    primary.lastResultEventIndex = Math.max(primary.lastResultEventIndex, secondary.lastResultEventIndex);
+    primary.lastSettledEventIndex = Math.max(primary.lastSettledEventIndex, secondary.lastSettledEventIndex);
+    for (const alias of secondary.aliases) {
+      primary.aliases.add(alias);
+      statesByAlias.set(alias, primary);
+    }
+    setAgentKey(primary, primary.agentKey);
+    return primary;
+  };
+
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+    const originalEvent = events[eventIndex]!;
+    const event = normalizeSubagentLifecycleEvent(originalEvent);
+    if (!event) continue;
+
+    const taskId = textField(event.taskId);
+    const agentId = textField(event.agentId);
+    const initialKey = subagentAgentKey(event);
+    if (!initialKey) continue;
+
+    const taskState = taskId ? statesByAlias.get(taskId) : undefined;
+    const agentState = agentId ? statesByAlias.get(agentId) : undefined;
+    let state = taskState && agentState && taskState !== agentState
+      ? mergeStates(taskState, agentState)
+      : agentState ?? taskState;
+    if (!state) {
+      state = {
+        agentKey: initialKey,
+        aliases: new Set(),
+        firstSeenEventIndex: eventIndex,
+        firstLifecycleEventIndex: null,
+        description: null,
+        agentType: null,
+        taskType: null,
+        command: null,
+        background: false,
+        progressSummary: null,
+        lastProgressEventIndex: -1,
+        lastResultEventIndex: -1,
+        lastSettledEventIndex: -1,
+        spawn: null,
+        result: null,
+        backgroundChip: null,
+      };
+    }
+
+    for (const alias of [taskId, agentId]) {
+      if (!alias) continue;
+      state.aliases.add(alias);
+      statesByAlias.set(alias, state);
+    }
+    if (agentId) setAgentKey(state, agentId);
+
+    const lifecycleRecord = event as NormalizedSubagentLifecycleEvent & {
+      background?: unknown;
+      description?: unknown;
+    };
+    const eventRecord = originalEvent as AgentChatEvent & { command?: unknown; description?: unknown };
+    state.description = longerSubagentText(
+      state.description,
+      textField(lifecycleRecord.description ?? eventRecord.description),
+    );
+    state.agentType = preferredSubagentAgentType(state.agentType, textField(event.agentType));
+    state.taskType = textField(event.taskType) ?? state.taskType;
+    state.command = longerSubagentText(state.command, textField(eventRecord.command));
+    state.background = state.background || lifecycleRecord.background === true;
+
+    const backgroundShell = isBackgroundShellCommand(state);
+    const realSubagent = isRealSubagent(state);
+    if (backgroundShell) {
+      removeTimelineRow(rows, state.spawn);
+      removeTimelineRow(rows, state.result);
+      state.spawn = null;
+      state.result = null;
+    }
+
+    if (event.type === "subagent_started" || event.type === "subagent_progress") {
+      state.firstLifecycleEventIndex ??= eventIndex;
+      if (!realSubagent) continue;
+      if (event.type === "subagent_progress" && state.lastResultEventIndex >= 0) continue;
+      if (!state.spawn) {
+        state.spawn = {
+          kind: "spawn",
+          agentKey: state.agentKey,
+          description: state.description ?? "Subagent task",
+          agentType: state.agentType,
+          background: state.background,
+          status: state.result?.status ?? "running",
+          statusLine: state.description ?? null,
+          lastToolName: null,
+          toolCount: null,
+          startedAtEventIndex: state.firstLifecycleEventIndex,
+        };
+        rows.push(state.spawn);
+      } else {
+        state.spawn.description = state.description ?? state.spawn.description;
+        state.spawn.agentType = state.agentType ?? state.spawn.agentType;
+        state.spawn.background = state.spawn.background || state.background;
+      }
+
+      if (event.type === "subagent_progress") {
+        state.lastProgressEventIndex = eventIndex;
+        state.spawn.status = "running";
+        state.progressSummary = preferSubagentSummary(state.progressSummary, event.summary);
+        const lastToolName = textField(event.lastToolName);
+        if (lastToolName) state.spawn.lastToolName = lastToolName;
+        if (typeof event.usage?.toolUses === "number") state.spawn.toolCount = event.usage.toolUses;
+        const meaningfulSummary = state.progressSummary
+          && !SUBAGENT_PLACEHOLDER_SUMMARY.test(state.progressSummary)
+          ? state.progressSummary
+          : null;
+        state.spawn.statusLine = meaningfulSummary
+          ?? state.spawn.lastToolName
+          ?? state.spawn.description;
+      } else if (!state.progressSummary) {
+        state.spawn.statusLine = state.spawn.lastToolName ?? state.spawn.description;
+      }
+      continue;
+    }
+
+    const incomingSummary = preferSubagentSummary(event.summary, event.finalSummary);
+    if (backgroundShell) {
+      const label = state.command ?? state.description ?? "Background command";
+      if (!state.backgroundChip) {
+        state.backgroundChip = {
+          kind: "background_chip",
+          agentKey: state.agentKey,
+          label,
+          status: event.status,
+          settledAtEventIndex: eventIndex,
+        };
+        rows.push(state.backgroundChip);
+      } else {
+        state.backgroundChip.label = longerSubagentText(state.backgroundChip.label, label) ?? "Background command";
+        state.backgroundChip.status = event.status;
+      }
+      state.lastSettledEventIndex = eventIndex;
+      continue;
+    }
+    if (!realSubagent) continue;
+
+    if (!state.result) {
+      state.result = {
+        kind: "result",
+        agentKey: state.agentKey,
+        status: event.status,
+        summary: incomingSummary,
+        resultAtEventIndex: eventIndex,
+      };
+      rows.push(state.result);
+    } else {
+      state.result.summary = preferSubagentSummary(state.result.summary, incomingSummary);
+      state.result.status = event.status;
+    }
+    state.lastResultEventIndex = eventIndex;
+    if (state.spawn) state.spawn.status = event.status;
+  }
+
+  return rows;
+}
+
 function eventType(event: AgentChatEvent): string {
   return String((event as { type?: unknown }).type ?? "");
 }

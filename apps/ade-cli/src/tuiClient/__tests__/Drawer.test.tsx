@@ -4,7 +4,7 @@ import { render } from "ink-testing-library";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
-import { Drawer } from "../components/Drawer";
+import { Drawer, drawerChatLabelWidth } from "../components/Drawer";
 import {
   closedCliRightPaneRow,
   closedCliSessionStatusKind,
@@ -146,6 +146,7 @@ describe("Drawer closed CLI sessions", () => {
       lastActivityAt: "2026-01-01T00:01:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
 
     expect(closed).toBeTruthy();
@@ -194,6 +195,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -250,6 +252,7 @@ describe("Drawer lane and chat navigation layout", () => {
       lastActivityAt: "2026-05-12T11:31:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
     const closedSession: ClosedCliSessionSummary = {
       sessionId: "term-1",
@@ -263,6 +266,7 @@ describe("Drawer lane and chat navigation layout", () => {
       lastActivityAt: "2026-05-12T11:45:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
       terminalStatus: "failed",
       terminalExitCode: 1,
       terminalRuntimeState: "killed",
@@ -306,6 +310,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -348,6 +353,7 @@ describe("Drawer lane and chat navigation layout", () => {
         lastActivityAt: "2026-05-12T11:31:00.000Z",
         lastOutputPreview: null,
         summary: null,
+        nextWakeAt: null,
       },
     ];
 
@@ -475,6 +481,7 @@ describe("Drawer active chat indicator", () => {
       lastActivityAt: "2026-05-12T12:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
 
     const frame = stripAnsi(render(
@@ -496,5 +503,63 @@ describe("Drawer active chat indicator", () => {
     // shows no timestamps).
     expect(frame).toMatch(/[◐◓◑◒]/);
     expect(frame).not.toContain("now");
+  });
+});
+
+describe("Drawer next-wake marker", () => {
+  function wakeSession(nextWakeAt: string | null): AgentChatSessionSummary {
+    return {
+      sessionId: "chat-wake",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-opus-4-8",
+      title: "Nightly sweep",
+      status: "ended",
+      startedAt: "2026-05-12T12:00:00.000Z",
+      endedAt: "2026-05-12T12:05:00.000Z",
+      lastActivityAt: "2026-05-12T12:05:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt,
+    };
+  }
+
+  function renderWith(nextWakeAt: string | null, width = 48): string {
+    return stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "feature", "feature/wake", "2026-05-12T12:00:00.000Z")]}
+        sessions={[wakeSession(nextWakeAt)]}
+        activeLaneId="lane-1"
+        activeSessionId={null}
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={40}
+        mode="chats"
+        focused
+        width={width}
+      />,
+    ).lastFrame() ?? "");
+  }
+
+  it("shows a ⏰ marker for an armed future wake", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const frame = renderWith(nextWakeAt);
+    expect(frame).toContain("⏰");
+    expect(frame).toContain("12m");
+  });
+
+  it("drops the title before the wake marker can overlap in a narrow drawer", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const frame = renderWith(nextWakeAt, 32);
+    const wakeRow = frame.split("\n").find((line) => line.includes("⏰12m")) ?? "";
+
+    expect(drawerChatLabelWidth(8, "12m".length + 3)).toBe(0);
+    expect(wakeRow).toContain("⏰12m");
+  });
+
+  it("omits the marker when there is no armed wake (null or past)", () => {
+    expect(renderWith(null)).not.toContain("⏰");
+    expect(renderWith(new Date(Date.now() - 60_000).toISOString())).not.toContain("⏰");
   });
 });

@@ -11803,20 +11803,47 @@ extension SyncService {
     refreshActiveSessionsAndSnapshot()
   }
 
-  /// Fold a `session_meta_updated` event's mode fields into the cached summary
-  /// for its session. The open `WorkSessionDestinationView` reconciles its live
-  /// `chatSummary` from this cache on the revision bump the event already
-  /// triggers, so the composer's mode pill updates live without a refetch.
-  /// No-op for the bare title/manuallyNamed events older hosts send, or when
-  /// the session isn't cached (a later refresh will hydrate it).
-  private func applyChatSessionMetaModeUpdateIfNeeded(
+  /// Fold a `session_meta_updated` event's mode fields AND an adopted title into
+  /// the cached summary (and the local session row) for its session. The open
+  /// `WorkSessionDestinationView` reconciles its live `chatSummary` from this
+  /// cache on the revision bump the event already triggers, so both the
+  /// composer's mode pill and the nav/list title update live without a refetch.
+  /// The host now renames Claude chats shortly after the first turn; reflecting
+  /// that here makes the rename appear without waiting for a list refresh.
+  /// No-op when neither a mode field nor a title is present, or when the session
+  /// isn't cached (a later refresh will hydrate it).
+  ///
+  /// Non-private so unit tests can drive the title/mode fold directly with a
+  /// seeded cached summary.
+  func applyChatSessionMetaModeUpdateIfNeeded(
     envelope: AgentChatEventEnvelope,
     rawPayload: [String: Any]
   ) {
     guard envelope.event.typeName == "session_meta_updated",
-          let eventObject = rawPayload["event"],
-          let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self),
-          update.hasAnyField,
+          let eventObject = rawPayload["event"]
+    else { return }
+
+    // A runtime-adopted title rides the same event as the mode fields (or on its
+    // own for a bare rename). Apply it to the local session row so the Work list
+    // reflects the rename even when the summary isn't cached yet.
+    let eventDict = eventObject as? [String: Any]
+    let adoptedTitle: String? = {
+      guard let raw = eventDict?["title"] as? String else { return nil }
+      let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }()
+    let adoptedManuallyNamed = eventDict?["manuallyNamed"] as? Bool
+    if adoptedTitle != nil || adoptedManuallyNamed != nil {
+      try? database.updateSessionMeta(
+        sessionId: envelope.sessionId,
+        title: adoptedTitle,
+        manuallyNamed: adoptedManuallyNamed
+      )
+    }
+
+    let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self)
+    // Nothing to fold into the cached summary: no mode change and no title.
+    guard (update?.hasAnyField ?? false) || adoptedTitle != nil,
           var summary = chatSummaryCache[envelope.sessionId]
     else { return }
     // `applyModeUpdate` applies an explicit `cursorModeId: null` /
@@ -11825,7 +11852,12 @@ extension SyncService {
     // view's reconcile mirrors the cache's cursor fields — nil included — on the
     // revision bump, so the clear reaches the live composer without any stateful
     // marker to go stale if the host later restores the mode.
-    summary.applyModeUpdate(update)
+    if let update, update.hasAnyField {
+      summary.applyModeUpdate(update)
+    }
+    if let adoptedTitle {
+      summary.title = adoptedTitle
+    }
     guard summary != chatSummaryCache[envelope.sessionId] else { return }
     chatSummaryCache[envelope.sessionId] = summary
     refreshActiveSessionsAndSnapshot()

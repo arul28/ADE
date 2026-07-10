@@ -1,10 +1,73 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { LaneChip } from "../terminals/LaneChip";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
+
+// Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
+// agentChatService.ts. When a chat's title transitions FROM one of these TO a
+// real (model-authored) title while mounted, the header title crossfades with a
+// brief one-time shimmer.
+const PROVIDER_DEFAULT_TITLES = new Set([
+  "Codex Chat",
+  "Claude Chat",
+  "Cursor Chat",
+  "Droid Chat",
+  "AI Chat",
+  "OpenCode Chat",
+  "Open Code Chat",
+]);
+
+/**
+ * Renders the surface title and plays a one-time shimmer when the title lands —
+ * i.e. transitions from a provider default to a real title while the surface is
+ * mounted. CSS keyframes only; respects `prefers-reduced-motion: reduce`.
+ */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function WorkSurfaceTitle({ title }: { title: string }) {
+  const prevTitleRef = useRef(title);
+  const [landed, setLanded] = useState(false);
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const prev = prevTitleRef.current;
+    prevTitleRef.current = title;
+    if (prev === title) return;
+    if (
+      PROVIDER_DEFAULT_TITLES.has(prev)
+      && !PROVIDER_DEFAULT_TITLES.has(title)
+      && title.trim().length > 0
+      && !prefersReducedMotion()
+    ) {
+      setLanded(true);
+      // Safety clear in case animationend never fires (element re-measured, etc.).
+      if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = setTimeout(() => setLanded(false), 800);
+    }
+  }, [title]);
+
+  useEffect(() => () => {
+    if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+  }, []);
+
+  return (
+    <span
+      className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white", landed && "ade-title-landed")}
+      title={title}
+      data-title-landed={landed ? "true" : undefined}
+      onAnimationEnd={() => setLanded(false)}
+    >
+      {title}
+    </span>
+  );
+}
 
 /** Small "docked tools panel" glyph for the per-surface Tools toggle (purple). */
 function ToolsPaneGlyph({ open }: { open: boolean }) {
@@ -199,12 +262,7 @@ export function WorkSurfaceHeader({
           {...(tileDragProps ?? {})}
           title={tileDragProps ? "Drag to rearrange or out of the grid" : undefined}
         >
-          <span
-            className="min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white"
-            title={title}
-          >
-            {title}
-          </span>
+          <WorkSurfaceTitle title={title} />
           {showLaneChip && laneId && laneChipName ? (
             <LaneChip
               laneName={laneChipName}

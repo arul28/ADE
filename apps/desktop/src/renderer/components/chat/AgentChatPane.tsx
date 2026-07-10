@@ -3571,6 +3571,76 @@ export function AgentChatPane({
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
   selectedEventsForDisplayRef.current = selectedEventsForDisplay;
+  const [wakeAwayWindow, setWakeAwayWindow] = useState<{
+    sessionId: string;
+    lastViewedAtMs: number;
+    openedAtMs: number;
+    dismissed: boolean;
+  } | null>(null);
+  const [wakeJumpRequest, setWakeJumpRequest] = useState<{ key: string; requestId: number } | null>(null);
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setWakeAwayWindow(null);
+      return;
+    }
+    const storageKey = `ade.chat.lastViewed.v1:${selectedSessionId}`;
+    const openedAtMs = Date.now();
+    let lastViewedAtMs = openedAtMs;
+    try {
+      const storedValue = window.localStorage.getItem(storageKey);
+      if (storedValue != null) {
+        const stored = Number.parseInt(storedValue, 10);
+        if (Number.isFinite(stored) && stored > 0) lastViewedAtMs = stored;
+      }
+    } catch {
+      // Renderer storage is best-effort; a blocked localStorage must not hide chat.
+    }
+    setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs, dismissed: false });
+    try {
+      window.localStorage.setItem(storageKey, String(openedAtMs));
+    } catch {
+      // Best-effort only.
+    }
+    return () => {
+      try {
+        window.localStorage.setItem(storageKey, String(Date.now()));
+      } catch {
+        // Best-effort only.
+      }
+    };
+  }, [selectedSessionId]);
+  const unattendedWakeTurns = useMemo(() => {
+    if (!selectedSessionId || wakeAwayWindow?.sessionId !== selectedSessionId || wakeAwayWindow.dismissed) return [];
+    return selectedEventsForDisplay.flatMap((envelope) => {
+      const event = envelope.event;
+      if (event.type !== "user_message" || !event.metadata?.scheduledWake || !event.turnId) return [];
+      const wake = event.metadata.scheduledWake;
+      const firedAtMs = Date.parse(wake.firedAt);
+      if (
+        !Number.isFinite(firedAtMs)
+        || firedAtMs <= wakeAwayWindow.lastViewedAtMs
+        || firedAtMs > wakeAwayWindow.openedAtMs
+      ) return [];
+      return [{
+        scheduleId: wake.scheduleId,
+        turnId: event.turnId,
+        reason: wake.reason?.trim() || null,
+        firedAtMs,
+      }];
+    }).sort((left, right) => left.firedAtMs - right.firedAtMs);
+  }, [selectedEventsForDisplay, selectedSessionId, wakeAwayWindow]);
+  const latestUnattendedOutcome = useMemo(() => {
+    const latest = unattendedWakeTurns[unattendedWakeTurns.length - 1];
+    if (!latest) return null;
+    const text = selectedEventsForDisplay
+      .filter((envelope) => envelope.event.type === "text" && envelope.event.turnId === latest.turnId)
+      .map((envelope) => envelope.event.type === "text" ? envelope.event.text : "")
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+    return (text || latest.reason || selectedSession?.lastOutputPreview || "Scheduled work ran while this chat was closed.")
+      .slice(0, 180);
+  }, [selectedEventsForDisplay, selectedSession?.lastOutputPreview, unattendedWakeTurns]);
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -3602,6 +3672,17 @@ export function AgentChatPane({
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedScheduledWorkSnapshots = useMemo(() => deriveScheduledWorkSnapshots(selectedEvents), [selectedEvents]);
+  // Partition scheduled work into schedule kinds (wakeup/cron/loop/remote_trigger)
+  // and background command tasks so the actions pane renders them in distinct
+  // sections. Both the drawer and pane variants receive the same partitioned data.
+  const selectedScheduleItems = useMemo(
+    () => selectedScheduledWorkSnapshots.filter((item) => item.kind !== "background_task"),
+    [selectedScheduledWorkSnapshots],
+  );
+  const selectedBackgroundItems = useMemo(
+    () => selectedScheduledWorkSnapshots.filter((item) => item.kind === "background_task"),
+    [selectedScheduledWorkSnapshots],
+  );
   // Per-runtime subagent capability — the single source of truth for whether
   // clicking a subagent takes over the chat (full transcript) or only opens the
   // inline drawer. Computed from the provider with the same shared resolver the
@@ -9248,7 +9329,23 @@ export function AgentChatPane({
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
       todoItems={selectedTodoItems}
-      scheduledItems={selectedScheduledWorkSnapshots}
+      scheduleItems={selectedScheduleItems}
+      backgroundItems={selectedBackgroundItems}
+      schedulesPaused={selectedSession?.scheduledWorkPaused === true}
+      onToggleSchedulesPaused={selectedSessionId ? () => {
+        const paused = selectedSession?.scheduledWorkPaused !== true;
+        void window.ade.agentChat.setScheduledWorkPaused({
+          sessionId: selectedSessionId,
+          paused,
+        }).then((result) => {
+          patchSessionSummary(selectedSessionId, {
+            scheduledWorkPaused: result.paused,
+            nextWakeAt: result.nextWakeAt,
+          });
+        }).catch((pauseError) => {
+          setError(pauseError instanceof Error ? pauseError.message : String(pauseError));
+        });
+      } : undefined}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -10391,6 +10488,38 @@ export function AgentChatPane({
       />
   );
 
+  const awayDigestStrip = unattendedWakeTurns.length > 0 ? (
+    <div className="flex shrink-0 items-center gap-2 border-t border-amber-200/[0.08] bg-amber-300/[0.055] px-3 py-1.5 font-sans text-[11px] text-amber-100/75">
+      <span className="min-w-0 flex-1 truncate">
+        While you were away: {unattendedWakeTurns.length} wakeup{unattendedWakeTurns.length === 1 ? "" : "s"}
+        {latestUnattendedOutcome ? ` · ${latestUnattendedOutcome}` : ""}
+      </span>
+      <span className="flex shrink-0 items-center gap-1" aria-label="Jump to scheduled wakeups">
+        {unattendedWakeTurns.slice(-3).map((wake, index) => (
+          <button
+            key={`${wake.scheduleId}:${wake.turnId}`}
+            type="button"
+            className="rounded px-1 py-0.5 text-amber-200/65 underline-offset-2 hover:bg-amber-200/10 hover:text-amber-100 hover:underline"
+            onClick={() => setWakeJumpRequest((current) => ({
+              key: `scheduled-wake:${wake.scheduleId}:${wake.turnId}`,
+              requestId: (current?.requestId ?? 0) + 1,
+            }))}
+          >
+            {Math.max(1, unattendedWakeTurns.length - Math.min(3, unattendedWakeTurns.length) + index + 1)}
+          </button>
+        ))}
+      </span>
+      <button
+        type="button"
+        aria-label="Dismiss while-you-were-away summary"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded text-amber-100/45 hover:bg-amber-200/10 hover:text-amber-100/80"
+        onClick={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
+      >
+        <X size={11} weight="bold" />
+      </button>
+    </div>
+  ) : null;
+
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
   // subagentEventsForDisplay useMemo are computed earlier (with the subagent state
   // cluster) so the hook is never called after the `if (!laneId) return` guard.
@@ -10502,6 +10631,7 @@ export function AgentChatPane({
         );
       })}
       {authStickyBar}
+      {awayDigestStrip}
       {composerElement}
     </div>
   );
@@ -10838,6 +10968,7 @@ export function AgentChatPane({
                       onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
                         window.ade.agentChat.recoverCodexTurn(args)}
                       mosaic={subagentView ? undefined : mosaicContext}
+                      scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
@@ -10848,6 +10979,7 @@ export function AgentChatPane({
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
+                        {awayDigestStrip}
                         {composerElement}
                       </div>
                     ) : null}

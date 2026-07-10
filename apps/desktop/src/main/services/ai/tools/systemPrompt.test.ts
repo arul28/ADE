@@ -119,15 +119,16 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("No autonomous wake from ADE");
     });
 
-    it("describes the Claude Agent SDK query runtime with wake-up caveat", () => {
+    it("describes durable Claude scheduled self-resume and pause controls", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-query" });
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Claude Agent SDK stable `query()`");
-      expect(result).toContain("Work confidently inside the active turn");
       expect(result).toContain("ScheduleWakeup");
-      expect(result).toContain("unavailable in this ADE chat");
-      expect(result).toContain("will not start a later turn by itself");
-      expect(result).not.toContain("never re-invokes");
+      expect(result).toContain("CronCreate");
+      expect(result).toContain("can start a later unattended turn");
+      expect(result).toContain("pause all scheduled work in Settings");
+      expect(result).not.toContain("unavailable in this ADE chat");
+      expect(result).not.toContain("will not start a later turn by itself");
     });
 
     it("describes the Cursor SDK runtime", () => {

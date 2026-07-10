@@ -389,7 +389,18 @@ export type AgentChatCloudRunStatus =
   | "cancelled"
   | "expired";
 
-export type AgentChatEventMetadata = Record<string, unknown>;
+export type AgentChatScheduledWakeMetadata = {
+  scheduleId: string;
+  kind: "wakeup" | "cron" | "loop";
+  firedAt: string;
+  reason?: string;
+  late?: boolean;
+};
+
+export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
+  scheduledWake?: AgentChatScheduledWakeMetadata;
+};
 
 export type AgentChatScheduledWorkKind =
   | "wakeup"
@@ -400,6 +411,7 @@ export type AgentChatScheduledWorkKind =
 
 export type AgentChatScheduledWorkStatus =
   | "scheduled"
+  | "paused"
   | "running"
   | "fired"
   | "missed"
@@ -783,6 +795,8 @@ export type AgentChatEvent =
       cron?: string;
       nextRunAt?: string;
       lastRunAt?: string;
+      firedAt?: string;
+      late?: boolean;
       recurring?: boolean;
       durable?: boolean;
       sourceToolUseId?: string;
@@ -1225,6 +1239,10 @@ export type AgentChatSessionSummary = {
   summary: string | null;
   awaitingInput?: boolean;
   pendingInputItemId?: string | null;
+  /** Earliest armed, unpaused schedule for this chat. */
+  nextWakeAt: string | null;
+  /** True when this chat's durable schedules are paused. */
+  scheduledWorkPaused?: boolean;
   threadId?: string;
   importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
@@ -1796,6 +1814,17 @@ export type AgentChatMessageSessionResult = {
   delivery: "sent" | "delivered" | "queued";
   steerId?: string;
   queued?: boolean;
+};
+
+export type AgentChatSetScheduledWorkPausedArgs = {
+  sessionId: string;
+  paused: boolean;
+};
+
+export type AgentChatSetScheduledWorkPausedResult = {
+  sessionId: string;
+  paused: boolean;
+  nextWakeAt: string | null;
 };
 
 export type AgentChatCancelSteerArgs = {

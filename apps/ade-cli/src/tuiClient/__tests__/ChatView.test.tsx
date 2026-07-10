@@ -37,6 +37,7 @@ const session: AgentChatSessionSummary = {
   lastActivityAt: "2026-01-01T12:00:00.000Z",
   lastOutputPreview: null,
   summary: null,
+  nextWakeAt: null,
 };
 
 function stripAnsi(value: string): string {

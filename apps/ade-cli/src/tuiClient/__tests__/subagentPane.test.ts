@@ -24,6 +24,7 @@ const session: AgentChatSessionSummary = {
   lastActivityAt: "2026-01-01T12:00:00.000Z",
   lastOutputPreview: null,
   summary: null,
+  nextWakeAt: null,
 };
 
 function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
@@ -41,6 +42,7 @@ function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
 	      planStreamingText: null,
 	      todos: [],
 	      scheduledWork: [],
+	      backgroundWork: [],
 	      pr: null,
       streaming: false,
       inspectedSubagentId: null,

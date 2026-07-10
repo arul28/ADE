@@ -109,6 +109,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    scrollToRowKeyRequest?: { key: string; requestId: number } | null;
   },
 ) {
   return render(
@@ -121,6 +122,7 @@ function renderMessageList(
         onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
+        scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -1047,6 +1049,68 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcript.scrollTop).toBeGreaterThan(0);
   });
 
+  it("handles each external row jump request only once across transcript updates", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          agentType: "Explore",
+          description: "Inspect the chat timeline",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-a",
+          agentId: "agent-a",
+          status: "completed",
+          summary: "Timeline inspected",
+          turnId: "turn-1",
+        },
+      },
+    ];
+    const view = renderMessageList(events);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    const request = { key: "subagent-result:agent-a", requestId: 1 };
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={request} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    expect(transcript.scrollTop).toBeGreaterThan(0);
+
+    transcript.scrollTop = 0;
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList
+          events={[
+            ...events,
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:02.000Z",
+              event: { type: "status", turnStatus: "completed", turnId: "turn-1" },
+            },
+          ]}
+          scrollToRowKeyRequest={request}
+        />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(transcript.scrollTop).toBe(0);
+  });
+
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock
   // summary absorption rendering which changes with UI iterations.
 
@@ -1966,7 +2030,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 
-  it("folds repeated subagent lifecycle events into unique full-width activity rows", () => {
+  it("renders each subagent as spawn + result cards (no per-tick activity bundle)", () => {
     const rendered = renderMessageList([
       {
         sessionId: "session-1",
@@ -1975,6 +2039,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "subagent_started",
           taskId: "agent-a",
           agentId: "agent-a",
+          agentType: "Explore",
           label: "Laplace",
           description: "Inspect the info pane",
           turnId: "turn-1",
@@ -1999,6 +2064,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "subagent_started",
           taskId: "agent-b",
           agentId: "agent-b",
+          agentType: "Explore",
           label: "Meitner",
           description: "Inspect the thread",
           turnId: "turn-1",
@@ -2019,20 +2085,27 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(rendered.container.textContent).toContain("Subagent updates");
-    expect(rendered.container.textContent).toContain("2 subagents");
-    expect(rendered.container.textContent).not.toContain("4 activity updates");
-    expect(rendered.container.innerHTML).toContain("w-full");
+    const text = rendered.container.textContent ?? "";
+    // Spawn card descriptions render; the result card shows the final summary.
+    expect(text).toContain("Inspect the info pane");
+    expect(text).toContain("Inspect the thread");
+    expect(text).toContain("Pane mapped");
+    // The old per-tick activity-bundle chrome is gone.
+    expect(text).not.toContain("Subagent updates");
+    expect(text).not.toContain("2 subagents");
+    // The result card exposes a "View transcript" affordance.
+    expect(text).toContain("View transcript");
   });
 
-  it("folds Codex parent placeholders into the resolved subagent row", () => {
+  it("renders a single spawn card for a Codex parent placeholder + resolved agent pair", () => {
     const rendered = renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "subagent_started",
-          taskId: "call-spawn-1",
+          taskId: "agent-thread-1",
+          agentType: "Explore",
           parentToolUseId: "call-spawn-1",
           description: "Inspect the placeholder path",
           turnId: "turn-1",
@@ -2042,22 +2115,25 @@ describe("AgentChatMessageList transcript rendering", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:01.000Z",
         event: {
-          type: "subagent_started",
+          type: "subagent_progress",
           taskId: "agent-thread-1",
           agentId: "agent-thread-1",
+          agentType: "Explore",
           parentToolUseId: "call-spawn-1",
           label: "Sagan",
-          description: "Inspect the placeholder path",
+          summary: "Reading files",
           turnId: "turn-1",
         },
       },
     ]);
 
     const text = rendered.container.textContent ?? "";
-    expect(text).toContain("Sagan");
+    // A single spawn card — the rebind from taskId to agentId does not duplicate it.
+    expect(text).toContain("Inspect the placeholder path");
     expect(text).not.toContain("2 subagents");
     expect(text).not.toContain("Subagents spawned");
-    expect((text.match(/started/g) ?? []).length).toBe(1);
+    const spawnCards = rendered.container.querySelectorAll('[class*="chat-radius-card"]');
+    expect(spawnCards.length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders an end-of-turn divider with tasks/agents and an inline files-changed panel", () => {

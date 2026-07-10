@@ -369,6 +369,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (sendOnEnter != null) chat.sendOnEnter = sendOnEnter;
   const autoAllowAskUser = asBool(value.autoAllowAskUser);
   if (autoAllowAskUser != null) chat.autoAllowAskUser = autoAllowAskUser;
+  const scheduledWorkPaused = asBool(value.scheduledWorkPaused);
+  if (scheduledWorkPaused != null) chat.scheduledWorkPaused = scheduledWorkPaused;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;

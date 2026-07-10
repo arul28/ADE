@@ -668,6 +668,7 @@ function coerceChatSessions(value: unknown): AgentChatSessionSummary[] {
       lastActivityAt,
       lastOutputPreview: trimString(entry.lastOutputPreview),
       summary: trimString(entry.summary),
+      nextWakeAt: trimString(entry.nextWakeAt),
       awaitingInput: typeof entry.awaitingInput === "boolean" ? entry.awaitingInput : undefined,
       pendingInputItemId: trimString(entry.pendingInputItemId),
       threadId: trimString(entry.threadId) ?? undefined,

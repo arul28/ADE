@@ -19,6 +19,10 @@ import {
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
+import {
+  backgroundCommandLabel,
+  compactRelativeDuration,
+} from "../../../../desktop/src/shared/chatScheduledWork";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
@@ -1021,6 +1025,9 @@ function scheduleStatusColor(status: ChatScheduledWorkSnapshot["status"]): strin
   if (status === "running" || status === "fired") return theme.color.running;
   if (status === "failed" || status === "missed") return theme.color.error;
   if (status === "completed") return theme.color.done;
+  // Paused reads as dormant, not armed — dimmest text so it never looks like a
+  // live "scheduled" row (which stays info-blue).
+  if (status === "paused") return theme.color.t5;
   if (status === "cancelled" || status === "stopped") return theme.color.t4;
   return theme.color.info;
 }
@@ -1029,6 +1036,7 @@ function scheduleStatusGlyph(status: ChatScheduledWorkSnapshot["status"]): strin
   if (status === "running" || status === "fired") return "●";
   if (status === "failed" || status === "missed") return "×";
   if (status === "completed") return "✓";
+  if (status === "paused") return "‖";
   if (status === "cancelled" || status === "stopped") return "○";
   return "◷";
 }
@@ -1043,17 +1051,31 @@ function scheduleLineDetail(item: ChatScheduledWorkSnapshot): string {
   return item.cron ?? item.reason ?? item.summary ?? item.prompt ?? "";
 }
 
+function nextWakeCountdown(value: string | null | undefined, nowMs: number): string | null {
+  if (!value) return null;
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
+  return compactRelativeDuration(Math.max(60_000, timestampMs - nowMs));
+}
+
 function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  if (!info.scheduledWork.length) return null;
+  const nextWake = nextWakeCountdown(info.nextWakeAt, Date.now());
+  if (!info.scheduledWork.length && !nextWake) return null;
   const inner = Math.max(10, width - 4);
   const visible = info.scheduledWork.slice(0, SCHEDULE_VISIBLE_CAP);
   const hiddenAfter = info.scheduledWork.length - visible.length;
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="SCHEDULE" hint={`${info.scheduledWork.length}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead title="SCHEDULE" hint={info.scheduledWork.length ? `${info.scheduledWork.length}` : ""} color={brandColor} width={width} />
+      {nextWake ? (
+        <Text color={theme.color.t2} wrap="truncate-end">
+          {` ⏰ next wake ${nextWake}`}
+        </Text>
+      ) : null}
       {visible.map((item) => {
         const detail = scheduleLineDetail(item);
-        const label = `${scheduleKindLabel(item.kind)} · ${item.status}`;
+        // Mirror desktop's history row: a fired-behind-schedule wake reads `· late`.
+        const label = `${scheduleKindLabel(item.kind)} · ${item.status}${item.late ? " · late" : ""}`;
         const titleBudget = Math.max(6, inner - label.length - 4);
         return (
           <Box key={item.id} flexDirection="column">
@@ -1066,6 +1088,32 @@ function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnap
               </Text>
             ) : null}
           </Box>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+    </Box>
+  );
+}
+
+// Background command tasks — mirrors the desktop actions-pane Background
+// section. Each row: `$ <smart label>  status` (ASCII, one line).
+function ChatInfoBackgroundBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (!info.backgroundWork.length) return null;
+  const inner = Math.max(10, width - 4);
+  const visible = info.backgroundWork.slice(0, SCHEDULE_VISIBLE_CAP);
+  const hiddenAfter = info.backgroundWork.length - visible.length;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="BACKGROUND" hint={`${info.backgroundWork.length}`} color={brandColor} width={width} />
+      {visible.map((item) => {
+        const raw = (item.title || item.prompt || item.summary || "").trim();
+        const label = backgroundCommandLabel(raw) || raw || "background command";
+        const status = ` ${item.status}`;
+        const labelBudget = Math.max(6, inner - status.length - 4);
+        return (
+          <Text key={item.id} color={scheduleStatusColor(item.status)} wrap="truncate-end">
+            {"$ "}{endTruncate(label, labelBudget)} <Text color={theme.color.t4}>{item.status}</Text>
+          </Text>
         );
       })}
       {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
@@ -1151,6 +1199,7 @@ function ChatInfoPane({
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>

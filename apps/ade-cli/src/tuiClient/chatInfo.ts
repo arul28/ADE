@@ -3,8 +3,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
-import { latestPlan } from "../../../desktop/src/shared/chatSubagents";
-import { deriveScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
+import { isBackgroundShellCommand, latestPlan } from "../../../desktop/src/shared/chatSubagents";
+import { deriveBackgroundItems, deriveScheduleItems } from "../../../desktop/src/shared/chatScheduledWork";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
@@ -79,9 +79,17 @@ export function deriveChatInfoSnapshot(args: {
     planExplanation: trimmedOrNull(planEventRecord?.explanation),
     planStreamingText: trimmedOrNull(planEventRecord?.streamingText),
     todos: deriveTodoItems(args.events),
-    scheduledWork: deriveScheduledWorkSnapshots(args.events),
+    // Schedule kinds only — background command tasks render in their own block.
+    scheduledWork: deriveScheduleItems(args.events),
+    nextWakeAt: args.activeSession?.nextWakeAt ?? null,
+    backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,
-    snapshots: args.snapshots,
+    // Merge subagents into one roster and drop historical command-as-subagent
+    // snapshots (the shared predicate keys on taskType/description).
+    snapshots: args.snapshots.filter((snapshot) => !isBackgroundShellCommand({
+      taskType: snapshot.taskType,
+      description: snapshot.name,
+    })),
     inspectedSubagentId: args.inspectedSubagentId ?? null,
     streaming: args.streaming,
     // Single source of truth for takeover-vs-inline + which stat fields render.

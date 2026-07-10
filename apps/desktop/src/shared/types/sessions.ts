@@ -109,6 +109,8 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
+  nextWakeAt?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */
   chatSessionId?: string | null;
   /**

@@ -514,6 +514,18 @@ func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId:
   }
 }
 
+func workChatEnvelopeOrderedBefore(_ lhs: WorkChatEnvelope, _ rhs: WorkChatEnvelope) -> Bool {
+  if let lhsSequence = lhs.sequence,
+     let rhsSequence = rhs.sequence,
+     lhsSequence != rhsSequence {
+    return lhsSequence < rhsSequence
+  }
+  if lhs.timestamp != rhs.timestamp {
+    return lhs.timestamp < rhs.timestamp
+  }
+  return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+}
+
 func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChatEnvelope] {
   let parentItemIds = workSubagentParentItemIds(from: entries)
   let childItemIds = workSubagentChildItemIds(from: entries, parentItemIds: parentItemIds)
@@ -526,15 +538,12 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       sessionId: entry.sessionId,
       timestamp: entry.timestamp,
       sequence: entry.sequence,
-      event: makeWorkChatEvent(from: entry.event)
+      event: makeWorkChatEvent(from: entry.event),
+      subagentTaskType: entry.subagentTaskType,
+      subagentCommand: entry.subagentCommand
     )
   }
-  .sorted { lhs, rhs in
-    if lhs.timestamp == rhs.timestamp {
-      return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
-    }
-    return lhs.timestamp < rhs.timestamp
-  }
+  .sorted(by: workChatEnvelopeOrderedBefore)
 }
 
 private func isSubagentTranscriptEnvelope(_ entry: AgentChatEventEnvelope) -> Bool {

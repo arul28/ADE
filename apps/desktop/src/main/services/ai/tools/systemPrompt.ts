@@ -6,9 +6,8 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 
 /**
  * Identifier for the runtime that's actually executing the model. Used to tell
- * the agent which harness it's in so it doesn't assume CLI-only primitives
- * (like ScheduleWakeup) are available, and so it knows whether autonomous
- * wake-ups are possible.
+ * the agent which harness it's in so it knows which provider-native primitives
+ * ADE supports and whether autonomous wake-ups are possible.
  */
 export type AdeRuntimeKind =
   | "claude-agent-sdk-query"
@@ -23,8 +22,8 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
-        "**Wake-up semantics:** Work confidently inside the active turn. ADE keeps the SDK query alive for streamed user and steer messages, but this chat does not currently expose Claude Code CLI's scheduled self-resume. Treat `ScheduleWakeup` as unavailable in this ADE chat: it will not start a later turn by itself. `Bash run_in_background: true` notifications may appear in the SDK stream when ADE is reading a turn, but do not rely on them to begin a new turn.",
-        "**To wait:** For bounded waits, keep the turn active with a foreground command such as `sleep ... && <one-shot command>` or one bounded `until ... ; do sleep N; done` loop. For longer external waits, save state and tell the user exactly what to re-ping when ready.",
+        "**Wake-up semantics:** ADE durably supports Claude Code scheduled self-resume. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn even after the ADE brain restarts; overdue work fires once when ADE resumes, then recurring cron work returns to its normal cadence. The user can pause this chat's schedules in Chat Info or pause all scheduled work in Settings.",
+        "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "codex-cli":
       return [

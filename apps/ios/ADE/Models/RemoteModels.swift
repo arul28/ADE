@@ -1794,6 +1794,66 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var event: AgentChatEvent
   var sequence: Int?
   var provenance: AgentChatEventProvenance?
+  /// Raw subagent fields retained for desktop-parity classification without
+  /// widening every AgentChatEvent lifecycle associated value.
+  var subagentTaskType: String?
+  var subagentCommand: String?
+
+  init(
+    sessionId: String,
+    timestamp: String,
+    event: AgentChatEvent,
+    sequence: Int? = nil,
+    provenance: AgentChatEventProvenance? = nil,
+    subagentTaskType: String? = nil,
+    subagentCommand: String? = nil
+  ) {
+    self.sessionId = sessionId
+    self.timestamp = timestamp
+    self.event = event
+    self.sequence = sequence
+    self.provenance = provenance
+    self.subagentTaskType = subagentTaskType
+    self.subagentCommand = subagentCommand
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case sessionId
+    case timestamp
+    case event
+    case sequence
+    case provenance
+  }
+
+  private struct SubagentMetadata: Decodable {
+    var taskType: String?
+    var command: String?
+
+    private enum CodingKeys: String, CodingKey {
+      case taskType
+      case taskTypeSnake = "task_type"
+      case command
+    }
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
+        ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
+      command = try container.decodeIfPresent(String.self, forKey: .command)
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    sessionId = try container.decode(String.self, forKey: .sessionId)
+    timestamp = try container.decode(String.self, forKey: .timestamp)
+    event = try container.decode(AgentChatEvent.self, forKey: .event)
+    sequence = try container.decodeIfPresent(Int.self, forKey: .sequence)
+    provenance = try container.decodeIfPresent(AgentChatEventProvenance.self, forKey: .provenance)
+    let metadata = try? container.decode(SubagentMetadata.self, forKey: .event)
+    subagentTaskType = metadata?.taskType
+    subagentCommand = metadata?.command
+  }
 }
 
 /// Decodes an array element-by-element, dropping elements that fail to decode

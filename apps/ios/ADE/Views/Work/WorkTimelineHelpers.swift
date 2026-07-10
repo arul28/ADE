@@ -25,6 +25,10 @@ func buildWorkChatTimelineSnapshot(
   let commandCards: [WorkCommandCardModel] = []
   let fileChangeCards: [WorkFileChangeCardModel] = []
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
+  let subagentTimelineRows = buildWorkSubagentTimelineRows(
+    from: transcript,
+    snapshots: subagentSnapshots
+  )
   let scheduledWorkSnapshots = buildWorkScheduledWorkSnapshots(from: transcript)
   let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
   let transcriptLatestTurnEnded = workTranscriptLatestTurnEnded(transcript)
@@ -36,6 +40,7 @@ func buildWorkChatTimelineSnapshot(
     toolCards: toolCards,
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
+    subagentRows: subagentTimelineRows,
     eventCards: eventCards,
     pendingInputs: pendingInputs,
     artifacts: artifacts,
@@ -73,6 +78,8 @@ private func workChatTimelineSnapshotSignature(
     hasher.combine(envelope.sessionId)
     hasher.combine(envelope.timestamp)
     hasher.combine(envelope.sequence ?? Int.min)
+    combineOptional(envelope.subagentTaskType, into: &hasher)
+    combineOptional(envelope.subagentCommand, into: &hasher)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
@@ -507,6 +514,136 @@ func workChatIsStreaming(
   return sessionStatus == "active"
 }
 
+/// Mirrors desktop `chatSubagents.ts` `isBackgroundShellCommand` exactly:
+/// background task type plus an absent or literal background agent type.
+func isBackgroundShellCommand(taskType: String?, agentType: String?) -> Bool {
+  let normalizedTaskType = nonEmptyWorkTimelineText(taskType)?.lowercased()
+  let normalizedAgentType = nonEmptyWorkTimelineText(agentType)?.lowercased()
+  return normalizedTaskType == "background"
+    && (normalizedAgentType == nil || normalizedAgentType == "background")
+}
+
+/// Mirrors desktop `chatSubagents.ts` `isRealSubagent`: a real subagent carries
+/// a non-background agentType, or an explicit `subagent`/`local_workflow` task
+/// type. Bare lifecycle events (no agentType, no taskType) are NOT real
+/// subagents and never produce spawn/result timeline rows — the timeline reads
+/// raw event fields, so unlike the roster it does not default agentType.
+func isRealSubagentTimelineRow(taskType: String?, agentType: String?) -> Bool {
+  if isBackgroundShellCommand(taskType: taskType, agentType: agentType) { return false }
+  let normalizedTaskType = nonEmptyWorkTimelineText(taskType)?.lowercased()
+  let normalizedAgentType = nonEmptyWorkTimelineText(agentType)?.lowercased()
+  if let normalizedAgentType, normalizedAgentType != "background" { return true }
+  return normalizedTaskType == "subagent" || normalizedTaskType == "local_workflow"
+}
+
+/// Mirrors desktop `chatSubagents.ts` placeholder-summary preference so a
+/// low-signal lifecycle tick never replaces a real result description.
+func isWorkSubagentPlaceholderSummary(_ value: String?) -> Bool {
+  guard let value = nonEmptyWorkTimelineText(value) else { return false }
+  return value.range(
+    of: #"^(status:\s|task updated$)"#,
+    options: [.regularExpression, .caseInsensitive]
+  ) != nil
+}
+
+func preferredWorkSubagentSummary(_ existing: String?, incoming: String?) -> String? {
+  let current = nonEmptyWorkTimelineText(existing)
+  let next = nonEmptyWorkTimelineText(incoming)
+  guard let current else { return next }
+  guard let next else { return current }
+
+  let currentIsPlaceholder = isWorkSubagentPlaceholderSummary(current)
+  let nextIsPlaceholder = isWorkSubagentPlaceholderSummary(next)
+  if currentIsPlaceholder != nextIsPlaceholder {
+    return currentIsPlaceholder ? next : current
+  }
+  if currentIsPlaceholder { return next }
+  return next.count >= current.count ? next : current
+}
+
+private func longerWorkSubagentText(_ existing: String?, _ incoming: String?) -> String? {
+  let current = nonEmptyWorkTimelineText(existing)
+  let next = nonEmptyWorkTimelineText(incoming)
+  guard let current else { return next }
+  guard let next else { return current }
+  return next.count > current.count ? next : current
+}
+
+struct WorkBackgroundCommandPresentation: Equatable {
+  let label: String
+  let cwd: String?
+}
+
+/// Mirrors desktop `chatScheduledWork.ts` `backgroundCommandLabel`, with cwd
+/// extraction from the same leading `cd <path> &&` prefix for the iOS detail.
+func workBackgroundCommandPresentation(_ command: String) -> WorkBackgroundCommandPresentation {
+  let original = command
+    .split(whereSeparator: { $0.isNewline })
+    .map(String.init)
+    .map(workCollapsedCommandWhitespace)
+    .first(where: { !$0.isEmpty }) ?? ""
+  guard !original.isEmpty else {
+    return WorkBackgroundCommandPresentation(label: "", cwd: nil)
+  }
+
+  var label = original
+  var cwd: String?
+  let cdPattern = #"^cd\s+(?:\"((?:\\.|[^\"])*)\"|'((?:\\.|[^'])*)'|((?:\\.|[^\s&])+?))\s*&&\s*"#
+  let environmentPattern = #"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^\s]*)\s+)+"#
+  let wrapperPattern = #"^(?:nohup|exec)\s+"#
+
+  for _ in 0..<32 {
+    let before = label
+    if let match = workRegexPrefixMatch(cdPattern, in: label) {
+      if cwd == nil {
+        cwd = (1...3).compactMap { capture -> String? in
+          guard capture < match.numberOfRanges,
+                let range = Range(match.range(at: capture), in: label)
+          else { return nil }
+          return String(label[range])
+        }.first
+      }
+      if let range = Range(match.range, in: label) {
+        label.removeSubrange(range)
+      }
+    }
+    label = workRemovingRegexPrefix(environmentPattern, from: label)
+    label = workRemovingRegexPrefix(wrapperPattern, from: label)
+    label = workCollapsedCommandWhitespace(label)
+    if label == before || label.isEmpty { break }
+  }
+
+  return WorkBackgroundCommandPresentation(
+    label: label.isEmpty ? original : label,
+    cwd: nonEmptyWorkTimelineText(cwd)
+  )
+}
+
+private func workCollapsedCommandWhitespace(_ value: String) -> String {
+  value
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+}
+
+private func workRegexPrefixMatch(_ pattern: String, in value: String) -> NSTextCheckingResult? {
+  guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+    return nil
+  }
+  return expression.firstMatch(
+    in: value,
+    range: NSRange(value.startIndex..<value.endIndex, in: value)
+  )
+}
+
+private func workRemovingRegexPrefix(_ pattern: String, from value: String) -> String {
+  guard let match = workRegexPrefixMatch(pattern, in: value),
+        let range = Range(match.range, in: value)
+  else { return value }
+  var result = value
+  result.removeSubrange(range)
+  return result
+}
+
 /// Collapse `subagent_*` events into one snapshot per runtime subagent. Codex
 /// can first emit a parent-tool placeholder keyed by `parentToolUseId`, then a
 /// real agent row keyed by `agentId`; mirror desktop by adopting that placeholder
@@ -594,22 +731,25 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
     switch envelope.event {
     case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
+      let existing = resolved.existing
       place(resolved.key, WorkSubagentSnapshot(
         taskId: taskId,
-        agentId: normalizedWorkSubagentAgentId(agentId) ?? resolved.existing?.agentId,
-        agentType: normalizedWorkSubagentAgentId(agentType) ?? resolved.existing?.agentType,
-        parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? resolved.existing?.parentToolUseId,
-        description: description,
-        background: background,
-        label: trimmedWorkSubagentText(label) ?? resolved.existing?.label,
-        model: trimmedWorkSubagentText(model) ?? resolved.existing?.model,
-        reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? resolved.existing?.reasoningEffort,
+        agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
+        agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
+        description: longerWorkSubagentText(existing?.description, description) ?? "Subagent",
+        background: background || (existing?.background ?? false),
+        label: trimmedWorkSubagentText(label) ?? existing?.label,
+        model: trimmedWorkSubagentText(model) ?? existing?.model,
+        reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: .running,
-        lastToolName: resolved.existing?.lastToolName,
-        latestSummary: resolved.existing?.latestSummary,
-        turnId: turnId,
-        startedAt: resolved.existing?.startedAt ?? envelope.timestamp,
-        updatedAt: envelope.timestamp
+        lastToolName: existing?.lastToolName,
+        latestSummary: existing?.latestSummary,
+        turnId: turnId ?? existing?.turnId,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp,
+        taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -619,17 +759,19 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
         agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
-        description: description ?? existing?.description ?? "Subagent",
+        description: longerWorkSubagentText(existing?.description, description) ?? "Subagent",
         background: existing?.background ?? false,
         label: trimmedWorkSubagentText(label) ?? existing?.label,
         model: trimmedWorkSubagentText(model) ?? existing?.model,
         reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: .running,
         lastToolName: toolName ?? existing?.lastToolName,
-        latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
+        latestSummary: preferredWorkSubagentSummary(existing?.latestSummary, incoming: summary),
         turnId: turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
-        updatedAt: envelope.timestamp
+        updatedAt: envelope.timestamp,
+        taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
       ), order: resolved.order)
     case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
@@ -647,10 +789,12 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: normalized,
         lastToolName: existing?.lastToolName,
-        latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
+        latestSummary: preferredWorkSubagentSummary(existing?.latestSummary, incoming: summary),
         turnId: turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
-        updatedAt: envelope.timestamp
+        updatedAt: envelope.timestamp,
+        taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
       ), order: resolved.order)
     default:
       break
@@ -662,6 +806,167 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
     .map { $0.snapshot }
 }
 
+/// Mirrors desktop `chatSubagents.ts` `deriveSubagentTimelineRows`: lifecycle
+/// progress enriches the folded snapshot but never creates a timeline row.
+func buildWorkSubagentTimelineRows(
+  from transcript: [WorkChatEnvelope],
+  snapshots: [WorkSubagentSnapshot]? = nil
+) -> [WorkSubagentTimelineRow] {
+  let foldedSnapshots = snapshots ?? buildWorkSubagentSnapshots(from: transcript)
+  let resolvedKeysByParent = buildResolvedWorkSubagentKeysByParent(from: transcript)
+  var positionedRows: [(index: Int, row: WorkSubagentTimelineRow)] = []
+
+  for snapshot in foldedSnapshots {
+    let snapshotKeys = Set([
+      normalizedWorkSubagentAgentId(snapshot.taskId),
+      normalizedWorkSubagentAgentId(snapshot.agentId),
+    ].compactMap { $0 })
+    let resolvedKey = normalizedWorkSubagentAgentId(snapshot.agentId) ?? snapshot.taskId
+    let parent = normalizedWorkSubagentAgentId(snapshot.parentToolUseId)
+    let canAdoptParentPlaceholder = parent.flatMap { parent in
+      let resolved = resolvedKeysByParent[parent]
+      return resolved?.count == 1 && resolved?.contains(resolvedKey) == true
+    } ?? false
+
+    var firstStarted: (index: Int, timestamp: String)?
+    var firstResult: (index: Int, timestamp: String)?
+    var resultSummary: String?
+
+    for (index, envelope) in transcript.enumerated() {
+      let taskId: String
+      let agentId: String?
+      let parentToolUseId: String?
+      let isStarted: Bool
+      let isResult: Bool
+      let summary: String?
+
+      switch envelope.event {
+      case .subagentStarted(let value, let agent, _, let parentValue, _, _, _, _, _, _):
+        taskId = value
+        agentId = agent
+        parentToolUseId = parentValue
+        isStarted = true
+        isResult = false
+        summary = nil
+      case .subagentProgress:
+        continue
+      case .subagentResult(let value, let agent, _, let parentValue, _, let valueSummary, _, _, _, _):
+        taskId = value
+        agentId = agent
+        parentToolUseId = parentValue
+        isStarted = false
+        isResult = true
+        summary = valueSummary
+      default:
+        continue
+      }
+
+      let eventKeys = Set([
+        normalizedWorkSubagentAgentId(taskId),
+        normalizedWorkSubagentAgentId(agentId),
+      ].compactMap { $0 })
+      let directMatch = !snapshotKeys.isDisjoint(with: eventKeys)
+      let normalizedParent = normalizedWorkSubagentAgentId(parentToolUseId)
+      let parentPlaceholderMatch = canAdoptParentPlaceholder
+        && normalizedWorkSubagentAgentId(agentId) == nil
+        && normalizedWorkSubagentAgentId(taskId) == parent
+        && normalizedParent == parent
+      guard directMatch || parentPlaceholderMatch else { continue }
+
+      if isStarted, firstStarted == nil {
+        firstStarted = (index, envelope.timestamp)
+      }
+      if isResult {
+        if firstResult == nil {
+          firstResult = (index, envelope.timestamp)
+        }
+        resultSummary = preferredWorkSubagentSummary(resultSummary, incoming: summary)
+      }
+    }
+
+    if isBackgroundShellCommand(taskType: snapshot.taskType, agentType: snapshot.agentType) {
+      guard snapshot.status != .running, let firstResult else { continue }
+      let presentation = workBackgroundCommandPresentation(snapshot.command ?? snapshot.description)
+      positionedRows.append((
+        firstResult.index,
+        WorkSubagentTimelineRow(
+          kind: .backgroundCommand,
+          snapshot: snapshot,
+          timestamp: firstResult.timestamp,
+          summary: nil,
+          commandLabel: presentation.label.isEmpty ? "Background command" : presentation.label,
+          exitLabel: workBackgroundCommandExitLabel(summary: resultSummary, status: snapshot.status)
+        )
+      ))
+      continue
+    }
+
+    // Only real subagents (non-background agentType, or subagent/local_workflow
+    // task type) produce spawn/result rows. Bare lifecycle events stay in the
+    // Chat Info roster but do not clutter the timeline. Mirrors desktop
+    // `deriveSubagentTimelineRows` gating on `isRealSubagent`.
+    guard isRealSubagentTimelineRow(taskType: snapshot.taskType, agentType: snapshot.agentType) else {
+      continue
+    }
+
+    if let firstStarted {
+      positionedRows.append((
+        firstStarted.index,
+        WorkSubagentTimelineRow(
+          kind: .spawn,
+          snapshot: snapshot,
+          timestamp: firstStarted.timestamp,
+          summary: nil,
+          commandLabel: nil,
+          exitLabel: nil
+        )
+      ))
+    }
+    if let firstResult {
+      let visibleSummary = isWorkSubagentPlaceholderSummary(resultSummary) ? nil : resultSummary
+      positionedRows.append((
+        firstResult.index,
+        WorkSubagentTimelineRow(
+          kind: .result,
+          snapshot: snapshot,
+          timestamp: firstResult.timestamp,
+          summary: visibleSummary,
+          commandLabel: nil,
+          exitLabel: nil
+        )
+      ))
+    }
+  }
+
+  return positionedRows
+    .sorted { lhs, rhs in
+      if lhs.index == rhs.index { return lhs.row.id < rhs.row.id }
+      return lhs.index < rhs.index
+    }
+    .map(\.row)
+}
+
+private func workBackgroundCommandExitLabel(
+  summary: String?,
+  status: WorkSubagentSnapshot.Status
+) -> String {
+  if let summary,
+     let match = workRegexPrefixMatch(
+       #".*?exit(?:ed)?(?:\s+with)?(?:\s+code)?\s*[:=]?\s*(-?\d+)"#,
+       in: summary
+     ),
+     match.numberOfRanges > 1,
+     let range = Range(match.range(at: 1), in: summary) {
+    return "exit \(summary[range])"
+  }
+  switch status {
+  case .running: return "running"
+  case .succeeded: return "completed"
+  case .failed: return "failed"
+  case .stopped: return "stopped"
+  }
+}
+
 func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkScheduledWorkSnapshot] {
   struct Entry {
     var snapshot: WorkScheduledWorkSnapshot
@@ -670,8 +975,25 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
 
   var entries: [String: Entry] = [:]
   var nextOrder = 0
+  var terminalTurnEventIndex: [String: Int] = [:]
+  var lastNonTerminalUpdateIndex: [String: Int] = [:]
 
-  for envelope in transcript {
+  for (eventIndex, envelope) in transcript.enumerated() {
+    switch envelope.event {
+    case .done(_, _, _, let turnId, _, _):
+      if let key = normalizedWorkTurnId(turnId) {
+        terminalTurnEventIndex[key] = eventIndex
+      }
+    case .status(let turnStatus, _, let turnId):
+      let normalized = turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if ["completed", "failed", "interrupted", "cancelled", "canceled", "ended"].contains(normalized),
+         let key = normalizedWorkTurnId(turnId) {
+        terminalTurnEventIndex[key] = eventIndex
+      }
+    default:
+      break
+    }
+
     guard case .scheduledWorkUpdate(
       let id,
       let kind,
@@ -728,6 +1050,27 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
     if existing == nil {
       nextOrder += 1
     }
+    let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if normalizedStatus == "scheduled" || normalizedStatus == "running" {
+      lastNonTerminalUpdateIndex[key] = eventIndex
+    }
+  }
+
+  // Mirrors desktop `chatScheduledWork.ts`: a background process whose parent
+  // turn ended after its last running update must not remain live forever.
+  for (id, var entry) in entries {
+    let snapshot = entry.snapshot
+    let normalizedKind = snapshot.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let normalizedStatus = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalizedKind == "background_task",
+          normalizedStatus == "scheduled" || normalizedStatus == "running",
+          let turnId = normalizedWorkTurnId(snapshot.turnId),
+          let finishedAt = terminalTurnEventIndex[turnId],
+          let lastNonTerminalAt = lastNonTerminalUpdateIndex[id],
+          finishedAt > lastNonTerminalAt
+    else { continue }
+    entry.snapshot.status = "stopped"
+    entries[id] = entry
   }
 
   return entries.values
@@ -755,6 +1098,49 @@ private func workScheduledWorkDefaultTitle(kind: String) -> String {
   default:
     return "Scheduled work"
   }
+}
+
+/// Mirrors desktop `chatScheduledWork.ts` schedule/background partitioning.
+func workChatInfoScheduleItems(
+  _ snapshots: [WorkScheduledWorkSnapshot]
+) -> [WorkScheduledWorkSnapshot] {
+  let scheduleKinds: Set<String> = ["wakeup", "cron", "loop", "remote_trigger"]
+  return snapshots.filter {
+    scheduleKinds.contains($0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+  }
+}
+
+func workChatInfoBackgroundItems(
+  _ snapshots: [WorkScheduledWorkSnapshot]
+) -> [WorkScheduledWorkSnapshot] {
+  snapshots.filter {
+    $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "background_task"
+  }
+}
+
+func workChatInfoSubagents(
+  _ snapshots: [WorkSubagentSnapshot]
+) -> [WorkSubagentSnapshot] {
+  snapshots.filter {
+    !isBackgroundShellCommand(taskType: $0.taskType, agentType: $0.agentType)
+  }
+}
+
+func workChatInfoItemCount(
+  subagents: [WorkSubagentSnapshot],
+  scheduledWork: [WorkScheduledWorkSnapshot]
+) -> Int {
+  workChatInfoSubagents(subagents).count
+    + workChatInfoBackgroundItems(scheduledWork).count
+    + workChatInfoScheduleItems(scheduledWork).count
+}
+
+func workBackgroundCommandSource(_ snapshot: WorkScheduledWorkSnapshot) -> String {
+  nonEmptyWorkTimelineText(snapshot.prompt)
+    ?? nonEmptyWorkTimelineText(snapshot.title)
+    ?? nonEmptyWorkTimelineText(snapshot.summary)
+    ?? nonEmptyWorkTimelineText(snapshot.reason)
+    ?? "Background work"
 }
 
 private func buildResolvedWorkSubagentKeysByParent(from transcript: [WorkChatEnvelope]) -> [String: Set<String>] {
@@ -892,10 +1278,12 @@ private func mergedWorkSubagentSnapshot(
     reasoningEffort: preferredWorkSubagentText(remote.reasoningEffort, fallback: local.reasoningEffort),
     status: mergedWorkSubagentStatus(remote: remote.status, local: local.status),
     lastToolName: local.lastToolName ?? remote.lastToolName,
-    latestSummary: preferredWorkSubagentText(remote.latestSummary, fallback: local.latestSummary),
+    latestSummary: preferredWorkSubagentSummary(remote.latestSummary, incoming: local.latestSummary),
     turnId: remote.turnId ?? local.turnId,
     startedAt: remote.startedAt ?? local.startedAt,
-    updatedAt: latestWorkSubagentTimestamp(remote.updatedAt, local.updatedAt)
+    updatedAt: latestWorkSubagentTimestamp(remote.updatedAt, local.updatedAt),
+    taskType: local.taskType ?? remote.taskType,
+    command: longerWorkSubagentText(remote.command, local.command)
   )
 }
 
@@ -933,6 +1321,7 @@ func buildWorkTimeline(
   toolCards: [WorkToolCardModel],
   commandCards: [WorkCommandCardModel],
   fileChangeCards: [WorkFileChangeCardModel],
+  subagentRows: [WorkSubagentTimelineRow] = [],
   eventCards: [WorkEventCardModel],
   pendingInputs: [WorkPendingInputItem] = [],
   artifacts: [ComputerUseArtifactSummary],
@@ -978,6 +1367,15 @@ func buildWorkTimeline(
 
   entries.append(contentsOf: fileChangeCards.enumerated().map { index, card in
     WorkTimelineEntry(id: "file-change-\(card.id)", timestamp: card.timestamp, rank: 1_375 + index, payload: .fileChangeCard(card))
+  })
+
+  entries.append(contentsOf: subagentRows.enumerated().map { index, row in
+    WorkTimelineEntry(
+      id: row.id,
+      timestamp: row.timestamp,
+      rank: 1_450 + index,
+      payload: .subagent(row)
+    )
   })
 
   entries.append(contentsOf: eventCards.enumerated().map { index, card in
@@ -2094,13 +2492,23 @@ private func eventCard(
       // a normal event card makes mobile chats look much longer than desktop.
       return nil
     case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, let turnId, let error):
+      // Background shell commands are owned by the Chat Info pane's Background
+      // section (and a compact timeline finish chip). Mirrors desktop, which
+      // stops rendering an inline scheduled-work card for background_task.
+      guard kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task" else {
+        return nil
+      }
       let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
       return WorkEventCardModel(
         id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "activity",
         title: kind == "cron" ? "Cron \(normalized.lowercased())" : "Scheduled work \(normalized.lowercased())",
         icon: kind == "cron" ? "calendar.badge.clock" : "clock.arrow.circlepath",
-        tint: status == "failed" || status == "cancelled" ? .danger : status == "running" || status == "fired" ? .accent : .warning,
+        tint: status == "failed" || status == "cancelled" ? .danger
+          : status == "running" || status == "fired" ? .accent
+          // Paused/stopped schedules read as inactive, not pending (amber).
+          : status == "paused" || status == "stopped" ? .secondary
+          : .warning,
         timestamp: envelope.timestamp,
         body: nonEmptyWorkTimelineText(summary)
           ?? nonEmptyWorkTimelineText(error)

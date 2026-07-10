@@ -68,6 +68,9 @@ const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
+const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  ["chat.suggestLaneNameFromPrompt", 120_000],
+]);
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -1044,10 +1047,12 @@ export class LocalRuntimeConnectionPool {
         entry = await this.connect();
       }
       const tConnect = Date.now();
+      const actionKey = `${request.domain}.${request.action}`;
       const actionCallOptions = {
-        timeoutMs: request.domain === "file"
-          ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
-          : LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
+        timeoutMs: LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS.get(actionKey)
+          ?? (request.domain === "file"
+            ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
+            : LOCAL_RUNTIME_ACTION_TIMEOUT_MS),
       };
       let value: unknown = undefined;
       let callError: Error | null = null;

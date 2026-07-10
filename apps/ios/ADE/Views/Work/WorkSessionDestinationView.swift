@@ -378,7 +378,6 @@ struct WorkSessionDestinationView: View {
   @State var subagentTranscriptRenderSignature = 0
   @State var parentTranscriptBeforeSubagent: [WorkChatEnvelope] = []
   @State var parentFallbackEntriesBeforeSubagent: [AgentChatTranscriptEntry] = []
-  @State var subagentDrawerPresented = false
   @State var chatInfoPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var probingSubagentTaskId: String?
@@ -668,8 +667,7 @@ struct WorkSessionDestinationView: View {
 
         WorkChatHeaderMenu(
           model: headerMenuModel(session),
-          onShowChatInfo: { chatInfoPresented = true },
-          onShowSubagents: { Task { await prepareSubagentDrawerPresentation() } },
+          onShowChatInfo: { Task { await prepareChatInfoPresentation() } },
           onShowProof: { artifactDrawerPresented = true },
           onViewPrDetails: { presentChatPrDetails() },
           onOpenPrsTab: { openLaneOpenPr() },
@@ -692,8 +690,12 @@ struct WorkSessionDestinationView: View {
 
   private func headerMenuModel(_ session: TerminalSessionSummary) -> WorkChatHeaderMenuModel {
     WorkChatHeaderMenuModel(
-      chatInfoCount: scheduledWorkSnapshots.count,
-      subagentCount: subagentSnapshots.count,
+      // Chat Info now owns subagents + background + schedule, so its badge count
+      // is the sum across all three sections (mirrors desktop's chat-info pane).
+      chatInfoCount: workChatInfoItemCount(
+        subagents: subagentSnapshots,
+        scheduledWork: scheduledWorkSnapshots
+      ),
       artifactCount: artifacts.count,
       showsLaneActions: showsLaneActions && !personalChat,
       prTag: lanePrTag,
@@ -791,9 +793,10 @@ struct WorkSessionDestinationView: View {
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }
-      .sheet(isPresented: $subagentDrawerPresented) {
-        WorkSubagentDrawerSheet(
-          snapshots: subagentSnapshots,
+      .sheet(isPresented: $chatInfoPresented) {
+        WorkChatInfoDetailsSheet(
+          subagentSnapshots: subagentSnapshots,
+          scheduledWorkSnapshots: scheduledWorkSnapshots,
           provider: subagentProvider,
           selectedTaskId: subagentView?.taskId,
           probingTaskId: probingSubagentTaskId,
@@ -805,11 +808,6 @@ struct WorkSessionDestinationView: View {
         .task {
           await refreshRemoteSubagentSnapshots()
         }
-      }
-      .sheet(isPresented: $chatInfoPresented) {
-        WorkChatInfoDetailsSheet(scheduledWorkSnapshots: scheduledWorkSnapshots)
-          .presentationDetents([.medium, .large])
-          .presentationDragIndicator(.visible)
       }
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
@@ -954,7 +952,7 @@ struct WorkSessionDestinationView: View {
       .onChange(of: transcript) { _, _ in
         refreshChatInfoSnapshots()
       }
-      .onChange(of: subagentDrawerPresented) { _, presented in
+      .onChange(of: chatInfoPresented) { _, presented in
         guard presented else { return }
         Task { await refreshRemoteSubagentSnapshots() }
       }
@@ -1134,8 +1132,11 @@ struct WorkSessionDestinationView: View {
       scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
       scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
-      onOpenChatInfo: viewingSubagent ? nil : { chatInfoPresented = true },
-      onOpenSubagents: { Task { await prepareSubagentDrawerPresentation() } },
+      onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
+      // The subagent roster now lives inside the unified Chat Info sheet, so the
+      // composer badge and header menu both open Chat Info — no separate drawer.
+      onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
+      onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,
@@ -1151,6 +1152,15 @@ struct WorkSessionDestinationView: View {
         viewingSubagent: viewingSubagent
       ) ? recoverCodexTurn : nil
     )
+  }
+
+  /// Explicitly-typed handler so the optional async closure doesn't make the
+  /// large `WorkChatSessionView(...)` initializer ambiguous at the call site.
+  private func subagentRowSelectionHandler(
+    viewingSubagent: Bool
+  ) -> (@MainActor (WorkSubagentSnapshot) async -> Void)? {
+    guard !viewingSubagent else { return nil }
+    return { snapshot in await handleSubagentSelection(snapshot) }
   }
 
   var pollingKey: String {
@@ -1263,6 +1273,16 @@ struct WorkSessionDestinationView: View {
           cached.sessionId == current.sessionId
     else { return }
     current.mergeModeFields(from: cached)
+    // The host renames Claude chats shortly after the first turn; that title
+    // rides a `session_meta_updated` event that SyncService folds into the
+    // cached summary. Mirror it onto the live summary here so the nav title
+    // updates without a refetch. Only overwrite from a non-empty cached title so
+    // a partial refresh that dropped the title can't blank the live one.
+    if let cachedTitle = cached.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !cachedTitle.isEmpty,
+       current.title != cached.title {
+      current.title = cached.title
+    }
     if current != chatSummary {
       chatSummary = current
     }
@@ -2114,8 +2134,12 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// Hydrate the transcript (so the subagent roster is fully populated) and
+  /// present the unified Chat Info sheet. Replaces the old standalone subagent
+  /// drawer presentation — subagents, background, and schedule now share one
+  /// sheet.
   @MainActor
-  func prepareSubagentDrawerPresentation() async {
+  func prepareChatInfoPresentation() async {
     materializeParentTranscriptFromLiveEventsIfNeeded()
     if transcript.isEmpty && fallbackEntries.isEmpty && shouldHydrateTranscriptFromHost {
       await refreshChatSummaryFromHost()
@@ -2123,7 +2147,7 @@ struct WorkSessionDestinationView: View {
     }
     materializeParentTranscriptFromLiveEventsIfNeeded()
     rememberParentTranscriptBeforeSubagent()
-    subagentDrawerPresented = true
+    chatInfoPresented = true
     await refreshRemoteSubagentSnapshots()
   }
 
@@ -2152,7 +2176,7 @@ struct WorkSessionDestinationView: View {
         || snapshot.agentId == subagentView.taskId
         || (subagentView.agentId != nil && (snapshot.agentId == subagentView.agentId || snapshot.taskId == subagentView.agentId)) {
       await dismissSubagentView()
-      subagentDrawerPresented = false
+      chatInfoPresented = false
       return
     }
 
@@ -2192,7 +2216,7 @@ struct WorkSessionDestinationView: View {
       await Task.yield()
       subagentView = workSubagentSelection(from: snapshot)
       expandedSubagentDetailIds.remove(snapshot.taskId)
-      subagentDrawerPresented = false
+      chatInfoPresented = false
     } catch {
       toggleExpandedSubagentDetail(snapshot.taskId)
     }

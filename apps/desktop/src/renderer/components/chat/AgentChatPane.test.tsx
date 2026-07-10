@@ -124,6 +124,7 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     executionMode: "focused",
     interactionMode: null,
     ...overrides,
+    nextWakeAt: overrides.nextWakeAt ?? null,
   };
 }
 
@@ -5942,6 +5943,46 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("persists the first view without showing historical scheduled wakes as away activity", async () => {
+    const openedAtMs = Date.parse("2026-07-10T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockReturnValue(openedAtMs);
+    const session = buildSession("session-1", { title: "First view" });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [{
+          sessionId: session.sessionId,
+          timestamp: "2026-07-10T11:59:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "Check PR CI",
+            deliveryState: "delivered",
+            turnId: "turn-wake-1",
+            metadata: {
+              scheduledWake: {
+                scheduleId: "wake-1",
+                kind: "wakeup",
+                firedAt: "2026-07-10T11:59:00.000Z",
+                reason: "CI follow-up",
+              },
+            },
+          },
+        }],
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Check PR CI")).toBeTruthy();
+    expect(screen.queryByText(/While you were away:/)).toBeNull();
+    expect(window.localStorage.getItem(`ade.chat.lastViewed.v1:${session.sessionId}`))
+      .toBe(String(openedAtMs));
+  });
+
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
     const session = buildSession("session-1", { title: "Possibly foreign chat" });
     installAdeMocks({
@@ -6635,6 +6676,7 @@ describe("resolveNextSelectedSessionId", () => {
       completion: null,
       reasoningEffort: null,
       executionMode: "focused",
+      nextWakeAt: null,
     };
   }
 

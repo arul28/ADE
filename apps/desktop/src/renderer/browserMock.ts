@@ -4712,6 +4712,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       unarchive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
+      setScheduledWorkPaused: async (args: { sessionId: string; paused: boolean }) => ({
+        sessionId: args.sessionId,
+        paused: args.paused,
+        nextWakeAt: null,
+      }),
       warmupModel: resolvedArg(undefined),
       onEvent: noop,
       slashCommands: resolvedArg([]),

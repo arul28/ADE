@@ -5,9 +5,22 @@ import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
-import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 import { ChatTaskList } from "./ChatTasksPanel";
+
+function scheduledSnapshot(overrides: Partial<ChatScheduledWorkSnapshot>): ChatScheduledWorkSnapshot {
+  return {
+    id: "sched-1",
+    kind: "cron",
+    status: "scheduled",
+    title: "Scheduled task",
+    summary: null,
+    createdAt: "2026-05-12T00:00:00.000Z",
+    updatedAt: "2026-05-12T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 // Real per-runtime descriptors so the tests exercise the actual capability
 // matrix: codex = takeover + immediate-for-running; claude = takeover via probe;
@@ -75,7 +88,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("Run focused checks")).toBeTruthy();
   });
 
-  it("splits foreground subagents and background tasks into separate sections", () => {
+  it("merges foreground and background-run agents into one Subagents list with a background chip", () => {
     const foregroundSnapshot: ChatSubagentSnapshot = {
       ...baseSnapshot,
       taskId: "task-2",
@@ -92,10 +105,14 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
+    // Both agents live under the single Subagents section now.
     expect(screen.getByText("Subagents")).toBeTruthy();
-    expect(screen.getByText("Background")).toBeTruthy();
     expect(screen.getByText("Explore")).toBeTruthy();
     expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
+    // The background-run agent carries an inline "background" chip.
+    expect(screen.getByText("background")).toBeTruthy();
+    // No command-task Background section without backgroundItems.
+    expect(screen.queryByText("Background")).toBeNull();
   });
 
   it("takes over the chat with the snapshot identity when the agent has a pullable transcript", async () => {
@@ -336,5 +353,251 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     await waitFor(() =>
       expect(screen.queryByText(/Live details only/i)).toBeNull(),
     );
+  });
+
+  it("renders sections in order Subagents → Background → Schedule with chips and labels", () => {
+    const foregroundAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "agent-fg",
+      description: "Explore the router",
+      agentType: "Explore",
+      background: false,
+    };
+    const backgroundAgent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "agent-bg",
+      description: "Tail the dev server",
+      agentType: "Explore",
+      background: true,
+    };
+    const backgroundItems: ChatScheduledWorkSnapshot[] = [
+      scheduledSnapshot({
+        id: "bg-run",
+        kind: "background_task",
+        status: "running",
+        title: "cd /x && npx vitest run t",
+      }),
+      scheduledSnapshot({
+        id: "bg-done",
+        kind: "background_task",
+        status: "completed",
+        title: "npm run build",
+      }),
+    ];
+    const scheduleItems: ChatScheduledWorkSnapshot[] = [
+      scheduledSnapshot({ id: "cron-1", kind: "cron", status: "scheduled", title: "Nightly sweep", cron: "0 9 * * *" }),
+    ];
+
+    const { container } = render(
+      <ChatSubagentsPanel
+        snapshots={[foregroundAgent, backgroundAgent]}
+        events={[]}
+        variant="pane"
+        backgroundItems={backgroundItems}
+        scheduleItems={scheduleItems}
+      />,
+    );
+
+    // Section headers present and ordered.
+    const text = container.textContent ?? "";
+    const subagentsIdx = text.indexOf("Subagents");
+    const backgroundIdx = text.indexOf("Background");
+    const scheduleIdx = text.indexOf("Schedule");
+    expect(subagentsIdx).toBeGreaterThanOrEqual(0);
+    expect(backgroundIdx).toBeGreaterThan(subagentsIdx);
+    expect(scheduleIdx).toBeGreaterThan(backgroundIdx);
+
+    // Both agents in the merged Subagents list; the background one has a chip.
+    expect(screen.getByTitle("Explore the router")).toBeTruthy();
+    expect(screen.getByTitle("Tail the dev server")).toBeTruthy();
+    expect(screen.getByText("background")).toBeTruthy();
+
+    // Background section shows smart labels (cwd stripped from the collapsed row).
+    expect(screen.getByText("npx vitest run t")).toBeTruthy();
+    expect(screen.getByText("npm run build")).toBeTruthy();
+
+    // Schedule row present.
+    expect(screen.getByText("Nightly sweep")).toBeTruthy();
+  });
+
+  it("expands a background command to show the full command and cwd chip", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        backgroundItems={[
+          scheduledSnapshot({
+            id: "bg-run",
+            kind: "background_task",
+            status: "running",
+            title: "cd /x && npx vitest run t",
+          }),
+        ]}
+      />,
+    );
+
+    // Collapsed: smart label only.
+    expect(screen.getByText("npx vitest run t")).toBeTruthy();
+    expect(screen.queryByText("/x")).toBeNull();
+
+    fireEvent.click(screen.getByText("npx vitest run t"));
+
+    // Expanded: full command + cwd chip.
+    expect(screen.getByText("/x")).toBeTruthy();
+    expect(screen.getByText("cd /x && npx vitest run t")).toBeTruthy();
+  });
+
+  it("never renders background_task rows in the Schedule section and hides empty sections", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[
+          scheduledSnapshot({ id: "cron-1", kind: "cron", status: "scheduled", title: "Nightly" }),
+        ]}
+      />,
+    );
+
+    // Schedule renders; Background + Subagents headers are absent (no rows).
+    expect(screen.getByText("Schedule")).toBeTruthy();
+    expect(screen.queryByText("Background")).toBeNull();
+    expect(screen.queryByText("Subagents")).toBeNull();
+  });
+
+  it("pauses and resumes the chat schedule from the Schedule header", () => {
+    const onToggleSchedulesPaused = vi.fn();
+    const scheduleItems = [
+      scheduledSnapshot({ id: "cron-1", kind: "cron", title: "Nightly" }),
+    ];
+    const { rerender } = render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={scheduleItems}
+        onToggleSchedulesPaused={onToggleSchedulesPaused}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause scheduled work for this chat" }));
+    expect(onToggleSchedulesPaused).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={scheduleItems}
+        schedulesPaused
+        onToggleSchedulesPaused={onToggleSchedulesPaused}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Resume scheduled work for this chat" })).toBeTruthy();
+  });
+
+  it("dims active schedule rows and labels them paused when the chat schedule is paused", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        schedulesPaused
+        scheduleItems={[
+          scheduledSnapshot({ id: "wake-1", kind: "wakeup", title: "Check PR CI" }),
+        ]}
+      />,
+    );
+
+    const row = screen.getByTitle("Check PR CI");
+    expect(row.getAttribute("data-paused")).toBe("true");
+    expect(row.className).toContain("opacity-45");
+    expect(screen.getByText("paused")).toBeTruthy();
+  });
+
+  it("moves fired one-shot wakeups into collapsed history and marks late fires", () => {
+    const firedAt = new Date(2026, 4, 12, 8, 41).toISOString();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[
+          scheduledSnapshot({
+            id: "wake-recurring",
+            kind: "wakeup",
+            status: "fired",
+            recurring: true,
+            title: "Recurring CI check",
+          }),
+          scheduledSnapshot({
+            id: "wake-history-1",
+            kind: "wakeup",
+            status: "completed",
+            title: "Check PR CI",
+            firedAt,
+            late: true,
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByTitle("Recurring CI check")).toBeTruthy();
+    const historyToggle = screen.getByRole("button", { name: "History (1)" });
+    expect(historyToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("✓ Check PR CI · fired 8:41 AM · late")).toBeNull();
+
+    fireEvent.click(historyToggle);
+
+    expect(historyToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("✓ Check PR CI · fired 8:41 AM · late")).toBeTruthy();
+    expect(screen.queryByText("done")).toBeNull();
+  });
+
+  it("shows a cron's last run and next fire on one timing line", () => {
+    const now = new Date(2026, 4, 12, 12, 0);
+    vi.spyOn(Date, "now").mockReturnValue(now.getTime());
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[
+          scheduledSnapshot({
+            id: "cron-timing",
+            kind: "cron",
+            title: "Daily sweep",
+            cron: "0 9 * * *",
+            lastRunAt: new Date(2026, 4, 12, 9, 0).toISOString(),
+            nextRunAt: new Date(2026, 4, 13, 9, 0).toISOString(),
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("last ran 9:00 AM · next in 21h · 9:00 AM")).toBeTruthy();
+  });
+
+  it("does not show a running status for a terminal background command", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        backgroundItems={[
+          scheduledSnapshot({
+            id: "bg-done",
+            kind: "background_task",
+            status: "completed",
+            title: "npm run build",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("done")).toBeTruthy();
+    expect(screen.queryByText("running")).toBeNull();
   });
 });

@@ -125,6 +125,7 @@ function chat(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessio
     lastOutputPreview: null,
     summary: null,
     ...overrides,
+    nextWakeAt: overrides.nextWakeAt ?? null,
   };
 }
 

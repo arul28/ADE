@@ -56,6 +56,7 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     planStreamingText: null,
     todos: [],
     scheduledWork: [],
+    backgroundWork: [],
     pr: null,
     resumableTerminal: false,
     ...overrides,
@@ -296,6 +297,35 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("no subagents yet");
   });
 
+  it("renders the active session's next wake in the Schedule block", () => {
+    const nextWakeAt = new Date(Date.now() + 12 * 60_000).toISOString();
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ nextWakeAt }) }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("⏰ next wake 12m");
+  });
+
+  it("does not render a next wake line for invalid or past timestamps", () => {
+    for (const nextWakeAt of ["not-a-date", new Date(Date.now() - 1_000).toISOString()]) {
+      const result = render(
+        <RightPane
+          content={{ kind: "chat-info", info: chatInfo({ nextWakeAt }) }}
+          focused
+          width={80}
+        />,
+      );
+      const frame = stripAnsi(result.lastFrame() ?? "");
+      expect(frame).not.toContain("next wake");
+    }
+  });
+
   it("caps scheduled work rows in narrow chat info panes", () => {
     const scheduledWork: ChatInfoSnapshot["scheduledWork"] = Array.from({ length: 7 }, (_, index) => {
       const ordinal = String(index + 1).padStart(2, "0");
@@ -329,6 +359,96 @@ describe("RightPane chat info", () => {
     expect(frame).not.toContain("Wakeup 06");
     expect(frame).toContain("↓ 2 more");
     expect(longestLine).toBeLessThanOrEqual(44);
+  });
+
+  it("renders paused and late schedule statuses without raw enum leakage", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            scheduledWork: [
+              {
+                id: "cron-paused",
+                kind: "cron",
+                status: "paused",
+                title: "Nightly digest",
+                summary: null,
+                cron: "0 9 * * *",
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:00.000Z",
+              },
+              {
+                id: "wake-late",
+                kind: "wakeup",
+                status: "fired",
+                title: "Follow up",
+                summary: null,
+                late: true,
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:05.000Z",
+              },
+            ],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE");
+    // Statuses render as clean lowercase words, and a behind-schedule fire adds
+    // a "· late" decoration (desktop history-row parity).
+    expect(frame).toContain("cron · paused");
+    expect(frame).toContain("wakeup · fired · late");
+  });
+
+  it("renders a BACKGROUND block with smart labels, distinct from SCHEDULE", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            backgroundWork: [
+              {
+                id: "bg-1",
+                kind: "background_task",
+                status: "running",
+                title: "cd /x && npx vitest run t",
+                summary: null,
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:05.000Z",
+              },
+            ],
+            scheduledWork: [
+              {
+                id: "cron-1",
+                kind: "cron",
+                status: "scheduled",
+                title: "Nightly sweep",
+                summary: null,
+                cron: "0 9 * * *",
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:00.000Z",
+              },
+            ],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("BACKGROUND");
+    // Smart label: the `cd /x &&` wrapper is stripped in the collapsed row.
+    expect(frame).toContain("$ npx vitest run t");
+    // SCHEDULE block is separate and holds the cron.
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("Nightly sweep");
+    // BACKGROUND appears before SCHEDULE.
+    expect(frame.indexOf("BACKGROUND")).toBeLessThan(frame.indexOf("SCHEDULE"));
   });
 
   it("renders the plan explanation under the plan steps when present", () => {

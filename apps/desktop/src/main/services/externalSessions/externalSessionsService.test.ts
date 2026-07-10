@@ -47,6 +47,7 @@ function makeImportedChatSummary(sessionId: string): AgentChatSessionSummary {
     lastActivityAt: "2026-07-06T10:00:00.000Z",
     lastOutputPreview: null,
     summary: null,
+    nextWakeAt: null,
   };
 }
 

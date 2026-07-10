@@ -73,6 +73,7 @@ export function terminalSessionToChatSummary(session: ChatTerminalSession): Clos
     lastActivityAt: session.endedAt ?? session.startedAt,
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
+    nextWakeAt: null,
     surface: "work",
     terminalStatus: session.status,
     terminalExitCode: session.exitCode,

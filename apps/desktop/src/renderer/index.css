@@ -2061,6 +2061,7 @@ button:active, [role="button"]:active {
   .ade-streaming-shimmer::after,
   .ade-update-installed-card,
   .ade-tool-bounce,
+  .ade-title-landed,
   .ade-fade-in,
   .ade-glow-pulse,
   .ade-glow-pulse-blue,
@@ -2070,6 +2071,10 @@ button:active, [role="button"]:active {
   .ade-float,
   .pull-btn-flash {
     animation: none !important;
+  }
+  .ade-title-landed {
+    background-image: none !important;
+    -webkit-text-fill-color: currentColor !important;
   }
   /* Dropdown item stagger — instant appearance under reduced motion */
   [data-radix-dropdown-menu-content] [role="menuitem"],
@@ -3968,6 +3973,36 @@ button:active, [role="button"]:active {
 
 .ade-tool-bounce {
   animation: ade-tool-bounce 0.6s ease-out;
+}
+
+/* Title-land shimmer — one-time crossfade + accent sweep when a chat title
+   transitions from the provider default to a real title. ≤700ms, keyframes
+   only. Uses the chat accent variable for the highlight. */
+@keyframes ade-title-land {
+  0% {
+    opacity: 0.35;
+    background-position: 200% 0;
+  }
+  100% {
+    opacity: 1;
+    background-position: -100% 0;
+  }
+}
+
+.ade-title-landed {
+  background-image: linear-gradient(
+    100deg,
+    currentColor 0%,
+    currentColor 35%,
+    color-mix(in srgb, var(--chat-accent, #a78bfa) 85%, #ffffff 15%) 50%,
+    currentColor 65%,
+    currentColor 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ade-title-land 640ms ease-out 1;
 }
 
 .ade-glow-pulse {

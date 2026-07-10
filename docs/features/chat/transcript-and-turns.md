@@ -87,7 +87,7 @@ Two helpers summarise a parsed stream:
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
 | `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId`, `parentAgentId`, and `agentType`: for Claude / ade-code `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Codex app-server `subAgentActivity` items also flow into these rows and may carry `label`, `model`, and `reasoningEffort` for richer roster labels. Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) are filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. Two additional producers fan into the same three event types: **Claude Workflow runs** — the SDK's undocumented `workflow_progress` snapshot on `system:task_progress` is normalized by `claudeWorkflowProgress.ts` (defensive: malformed entries dropped, previews clipped, counts capped, unknown states degrade to queued/running; an unparseable snapshot leaves the generic task rendering untouched) and diffed per tick into started/progress/result transitions under a stable `<taskId>::a<index>` / latched-agentId identity, so each workflow agent renders as its own row with phase, tokens, and duration, reconnects upsert instead of duplicating, and agents left running when the workflow ends are closed out as `stopped`; and **child chat spawns** — a session created with `orchestrationParentSessionId` outside an orchestration run (e.g. `ade chat create` from a tracked agent shell) emits synthetic `subagent_started`/`subagent_result` events keyed `chat:<childSessionId>` into the parent so the child lists in the parent's subagents panel, its first finished turn reporting completed/failed/stopped. |
-| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. Claude emits it from `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, and cron/background task lifecycle messages. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, and is folded by `shared/chatScheduledWork.ts` into Chat Info schedule rows on desktop, ADE Code, and iOS. |
+| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. Claude emits it from `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, cron/background task lifecycle messages, and durable scheduler transitions. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `paused`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, `firedAt`, `late`, and `durable`; `shared/chatScheduledWork.ts` folds it into active/history Chat Info rows on desktop, ADE Code, and iOS. One-shots progress through `scheduled` -> `fired` -> `completed`; crons record the fire and return to `scheduled` with `lastRunAt` plus their next occurrence. |
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Workflow step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Special-cased renders: the "Promoted to Cursor Cloud" pill, and the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`; the TUI shows the message line; iOS renders it through its existing system_notice mapping). |
@@ -148,7 +148,22 @@ implements a two-layer transform:
      `ChatWorkLogEntry` objects (status, label, tone, diff stats, and
      web-search action metadata for result chips).
    - Text, reasoning, plan, status, pending input, and user-message
-     events pass through as visible rows.
+     events pass through as visible rows. Before a synthetic scheduled
+     `user_message` carrying `metadata.scheduledWake`, the transform inserts a
+     `scheduled_wake_divider` keyed
+     `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
+     state; the while-you-were-away strip scrolls to these stable keys.
+   - `subagent_started` / `subagent_progress` / `subagent_result`
+     events collapse per agent (keyed by `agentId ?? taskId`) into two
+     stable render rows — a `subagent_spawn_anchor` at the start
+     position (mutated in place as progress arrives) and a
+     `subagent_result_card` at the settle position — while backgrounded
+     shell commands collapse to a single `background_finish_chip`. The
+     anchor keys (`subagent-spawn:` / `subagent-result:` /
+     `background-chip:<agentKey>`) never change on rebind so the
+     virtualizer's measured heights survive; a `transcript_retraction`
+     splice repairs each stored row index. Raw lifecycle events are then
+     hidden.
    - `pending_input_resolved`, `activity`, `step_boundary`, raw tool/
      command/file-change events, standalone reasoning events, and
      `scheduled_work_update` are hidden (consumed by other derivations).

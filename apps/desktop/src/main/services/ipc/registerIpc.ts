@@ -308,6 +308,8 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
+  AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkPausedResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -976,6 +978,7 @@ function projectChatOntoSession(
 ): TerminalSessionSummary {
   const base: TerminalSessionSummary = {
     ...session,
+    nextWakeAt: chat.nextWakeAt,
     ...(chat.orchestrationRunId
       ? {
           orchestrationRunId: chat.orchestrationRunId,
@@ -4100,6 +4103,7 @@ export function registerIpc({
       shared: { ...snapshot.shared, ai: merged },
       local: snapshot.local ?? {},
     });
+    void ctx.agentChatService?.refreshScheduledWork();
   });
 
   ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
@@ -6261,6 +6265,14 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(arg);
   });
+
+  ipcMain.handle(
+    IPC.agentChatSetScheduledWorkPaused,
+    async (_event, arg: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.setScheduledWorkPaused(arg);
+    },
+  );
 
   ipcMain.handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
     const ctx = ensureAgentChatContext();

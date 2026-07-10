@@ -127,6 +127,8 @@ import type {
   AgentChatClaudeOutputStyle,
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
+  AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkPausedResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
   AgentChatReloadClaudePluginsArgs,
@@ -1318,6 +1320,9 @@ declare global {
         updateSession: (
           args: AgentChatUpdateSessionArgs,
         ) => Promise<AgentChatSession>;
+        setScheduledWorkPaused: (
+          args: AgentChatSetScheduledWorkPausedArgs,
+        ) => Promise<AgentChatSetScheduledWorkPausedResult>;
         warmupModel: (args: {
           sessionId: string;
           modelId: string;

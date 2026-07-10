@@ -717,6 +717,7 @@ describe("right pane context defaults", () => {
       planStreamingText: null,
       todos: [],
       scheduledWork: [],
+      backgroundWork: [],
       pr: null,
       snapshots: [],
       inspectedSubagentId: null,
@@ -1911,6 +1912,7 @@ describe("optimistic chat summaries", () => {
       lastActivityAt: "2026-05-25T11:00:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      nextWakeAt: null,
     };
   }
 

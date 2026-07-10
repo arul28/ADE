@@ -105,6 +105,8 @@ extension WorkChatSessionView {
       WorkCommandCardView(card: commandCard)
     case .fileChangeCard(let fileChangeCard):
       WorkFileChangeCardView(card: fileChangeCard)
+    case .subagent(let row):
+      WorkSubagentTimelineRowView(row: row, onOpen: onSelectSubagentRow)
     case .toolGroup(let group):
       timelineToolGroup(group)
     case .changedFiles(let group):
