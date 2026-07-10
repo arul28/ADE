@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 // Named import: bonjour-service exports the constructor as a named `Bonjour`.
 // A default import (`import Bonjour from …`) survives typecheck (the package
@@ -8,6 +10,7 @@ import { promisify } from "node:util";
 // daemon's syncHostService.ts uses this same named form.
 import { Bonjour } from "bonjour-service";
 import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
@@ -263,6 +266,122 @@ export function discoveredRuntimesFromTailscaleStatus(
   return discovered;
 }
 
+function normalizeDiscoveryHost(host: string | null | undefined): string {
+  return host?.trim().toLowerCase().replace(/\.$/, "") ?? "";
+}
+
+/**
+ * The set of hostnames a machine can be reached at — its Tailscale address plus
+ * every advertised address. Used to detect when a Bonjour machine and a
+ * Tailscale peer are the same physical machine seen through two discovery
+ * sources.
+ */
+function discoveredMachineHostSet(
+  machine: RemoteRuntimeDiscoveredMachine,
+): Set<string> {
+  const set = new Set<string>();
+  const add = (host: string | null | undefined): void => {
+    const normalized = normalizeDiscoveryHost(host);
+    if (normalized) set.add(normalized);
+  };
+  add(machine.tailscaleAddress);
+  for (const address of machine.addresses) add(address);
+  return set;
+}
+
+function isTailscalePeerMachine(
+  machine: RemoteRuntimeDiscoveredMachine,
+): boolean {
+  return machine.id.startsWith("tailscale:");
+}
+
+/**
+ * Drops this machine's own Bonjour advertisement from the discovery list. The
+ * ADE sync service advertises itself over mDNS with its `deviceId` in the TXT
+ * payload (surfaced as `hostIdentity`); comparing that against the local sync
+ * device id keeps the panel from listing "this Mac" as a connectable target.
+ */
+export function dropSelfDiscoveredMachines(
+  machines: RemoteRuntimeDiscoveredMachine[],
+  localDeviceId: string | null | undefined,
+): RemoteRuntimeDiscoveredMachine[] {
+  const self = localDeviceId?.trim();
+  if (!self) return machines;
+  return machines.filter(
+    (machine) => !(machine.hostIdentity && machine.hostIdentity.trim() === self),
+  );
+}
+
+/**
+ * A machine discovered over BOTH Bonjour and Tailscale currently appears twice
+ * because the two id spaces (`hostIdentity::serviceKey` vs `tailscale:…`) never
+ * collide. When a Tailscale peer's address matches a Bonjour machine's
+ * Tailscale address or any advertised address, they are the same machine: fold
+ * the peer into the Bonjour row (which carries richer ADE metadata), letting the
+ * row gain the Tailscale route and the peer's reported OS.
+ */
+export function mergeCrossSourceDiscoveredMachines(
+  machines: RemoteRuntimeDiscoveredMachine[],
+): RemoteRuntimeDiscoveredMachine[] {
+  const merged: RemoteRuntimeDiscoveredMachine[] = [];
+  const bonjourHostSets: Array<{
+    machine: RemoteRuntimeDiscoveredMachine;
+    hosts: Set<string>;
+  }> = [];
+  const unmatchedPeers: RemoteRuntimeDiscoveredMachine[] = [];
+
+  for (const machine of machines) {
+    if (isTailscalePeerMachine(machine)) continue;
+    const clone: RemoteRuntimeDiscoveredMachine = {
+      ...machine,
+      addresses: [...machine.addresses],
+    };
+    merged.push(clone);
+    bonjourHostSets.push({ machine: clone, hosts: discoveredMachineHostSet(clone) });
+  }
+
+  for (const machine of machines) {
+    if (!isTailscalePeerMachine(machine)) continue;
+    const peerHosts = discoveredMachineHostSet(machine);
+    const target = bonjourHostSets.find(({ hosts }) => {
+      for (const host of peerHosts) {
+        if (hosts.has(host)) return true;
+      }
+      return false;
+    });
+    if (!target) {
+      unmatchedPeers.push(machine);
+      continue;
+    }
+    target.machine.addresses = orderAddresses(
+      uniqueStrings([...target.machine.addresses, ...machine.addresses]),
+    );
+    if (!target.machine.tailscaleAddress && machine.tailscaleAddress) {
+      target.machine.tailscaleAddress = machine.tailscaleAddress;
+    }
+    if (!target.machine.os && machine.os) {
+      target.machine.os = machine.os;
+    }
+    // Refresh the host set so a later peer sharing only the newly-added
+    // Tailscale address still folds into the same Bonjour machine.
+    target.hosts = discoveredMachineHostSet(target.machine);
+  }
+
+  return [...merged, ...unmatchedPeers];
+}
+
+function readLocalSyncDeviceId(): string | null {
+  try {
+    const layout = resolveMachineAdeLayout();
+    const deviceIdPath = path.join(layout.secretsDir, "sync-device-id");
+    if (!fs.existsSync(deviceIdPath)) return null;
+    const value = fs.readFileSync(deviceIdPath, "utf8").trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 async function discoverTailscalePeers(
   timeoutMs = 1_200,
 ): Promise<{
@@ -373,8 +492,13 @@ export async function discoverLanRuntimes(
     })(),
   ]);
 
+  const localDeviceId = readLocalSyncDeviceId();
+  const deduped = mergeCrossSourceDiscoveredMachines(
+    dropSelfDiscoveredMachines([...discovered.values()], localDeviceId),
+  );
+
   return {
-    machines: [...discovered.values()].sort((a, b) => {
+    machines: deduped.sort((a, b) => {
       const name = a.machineName.localeCompare(b.machineName);
       if (name !== 0) return name;
       return a.serviceName.localeCompare(b.serviceName);

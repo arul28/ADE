@@ -25,6 +25,10 @@ const remoteRuntimeMock = {
   streamEvents: vi.fn(),
   checkLocalWork: vi.fn(),
   disconnect: vi.fn(),
+  getLocalPairingInfo: vi.fn(),
+  parsePairingInput: vi.fn(),
+  pairWithMachine: vi.fn(),
+  runDoctor: vi.fn(),
 };
 
 const lanesMock = {
@@ -32,13 +36,25 @@ const lanesMock = {
   listSnapshots: vi.fn(),
 };
 
+const appMock = {
+  writeClipboardText: vi.fn(),
+};
+
 function installAdeMock(): void {
   remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValue({ state: "trusted" });
+  remoteRuntimeMock.getLocalPairingInfo.mockResolvedValue({
+    url: "https://ade-app.dev/pair#payload",
+    pin: "123456",
+    machineName: "This Mac",
+    relayAvailable: false,
+  });
+  remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
       remoteRuntime: remoteRuntimeMock,
       lanes: lanesMock,
+      app: appMock,
     },
   });
 }
@@ -52,7 +68,7 @@ describe("RemoteTargetList", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("shows LAN-discovered machines and uses their route to prefill the SSH form", async () => {
+  it("lists a discovered ADE machine under Available and connects via its route", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [
@@ -81,31 +97,10 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
+    expect(screen.getByText("AVAILABLE")).toBeTruthy();
     expect(screen.getByText("studio.tailnet.ts.net:8787")).toBeTruthy();
-    expect(
-      screen.getByText(/Background ADE 0\.0\.0/),
-    ).toBeTruthy();
-    expect(screen.getByText(/2 projects advertised/)).toBeTruthy();
-
-    const editButton = screen.getByRole("button", { name: "Edit" });
-    expect(editButton.getAttribute("aria-expanded")).toBe("false");
-
-    fireEvent.click(editButton);
-
-    expect(editButton.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Edit Studio")).toBeTruthy();
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
-      "Studio",
-    );
-    expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe(
-      "studio.tailnet.ts.net",
-    );
-    expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("");
-
-    fireEvent.click(editButton);
-
-    expect(editButton.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Edit Studio")).toBeNull();
+    // ADE machines advertise their project count concisely.
+    expect(screen.getByText("ADE · 2 projects")).toBeTruthy();
 
     const savedTarget = {
       id: "target-1",
@@ -159,6 +154,41 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
+  });
+
+  it("shows an SSH-only Tailscale peer with its OS in the Available section", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "tailscale:peer-linux",
+          serviceName: "Tailscale peer",
+          machineName: "Linux box",
+          hostIdentity: "peer-linux",
+          hostName: "linux-box",
+          port: 22,
+          addresses: ["100.64.0.20"],
+          primaryRoute: "100.64.0.20",
+          tailscaleAddress: "100.64.0.20",
+          runtimeKind: "tailscale-peer",
+          runtimeVersion: null,
+          os: "linux",
+          connectable: true,
+          projectIds: [],
+          projectCount: null,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() => expect(screen.getByText("Linux box")).toBeTruthy());
+    expect(screen.getByText("SSH only · linux")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Test" })).toBeTruthy();
   });
 
   it("shows why an unsupported discovered machine cannot connect", async () => {
@@ -648,6 +678,221 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText("studio.local:8787")).toBeNull();
     expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
     expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+  });
+
+  it("splits saved and discovered machines into status sections with a route chip", async () => {
+    const connectedTarget = {
+      id: "target-c",
+      name: "Connected Mac",
+      hostname: "100.64.0.5",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: 1,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target: connectedTarget,
+            state: "connected",
+            arch: "darwin-arm64",
+            version: "1.0.0",
+            route: { kind: "tailnet", endpoint: "100.64.0.5", latencyMs: 4 },
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: 1,
+            connectedAt: 1,
+          },
+        ],
+        connectedCount: 1,
+        updatedAt: 1,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "tailscale:windows-pc",
+          serviceName: "Tailscale peer",
+          machineName: "Windows PC",
+          hostIdentity: "windows-pc",
+          hostName: "windows-pc",
+          port: 22,
+          addresses: ["100.64.0.12"],
+          primaryRoute: "100.64.0.12",
+          tailscaleAddress: "100.64.0.12",
+          runtimeKind: "tailscale-peer",
+          runtimeVersion: null,
+          os: "windows",
+          connectable: false,
+          unsupportedReason: "Windows — not supported yet",
+          projectIds: [],
+          projectCount: null,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Connected Mac").length).toBeGreaterThan(0),
+    );
+    expect(screen.getByText("CONNECTED")).toBeTruthy();
+    expect(screen.getByText("UNAVAILABLE")).toBeTruthy();
+    // Live route chip on the connected row, sourced from status.route.
+    expect(screen.getByText("tailnet · 4 ms")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    // The unsupported peer greys out with a concrete reason and no Connect.
+    expect(screen.getByText("Windows — not supported yet")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+  });
+
+  it("reveals capped technical detail behind the error card expander", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: null,
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target,
+            state: "error",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: "ENOSPC",
+            lastErrorInfo: {
+              kind: "disk_full",
+              message: "The remote machine is out of disk space.",
+              detail: "df: /: 100% used (0 bytes free)\nextract aborted",
+            },
+            lastAttemptedAt: 1,
+            connectedAt: null,
+          },
+        ],
+        connectedCount: 0,
+        updatedAt: 1,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    expect(
+      await screen.findByText("The remote machine is out of disk space."),
+    ).toBeTruthy();
+    // Technical detail is hidden until the expander is opened.
+    expect(screen.queryByText(/100% used/)).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Show technical details/ }),
+    );
+
+    expect(screen.getByText(/df: \/: 100% used \(0 bytes free\)/)).toBeTruthy();
+  });
+
+  it("validates a pairing link and pairs on the Pair tab", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.parsePairingInput
+      .mockRejectedValueOnce(new Error("That doesn't look like a pairing code."))
+      .mockResolvedValue({
+        hostIdentity: {
+          deviceId: "d1",
+          siteId: "s1",
+          name: "Studio",
+          platform: "macOS",
+          deviceType: "desktop",
+        },
+        machineName: "Studio",
+        endpoints: ["wss://studio.example"],
+        requiresPin: true,
+      });
+    const savedTarget = {
+      id: "target-9",
+      name: "Studio",
+      hostname: "studio.example",
+      transport: "paired",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.pairWithMachine.mockResolvedValue({ targetId: "target-9" });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target: savedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add machine" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+
+    const input = screen.getByLabelText("Pairing code or link");
+    fireEvent.change(input, { target: { value: "nope" } });
+    await waitFor(() =>
+      expect(
+        screen.getByText("That doesn't look like a pairing code."),
+      ).toBeTruthy(),
+    );
+
+    fireEvent.change(input, {
+      target: { value: "https://ade-app.dev/pair#ok" },
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Studio ready to pair/)).toBeTruthy(),
+    );
+
+    // Device name is prefilled from this Mac's pairing info.
+    expect(
+      (screen.getByLabelText("This device's name") as HTMLInputElement).value,
+    ).toBe("This Mac");
+
+    fireEvent.change(screen.getByLabelText("PIN"), {
+      target: { value: "654321" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(remoteRuntimeMock.pairWithMachine).toHaveBeenCalledWith({
+        input: "https://ade-app.dev/pair#ok",
+        pin: "654321",
+        deviceName: "This Mac",
+      }),
+    );
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-9"),
+    );
   });
 
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
