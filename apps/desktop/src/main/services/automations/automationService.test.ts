@@ -392,6 +392,37 @@ describe("automation ingress enable gating", () => {
     });
   });
 
+  it("treats legacy git.pr_* triggers as GitHub delivery for enable-gating", () => {
+    const rule = normalizeRuntimeRule({
+      id: "legacy-git-pr",
+      name: "Legacy git.pr trigger",
+      enabled: false,
+      mode: "review",
+      triggers: [{ type: "git.pr_opened" }],
+      trigger: { type: "git.pr_opened" },
+      execution: { kind: "built-in", builtIn: { actions: [] } },
+      executor: { mode: "automation-bot" },
+      reviewProfile: "quick",
+      toolPalette: ["github"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:legacy-git-pr",
+      actions: [],
+    });
+    const { service } = createServiceForRule(rule, {}, { githubPollingAvailable: () => false });
+
+    expect(() => service.toggle({ id: rule.id, enabled: true })).toThrow(/Connect a GitHub repository/);
+
+    service.updateIngressStatus({
+      githubRelay: { configured: true, healthy: true, status: "ready" },
+    });
+    const summaries = service.toggle({ id: rule.id, enabled: true });
+    expect(summaries.find((r) => r.id === rule.id)?.enabled).toBe(true);
+    expect(service.getIngressStatus().delivery?.github.ready).toBe(true);
+  });
+
   it("reports unavailable GitHub delivery and mirrors Linear ingress capability", () => {
     const rule = normalizeRuntimeRule({
       id: "ingress-delivery-status",
