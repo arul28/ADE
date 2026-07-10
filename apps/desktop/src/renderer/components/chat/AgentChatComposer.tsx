@@ -113,6 +113,17 @@ function ensureVoiceShimmerStyles(): void {
   document.head.appendChild(sheet);
 }
 
+function isHttpAuthorizationUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Best-effort decoder for the `providerMetadata` payload carried on a
  * `model_selection` PendingInputRequest. The server packs
@@ -3177,6 +3188,7 @@ export function AgentChatComposer({
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
   const mcpElicitationUrl = typeof pendingInput?.providerMetadata?.url === "string"
+    && isHttpAuthorizationUrl(pendingInput.providerMetadata.url)
     && canOpenInAdeBrowser(pendingInput.providerMetadata.url)
     ? pendingInput.providerMetadata.url
     : null;

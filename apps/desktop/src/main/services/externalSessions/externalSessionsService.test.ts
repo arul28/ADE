@@ -10,10 +10,18 @@ import { createExternalSessionsService } from "./externalSessionsService";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
 
+const computerUseMocks = vi.hoisted(() => ({
+  resolveCodexComputerUseMcpConfig: vi.fn(async () => null),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFile: vi.fn() };
 });
+
+vi.mock("../../utils/codexComputerUse", () => ({
+  resolveCodexComputerUseMcpConfig: computerUseMocks.resolveCodexComputerUseMcpConfig,
+}));
 
 const execFileMock = vi.mocked(execFile);
 let root: string;
@@ -44,6 +52,8 @@ function makeImportedChatSummary(sessionId: string): AgentChatSessionSummary {
 
 beforeEach(() => {
   execFileMock.mockReset();
+  computerUseMocks.resolveCodexComputerUseMcpConfig.mockReset();
+  computerUseMocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-external-service-"));
 });
 

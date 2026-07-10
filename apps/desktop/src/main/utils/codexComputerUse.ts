@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 export type CodexComputerUseMcpConfig = {
   command: string;
@@ -13,7 +13,7 @@ export type ResolveCodexComputerUseOptions = {
   platform?: NodeJS.Platform;
   codexHome?: string;
   configText?: string | null;
-  verifySignature?: (filePath: string) => boolean;
+  verifySignature?: (filePath: string) => boolean | Promise<boolean>;
 };
 
 const COMPUTER_USE_PLUGIN_SECTION = 'plugins."computer-use@openai-bundled"';
@@ -77,35 +77,85 @@ function isExecutable(filePath: string): boolean {
   }
 }
 
-const signatureVerificationCache = new Map<string, boolean>();
+type CodesignExecutionResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+};
 
-export function isOpenAiSignedComputerUseClient(filePath: string): boolean {
-  let cacheKey = filePath;
+function executeCodesign(args: string[]): Promise<CodesignExecutionResult> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "/usr/bin/codesign",
+        args,
+        { encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024 },
+        (error, stdout, stderr) => {
+          resolve({
+            ok: error == null,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+          });
+        },
+      );
+    } catch {
+      resolve({ ok: false, stdout: "", stderr: "" });
+    }
+  });
+}
+
+function signatureVerificationFingerprint(filePath: string): string | null {
   try {
     const stat = fs.statSync(filePath);
-    cacheKey = `${filePath}:${stat.size}:${stat.mtimeMs}`;
+    // Include filesystem identity and change metadata, not just size/mtime.
+    // A replaced binary can preserve its size and mtime; inode/ctime ensure the
+    // replacement is verified again before ADE passes it to Codex.
+    return [
+      filePath,
+      stat.dev,
+      stat.ino,
+      stat.mode,
+      stat.size,
+      stat.mtimeMs,
+      stat.ctimeMs,
+    ].join("\0");
   } catch {
-    return false;
+    return null;
   }
+}
+
+// Cache the in-flight Promise as well as the settled result. Concurrent launch
+// and resume requests for the same binary must share one cold codesign pass.
+const signatureVerificationCache = new Map<string, Promise<boolean>>();
+
+export async function isOpenAiSignedComputerUseClient(filePath: string): Promise<boolean> {
+  const cacheKey = signatureVerificationFingerprint(filePath);
+  if (!cacheKey) return false;
   const cached = signatureVerificationCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  const verification = spawnSync(
-    "/usr/bin/codesign",
-    ["--verify", "--strict", "--verbose=2", filePath],
-    { encoding: "utf8", timeout: 5_000 },
-  );
-  const result = spawnSync(
-    "/usr/bin/codesign",
-    ["-dv", "--verbose=4", filePath],
-    { encoding: "utf8", timeout: 5_000 },
-  );
-  const details = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const valid = verification.status === 0
-    && result.status === 0
-    && details.includes(`Identifier=${COMPUTER_USE_CLIENT_IDENTIFIER}`)
-    && details.includes(`TeamIdentifier=${OPENAI_TEAM_IDENTIFIER}`);
-  signatureVerificationCache.set(cacheKey, valid);
-  return valid;
+  if (cached) return await cached;
+
+  // Keep only the current fingerprint for this path so plugin upgrades do not
+  // accumulate stale verification entries for the lifetime of the runtime.
+  const pathPrefix = `${filePath}\0`;
+  for (const key of signatureVerificationCache.keys()) {
+    if (key !== cacheKey && key.startsWith(pathPrefix)) {
+      signatureVerificationCache.delete(key);
+    }
+  }
+
+  const pending = (async (): Promise<boolean> => {
+    const [verification, identity] = await Promise.all([
+      executeCodesign(["--verify", "--strict", "--verbose=2", filePath]),
+      executeCodesign(["-dv", "--verbose=4", filePath]),
+    ]);
+    const details = `${identity.stdout}\n${identity.stderr}`;
+    return verification.ok
+      && identity.ok
+      && details.includes(`Identifier=${COMPUTER_USE_CLIENT_IDENTIFIER}`)
+      && details.includes(`TeamIdentifier=${OPENAI_TEAM_IDENTIFIER}`);
+  })().catch(() => false);
+  signatureVerificationCache.set(cacheKey, pending);
+  return await pending;
 }
 
 function compareVersionDirectoryNames(left: string, right: string): number {
@@ -137,9 +187,9 @@ export function codexComputerUseClientCandidates(codexHome: string): string[] {
   return candidates;
 }
 
-export function resolveCodexComputerUseMcpConfig(
+export async function resolveCodexComputerUseMcpConfig(
   options: ResolveCodexComputerUseOptions = {},
-): CodexComputerUseMcpConfig | null {
+): Promise<CodexComputerUseMcpConfig | null> {
   if ((options.platform ?? process.platform) !== "darwin") return null;
   const codexHome = options.codexHome?.trim()
     || process.env.CODEX_HOME?.trim()
@@ -155,8 +205,11 @@ export function resolveCodexComputerUseMcpConfig(
   if (!configText || !codexComputerUseOptedIn(configText)) return null;
 
   const verifySignature = options.verifySignature ?? isOpenAiSignedComputerUseClient;
-  const command = codexComputerUseClientCandidates(codexHome)
-    .find((candidate) => isExecutable(candidate) && verifySignature(candidate));
-  if (!command) return null;
-  return { command, args: ["mcp"], enabled: true };
+  for (const command of codexComputerUseClientCandidates(codexHome)) {
+    if (!isExecutable(command)) continue;
+    if (await verifySignature(command)) {
+      return { command, args: ["mcp"], enabled: true };
+    }
+  }
+  return null;
 }

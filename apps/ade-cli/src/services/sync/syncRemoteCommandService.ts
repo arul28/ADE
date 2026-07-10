@@ -3390,6 +3390,9 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     });
     const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
+    const codexComputerUse = provider === "codex"
+      ? await resolveCodexComputerUseMcpConfig()
+      : null;
 
     function resolveLaunch(): Partial<TrackedCliLaunchCommand> {
       if (provider === "shell") {
@@ -3408,7 +3411,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         fastMode: parsed.fastMode ?? undefined,
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
-        ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
+        ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     }
 

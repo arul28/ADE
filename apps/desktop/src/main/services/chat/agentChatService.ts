@@ -5580,7 +5580,10 @@ export function createAgentChatService(args: {
   logger: Logger;
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
-  resolveCodexComputerUseMcp?: () => CodexComputerUseMcpConfig | null;
+  resolveCodexComputerUseMcp?: () =>
+    | CodexComputerUseMcpConfig
+    | null
+    | Promise<CodexComputerUseMcpConfig | null>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
@@ -20757,7 +20760,7 @@ export function createAgentChatService(args: {
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
-      ...codexThreadConfigArgs(reasoningEffort, resolveCodexComputerUseMcp()),
+      ...codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp()),
       developerInstructions: buildCodexDeveloperInstructions({
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
@@ -26269,7 +26272,7 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              ...codexThreadConfigArgs(resumeReasoningEffort, resolveCodexComputerUseMcp()),
+              ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
               developerInstructions: buildCodexDeveloperInstructions({
                 laneWorktreePath: managed.laneWorktreePath,
                 session: managed.session,
@@ -27519,7 +27522,7 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            ...codexThreadConfigArgs(managed.session.reasoningEffort, resolveCodexComputerUseMcp()),
+            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
             excludeTurns: true,
@@ -28920,22 +28923,41 @@ export function createAgentChatService(args: {
     return [];
   };
 
+  const aggregateModelProviders = [
+    "claude",
+    "codex",
+    "cursor",
+    "droid",
+    "opencode",
+  ] as const satisfies readonly AgentChatProvider[];
+
   const getAvailableModels = async ({
     provider,
     activateRuntime,
     cursorSource,
   }: {
-    provider: AgentChatProvider;
+    provider?: AgentChatProvider;
     activateRuntime?: boolean;
     cursorSource?: AgentChatCursorModelSource;
-  }): Promise<AgentChatModelInfo[]> => {
-    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
+  } = {}): Promise<AgentChatModelInfo[]> => {
+    const requestedProvider = provider?.trim() ? provider : undefined;
+    const requestKey = `${requestedProvider ?? "all"}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
     const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
-    const request = loadAvailableModels({ provider, activateRuntime, cursorSource });
+    const request = requestedProvider
+      ? loadAvailableModels({ provider: requestedProvider, activateRuntime, cursorSource })
+      : Promise.all(
+          aggregateModelProviders.map((catalogProvider) =>
+            getAvailableModels({
+              provider: catalogProvider,
+              activateRuntime,
+              ...(catalogProvider === "cursor" && cursorSource ? { cursorSource } : {}),
+            }).catch(() => []),
+          ),
+        ).then((providerModels) => providerModels.flat());
     availableModelsRequests.set(requestKey, request);
     try {
       return await request;
@@ -31820,7 +31842,7 @@ export function createAgentChatService(args: {
           threadId,
           model: managed.session.model,
           cwd: managed.laneWorktreePath,
-          ...codexThreadConfigArgs(resumeReasoningEffort, resolveCodexComputerUseMcp()),
+          ...codexThreadConfigArgs(resumeReasoningEffort, await resolveCodexComputerUseMcp()),
           developerInstructions: buildCodexDeveloperInstructions({
             laneWorktreePath: managed.laneWorktreePath,
             session: managed.session,

@@ -2053,7 +2053,7 @@ extension AgentChatEvent {
       )
     case "tool_call":
       let rawTool = try container.decode(String.self, forKey: .tool)
-      let mcp = try container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
+      let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
       self = .toolCall(
         tool: mcp?.displayToolName(fallback: rawTool) ?? rawTool,
         args: try container.decode(RemoteJSONValue.self, forKey: .args),
@@ -2064,7 +2064,7 @@ extension AgentChatEvent {
       )
     case "tool_result":
       let rawTool = try container.decode(String.self, forKey: .tool)
-      let mcp = try container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
+      let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
       self = .toolResult(
         tool: mcp?.displayToolName(fallback: rawTool) ?? rawTool,
         result: try container.decode(RemoteJSONValue.self, forKey: .result),

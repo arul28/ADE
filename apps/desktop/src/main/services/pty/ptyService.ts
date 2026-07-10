@@ -15,7 +15,10 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
+import {
+  resolveCodexComputerUseMcpConfig,
+  type CodexComputerUseMcpConfig,
+} from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
@@ -3429,6 +3432,7 @@ export function createPtyService({
     session: TerminalSessionSummary,
     provider: TerminalResumeProvider,
     overrides: ReturnType<typeof resumeLaunchOverrides> & { prompt?: string | null },
+    codexComputerUse: CodexComputerUseMcpConfig | null = null,
   ): { command: string | null; promptAtLaunch: boolean } => {
     const prompt = typeof overrides.prompt === "string" && overrides.prompt.trim().length
       ? overrides.prompt
@@ -3446,7 +3450,7 @@ export function createPtyService({
     const metadataOverrides = provider === "cursor"
       ? { ...overrides, prompt: null }
       : provider === "codex"
-        ? { ...overrides, codexComputerUse: resolveCodexComputerUseMcpConfig() }
+        ? { ...overrides, codexComputerUse }
         : overrides;
     const metadataResumeCommand = metadata
       ? buildTrackedCliResumeCommand(metadata, metadataOverrides)
@@ -4318,11 +4322,23 @@ export function createPtyService({
             prompt: text,
           })
         : null;
+      const codexComputerUse = provider === "codex"
+        ? await resolveCodexComputerUseMcpConfig()
+        : null;
+      // Resolve Computer Use before this single-flight snapshot. Once the
+      // snapshot is taken, command construction and flight creation must stay
+      // synchronous so a concurrent send cannot also assume its prompt will be
+      // embedded in the newly launched command.
       const resumeFlightAlreadyInProgress = resumeRuntimeFlights.has(sessionId);
-      const builtResume = buildResumeCommandForSession(resumableSession, provider, {
+      const builtResume = buildResumeCommandForSession(
+        resumableSession,
+        provider,
+        {
           ...overrides,
           ...(!openCodeReplayCommand && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
-        });
+        },
+        codexComputerUse,
+      );
       const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && builtResume.promptAtLaunch;
       const resumeCommand = openCodeReplayCommand ?? builtResume.command;
       if (!resumeCommand) {
@@ -4367,7 +4383,15 @@ export function createPtyService({
       }
 
       const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
-      const { command: resumeCommand } = buildResumeCommandForSession(resumableSession, provider, resumeLaunchOverrides(args));
+      const codexComputerUse = provider === "codex"
+        ? await resolveCodexComputerUseMcpConfig()
+        : null;
+      const { command: resumeCommand } = buildResumeCommandForSession(
+        resumableSession,
+        provider,
+        resumeLaunchOverrides(args),
+        codexComputerUse,
+      );
       if (!resumeCommand) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
       }
@@ -4481,7 +4505,7 @@ export function createPtyService({
           ? buildTrackedCliResumeCommand(
               session.resumeMetadata,
               session.resumeMetadata.provider === "codex"
-                ? { codexComputerUse: resolveCodexComputerUseMcpConfig() }
+                ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() }
                 : {},
             )
           : normalizeResumeCommand(session.resumeCommand, session.toolType);

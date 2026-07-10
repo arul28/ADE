@@ -101,7 +101,7 @@ export async function launchAgentChatCli(
       : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
-    ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
+    ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
   });
 
   const result = await deps.ptyService.create({

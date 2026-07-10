@@ -14243,7 +14243,7 @@ describe("createAgentChatService", () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
-    it("pins GPT-5.6 ordering/defaults over the authenticated app-server order", async () => {
+    it("pins GPT-5.6 ordering/defaults in filtered and provider-omitted catalogs", async () => {
       mockState.codexResponseOverrides.set("model/list", {
         data: [
           {
@@ -14328,6 +14328,12 @@ describe("createAgentChatService", () => {
       expect(models.slice(0, 3).flatMap((model) => model.reasoningEfforts ?? []))
         .not.toContainEqual(expect.objectContaining({ effort: "max" }));
       expect(models[3]?.isDefault).toBe(false);
+
+      const aggregate = await service.getAvailableModels({});
+      const codexIds = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+      const aggregatedCodexModels = aggregate.filter((model) => codexIds.has(model.id));
+      expect(aggregate.length).toBeGreaterThan(0);
+      expect(aggregatedCodexModels).toEqual(models.slice(0, 4));
     });
 
     it("returns an array for claude provider", async () => {
@@ -16554,11 +16560,11 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("injects the opted-in signed Computer Use MCP client into Codex threads", async () => {
+    it("awaits and injects the opted-in signed Computer Use MCP client into Codex threads", async () => {
       const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
 
       const { service } = createService({
-        resolveCodexComputerUseMcp: () => ({ command: signedClient, args: ["mcp"], enabled: true }),
+        resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
       });
       const session = await service.createSession({
         laneId: "lane-1",

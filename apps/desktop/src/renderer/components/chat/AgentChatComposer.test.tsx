@@ -843,6 +843,33 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenNthCalledWith(3, "decline");
   });
 
+  it.each([
+    "file:///tmp/authorize.html",
+    "about:blank",
+  ])("does not expose MCP authorization for non-HTTP(S) URL %s", (url) => {
+    renderComposer({
+      pendingInput: {
+        requestId: "mcp-auth-invalid-url",
+        itemId: "mcp-elicitation:computer_use:mcp-auth-invalid-url",
+        source: "codex",
+        kind: "approval",
+        description: "Allow Codex to authenticate this MCP server?",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          mcpElicitation: true,
+          persistenceSupported: false,
+          url,
+        },
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.queryByRole("button", { name: "Open authorization" })).toBeNull();
+  });
+
   it("does not offer persistent Computer Use approval when the server disallows it", () => {
     renderComposer({
       pendingInput: {

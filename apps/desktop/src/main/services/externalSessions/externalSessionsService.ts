@@ -340,14 +340,14 @@ function metadataForImport(args: {
   } as TerminalResumeMetadata;
 }
 
-function forkCommandFor(args: {
+async function forkCommandFor(args: {
   provider: ExternalSessionProvider;
   metadata: TerminalResumeMetadata;
   targetId: string;
   model?: string | null;
   permissionMode?: string | null;
   transplantedClaude: boolean;
-}): string {
+}): Promise<string> {
   if (args.provider === "claude") {
     const command = buildTrackedCliResumeCommand(
       { ...args.metadata, targetId: args.targetId },
@@ -365,7 +365,7 @@ function forkCommandFor(args: {
       {
         model: args.model,
         permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-        codexComputerUse: resolveCodexComputerUseMcpConfig(),
+        codexComputerUse: await resolveCodexComputerUseMcpConfig(),
       },
     );
     return withCodexNoAltScreen(resume.replace(/\bresume\b/u, "fork"));
@@ -702,9 +702,9 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       ? buildTrackedCliResumeCommand(metadata, {
           model: importArgs.model,
           permissionMode: importArgs.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-          ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
+          ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
         })
-      : forkCommandFor({
+      : await forkCommandFor({
           provider,
           metadata,
           targetId: launchTargetId,

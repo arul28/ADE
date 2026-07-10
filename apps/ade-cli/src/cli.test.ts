@@ -2057,6 +2057,19 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("requests the complete typed chat model inventory when provider is omitted", () => {
+    const executePlan = expectExecutePlan(buildCliPlan(["chat", "models"]));
+
+    expect(executePlan.label).toBe("chat models");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "getAvailableModels",
+        args: {},
+      },
+    });
+  });
+
   it("builds chat message with an explicit routing kind", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",

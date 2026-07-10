@@ -3517,6 +3517,9 @@ async function runTool(args: {
     const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
     const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
+    const codexComputerUse = provider === "codex"
+      ? await resolveCodexComputerUseMcpConfig()
+      : null;
 
     const launchFields: Partial<TrackedCliLaunchCommand> = (() => {
       if (provider === "shell") {
@@ -3536,7 +3539,7 @@ async function runTool(args: {
         fastMode,
         initialPrompt: initialInput,
         laneWorktreePath,
-        ...(provider === "codex" ? { codexComputerUse: resolveCodexComputerUseMcpConfig() } : {}),
+        ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     })();
 

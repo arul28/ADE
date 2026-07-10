@@ -250,6 +250,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cleaned, "SSeta")
   }
 
+  func testBundledVoiceGlossaryKeepsContextualTermsWithinSpeechAnalyzerLimit() {
+    let terms = VoiceGlossary.shared.contextualTerms
+
+    XCTAssertLessThanOrEqual(terms.count, 100)
+    XCTAssertTrue(terms.contains("GPT-5.6 Sol"))
+    XCTAssertTrue(terms.contains("GPT-5.6 Terra"))
+    XCTAssertTrue(terms.contains("GPT-5.6 Luna"))
+  }
+
   func testDictationBufferConverterRecreatesWhenInputFormatChanges() throws {
     let converter = DictationBufferConverter()
     let outputFormat = try XCTUnwrap(AVAudioFormat(
@@ -11956,6 +11965,28 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toolDisplayName(cards.first?.toolName ?? ""), "Google Drive · search files")
     XCTAssertEqual(cards.first?.resultText, "2 files")
     XCTAssertTrue(isRequestUserInputToolName("ADE:request_user_input"))
+  }
+
+  func testMalformedMcpMetadataFallsBackToRawToolForCallAndResult() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"google_drive:search_files","args":{"query":"roadmap"},"mcp":{"server":"google_drive"},"itemId":"mcp-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"tool_result","tool":"google_drive:search_files","result":"2 files","mcp":{"tool":"search_files"},"itemId":"mcp-1","turnId":"turn-1","status":"completed"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+
+    guard transcript.count == 2,
+          case .toolCall(let callTool, _, let callItemId, _, _) = transcript[0].event,
+          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status) = transcript[1].event else {
+      return XCTFail("Expected malformed MCP metadata to preserve the raw tool call and result.")
+    }
+    XCTAssertEqual(callTool, "google_drive:search_files")
+    XCTAssertEqual(callItemId, "mcp-1")
+    XCTAssertEqual(resultTool, "google_drive:search_files")
+    XCTAssertEqual(resultText, "2 files")
+    XCTAssertEqual(resultItemId, "mcp-1")
+    XCTAssertEqual(status, .completed)
   }
 
   func testParseWorkChatTranscriptPrefersUserMessageDisplayText() {
