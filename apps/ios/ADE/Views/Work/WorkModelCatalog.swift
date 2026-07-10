@@ -236,6 +236,7 @@ private func workCodex56ReasoningEfforts(includeUltra: Bool) -> [AgentChatModelR
     AgentChatModelReasoningEffort(effort: "medium", description: "Balanced speed and reasoning"),
     AgentChatModelReasoningEffort(effort: "high", description: "Deeper reasoning for complex work"),
     AgentChatModelReasoningEffort(effort: "xhigh", description: "Extended reasoning for difficult work"),
+    AgentChatModelReasoningEffort(effort: "max", description: "Maximum reasoning depth for the hardest problems"),
   ]
   if includeUltra {
     efforts.append(AgentChatModelReasoningEffort(
@@ -257,17 +258,11 @@ private func workVisibleReasoningEfforts(
     || canonicalId == "openai/gpt-5.6-luna" else {
     return advertised ?? fallback
   }
-  let visibleAdvertised = advertised?.filter {
-    $0.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "max"
-  } ?? []
-  if !visibleAdvertised.isEmpty {
-    return visibleAdvertised
+  if let advertised, !advertised.isEmpty {
+    return advertised
   }
-  let visibleFallback = fallback.filter {
-    $0.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "max"
-  }
-  if !visibleFallback.isEmpty {
-    return visibleFallback
+  if !fallback.isEmpty {
+    return fallback
   }
   switch canonicalId {
   case "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
@@ -291,11 +286,11 @@ private func workVisibleDefaultReasoningEffort(
     return advertised ?? fallback
   }
   let normalizedAdvertised = advertised?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  if let normalizedAdvertised, !normalizedAdvertised.isEmpty, normalizedAdvertised != "max" {
+  if let normalizedAdvertised, !normalizedAdvertised.isEmpty {
     return normalizedAdvertised
   }
   let normalizedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  if let normalizedFallback, !normalizedFallback.isEmpty, normalizedFallback != "max" {
+  if let normalizedFallback, !normalizedFallback.isEmpty {
     return normalizedFallback
   }
   switch canonicalId {

@@ -20,7 +20,7 @@ import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
 import { normalizeProvider, providerLabel } from "./providerMetadata";
 
-export const EFFORTS = ["low", "medium", "high", "xhigh", "ultra"];
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
 export const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 export const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
@@ -69,10 +69,9 @@ export function cliProviderForModelStateProvider(provider: AdeCodeProvider): Cli
 
 function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
   const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
-  const isGpt56CodexModel = provider === "codex" && /gpt-5\.6-(?:sol|terra|luna)/.test(modelId);
   const efforts = model?.reasoningEfforts
     ?.map((entry) => entry.effort)
-    .filter((effort) => Boolean(effort) && (!isGpt56CodexModel || effort !== "max")) ?? [];
+    .filter(Boolean) ?? [];
   const advertisedDefault = model?.defaultReasoningEffort?.trim().toLowerCase() ?? null;
   if (modelId.includes("fable") && efforts.includes("high")) return "high";
   if (advertisedDefault && efforts.includes(advertisedDefault)) return advertisedDefault;
@@ -285,13 +284,8 @@ export function modelReasoningEfforts(modelState: AdeCodeModelState, models: Age
   const model = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
   const fromModel = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
   const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
-  const isGpt56CodexModel = modelState.provider === "codex"
-    && /gpt-5\.6-(?:sol|terra|luna)/i.test(`${descriptor?.providerModelId ?? ""} ${modelState.model}`);
-  const visibleEfforts = (efforts: string[]) => isGpt56CodexModel
-    ? efforts.filter((effort) => effort !== "max")
-    : efforts;
-  if (fromModel.length) return visibleEfforts(fromModel);
-  if (descriptor?.reasoningTiers?.length) return visibleEfforts(descriptor.reasoningTiers);
+  if (fromModel.length) return fromModel;
+  if (descriptor?.reasoningTiers?.length) return descriptor.reasoningTiers;
   return modelState.provider === "codex" ? EFFORTS : [];
 }
 
@@ -307,6 +301,7 @@ export function reasoningEffortDisplayLabel(
   if (effort === "medium") return "Medium";
   if (effort === "high") return "High";
   if (effort === "xhigh") return "Extra High";
+  if (effort === "max") return "Max";
   if (effort === "ultra") return "Ultra";
   return effort;
 }

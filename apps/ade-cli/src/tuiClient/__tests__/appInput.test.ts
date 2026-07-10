@@ -1203,7 +1203,7 @@ describe("interface draft setup", () => {
     ]);
   });
 
-  it("shows the product-facing Sol effort ladder without internal max", () => {
+  it("shows the complete GPT-5.6 effort ladders from runtime and registry metadata", () => {
     const modelState = initialModelState("chat");
     const models = [{
       id: "gpt-5.6-sol",
@@ -1214,7 +1214,19 @@ describe("interface draft setup", () => {
         .map((effort) => ({ effort, description: effort })),
     }];
 
-    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "ultra"]);
+    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(modelReasoningEfforts({
+      ...modelState,
+      model: "gpt-5.6-terra",
+      modelId: "openai/gpt-5.6-terra",
+      displayName: "GPT-5.6 Terra",
+    }, [])).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(modelReasoningEfforts({
+      ...modelState,
+      model: "gpt-5.6-luna",
+      modelId: "openai/gpt-5.6-luna",
+      displayName: "GPT-5.6 Luna",
+    }, [])).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(buildSetupRows({
       modelState,
       models,
@@ -1224,7 +1236,7 @@ describe("interface draft setup", () => {
       interfaceEditable: true,
     }).find((row) => row.kind === "reasoning")).toMatchObject({
       value: "Light",
-      detail: "Light, Medium, High, Extra High, Ultra",
+      detail: "Light, Medium, High, Extra High, Max, Ultra",
     });
   });
 

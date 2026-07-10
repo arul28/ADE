@@ -202,10 +202,9 @@ export function descriptorsFromAgentChatModelCatalog(
         for (const model of subsection.models ?? []) {
           const base = resolveModelDescriptor(model.id) ?? createUnknownModelPlaceholder(model.id);
           const family = pickerFamilyForCatalogGroup(String(model.groupKey || group.key), model.family);
-          const isGpt56CodexModel = /^gpt-5\.6-(?:sol|terra|luna)$/i.test(base.providerModelId);
           const runtimeReasoningTiers = model.reasoningEfforts
             ?.map((entry) => entry.effort.trim().toLowerCase())
-            .filter((effort) => Boolean(effort) && (!isGpt56CodexModel || effort !== "max"));
+            .filter(Boolean);
           const serviceTiers = model.serviceTiers
             ?.map((entry) => entry.trim().toLowerCase())
             .filter(Boolean);

@@ -114,12 +114,10 @@ The OpenAI section is pinned in this order on every ADE model surface:
 3. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 
 GPT-5.5 remains selectable below them. Sol and Terra expose `low | medium |
-high | xhigh | ultra`; Luna exposes `low | medium | high | xhigh`. Desktop,
-ADE Code, and iOS label those values Light, Medium, High, Extra High, and
-Ultra. `ultra` is the multi-agent tier and carries a usage warning. Although a
-raw 0.144.0 app-server catalog may advertise `max`, Codex Desktop puts that
-tier behind a separate feature opt-in, so ADE filters it from the GPT-5.6
-picker ladder rather than presenting it as an ordinary level.
+high | xhigh | max | ultra`; Luna exposes `low | medium | high | xhigh | max`.
+Desktop, ADE Code, and iOS label those values Light, Medium, High, Extra High,
+Max, and (for Sol/Terra) Ultra. Runtime app-server ladders retain their
+advertised order. `ultra` is the multi-agent tier and carries a usage warning.
 
 `selectSupportedReasoningEffort()` centralizes fallback order: keep a valid
 explicit selection, then use the model's advertised default, then a valid
