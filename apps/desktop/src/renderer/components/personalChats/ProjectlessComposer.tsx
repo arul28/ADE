@@ -90,8 +90,10 @@ export function ProjectlessComposer({
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
             // isComposing: Enter confirms an in-progress IME composition
-            // (CJK input) and must not send the message.
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            // (CJK input) and must not send the message. During an active turn
+            // the Send control is replaced by Stop, so Enter falls through to
+            // a plain newline instead of enqueuing another message.
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !turnActive) {
               event.preventDefault();
               onSubmit();
             }
