@@ -304,6 +304,34 @@ describe("buildTrackedCliStartupCommand", () => {
       }
     });
 
+    it("injects the signed Computer Use MCP client only when main selects it", () => {
+      const command = "/Users/test/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient";
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        codexComputerUse: { command, args: ["mcp"] },
+      });
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "-c",
+        `mcp_servers.computer_use.command=${JSON.stringify(command)}`,
+        "-c",
+        'mcp_servers.computer_use.args=["mcp"]',
+        "-c",
+        "mcp_servers.computer_use.enabled=true",
+      ]));
+      expect(launch.startupCommand).toContain("mcp_servers.computer_use.command");
+      expect(launch.startupCommand).not.toContain("mcp_servers.computer-use");
+
+      const resumed = buildTrackedCliResumeCommand({
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-cu",
+        launch: { permissionMode: "default" },
+      }, { codexComputerUse: { command, args: ["mcp"] } });
+      expect(resumed).toContain("mcp_servers.computer_use.command");
+      expect(resumed).toContain("resume thread-cu");
+    });
+
     it("keeps empty Codex CLI launches waiting for the next user task", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
 

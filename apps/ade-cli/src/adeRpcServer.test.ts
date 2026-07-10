@@ -1728,9 +1728,16 @@ describe("adeRpcServer", () => {
       expect.objectContaining({
         cols: 400,
         rows: 200,
-        startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request"),
+        startupCommand: expect.stringContaining("codex --no-alt-screen"),
       }),
     );
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall?.args).toEqual(expect.arrayContaining([
+      "--sandbox",
+      "workspace-write",
+      "--ask-for-approval",
+      "on-request",
+    ]));
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
   });
 

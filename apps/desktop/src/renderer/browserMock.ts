@@ -57,7 +57,7 @@ const resolvedArg2 =
   async (_a: any, _b: any) =>
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
@@ -4693,6 +4693,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       cancelDispatchedSteer: resolvedArg({ cancelled: false }),
       interrupt: resolvedArg(undefined),
+      recoverCodexTurn: async (args: any) => ({
+        action: args.action,
+        turnId: args.turnId,
+        status: args.action === "wait"
+          ? "waiting"
+          : args.action === "steer"
+            ? "nudged"
+            : args.action === "restart_resume_thread"
+              ? "resumed"
+              : "retrying",
+      }),
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       models: resolvedArg([]),

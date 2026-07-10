@@ -11,6 +11,7 @@ import {
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
+  type AgentChatRecoverCodexTurnArgs,
   type AgentChatCursorConfigValue,
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
@@ -77,6 +78,7 @@ import {
   resolveCliProviderForModel,
   resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
+  selectSupportedReasoningEffort,
   type LocalProviderFamily,
   type ModelDescriptor,
   type ProviderFamily,
@@ -131,6 +133,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
+import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
@@ -1544,12 +1547,15 @@ function selectReasoningEffort(args: {
   preferred: string | null;
   modelId?: string | null;
 }): string | null {
-  if (!args.tiers.length) return null;
-  if (args.preferred && args.tiers.includes(args.preferred)) {
-    return args.preferred;
-  }
-  if (args.modelId?.toLowerCase().includes("fable") && args.tiers.includes("high")) return "high";
-  return args.tiers.includes("medium") ? "medium" : args.tiers[0]!;
+  const descriptor = args.modelId
+    ? resolveModelDescriptorWithRuntimeCatalog(args.modelId) ?? getModelById(args.modelId)
+    : undefined;
+  return selectSupportedReasoningEffort({
+    tiers: args.tiers,
+    preferred: args.preferred,
+    advertisedDefault: descriptor?.defaultReasoningEffort,
+    fallback: args.modelId?.toLowerCase().includes("fable") ? "high" : null,
+  });
 }
 
 function resolveAssistantLabel(
@@ -2702,7 +2708,14 @@ const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
 };
 
 function parseChatActionsTab(value: unknown): ChatActionsTab {
-  if (value === "agents" || value === "proof" || value === "handoff" || value === "missions") return value;
+  if (
+    value === "sources"
+    || value === "agents"
+    || value === "proof"
+    || value === "handoff"
+    || value === "missions"
+    || value === "run"
+  ) return value;
   return "agents";
 }
 
@@ -9508,6 +9521,9 @@ export function AgentChatPane({
       ) : undefined}
       proofContent={proofTabContent}
       handoffContent={handoffTabContent}
+      sourcesContent={selectedSession?.provider === "codex" ? (
+        <ChatSourcesPanel events={selectedEventsForDisplay} />
+      ) : undefined}
       runContent={showWorkspaceChrome && laneId ? (
         <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
           <div>
@@ -10819,6 +10835,8 @@ export function AgentChatPane({
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
+                      onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
+                        window.ade.agentChat.recoverCodexTurn(args)}
                       mosaic={subagentView ? undefined : mosaicContext}
                     />
                     {sessionDelta ? (

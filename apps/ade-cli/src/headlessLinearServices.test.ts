@@ -573,8 +573,8 @@ describe("headlessLinearServices", () => {
       laneId: "lane-1",
     });
     expect(session.title).toBe("CTO Headless Session");
-    expect(session.model).toBe("gpt-5.5");
-    expect(session.modelId).toBe("openai/gpt-5.5");
+    expect(session.model).toBe("gpt-5.6-sol");
+    expect(session.modelId).toBe("openai/gpt-5.6-sol");
 
     services.dispose();
   });

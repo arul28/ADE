@@ -130,6 +130,11 @@ const mocks = vi.hoisted(() => {
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
     resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
+    resolveCodexComputerUseMcpConfig: vi.fn(async (): Promise<{
+      command: string;
+      args: ["mcp"];
+      enabled: true;
+    } | null> => null),
     execFileSync: vi.fn((_file?: unknown, _args?: unknown) => ""),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
@@ -209,6 +214,10 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({
   resolveOpenCodeBinaryPath: mocks.resolveOpenCodeBinaryPath,
+}));
+
+vi.mock("../../utils/codexComputerUse", () => ({
+  resolveCodexComputerUseMcpConfig: mocks.resolveCodexComputerUseMcpConfig,
 }));
 
 import {
@@ -413,6 +422,7 @@ describe("ptyService", () => {
     mocks.extractResumeCommandFromOutput.mockReturnValue(null);
     mocks.derivePreviewFromChunk.mockReturnValue({ nextLine: "", preview: "preview" });
     mocks.resolveOpenCodeBinaryPath.mockReturnValue(null);
+    mocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
@@ -2613,6 +2623,53 @@ describe("ptyService", () => {
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
+    it("includes the asynchronously resolved Computer Use MCP config in Codex resume args", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      const command = "/Applications/Codex Computer Use.app/Contents/MacOS/SkyComputerUseClient";
+      mocks.resolveCodexComputerUseMcpConfig.mockResolvedValueOnce({
+        command,
+        args: ["mcp"],
+        enabled: true,
+      });
+      sessionService.create({
+        sessionId: "session-codex-computer-use",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-codex-computer-use.log",
+        toolType: "codex",
+        resumeCommand: "codex resume thread-computer-use",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-computer-use",
+          launch: { permissionMode: "default" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-codex-computer-use",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.resumeSession({
+        sessionId: "session-codex-computer-use",
+        cols: 120,
+        rows: 40,
+      });
+
+      expect(mocks.resolveCodexComputerUseMcpConfig).toHaveBeenCalledTimes(1);
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      const startupCommand = spawn.mock.calls[0]?.[1]?.[3] as string;
+      expect(startupCommand).toContain("mcp_servers.computer_use.command");
+      expect(startupCommand).toContain("mcp_servers.computer_use.args");
+      expect(startupCommand).toContain("mcp_servers.computer_use.enabled=true");
+      expect(startupCommand).toContain("SkyComputerUseClient");
     });
 
     it("sendToSession launches resumed Codex with the prompt argument when the composer is visible", async () => {

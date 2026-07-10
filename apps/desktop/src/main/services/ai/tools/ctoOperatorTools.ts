@@ -335,7 +335,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
       "(e.g. 'anthropic/claude-opus-4-8' for Opus, 'anthropic/claude-sonnet-5' for Sonnet, " +
-      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.5' for GPT-5.5). " +
+      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.6-sol' for Sol). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
@@ -343,7 +343,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     inputSchema: z.object({
       laneId: z.string().optional().describe("Lane to run in. Defaults to the primary lane. A new lane is auto-created if needed."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
-      reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
+      reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
       initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),

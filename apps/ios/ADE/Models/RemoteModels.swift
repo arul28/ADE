@@ -1730,6 +1730,31 @@ struct CodexWebSearchAction: Codable, Equatable {
   var snippet: String?
 }
 
+struct AgentChatMcpAppContext: Codable, Equatable {
+  var connectorId: String?
+  var linkId: String?
+  var resourceUri: String?
+  var appName: String?
+  var templateId: String?
+  var actionName: String?
+}
+
+struct AgentChatMcpToolSource: Codable, Equatable {
+  var server: String
+  var tool: String
+  var pluginId: String?
+  var resourceUri: String?
+  var appContext: AgentChatMcpAppContext?
+
+  func displayToolName(fallback: String) -> String {
+    let appName = appContext?.appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let sourceName = appName.isEmpty ? server.trimmingCharacters(in: .whitespacesAndNewlines) : appName
+    let resolvedTool = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sourceName.isEmpty, !resolvedTool.isEmpty else { return fallback }
+    return "\(sourceName):\(resolvedTool)"
+  }
+}
+
 struct CodexSafetyBufferingState: Codable, Equatable {
   var threadId: String?
   var turnId: String?
@@ -1874,11 +1899,13 @@ enum AgentChatEvent: Decodable, Equatable {
   case codexSafetyBuffering(state: CodexSafetyBufferingState, turnId: String?)
   case codexModerationMetadata(metadata: CodexModerationMetadata, turnId: String?)
   case codexSleep(itemId: String, turnId: String?, durationMs: Int?, status: String)
-  case codexTurnStalled(turnId: String, threadId: String?, reason: String, message: String, recoveryOptions: [String]?)
+  case codexTurnStalled(turnId: String, threadId: String?, reason: String, message: String, recoveryOptions: [String]?, sourceSessionId: String?)
   case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
+  case codexImageGeneration(itemId: String, turnId: String?, prompt: String?, revisedPrompt: String?, result: String?, savedPath: String?, resultOriginalBytes: Int?, resultOmittedBytes: Int?, status: String)
+  case codexImageView(itemId: String, turnId: String?, path: String?, url: String?, title: String?, urlOriginalBytes: Int?, urlOmittedBytes: Int?, status: String)
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
   case promptSuggestion(suggestion: String, turnId: String?)
   case planText(text: String, turnId: String?, itemId: String?)
@@ -1900,6 +1927,7 @@ extension AgentChatEvent {
     case logicalItemId
     case parentItemId
     case tool
+    case mcp
     case args
     case result
     case path
@@ -1970,6 +1998,7 @@ extension AgentChatEvent {
     case state
     case reasons
     case recoveryOptions
+    case sourceSessionId
     case threadId
     case metadata
     case noticeKind
@@ -1982,6 +2011,13 @@ extension AgentChatEvent {
     case suggestion
     case targetItemId
     case resolution
+    case revisedPrompt
+    case savedPath
+    case url
+    case resultOriginalBytes
+    case resultOmittedBytes
+    case urlOriginalBytes
+    case urlOmittedBytes
   }
 
   init(from decoder: Decoder) throws {
@@ -2016,8 +2052,10 @@ extension AgentChatEvent {
         itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
       )
     case "tool_call":
+      let rawTool = try container.decode(String.self, forKey: .tool)
+      let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
       self = .toolCall(
-        tool: try container.decode(String.self, forKey: .tool),
+        tool: mcp?.displayToolName(fallback: rawTool) ?? rawTool,
         args: try container.decode(RemoteJSONValue.self, forKey: .args),
         itemId: try container.decode(String.self, forKey: .itemId),
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
@@ -2025,8 +2063,10 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "tool_result":
+      let rawTool = try container.decode(String.self, forKey: .tool)
+      let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
       self = .toolResult(
-        tool: try container.decode(String.self, forKey: .tool),
+        tool: mcp?.displayToolName(fallback: rawTool) ?? rawTool,
         result: try container.decode(RemoteJSONValue.self, forKey: .result),
         itemId: try container.decode(String.self, forKey: .itemId),
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
@@ -2327,7 +2367,8 @@ extension AgentChatEvent {
         threadId: threadId,
         reason: reason,
         message: message,
-        recoveryOptions: recoveryOptions
+        recoveryOptions: recoveryOptions,
+        sourceSessionId: try container.decodeIfPresent(String.self, forKey: .sourceSessionId)
       )
     case "codex_thread_deleted":
       self = .codexThreadDeleted(
@@ -2355,6 +2396,29 @@ extension AgentChatEvent {
         itemId: try container.decode(String.self, forKey: .itemId),
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "codex_image_generation", "image_generation":
+      self = .codexImageGeneration(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        prompt: try container.decodeIfPresent(String.self, forKey: .prompt),
+        revisedPrompt: try container.decodeIfPresent(String.self, forKey: .revisedPrompt),
+        result: try container.decodeIfPresent(String.self, forKey: .result),
+        savedPath: try container.decodeIfPresent(String.self, forKey: .savedPath),
+        resultOriginalBytes: try container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes),
+        resultOmittedBytes: try container.decodeIfPresent(Int.self, forKey: .resultOmittedBytes),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "codex_image_view", "image_view":
+      self = .codexImageView(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        path: try container.decodeIfPresent(String.self, forKey: .path),
+        url: try container.decodeIfPresent(String.self, forKey: .url),
+        title: try container.decodeIfPresent(String.self, forKey: .title),
+        urlOriginalBytes: try container.decodeIfPresent(Int.self, forKey: .urlOriginalBytes),
+        urlOmittedBytes: try container.decodeIfPresent(Int.self, forKey: .urlOmittedBytes),
         status: try container.decode(String.self, forKey: .status)
       )
     case "auto_approval_review":
@@ -2419,6 +2483,8 @@ extension AgentChatEvent {
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
     case .webSearch: return "web_search"
+    case .codexImageGeneration: return "codex_image_generation"
+    case .codexImageView: return "codex_image_view"
     case .autoApprovalReview: return "auto_approval_review"
     case .promptSuggestion: return "prompt_suggestion"
     case .planText: return "plan_text"
@@ -2481,6 +2547,18 @@ struct AgentChatCancelDispatchedSteerRequest: Codable, Equatable {
 
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
+}
+
+struct AgentChatRecoverCodexTurnRequest: Codable, Equatable {
+  var sessionId: String
+  var turnId: String
+  var action: String
+}
+
+struct AgentChatRecoverCodexTurnResult: Codable, Equatable {
+  var action: String
+  var turnId: String
+  var status: String
 }
 
 struct AgentChatSessionIdRequest: Codable, Equatable {
@@ -2557,6 +2635,7 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var description: String?
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
+  var defaultReasoningEffort: String? = nil
   var serviceTiers: [String]?
   var aliases: [String]? = nil
   var maxThinkingTokens: Int?
@@ -2590,6 +2669,7 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var description: String?
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
+  var defaultReasoningEffort: String? = nil
   var serviceTiers: [String]?
   var aliases: [String]? = nil
   var maxThinkingTokens: Int?

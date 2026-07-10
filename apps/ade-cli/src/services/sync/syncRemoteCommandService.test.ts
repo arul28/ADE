@@ -288,6 +288,53 @@ describe("createSyncRemoteCommandService", () => {
     expect(ptyService.resumeSession).not.toHaveBeenCalled();
   });
 
+  it("routes all Codex recovery actions through the mobile sync command", async () => {
+    const recoverCodexTurn = vi.fn(async (args) => ({
+      action: args.action,
+      turnId: args.turnId,
+      status: args.action === "wait" ? "waiting" : "retrying",
+    }));
+    const { service } = createService({ agentChatService: { recoverCodexTurn } });
+
+    expect(service.getDescriptor("chat.recoverCodexTurn")).toEqual({
+      action: "chat.recoverCodexTurn",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+
+    for (const action of [
+      "wait",
+      "steer",
+      "interrupt_retry_same_thread",
+      "restart_resume_thread",
+    ]) {
+      await service.execute(makePayload("chat.recoverCodexTurn", {
+        sessionId: "chat-1",
+        turnId: "turn-1",
+        action,
+      }));
+    }
+
+    expect(recoverCodexTurn.mock.calls.map(([args]) => args)).toEqual([
+      { sessionId: "chat-1", turnId: "turn-1", action: "wait" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "steer" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "interrupt_retry_same_thread" },
+      { sessionId: "chat-1", turnId: "turn-1", action: "restart_resume_thread" },
+    ]);
+  });
+
+  it("rejects unsupported Codex recovery actions before invoking chat", async () => {
+    const recoverCodexTurn = vi.fn();
+    const { service } = createService({ agentChatService: { recoverCodexTurn } });
+
+    await expect(service.execute(makePayload("chat.recoverCodexTurn", {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "replace",
+    }))).rejects.toThrow("unsupported action 'replace'");
+    expect(recoverCodexTurn).not.toHaveBeenCalled();
+  });
+
   it("omits non-finite work.resumeCliSession dimensions", async () => {
     const { service, ptyService } = createService();
 

@@ -16,6 +16,132 @@ func workStableTimelineItemId(itemId: String?, logicalItemId: String?) -> String
   return itemId
 }
 
+private func workNonEmptyImageField(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workCompactImageResult(_ value: String?) -> String? {
+  guard let value = workNonEmptyImageField(value) else { return nil }
+  if value.lowercased().hasPrefix("data:") {
+    return "Generated image data"
+  }
+  return value
+}
+
+private func workCompactImageReference(_ value: String?) -> String? {
+  guard let value = workNonEmptyImageField(value) else { return nil }
+  return value.lowercased().hasPrefix("data:") ? "Inline image data" : value
+}
+
+private func workOmittedImageDetail(originalBytes: Int?, omittedBytes: Int?) -> String? {
+  guard let omittedBytes, omittedBytes > 0 else { return nil }
+  let bytes = max(originalBytes ?? omittedBytes, omittedBytes)
+  let count: String
+  if bytes >= 1024 * 1024 {
+    count = String(format: "%.1f MB", Double(bytes) / Double(1024 * 1024))
+  } else if bytes >= 1024 {
+    count = "\((bytes + 512) / 1024) KB"
+  } else {
+    count = "\(bytes) bytes"
+  }
+  return "Inline preview omitted from mobile sync (\(count))"
+}
+
+func workCodexImageGenerationEvent(
+  itemId: String,
+  turnId: String?,
+  prompt: String?,
+  revisedPrompt: String?,
+  result: String?,
+  savedPath: String?,
+  resultOriginalBytes: Int? = nil,
+  resultOmittedBytes: Int? = nil,
+  status rawStatus: String
+) -> WorkChatEvent {
+  let status = toolStatus(from: rawStatus)
+  let effectivePrompt = workNonEmptyImageField(revisedPrompt) ?? workNonEmptyImageField(prompt)
+  if status == .running {
+    return .toolCall(
+      tool: "image_generation",
+      argsText: effectivePrompt ?? "Generating image",
+      itemId: itemId,
+      parentItemId: nil,
+      turnId: turnId
+    )
+  }
+
+  var lines: [String] = []
+  if let savedPath = workNonEmptyImageField(savedPath) {
+    lines.append(savedPath)
+  }
+  if let result = workCompactImageResult(result), !lines.contains(result) {
+    lines.append(result)
+  }
+  if let omittedDetail = workOmittedImageDetail(
+    originalBytes: resultOriginalBytes,
+    omittedBytes: resultOmittedBytes
+  ) {
+    lines.append(omittedDetail)
+  }
+  if let effectivePrompt {
+    lines.append("Prompt: \(effectivePrompt)")
+  }
+  if lines.isEmpty {
+    lines.append(status == .failed ? "Image generation failed" : "Image generated")
+  }
+  return .toolResult(
+    tool: "image_generation",
+    resultText: lines.joined(separator: "\n"),
+    itemId: itemId,
+    parentItemId: nil,
+    turnId: turnId,
+    status: status
+  )
+}
+
+func workCodexImageViewEvent(
+  itemId: String,
+  turnId: String?,
+  path: String?,
+  url: String?,
+  title: String?,
+  urlOriginalBytes: Int? = nil,
+  urlOmittedBytes: Int? = nil,
+  status rawStatus: String
+) -> WorkChatEvent {
+  let status = toolStatus(from: rawStatus)
+  var fields = [
+    workNonEmptyImageField(title),
+    workCompactImageReference(path),
+    workCompactImageReference(url),
+  ].compactMap { $0 }
+  if let omittedDetail = workOmittedImageDetail(
+    originalBytes: urlOriginalBytes,
+    omittedBytes: urlOmittedBytes
+  ) {
+    fields.append(omittedDetail)
+  }
+  let detail = fields.isEmpty ? "Image" : fields.joined(separator: "\n")
+  if status == .running {
+    return .toolCall(
+      tool: "image_view",
+      argsText: detail,
+      itemId: itemId,
+      parentItemId: nil,
+      turnId: turnId
+    )
+  }
+  return .toolResult(
+    tool: "image_view",
+    resultText: detail,
+    itemId: itemId,
+    parentItemId: nil,
+    turnId: turnId,
+    status: status
+  )
+}
+
 private final class WorkANSIAttributedStringCacheBox: NSObject {
   let value: AttributedString
 
@@ -307,6 +433,29 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .autoApprovalReview(summary: summary, turnId: turnId)
   case .webSearch(let query, let action, let actions, let itemId, let logicalItemId, let turnId, let status):
     return .webSearch(query: query, action: action, actions: actions, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
+  case .codexImageGeneration(let itemId, let turnId, let prompt, let revisedPrompt, let result, let savedPath, let resultOriginalBytes, let resultOmittedBytes, let status):
+    return workCodexImageGenerationEvent(
+      itemId: itemId,
+      turnId: turnId,
+      prompt: prompt,
+      revisedPrompt: revisedPrompt,
+      result: result,
+      savedPath: savedPath,
+      resultOriginalBytes: resultOriginalBytes,
+      resultOmittedBytes: resultOmittedBytes,
+      status: status
+    )
+  case .codexImageView(let itemId, let turnId, let path, let url, let title, let urlOriginalBytes, let urlOmittedBytes, let status):
+    return workCodexImageViewEvent(
+      itemId: itemId,
+      turnId: turnId,
+      path: path,
+      url: url,
+      title: title,
+      urlOriginalBytes: urlOriginalBytes,
+      urlOmittedBytes: urlOmittedBytes,
+      status: status
+    )
   case .codexSafetyBuffering(let state, let turnId):
     let detail = state.fasterModel.map { "Buffering, \($0) ready" } ?? "Buffering"
     return .codexState(title: "Safety", message: detail, icon: "shield.checkered", turnId: turnId ?? state.turnId)
@@ -317,8 +466,13 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .codexState(title: "Wait", message: duration.map { "Sleeping \($0)" } ?? "Sleeping", icon: "hourglass", turnId: turnId)
   case .codexThreadDeleted(_, let turnId):
     return .codexState(title: "Thread", message: "Deleted upstream. Next message starts fresh.", icon: "exclamationmark.triangle", turnId: turnId)
-  case .codexTurnStalled(let turnId, _, _, let message, let recoveryOptions):
-    return .codexTurnStalled(message: message, recoveryOptions: recoveryOptions ?? [], turnId: turnId)
+  case .codexTurnStalled(let turnId, _, _, let message, let recoveryOptions, let sourceSessionId):
+    return .codexTurnStalled(
+      message: message,
+      recoveryOptions: recoveryOptions ?? [],
+      turnId: turnId,
+      sourceSessionId: sourceSessionId
+    )
   case .planText(let text, let turnId, _):
     return .planText(text: text, turnId: turnId)
   case .toolUseSummary(let summary, _, let turnId):

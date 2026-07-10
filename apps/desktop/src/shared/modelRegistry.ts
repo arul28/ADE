@@ -53,6 +53,8 @@ export type ModelDescriptor = {
   maxOutputTokens: number;
   capabilities: ModelCapabilities;
   reasoningTiers?: string[];
+  /** Runtime-recommended effort when the user has not chosen one explicitly. */
+  defaultReasoningEffort?: string;
   serviceTiers?: string[];
   color: string;
   providerRoute: string;
@@ -95,6 +97,22 @@ export type DynamicLocalModelDescriptorOptions = {
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
 export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "droid";
+
+/** Select a valid reasoning tier without duplicating fallback policy in each UI. */
+export function selectSupportedReasoningEffort(args: {
+  tiers: readonly string[];
+  preferred?: string | null;
+  advertisedDefault?: string | null;
+  fallback?: string | null;
+}): string | null {
+  if (!args.tiers.length) return null;
+  if (args.preferred && args.tiers.includes(args.preferred)) return args.preferred;
+  if (args.advertisedDefault && args.tiers.includes(args.advertisedDefault)) {
+    return args.advertisedDefault;
+  }
+  if (args.fallback && args.tiers.includes(args.fallback)) return args.fallback;
+  return args.tiers.includes("medium") ? "medium" : args.tiers[0] ?? null;
+}
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
   return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid";
@@ -378,6 +396,74 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ADE codex chat surfaces use real OpenAI model ids as the canonical
   // registry ids; older ADE-internal "-codex" wrapper ids remain aliases so
   // persisted sessions continue to resolve.
+  {
+    id: "openai/gpt-5.6-sol",
+    shortId: "gpt-5.6-sol",
+    aliases: ["sol", "gpt-5.6-sol"],
+    displayName: "GPT-5.6 Sol",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    // Codex keeps `max` behind an opt-in model-feature flag. ADE aligns with
+    // the default product-facing ladder while exposing Ultra orchestration.
+    reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.6-sol",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 30,
+    costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.6-terra",
+    shortId: "gpt-5.6-terra",
+    aliases: ["terra", "gpt-5.6-terra"],
+    displayName: "GPT-5.6 Terra",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "ultra"],
+    defaultReasoningEffort: "medium",
+    serviceTiers: ["fast"],
+    color: "#22B88A",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.6-terra",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2.5,
+    outputPricePer1M: 15,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-5.6-luna",
+    shortId: "gpt-5.6-luna",
+    aliases: ["luna", "gpt-5.6-luna"],
+    displayName: "GPT-5.6 Luna",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 372_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    serviceTiers: ["fast"],
+    color: "#34D399",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.6-luna",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1,
+    outputPricePer1M: 6,
+    costTier: "low",
+  },
   {
     id: "openai/gpt-5.5",
     shortId: "gpt-5.5",
@@ -1570,6 +1656,13 @@ function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | un
 }
 
 function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  const sol = models
+    .filter((model) => /gpt-\d+(?:\.\d+)*-sol$/i.test(model.providerModelId))
+    .sort((left, right) => compareVersionSegmentsDesc(
+      parseVersionSegments(left.providerModelId),
+      parseVersionSegments(right.providerModelId),
+    ));
+  if (sol[0]) return sol[0];
   const standard = models
     .filter((model) => /gpt-\d+(?:\.\d+)*(?:-codex)?$/i.test(model.id) || /gpt-\d+(?:\.\d+)*$/i.test(model.providerModelId))
     .sort((left, right) => {

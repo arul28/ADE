@@ -48,6 +48,7 @@ import type {
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
+  AgentChatRecoverCodexTurnArgs,
   AgentChatUpdateSessionArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
@@ -213,6 +214,7 @@ import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAtta
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
@@ -1930,6 +1932,23 @@ function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatI
   };
 }
 
+function parseAgentChatRecoverCodexTurnArgs(value: Record<string, unknown>): AgentChatRecoverCodexTurnArgs {
+  const action = requireString(value.action, "chat.recoverCodexTurn requires action.");
+  if (
+    action !== "wait"
+    && action !== "steer"
+    && action !== "interrupt_retry_same_thread"
+    && action !== "restart_resume_thread"
+  ) {
+    throw new Error(`chat.recoverCodexTurn received unsupported action '${action}'.`);
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.recoverCodexTurn requires sessionId."),
+    turnId: requireString(value.turnId, "chat.recoverCodexTurn requires turnId."),
+    action,
+  };
+}
+
 function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.approve requires sessionId."),
@@ -3371,6 +3390,9 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     });
     const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
+    const codexComputerUse = provider === "codex"
+      ? await resolveCodexComputerUseMcpConfig()
+      : null;
 
     function resolveLaunch(): Partial<TrackedCliLaunchCommand> {
       if (provider === "shell") {
@@ -3389,6 +3411,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         fastMode: parsed.fastMode ?? undefined,
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
+        ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     }
 
@@ -3636,6 +3659,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
     return { ok: true };
   });
+  register("chat.recoverCodexTurn", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.")
+      .recoverCodexTurn(parseAgentChatRecoverCodexTurnArgs(payload)));
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
     return isRecord(result) ? { ...result, ok: true } : { ok: true };

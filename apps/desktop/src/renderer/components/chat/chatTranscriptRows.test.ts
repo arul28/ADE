@@ -551,6 +551,93 @@ describe("chatTranscriptRows", () => {
     ]);
   });
 
+  it("retains MCP connector identity and action on compact tool rows", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "github:search_issues",
+          args: { query: "is:open label:bug" },
+          mcp: {
+            server: "github",
+            tool: "search_issues",
+            appContext: { appName: "GitHub", actionName: "Search issues" },
+          },
+          itemId: "mcp-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "github:search_issues",
+          result: "Issue 1",
+          mcp: {
+            server: "github",
+            tool: "search_issues",
+            appContext: { appName: "GitHub", actionName: "Search issues" },
+          },
+          itemId: "mcp-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("work_log_entry");
+    if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work log entry");
+    expect(rows[0]!.event.entry).toMatchObject({
+      label: "GitHub",
+      detail: "Search issues",
+      status: "completed",
+      mcp: { server: "github", tool: "search_issues" },
+    });
+  });
+
+  it("collapses image generation lifecycle updates into one completed card", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_image_generation",
+          itemId: "image-1",
+          turnId: "turn-1",
+          prompt: "A tiny moon icon",
+          status: "running",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "codex_image_generation",
+          itemId: "image-1",
+          turnId: "turn-1",
+          revisedPrompt: "A crisp crescent moon icon",
+          result: "/tmp/moon.png",
+          savedPath: "/tmp/moon.png",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event).toMatchObject({
+      type: "codex_image_generation",
+      itemId: "image-1",
+      prompt: "A tiny moon icon",
+      revisedPrompt: "A crisp crescent moon icon",
+      result: "/tmp/moon.png",
+      status: "completed",
+    });
+  });
+
   it("preserves failed tool result detail for expansion", () => {
     const grouped = groupEvents([
       {

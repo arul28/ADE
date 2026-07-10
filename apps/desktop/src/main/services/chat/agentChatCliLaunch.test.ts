@@ -1,6 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatLaunchCliArgs } from "../../../shared/types/chat";
 import type { PtyCreateArgs } from "../../../shared/types";
+
+const mocks = vi.hoisted(() => ({
+  resolveCodexComputerUseMcpConfig: vi.fn(async (): Promise<{
+    command: string;
+    args: ["mcp"];
+    enabled: true;
+  } | null> => null),
+}));
+
+vi.mock("../../utils/codexComputerUse", () => ({
+  resolveCodexComputerUseMcpConfig: mocks.resolveCodexComputerUseMcpConfig,
+}));
+
 import { launchAgentChatCli, type AgentChatCliLaunchDeps } from "./agentChatCliLaunch";
 
 type LaneBaseAndBranch =
@@ -49,6 +62,11 @@ function makeArgs(overrides: Partial<AgentChatLaunchCliArgs> = {}): AgentChatLau
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  mocks.resolveCodexComputerUseMcpConfig.mockReset();
+  mocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
+});
 
 describe("launchAgentChatCli provider validation", () => {
   it("rejects an unknown provider at the runtime boundary", async () => {
@@ -141,6 +159,28 @@ describe("launchAgentChatCli orchestration policy", () => {
 });
 
 describe("launchAgentChatCli Codex fast mode", () => {
+  it("includes the asynchronously resolved Computer Use MCP config", async () => {
+    const deps = makeDeps();
+    const command = "/Applications/Codex Computer Use.app/Contents/MacOS/SkyComputerUseClient";
+    mocks.resolveCodexComputerUseMcpConfig.mockResolvedValueOnce({
+      command,
+      args: ["mcp"],
+      enabled: true,
+    });
+
+    await launchAgentChatCli(makeArgs({ provider: "codex" }), deps);
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "-c",
+      `mcp_servers.computer_use.command=${JSON.stringify(command)}`,
+      "-c",
+      'mcp_servers.computer_use.args=["mcp"]',
+      "-c",
+      "mcp_servers.computer_use.enabled=true",
+    ]));
+  });
+
   it("passes explicit service tier flags to Codex CLI launches", async () => {
     const deps = makeDeps();
 

@@ -116,6 +116,24 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func recoverCodexTurn(sessionId targetSessionId: String, turnId: String, action: String) async throws -> String {
+    let result = try await syncService.recoverCodexTurn(
+      sessionId: targetSessionId,
+      turnId: turnId,
+      action: action
+    )
+    await refreshChatStateAfterAction(forceRemote: true)
+    errorMessage = nil
+    switch result.status {
+    case "waiting": return "Waiting for Codex output…"
+    case "nudged": return "Status nudge sent."
+    case "retrying": return "Retry started in this thread."
+    case "resumed": return "Codex app server restarted and the thread resumed."
+    default: return "Recovery action sent."
+    }
+  }
+
+  @MainActor
   func approveRequest(itemId: String, decision: AgentChatApprovalDecision, responseText: String? = nil) async {
     do {
       let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)

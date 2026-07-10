@@ -89,6 +89,16 @@ function entryArgText(entry: ChatWorkLogEntry): string {
     return summarizeInlineText(entry.detail ?? entry.label, 140);
   }
   if (entry.entryKind === "tool" && entry.toolName) {
+    if (entry.mcp) {
+      const args = readRecord(entry.args) ?? {};
+      for (const key of ["query", "url", "path", "file_path", "name", "id"] as const) {
+        const value = args[key];
+        if (typeof value === "string" && value.trim().length) {
+          return summarizeInlineText(value, 140);
+        }
+      }
+      return summarizeInlineText(entry.detail ?? entry.mcp.tool, 140);
+    }
     const meta = getToolMeta(entry.toolName);
     const args = readRecord(entry.args) ?? {};
     const target = meta.getTarget ? meta.getTarget(args) : null;
@@ -219,16 +229,19 @@ function workLogEntryKindSlug(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "web_search") return "search";
   if (entry.entryKind === "hook") return "hook";
   if (entry.entryKind === "tool" && entry.toolName?.trim()) {
-    let raw = entry.toolName.trim();
+    let raw = entry.mcp
+      ? (entry.mcp.appContext?.appName ?? entry.mcp.pluginId ?? entry.mcp.server)
+      : entry.toolName.trim();
     if (raw.includes(".")) {
       raw = raw.split(".").pop() ?? raw;
     }
     const snake = raw
       .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-      .replace(/[-\s.]+/g, "_")
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
       .toLowerCase();
     if (snake === "exec_command") return "shell";
-    return snake;
+    return snake || "tool";
   }
   return entry.label.replace(/\s+/g, "_").toLowerCase() || "tool";
 }

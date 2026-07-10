@@ -355,6 +355,17 @@ describe("renderChatLines", () => {
             usage: { total: { totalTokens: 1200 }, last: { totalTokens: 120 }, modelContextWindow: 200000 },
           },
         },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:05.000Z",
+          sequence: 6,
+          event: {
+            type: "codex_turn_stalled",
+            turnId: "turn-1",
+            reason: "no_output",
+            message: "Codex accepted the turn but has not streamed output.",
+          },
+        },
       ],
     });
 
@@ -367,6 +378,7 @@ describe("renderChatLines", () => {
     expect(body).toMatch(/search\s+Codex app server/);
     expect(body).toMatch(/openPage\s+https:\/\/example\.com\/codex/);
     expect(body).toContain("image generated");
+    expect(body).toContain("/recover wait · nudge · retry · resume");
     // Goal/token-usage events are suppressed in the chat transcript.
     expect(body).not.toContain("goal active");
     expect(body).not.toContain("tokens · last");

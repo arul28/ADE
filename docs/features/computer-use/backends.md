@@ -1,15 +1,57 @@
 # Computer-Use Backends
 
-Backend discovery runs on the runtime machine that owns the project (the ADE runtime's `commandExists("ghost")` / `commandExists("agent-browser")` checks reflect that machine's `PATH`). ADE's job is to discover backends locally to that runtime, report their readiness, and ingest their output. ADE does not wrap or replace the backends themselves.
+The current active provider integration is **Codex Computer Use**: ADE securely resolves OpenAI's standalone signed client and presents it to Codex as an MCP server. Proof capture remains a separate broker workflow.
 
-This doc describes the historical Ghost OS / agent-browser / local-fallback model. The current shipping broker (`computerUseArtifactBrokerService.getBackendStatus`) reports the same backend names but the policy + readiness machinery (`buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, capability matrix) was retired with the proof rebuild and the Settings > Computer Use panel was folded into Integrations. Use this doc for context on backend semantics, not for the current operator UI.
+The later sections describe the historical Ghost OS / agent-browser / local-fallback model. The current shipping broker (`computerUseArtifactBrokerService.getBackendStatus`) reports the same proof-backend names, but the policy + readiness machinery (`buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, capability matrix) was retired with the proof rebuild and the Settings > Computer Use panel was folded into Integrations. Use those sections for context on proof-backend semantics, not for the current operator UI.
 
 ## Source file map
 
 - `apps/desktop/src/main/services/computerUse/controlPlane.ts` — pre-rebuild `buildComputerUseOwnerSnapshot` + capability/Ghost-OS helpers. The current build keeps the snapshot assembly path; the policy/Ghost-OS readiness helpers are vestigial.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `createComputerUseArtifactPath`, `toProjectArtifactUri`. Capability detection (`screencapture`, `open`, `swift`, `osascript`) reflects the runtime host's environment.
-- `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests on the runtime host.
+- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests on the runtime host.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus` (emits `ComputerUseBackendStatus`), `secureCopyFromDescriptor` (symlink-safe path-based ingest), backend enumeration.
+- `apps/desktop/src/main/utils/codexComputerUse.ts` — current direct Codex client resolver and signature/opt-in boundary.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — injects the MCP config into app-server threads and maps Computer Use MCP calls/elicitations into chat events.
+- `apps/desktop/src/shared/cliLaunch.ts` — injects the same MCP server into tracked Codex CLI start/resume argv.
+
+## Codex Computer Use (current)
+
+**Transport:** provider-native MCP server named `computer_use`, exposed to the model as `mcp__computer_use`.
+
+ADE enables this path only on macOS and only when the user's Codex config has one of these explicit opt-ins:
+
+- `[plugins."computer-use@openai-bundled"]` with `enabled = true`; or
+- `[mcp_servers.computer_use]` unless that section explicitly sets `enabled = false`.
+
+`resolveCodexComputerUseMcpConfig()` searches the stable install under
+`$CODEX_HOME/computer-use/` first, then version-sorted bundled plugin-cache
+directories. A candidate must be executable and pass both
+`codesign --verify --strict` and identity checks for OpenAI team `2DC432GLL2` and client bundle
+identifier `com.openai.sky.CUAService.cli`. ADE never executes an arbitrary
+same-named cache binary.
+
+The standalone helper is important: starting Computer Use through a generic
+`node_repl`/host wrapper makes the operating-system entitlement depend on the
+host process. ADE instead launches the OpenAI-signed helper directly, preserving
+the Computer Use entitlement when Codex runs inside ADE.
+
+Native Work chats merge the config into the app-server `thread/start` and
+`thread/resume` config alongside the selected reasoning effort. Existing user
+MCP servers remain configured; ADE supplies only the canonical `computer_use`
+entry. Tracked Codex CLI sessions receive the equivalent `-c` overrides on
+initial launch, resume, imported-session resume, and fork. The resolver runs at
+those boundaries rather than persisting an executable path in chat state.
+
+Computer Use follows normal MCP consent. `mcpServer/elicitation/request` becomes
+an ADE pending-input card with Allow once / Deny and, only when the server's
+`_meta.persist` permits it, Always allow. URL-mode requests can open the
+authorization link in ADE's built-in browser. Full-auto chat permissions do not
+silently approve a per-app elicitation.
+
+## Historical proof backends
+
+The remaining sections document the retired readiness/policy model.
+
 ## Ghost OS
 
 **Transport:** external CLI. ADE detects `ghost` on `PATH` and reads `ghost status` / `ghost doctor` for readiness.

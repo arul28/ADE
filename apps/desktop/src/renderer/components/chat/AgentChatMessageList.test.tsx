@@ -3,7 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import type { AgentChatApprovalDecision, AgentChatEventEnvelope } from "../../../shared/types";
+import type {
+  AgentChatApprovalDecision,
+  AgentChatEventEnvelope,
+  AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverCodexTurnResult,
+} from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
 
 vi.mock("lottie-react", () => ({
@@ -103,6 +108,7 @@ function renderMessageList(
     sessionId?: string | null;
     onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   },
 ) {
   return render(
@@ -114,6 +120,7 @@ function renderMessageList(
         sessionId={options?.sessionId}
         onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
+        onCodexRecovery={options?.onCodexRecovery}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -742,6 +749,63 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Approaching Claude plan limit")).toBeTruthy();
     expect(screen.getByText("80% utilized | resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("runs Codex stalled-turn recovery actions against the source chat", async () => {
+    const onCodexRecovery = vi.fn().mockResolvedValue({
+      action: "wait",
+      turnId: "turn-stalled",
+      status: "waiting",
+    });
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_turn_stalled",
+          turnId: "turn-stalled",
+          reason: "no_output",
+          message: "Codex accepted this turn but has not streamed output yet.",
+          recoveryOptions: ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"],
+          sourceSessionId: "child-session",
+          parentSessionId: "parent-session",
+        },
+      },
+    ], { sessionId: "parent-session", onCodexRecovery });
+
+    fireEvent.click(screen.getByRole("button", { name: "Wait" }));
+    await waitFor(() => {
+      expect(onCodexRecovery).toHaveBeenCalledWith({
+        sessionId: "child-session",
+        turnId: "turn-stalled",
+        action: "wait",
+      });
+    });
+    expect(await screen.findByText("Waiting for Codex output…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Nudge" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+  });
+
+  it("shows a Codex recovery error without making the card inert", async () => {
+    const onCodexRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_turn_stalled",
+          turnId: "turn-stalled",
+          reason: "app_server_state_unknown",
+          message: "Codex paused unexpectedly.",
+          recoveryOptions: ["restart_resume_thread"],
+        },
+      },
+    ], { sessionId: "session-1", onCodexRecovery });
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("no longer active");
+    expect((screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps non-rate-limit notice details in collapsible cards", () => {

@@ -22,6 +22,7 @@ import {
 } from "../../../desktop/src/shared/composerTriggers";
 import type {
   AgentChatClaudePlugin,
+  AgentChatCodexRecoveryAction,
   AgentChatReloadClaudePluginsResult,
 	  AgentChatEventEnvelope,
 	  AgentChatFileRef,
@@ -83,6 +84,7 @@ import {
   normalizeChatTerminalSession,
   previewTerminal,
   renameChat,
+  recoverCodexTurn,
   resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
@@ -183,6 +185,7 @@ import {
   modelStatePatchForModel,
   permissionSummary,
   providerModelsCacheKey,
+  reasoningEffortDisplayLabel,
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
   resolveCodexPreset,
@@ -1671,6 +1674,60 @@ function splitFirstArg(input: string): { first: string; rest: string } {
   };
 }
 
+const CODEX_RECOVERY_ACTION_ALIASES: Readonly<Record<string, AgentChatCodexRecoveryAction>> = {
+  wait: "wait",
+  nudge: "steer",
+  steer: "steer",
+  retry: "interrupt_retry_same_thread",
+  interrupt_retry_same_thread: "interrupt_retry_same_thread",
+  resume: "restart_resume_thread",
+  restart_resume_thread: "restart_resume_thread",
+};
+
+export function resolveTuiCodexRecoveryRequest(args: {
+  input: string;
+  sessionId: string;
+  events: readonly AgentChatEventEnvelope[];
+}): { action: AgentChatCodexRecoveryAction; turnId: string; sessionId: string } | null {
+  const parsed = splitFirstArg(args.input);
+  const action = CODEX_RECOVERY_ACTION_ALIASES[parsed.first.trim().toLowerCase().replace(/-/g, "_")];
+  if (!action) return null;
+  const explicitTurnId = splitFirstArg(parsed.rest).first;
+  if (explicitTurnId) {
+    const matchingEnvelope = [...args.events].reverse().find((envelope) =>
+      envelope.event.type === "codex_turn_stalled" && envelope.event.turnId === explicitTurnId
+    );
+    const targetSessionId = matchingEnvelope?.event.type === "codex_turn_stalled"
+      ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
+      : args.sessionId;
+    return { action, turnId: explicitTurnId, sessionId: targetSessionId };
+  }
+  for (let index = args.events.length - 1; index >= 0; index -= 1) {
+    const envelope = args.events[index];
+    if (envelope?.event.type !== "codex_turn_stalled") continue;
+    return {
+      action,
+      turnId: envelope.event.turnId,
+      sessionId: envelope.event.sourceSessionId?.trim() || envelope.sessionId,
+    };
+  }
+  return null;
+}
+
+export function resolveTuiCodexRecoveryTargetProvider(args: {
+  targetSessionId: string;
+  visibleSessionId: string;
+  visibleProvider: AgentChatSessionSummary["provider"] | null | undefined;
+  sessions: ReadonlyArray<Pick<AgentChatSessionSummary, "sessionId" | "provider">>;
+}): AgentChatSessionSummary["provider"] | null {
+  const targetSession = args.sessions.find((session) => session.sessionId === args.targetSessionId);
+  if (targetSession) return targetSession.provider;
+  // An orchestration child may not have reached the TUI's session inventory yet.
+  // In that case the forwarded stalled event remains authoritative and the
+  // service performs the final Codex-provider validation.
+  return args.targetSessionId === args.visibleSessionId ? args.visibleProvider ?? null : null;
+}
+
 type ParsedAdeActionPayload =
   | { args: Record<string, unknown> }
   | { argsList: unknown[] }
@@ -2683,6 +2740,7 @@ function modelInfoFromDescriptor(modelRef: string): AgentChatModelInfo | null {
     displayName: descriptor.displayName,
     isDefault: false,
     reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
+    defaultReasoningEffort: descriptor.defaultReasoningEffort ?? null,
     ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
     ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
     ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
@@ -3710,6 +3768,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => modelReasoningEfforts(modelState, models).length > 0,
     [modelState, models],
   );
+  const footerReasoningLabel = reasoningEffortDisplayLabel(modelState.reasoningEffort, modelState);
   const footerFastSupportedRef = useRef(false);
   const footerReasoningSupportedRef = useRef(false);
   useEffect(() => {
@@ -9640,6 +9699,69 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       return;
     }
+    if (name === "/recover") {
+      if (!sessionId || activeTerminalSessionRef.current) {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: "Recovery is available for an active Codex Work chat, not a CLI terminal.",
+        });
+        return;
+      }
+      const request = resolveTuiCodexRecoveryRequest({
+        input: args,
+        sessionId,
+        events: eventsRef.current,
+      });
+      if (!request) {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: [
+            "Usage: /recover <wait|nudge|retry|resume> [turn-id]",
+            "",
+            "The turn id is optional when this chat has a recent stalled-turn notice.",
+          ].join("\n"),
+        });
+        return;
+      }
+      const targetProvider = resolveTuiCodexRecoveryTargetProvider({
+        targetSessionId: request.sessionId,
+        visibleSessionId: sessionId,
+        visibleProvider: activeSession?.provider,
+        sessions,
+      });
+      if (targetProvider && targetProvider !== "codex") {
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: "/recover target is not a Codex chat.",
+        });
+        return;
+      }
+      try {
+        const result = await recoverCodexTurn(conn, request);
+        const label = request.action === "wait"
+          ? "Waiting"
+          : request.action === "steer"
+            ? "Status nudge sent"
+            : request.action === "interrupt_retry_same_thread"
+              ? "Retrying the same thread"
+              : "App server restarted; thread resumed";
+        setRightPane({
+          kind: "details",
+          title: "Codex recovery",
+          body: `${label} · ${result.status}\nTurn ${result.turnId}`,
+        });
+        addNotice(label, "success");
+        await refreshState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setRightPane({ kind: "details", title: "Codex recovery", body: message });
+        addNotice(message, "error");
+      }
+      return;
+    }
     if (name === "/model") {
       openModelPicker();
       return;
@@ -14244,9 +14366,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       footerX += width;
     }
-    if (footerReasoningSupported && modelState.reasoningEffort) {
+    if (footerReasoningSupported && footerReasoningLabel) {
       footerX += 2;
-      const width = footerCellWidth(modelState.reasoningEffort, "reasoning");
+      const width = footerCellWidth(footerReasoningLabel, "reasoning");
       addFooterInlineTarget("footer:inline:reasoning", footerX, width, () => {
         selectFooterControl(null);
         setPaneFocus("chat");
@@ -15223,7 +15345,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     favorites: modelPickerFavorites,
     recents: modelPickerRecents,
     activeModelId: modelState.modelId,
-    activeReasoningEffort: modelState.reasoningEffort,
+    activeReasoningEffort: footerReasoningLabel,
     aiStatus,
     interfaceMode: modelState.interfaceMode,
   }), [
@@ -15233,7 +15355,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     modelPickerRecents,
     modelState.interfaceMode,
     modelState.modelId,
-    modelState.reasoningEffort,
+    footerReasoningLabel,
     models,
   ]);
   const activeTerminalScroll = readTerminalScroll(terminalScrollBySessionId, activeTerminalSession?.terminalId);
@@ -15507,7 +15629,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         <FooterControls
           provider={modelState.provider}
           modelDisplay={modelState.displayName}
-          reasoningEffort={modelState.reasoningEffort}
+          reasoningEffort={footerReasoningLabel}
           permissionLabel={permissionSummary(modelState)}
           permissionDetail={modelState.provider === "codex" ? codexApprovalSandboxLabel(modelState) : null}
           contextPercent={contextPercent}

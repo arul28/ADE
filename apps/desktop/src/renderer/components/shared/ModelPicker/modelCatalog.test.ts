@@ -94,6 +94,7 @@ describe("mergeSelectorModels", () => {
                       isDefault: true,
                       isAvailable: true,
                       reasoningEfforts: [{ effort: "high", description: "High" }],
+                      defaultReasoningEffort: "high",
                       serviceTiers: ["fast"],
                       supportsReasoning: true,
                       supportsTools: true,
@@ -111,6 +112,7 @@ describe("mergeSelectorModels", () => {
     expect(result.models[0]).toMatchObject({
       id: "cursor/composer-2",
       reasoningTiers: ["high"],
+      defaultReasoningEffort: "high",
       serviceTiers: ["fast"],
       capabilities: expect.objectContaining({ reasoning: true, tools: true }),
     });

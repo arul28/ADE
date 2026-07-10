@@ -342,10 +342,18 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
   }
 
   if (provider === "codex") {
-    const match = command.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+--dangerously-bypass-approvals-and-sandbox)|(?:\s+--yolo)|(?:\s+--sandbox\s+[^\s]+)|(?:\s+-s\s+[^\s]+)|(?:\s+--ask-for-approval\s+[^\s]+)|(?:\s+-a\s+[^\s]+)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
-    if (!match) return undefined;
-    if (match[1] == null) return null;
-    return sanitizeResumeTargetId(match[1]) ?? undefined;
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "codex") return undefined;
+    const resumeIndex = parts.findIndex((part, index) => index > 0 && part.toLowerCase() === "resume");
+    if (resumeIndex < 0) return undefined;
+    const raw = parts[resumeIndex + 1];
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
   if (provider === "cursor") {
@@ -398,6 +406,7 @@ export function buildTrackedCliResumeCommand(
     fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
     prompt?: string | null;
+    codexComputerUse?: { command: string; args?: readonly string[] } | null;
   } = {},
 ): string | null {
   if (!metadata) return null;

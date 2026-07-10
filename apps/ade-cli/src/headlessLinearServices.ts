@@ -1581,7 +1581,7 @@ function createHeadlessAgentChatService(
   const identitySessionIds = new Map<string, string>();
   const transcripts = new Map<string, HeadlessTranscriptEntry[]>();
 
-  const HEADLESS_MODEL_ID = "openai/gpt-5.5";
+  const HEADLESS_MODEL_ID = "openai/gpt-5.6-sol";
 
   const clipText = (value: string, maxChars: number): string => {
     const trimmed = value.trim();

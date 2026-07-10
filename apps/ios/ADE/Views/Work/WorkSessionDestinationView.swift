@@ -49,6 +49,15 @@ func workChatSendWillQueueMessage(
   isLive && !hostReachable && chatSendQueueable
 }
 
+/// Child recovery cards carry their own source session id, so viewing a
+/// subagent transcript must not hide actions that the paired host supports.
+func workChatCodexRecoveryAvailable(
+  hostSupportsRecovery: Bool,
+  viewingSubagent _: Bool
+) -> Bool {
+  hostSupportsRecovery
+}
+
 func workChatLiveObservationKey(sessionId: String, chatEventRevision: Int) -> String {
   "\(sessionId)-\(chatEventRevision)"
 }
@@ -1136,7 +1145,11 @@ struct WorkSessionDestinationView: View {
       personalModelCatalogAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
       personalSessionUpdatesAvailable: !personalChat
-        || syncService.canInvokeRemoteAction("personalChats.updateSession")
+        || syncService.canInvokeRemoteAction("personalChats.updateSession"),
+      onRecoverCodexTurn: workChatCodexRecoveryAvailable(
+        hostSupportsRecovery: syncService.supportsRemoteAction("chat.recoverCodexTurn"),
+        viewingSubagent: viewingSubagent
+      ) ? recoverCodexTurn : nil
     )
   }
 

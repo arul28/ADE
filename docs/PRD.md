@@ -21,9 +21,9 @@ The clients of that brain are equal:
 The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
 
 Layered on top, all owned by the brain:
-- **Agents** — lane-bound chat, machine-owned personal chat, plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware.
+- **Agents** — lane-bound chat, machine-owned personal chat, plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware; Codex defaults to GPT-5.6 Sol with Terra/Luna beside it.
 - **Automations** — rule-based background workflows triggered by events, cron, webhooks.
-- **Computer use** — control plane that fans out to Computer Use, agent-browser, or local fallback for UI automation proofs.
+- **Computer use** — direct, signed Codex Computer Use MCP wiring on macOS plus the provider-neutral proof broker for intentional screenshots, videos, traces, and verification artifacts.
 - **ADE browser** — built-in browser with persistent isolated project profiles plus an explicit global profile for personal chat, tab/session ownership, hidden-tab agent actions, diagnostics, traces, and explicit proof promotion.
 - **Linear** — issue read/search plus a developer lane/PR flow and an optional live-status round-trip.
 - **Multi-device sync** — cr-sqlite CRDT replication, owned by the sync service inside the brain. The iOS app and any controller desktops connect through the same sync service.
@@ -102,7 +102,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Agents and chat
 
 - [**Agents**](./features/agents/README.md) — Two surfaces: lane-bound chat and the persistent CTO operator. Identity, capability modes, tool tiers, and the CTO memory system.
-- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
+- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, compact web/MCP/image/subagent activity, Codex Sources and stalled-turn recovery, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
 - [**Personal Chats**](./features/personal-chats/README.md) — General-purpose, machine-owned AI conversations with the same model catalog but no project, lane, Git, or PR binding. Available from desktop, hosted web, mobile Hub, and the ADE CLI.
 - [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions and CTO sessions. Every recorded service follows the same `runTrackedOperation` pattern.
 
@@ -122,7 +122,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Integrations
 
 - [**Linear Integration**](./features/linear-integration/README.md) — Issue read/search, lane/commit/PR attachment flow, batch launch, session-scoped attachment, and an optional live-status round-trip.
-- [**Computer Use**](./features/computer-use/README.md) — Intentional proof capture plus active App Control. Canonical artifact model, ownership-linked storage.
+- [**Computer Use**](./features/computer-use/README.md) — Direct signed Codex Computer Use, intentional proof capture, and active App Control. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 

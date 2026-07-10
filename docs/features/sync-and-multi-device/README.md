@@ -216,7 +216,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `crdt-model.md`), chat-first scheduling (chat events are pumped before
   background changesets, and peers with active chat subscriptions get
   smaller background batches / backpressure deferral when the WebSocket
-  send buffer is already backed up), the mobile changeset diet
+  send buffer is already backed up), mobile-chat inline-image compaction
+  (`compactChatEventEnvelopeForSync`: data URIs above 64 KB are removed from
+  live sends, snapshots, and replay entries while the desktop event remains
+  unchanged and original/omitted byte counts are retained), the mobile changeset diet
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: high-churn tables the phone
   never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
   `budget_usage_records`, `automation_runs`,
@@ -361,7 +364,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `usage.getAdeStats`, `prs.getMobileSnapshot`, `lanes.presence.*`,
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
-  `work.importExternalSession`, `modelPicker.*`, …). Each registration
+  `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
+  Stalled-turn recovery is viewer-allowed but not queueable because it must
+  target the currently active Codex turn. Mobile/remote Codex CLI launches
+  also resolve the explicitly opted-in, verified standalone Computer Use MCP
+  client and add it through the shared launch builder. Each registration
   carries a `SyncRemoteCommandDescriptor` with a **scope** label of
   `"runtime"` or `"project"`. The runtime rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a

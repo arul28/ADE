@@ -426,6 +426,10 @@ A handful have more logic:
   — the same module the desktop Work tab uses — so the runtime owns the
   startup-command shape and a phone cannot smuggle in a free-form
   shell command (the `shell` provider takes no startup payload at all).
+  For Codex on macOS, the runtime resolves the explicitly opted-in and
+  OpenAI-signature-verified standalone Computer Use client at launch time and
+  adds only the canonical `mcp_servers.computer_use` config overrides; a
+  missing/disabled/unverified client adds nothing.
   The runtime resolves the requested lane worktree before building that
   launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
   lane-local `.claude` / `.agents` / `.ade` / `.codex` skill dirs and
@@ -466,6 +470,10 @@ A handful have more logic:
 - **`chat.create`** — resolves a missing `model` to the first
   available provider model via `agentChatService.getAvailableModels`
   before forwarding.
+- **`chat.recoverCodexTurn`** — validates one of `wait`, `steer`,
+  `interrupt_retry_same_thread`, or `restart_resume_thread` and forwards to
+  the chat service. It is viewer-allowed but deliberately non-queueable: the
+  session/turn pair must still be the active stalled turn when handled.
 - **`lanes.suggestName`** — background lane naming for the mobile
   auto-create flow (desktop parity with
   `agentChatService.suggestLaneNameFromPrompt`). Takes `{ prompt,
@@ -657,7 +665,9 @@ first fetch instead of returning an empty passive cache.
 - **`chat.models` returns the brain's model catalog.** A controller
   must not hardcode model IDs. The brain is authoritative about
   which models are wired up, which providers have credentials, and
-  what the default model is.
+  what the default model and `defaultReasoningEffort` are. Compatibility
+  catalogs may keep fallback rows for older hosts, but host-advertised tiers
+  and defaults win.
 - **`lanes.delete` and `lanes.archive` are queueable.** A
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane

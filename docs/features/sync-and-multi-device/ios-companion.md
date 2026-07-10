@@ -262,6 +262,20 @@ parsing, model catalog, session grouping) to keep individual files
 under a few hundred lines. This split is the primary reason the Work
 tab grew from one ~3,000-line file to ~30 focused files.
 
+The Work model/activity parity path is concentrated in these files:
+
+- `ADE/Models/RemoteModels.swift` — tolerant chat-event decoding, MCP app/tool
+  source metadata, image events/omission metadata, Codex recovery DTOs, and
+  host model rows including `defaultReasoningEffort`.
+- `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
+  host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
+  and the Ultra usage warning.
+- `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`, and
+  `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
+  both live Codable events and persisted JSONL fallback.
+- `ADE/Services/SyncService.swift` and `ADE/Views/Work/WorkSessionDestinationView+Actions.swift`
+  — host-advertised `chat.recoverCodexTurn` dispatch for stalled-turn buttons.
+
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
 
@@ -1418,10 +1432,17 @@ does not duplicate the full desktop Stats page.
   `codex_safety_buffering`, `codex_moderation_metadata`, `codex_sleep`,
   `codex_thread_deleted`, and `codex_turn_stalled` in
   `RemoteModels.swift`, mapping them through `WorkEventMapping.swift`,
-  and rendering compact timeline cards. Web-search events also carry
+  and rendering compact timeline cards. Stalled rows preserve the
+  `sourceSessionId` from child chats and expose Wait / Nudge / Retry / Resume
+  only when the host advertises `chat.recoverCodexTurn`. Web-search events also carry
   provider action metadata (`query` / `queries`, `title`, `url`,
   `snippet`); Work keeps those in the enriched web-search tool card so
   URLs are visible without duplicating the same event as a second row.
+  MCP tool events decode provider-neutral app/server/action metadata so cards
+  name the connected app instead of `mcp`. Generated/viewed-image events from
+  Codex and other adapters reuse compact tool cards; data URIs are never printed
+  into the timeline, and stored/mobile compaction byte counts become a short
+  "preview omitted" detail.
 - **Subagent lifecycle is rendered as chat structure, not event spam.**
   `RemoteModels.swift` accepts both legacy `subagent_started` /
   `subagent_progress` / `subagent_result` events and the canonical dotted
@@ -1472,7 +1493,12 @@ does not duplicate the full desktop Stats page.
   together; the Claude picker order mirrors desktop (Fable 5, Opus
   4.8 1M, Sonnet 5, Haiku 4.5, Opus 4.7 1M) and legacy Sonnet 4.6 /
   basic Opus 4.7 selections normalize forward instead of appearing as
-  rows. `shell` remains valid runtime-side but the phone no longer
+  rows. The OpenAI picker always promotes GPT-5.6 Sol, Terra, Luna in that
+  order even when a host returns another order; Sol is the fallback default
+  and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
+  tiers/defaults, filters raw `max` for GPT-5.6, and falls back to Light /
+  Medium / High / Extra High / Ultra on Sol/Terra and through Extra High on
+  Luna (`low` for Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to
   `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /

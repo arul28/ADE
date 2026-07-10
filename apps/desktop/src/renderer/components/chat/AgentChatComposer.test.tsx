@@ -120,6 +120,66 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
+const CAPTION_FREE_PERMISSION_CASES: Array<{
+  provider: string;
+  triggerName: string;
+  optionCount: number;
+  overrides: Partial<ComponentProps<typeof AgentChatComposer>>;
+}> = [
+  {
+    provider: "Claude",
+    triggerName: "Claude permission mode",
+    optionCount: 5,
+    overrides: {
+      sessionProvider: "claude",
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
+    },
+  },
+  {
+    provider: "Codex",
+    triggerName: "Codex permission mode",
+    optionCount: 5,
+    overrides: { sessionProvider: "codex" },
+  },
+  {
+    provider: "Cursor",
+    triggerName: "Cursor mode",
+    optionCount: 4,
+    overrides: {
+      sessionProvider: "cursor",
+      modelId: "cursor/auto",
+      availableModelIds: ["cursor/auto"],
+      cursorModeSnapshot: {
+        currentModeId: "agent",
+        availableModeIds: ["agent", "ask", "plan", "full-auto"],
+      },
+      onCursorModeChange: vi.fn(),
+    },
+  },
+  {
+    provider: "Droid",
+    triggerName: "Droid autonomy mode",
+    optionCount: 5,
+    overrides: {
+      sessionProvider: "droid",
+      modelId: "droid/gpt-5.2",
+      availableModelIds: ["droid/gpt-5.2"],
+      onDroidPermissionModeChange: vi.fn(),
+    },
+  },
+  {
+    provider: "OpenCode",
+    triggerName: "OpenCode permission mode",
+    optionCount: 4,
+    overrides: {
+      sessionProvider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+      availableModelIds: ["opencode/openai/gpt-5.4"],
+    },
+  },
+];
+
 function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): NormalizedLinearIssue {
   return {
     id: "issue-1",
@@ -518,6 +578,22 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("option", { name: /Bypass/ })).toBeTruthy();
   });
 
+  it.each(CAPTION_FREE_PERMISSION_CASES)(
+    "renders title-only $provider permission rows",
+    ({ triggerName, optionCount, overrides }) => {
+      renderComposer(overrides);
+      fireEvent.click(screen.getByRole("button", { name: triggerName }));
+
+      const listbox = screen.getByRole("listbox", { name: triggerName });
+      const options = Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'));
+      expect(options).toHaveLength(optionCount);
+      for (const option of options) {
+        expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
+        expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
+      }
+    },
+  );
+
   it("routes Claude auto through the native permission callback", () => {
     const onInteractionModeChange = vi.fn();
     const onClaudePermissionModeChange = vi.fn();
@@ -733,6 +809,89 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Codex permission mode" })).toBeNull();
+  });
+
+  it("uses explicit per-app choices for Computer Use elicitation", () => {
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "cu-1",
+        itemId: "mcp-elicitation:computer_use:cu-1",
+        source: "codex",
+        kind: "approval",
+        title: "Computer Use permission",
+        description: "Allow Codex to use Calculator?",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          mcpElicitation: true,
+          persistenceSupported: true,
+          url: "https://example.com/authorize",
+        },
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByText("Allow Codex to use Calculator?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open authorization" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Always allow" }));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(props.onApproval).toHaveBeenNthCalledWith(1, "accept");
+    expect(props.onApproval).toHaveBeenNthCalledWith(2, "accept_for_session");
+    expect(props.onApproval).toHaveBeenNthCalledWith(3, "decline");
+  });
+
+  it.each([
+    "file:///tmp/authorize.html",
+    "about:blank",
+  ])("does not expose MCP authorization for non-HTTP(S) URL %s", (url) => {
+    renderComposer({
+      pendingInput: {
+        requestId: "mcp-auth-invalid-url",
+        itemId: "mcp-elicitation:computer_use:mcp-auth-invalid-url",
+        source: "codex",
+        kind: "approval",
+        description: "Allow Codex to authenticate this MCP server?",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          mcpElicitation: true,
+          persistenceSupported: false,
+          url,
+        },
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.queryByRole("button", { name: "Open authorization" })).toBeNull();
+  });
+
+  it("does not offer persistent Computer Use approval when the server disallows it", () => {
+    renderComposer({
+      pendingInput: {
+        requestId: "cu-2",
+        itemId: "mcp-elicitation:computer_use:cu-2",
+        source: "codex",
+        kind: "approval",
+        description: "Allow Codex to use System Settings?",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          mcpElicitation: true,
+          persistenceSupported: false,
+        },
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
   });
 
   it("avoids promising option chips when a pending question is freeform only", () => {
