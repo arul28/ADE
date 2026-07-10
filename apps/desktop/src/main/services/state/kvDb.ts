@@ -2182,9 +2182,13 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)");
 
+  // Must stay in lockstep with the defensive DDL in automationService.ts —
+  // whichever runs first wins the `if not exists`, so a column drift between
+  // them breaks the other's queries at startup.
   db.run(`
     create table if not exists automation_scheduled_cleanups (
       id text primary key,
+      project_id text not null,
       rule_id text not null,
       run_id text not null,
       lane_id text not null,
@@ -2193,10 +2197,34 @@ function migrate(db: MigrationDb) {
       status text not null,
       created_at text not null,
       executed_at text,
-      error text
+      error text,
+      foreign key(project_id) references projects(id)
     )
   `);
-  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(status, due_at)");
+  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
+  // Heal databases created while the base migration lacked project_id (the
+  // table shipped nowhere, so dropping any stray rows is safe).
+  const scheduledCleanupColumns = db.all<{ name: string }>("pragma table_info(automation_scheduled_cleanups)");
+  if (!scheduledCleanupColumns.some((column) => column.name === "project_id")) {
+    db.run("drop table automation_scheduled_cleanups");
+    db.run(`
+      create table automation_scheduled_cleanups (
+        id text primary key,
+        project_id text not null,
+        rule_id text not null,
+        run_id text not null,
+        lane_id text not null,
+        due_at text not null,
+        options_json text not null,
+        status text not null,
+        created_at text not null,
+        executed_at text,
+        error text,
+        foreign key(project_id) references projects(id)
+      )
+    `);
+    db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
+  }
 
   // Phase 8+ PR groups (queue / integration).
   db.run(`
