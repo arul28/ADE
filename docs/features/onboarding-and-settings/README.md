@@ -266,33 +266,67 @@ Renderer — settings:
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
-  — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
-  for today / 7d / 30d / year / all-time stats and calls
-  `window.ade.usage.refresh()` for explicit refresh. The first render is
-  stale-while-revalidate: cached provider/GitHub data and live project-DB
-  aggregates return immediately while expensive provider-ledger and `gh`
-  scans refresh in the background. The dashboard combines deduplicated local
-  provider tokens, ADE AI calls, sessions, lane/code movement, artifacts,
-  automations, workers, GitHub activity, and client-surface activity.
+  — Settings > Stats, a sectioned dashboard rather than a single carousel.
+  The header carries two segmented controls — a **scope** toggle (This
+  project / This machine, persisted to `ade.stats.scope.v1`, default project)
+  and a **range** toggle (Today / 7d / 30d / year / all) — plus a Refresh
+  button. Below the header: an **Overview** row of stat tiles (AI tokens,
+  estimated cost, code movement, pull requests), an **Activity** section that
+  mounts `ActivityModule` (`variant="full"`, `showRangeControl={false}`), and
+  a two-panel row of **AI usage** (deduplicated per-provider token totals and
+  per-model breakdown, with per-provider estimation notes) and **Code & PRs**
+  (GitHub activity and ADE-local activity as separate labeled columns, never
+  max-merged). A meta line at the bottom reports freshness ("refreshing"),
+  estimation caveats, and which scope the provider totals were computed at.
+  It reads `window.ade.usage.getAdeStats({ preset, scope })` and calls
+  `window.ade.usage.refresh()` for explicit refresh; the first render is
+  stale-while-revalidate (cached provider/GitHub data plus live project-DB
+  aggregates return immediately while expensive provider-ledger and `gh` scans
+  refresh in the background). Provider colors come from `providerColor`.
 - `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
-  live quota snapshot plus the retrospective `getAdeUsageStats` projection.
+  live quota snapshot plus the retrospective `getAdeUsageStats(args)`
+  projection. `args.scope` selects `machine` (every session in the provider's
+  local ledgers, codeburn-comparable) or `project` (only sessions attributable
+  to the current project root by cwd match); GitHub and ADE-DB metrics are
+  always project/repo scoped regardless of scope. Provider token totals are
+  deduplicated from the local provider ledgers, all daily buckets and range
+  boundaries key on machine-local calendar days (`localDay.ts`), and GitHub vs
+  local activity are reported as separate labeled groups (never max-merged).
   It returns cached provider/GitHub results and current DB aggregates without
-  awaiting expensive scans, exposes freshness metadata, and coalesces stale
-  provider/GitHub revalidation in the background.
+  awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
+  and coalesces stale provider/GitHub revalidation in the background
+  (`refreshStatsInBackground`, single-flight per range + source).
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is
-  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, and paired
-  web commands are attributed as `desktop`, `tui`, `mobile`, and `web`.
-  `usage_events` is local-only (excluded from CRR replication) because every
-  controller action is recorded once on the runtime that executes it.
-- `apps/desktop/src/shared/types/usage.ts` — shared range, daily-point,
-  freshness, aggregate, and client-attribution contracts. Supported presets
-  are today, 7d, 30d, year, and all time.
-- `apps/desktop/src/renderer/components/usage/UsageActivityCarousel.tsx` —
-  reusable animated activity/token/code/client-mix carousel. It persists the
-  selected chart and day/week/month/year range, appears in Settings > Stats,
-  and renders directly below the empty Work composer on desktop and web.
+  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, paired web
+  commands, and API callers are attributed as `desktop`, `tui`, `mobile`,
+  `web`, and `api`. `usage_events` is local-only (excluded from CRR
+  replication) because every controller action is recorded once on the runtime
+  that executes it.
+- `apps/desktop/src/main/services/usage/localDay.ts` — machine-local calendar
+  day helpers (`localDayKey`, `localDayStart`, `localDayOffset`,
+  `localDayOrdinal`) so daily points and range boundaries follow the user's
+  timezone instead of UTC.
+- `apps/desktop/src/shared/types/usage.ts` — shared range, scope, daily-point,
+  freshness, estimation, GitHub-vs-local activity, aggregate, and
+  client-attribution contracts. Supported presets are today, 7d, 30d, year,
+  and all time; scopes are `machine` and `project`; `AdeUsageEstimationKind`
+  (`exact` / `chars` / `distribution` / `mixed`) records how a provider's token
+  counts were obtained.
+- `apps/desktop/src/renderer/components/usage/ActivityModule.tsx` — the
+  tabbed activity/tokens/code/clients module that replaced the old carousel.
+  `ActivityModule` renders `full` and `compact` variants (optional range
+  control) and persists the selected tab and day/week/month/year range to
+  `ade.activity.module.v1` (migrating the retired `ade.stats.carousel.v1`
+  key). `WorkActivityModule` is the self-fetching compact wrapper that reads
+  `usage.getAdeStats` and renders directly below the empty Work composer on
+  desktop and web.
+- `apps/desktop/src/renderer/components/usage/providerColors.ts` — theme-aware
+  brand color palette for usage bars and legends. `providerColor(provider,
+  theme)` returns a per-provider brand color (Claude's rust family, distinct
+  hues for the other providers) with a deterministic hashed fallback for
+  unknown providers.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
@@ -457,7 +491,7 @@ changing rather than which service backs it:
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus the project-wide **Pause all scheduled work** control for Claude wakeups, cron tasks, and loops. Pausing keeps schedules armed and suppresses `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Stats | `AdeUsageSection.tsx`, `UsageActivityCarousel.tsx` | Fast cached local-provider, project-DB, GitHub, and cross-client activity with animated day/week/month/year charts. Deep links from `?tab=usage` and `?tab=stats` land here. |
+| Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Sectioned dashboard: overview stat tiles, an activity/tokens/code/clients module, and split AI-usage and GitHub-vs-local Code & PRs panels, with project/machine scope and day/week/month/year ranges. Fast cached local-provider, project-DB, GitHub, and cross-client activity. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
 > Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`). Settings > Stats is the retrospective cross-client ADE activity dashboard.
 
