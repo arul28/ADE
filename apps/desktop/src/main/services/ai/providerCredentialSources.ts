@@ -11,6 +11,11 @@ const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000;
 const CODEX_TOKEN_REFRESH_DAYS = 8;
 const CLAUDE_CREDENTIAL_MISS_TTL_MS = 60_000;
+// A refresh token the endpoint rejected (4xx) is rotated or revoked; retrying
+// it on every poll cycle looks like an OAuth storm to Anthropic and gets the
+// whole client rate-limited. Remember the rejected token and stop asking.
+const CLAUDE_REFRESH_REJECTED_TTL_MS = 24 * 60 * 60_000;
+const CLAUDE_REFRESH_TRANSIENT_TTL_MS = 10 * 60_000;
 
 export type LocalAuthSource =
   | "macos-keychain"
@@ -153,7 +158,16 @@ export async function readClaudeCredentials(
           safeJsonParse<Record<string, unknown>>(result.stdout.trim(), {}),
           "macos-keychain",
         );
-        if (credentials) return credentials;
+        if (credentials) {
+          // The Keychain holds the CLI's live login while the credentials file
+          // can be a stale leftover from an older install. Cache every valid
+          // Keychain read so background pollers (which must not touch the
+          // Keychain) can reuse it instead of the possibly-dead file token.
+          if (!isClaudeTokenExpiredOrExpiring(credentials)) {
+            cacheClaudeCredentials(credentials);
+          }
+          return credentials;
+        }
       }
     } catch {
       // Fall back to the local credentials file.
@@ -183,7 +197,21 @@ type ClaudeTokenRefreshResponse = {
   expires_in?: number;
 };
 
+let failedClaudeRefresh: { refreshToken: string; untilMs: number } | null = null;
+
+function noteClaudeRefreshFailure(refreshToken: string, ttlMs: number): void {
+  failedClaudeRefresh = { refreshToken, untilMs: Date.now() + ttlMs };
+}
+
+function isClaudeRefreshBlocked(refreshToken: string): boolean {
+  return failedClaudeRefresh != null
+    && failedClaudeRefresh.refreshToken === refreshToken
+    && Date.now() < failedClaudeRefresh.untilMs;
+}
+
 export async function refreshClaudeCredentials(refreshToken: string): Promise<ClaudeLocalAuthCredentials | null> {
+  if (isClaudeRefreshBlocked(refreshToken)) return null;
+
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
@@ -199,16 +227,29 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
       body: body.toString(),
       signal: controller.signal,
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      // 5xx/429/408 are transient endpoint conditions; other 4xx mean the
+      // token itself was rejected (rotated or revoked) and will never work.
+      const transient = response.status >= 500 || response.status === 429 || response.status === 408;
+      noteClaudeRefreshFailure(
+        refreshToken,
+        transient ? CLAUDE_REFRESH_TRANSIENT_TTL_MS : CLAUDE_REFRESH_REJECTED_TTL_MS,
+      );
+      return null;
+    }
 
     const payload = (await response.json()) as ClaudeTokenRefreshResponse;
-    if (!payload.access_token) return null;
+    if (!payload.access_token) {
+      noteClaudeRefreshFailure(refreshToken, CLAUDE_REFRESH_REJECTED_TTL_MS);
+      return null;
+    }
 
     const expiresAt =
       payload.expires_in != null
         ? Date.now() + payload.expires_in * 1000
         : undefined;
 
+    failedClaudeRefresh = null;
     return {
       accessToken: payload.access_token,
       refreshToken: payload.refresh_token ?? refreshToken,
@@ -216,6 +257,7 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
       source: "claude-credentials-file",
     };
   } catch {
+    noteClaudeRefreshFailure(refreshToken, CLAUDE_REFRESH_TRANSIENT_TTL_MS);
     return null;
   } finally {
     clearTimeout(timer);
@@ -226,6 +268,18 @@ let cachedClaudeCreds: ClaudeLocalAuthCredentials | null = null;
 let cachedClaudeMissUntilMs = 0;
 
 export function clearClaudeCredentialCache(): void {
+  cachedClaudeCreds = null;
+  cachedClaudeMissUntilMs = 0;
+  failedClaudeRefresh = null;
+}
+
+/**
+ * Drop only the cached access token so the next read re-reads sources.
+ * Keeps the refresh-token refusal memory intact — a 401 on the usage API
+ * must not reopen per-poll refresh attempts for a token the token endpoint
+ * already rejected.
+ */
+export function invalidateCachedClaudeCredentials(): void {
   cachedClaudeCreds = null;
   cachedClaudeMissUntilMs = 0;
 }
@@ -258,7 +312,7 @@ export async function readClaudeCredentialsWithRefresh(
     return creds;
   }
 
-  if (creds.refreshToken) {
+  if (creds.refreshToken && !isClaudeRefreshBlocked(creds.refreshToken)) {
     logger.info("usage.token_refresh.attempting", { expiresAt: creds.expiresAt });
     const refreshed = await refreshClaudeCredentials(creds.refreshToken);
     if (refreshed) {
@@ -273,8 +327,12 @@ export async function readClaudeCredentialsWithRefresh(
     });
   }
 
-  cachedClaudeCreds = creds;
-  return creds;
+  // The token is expired and could not be refreshed. Returning it anyway
+  // guarantees a 401 (and another doomed refresh attempt) on every poll —
+  // enough of those and Anthropic rate-limits the whole client. Report
+  // "no usable credentials" instead so callers surface a reconnect state.
+  cachedClaudeMissUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
+  return null;
 }
 
 export async function readCodexCredentials(): Promise<CodexLocalAuthCredentials | null> {

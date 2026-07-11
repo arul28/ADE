@@ -59,7 +59,6 @@ const {
   collectAdeUsageStats,
   pollCodexUsage,
   pollCodexViaCliRpc,
-  readClaudeCredentials,
   resolveTokenPrice,
   resetDynamicTokenPricingForTest,
   setDynamicTokenPricingForTest,
@@ -1055,23 +1054,8 @@ Resets Jul 12 at 3pm
   });
 });
 
-describe("readClaudeCredentials", () => {
-  it("skips macOS Keychain access for background reads", async () => {
-    const originalPlatform = process.platform;
-    const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
-      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-    );
-    setPlatform("darwin");
-
-    try {
-      await expect(readClaudeCredentials({ allowKeychain: false })).resolves.toBeNull();
-      expect(mockState.spawn).not.toHaveBeenCalled();
-    } finally {
-      readFileSpy.mockRestore();
-      setPlatform(originalPlatform);
-    }
-  });
-});
+// readClaudeCredentials contract tests live in
+// ../ai/providerCredentialSources.test.ts, colocated with the module.
 
 describe("parseCodexRateLimitWindows", () => {
   it("accepts the wham HTTP response shape", () => {

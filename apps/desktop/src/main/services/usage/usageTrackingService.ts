@@ -44,10 +44,9 @@ import {
 } from "../../../shared/modelRegistry";
 import {
   cacheClaudeCredentials,
-  clearClaudeCredentialCache,
+  invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
-  readClaudeCredentials,
   readClaudeCredentialsWithRefresh,
   readCodexCredentials,
   refreshClaudeCredentials,
@@ -772,7 +771,7 @@ async function pollClaudeUsage(
     if (!result.ok) {
       if (result.status === 401 && creds.refreshToken) {
         logger.info("usage.token_refresh.401_retry");
-        clearClaudeCredentialCache();
+        invalidateCachedClaudeCredentials();
         const refreshed = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "token_refresh", reason: context.reason },
@@ -2527,7 +2526,9 @@ function buildProviderWindows(
       ...(nextRetryAt ? { nextRetryAt } : {}),
       message: prevWindows.length > 0
         ? `Couldn't refresh ${name} — last reading expired`
-        : `Couldn't reach ${name} — retrying`,
+        : errorKind === "rate_limited"
+          ? `${name} is rate-limiting usage checks — waiting to retry`
+          : `Couldn't reach ${name} — retrying`,
     },
     lastSuccessAt: prevLastSuccessAt,
   };
@@ -3196,7 +3197,6 @@ export function createUsageTrackingService({
 export const _testing = {
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
-  readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
   isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
