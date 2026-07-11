@@ -2062,6 +2062,7 @@ private struct WorkContextUsagePopover: View {
 
 final class WorkChatComposerDraftState: ObservableObject {
   @Published var text = ""
+  @Published var isFocused = false
 
   var trimmedText: String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2073,6 +2074,7 @@ final class WorkChatComposerDraftState: ObservableObject {
 
   func consumeSendableText() -> String {
     let value = trimmedText
+    isFocused = false
     text = ""
     return value
   }

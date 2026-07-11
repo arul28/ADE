@@ -755,6 +755,7 @@ struct HubInlineComposer: View {
     guard !text.isEmpty else { return }
     let restoredDraft = draft
     let restoredAttachments = attachments
+    collapse()
     draft = ""
     attachments.removeAll()
     Task {

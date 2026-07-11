@@ -552,6 +552,7 @@ struct PersonalChatNewScreen: View {
   private func create() async {
     let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard canCreateChat, !prompt.isEmpty, !busy else { return }
+    composerFocused = false
     busy = true
     errorMessage = nil
     defer { busy = false }

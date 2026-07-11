@@ -1036,6 +1036,16 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
 
+Submitting a valid prompt dismisses the keyboard across every mobile chat
+composer: Work session chat clears the observable `UITextView` focus request,
+Work new-chat and personal new-chat clear their focus bindings, and the Hub
+inline composer collapses its full panel. The prompt field therefore returns to
+its compact resting state without an interactive keyboard swipe that can
+conflict with chat navigation. On `WorkNewChatScreen`, the cross-client activity
+carousel is part of the main scroll content rather than a pinned sibling above
+the composer, so keyboard presentation gives an expanding multi-line prompt the
+available space instead of lifting the activity panel with it.
+
 Mobile chat image attachments use the same host-side temp attachment contract as
 desktop. Work and Hub chat composers expose an add-attachment control beside the
 permission/model controls; its menu currently has one action, Attach from camera
