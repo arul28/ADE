@@ -149,6 +149,25 @@ describe("latestContextUsageInput", () => {
     expect(viewModel?.ratio).toBe(0.13);
   });
 
+  it("ignores metadata-only Codex usage after compaction but accepts an explicit zero", () => {
+    const metadataOnlyEvents = [
+      envelope(1, { type: "codex_token_usage", usage: { last: { inputTokens: 190_000 }, modelContextWindow: 200_000 }, turnId: "turn-1" }),
+      envelope(2, { type: "context_compact", trigger: "auto", state: "completed", turnId: "turn-1" }),
+      envelope(3, { type: "codex_token_usage", usage: { modelContextWindow: 200_000 }, turnId: "turn-1" }),
+      envelope(4, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
+    ] as any;
+    expect(latestContextUsageInput(metadataOnlyEvents, "codex")).toBeNull();
+
+    const explicitZero = latestContextUsageInput([
+      envelope(1, { type: "context_compact", trigger: "auto", state: "completed", turnId: "turn-1" }),
+      envelope(2, { type: "codex_token_usage", usage: { last: { inputTokens: 0 }, modelContextWindow: 200_000 }, turnId: "turn-1" }),
+    ] as any, "codex");
+    const viewModel = toUsageViewModel(explicitZero);
+    expect(viewModel?.usedTokens).toBe(0);
+    expect(viewModel?.contextWindow).toBe(200_000);
+    expect(viewModel?.ratio).toBe(0);
+  });
+
   it("prefers Claude's exact context_usage snapshot", () => {
     const input = latestContextUsageInput([
       envelope(1, { type: "context_usage", usage: { categories: [], totalTokens: 31_000, maxTokens: 200_000, percentage: 15.5 } }),

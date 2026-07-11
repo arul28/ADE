@@ -434,6 +434,51 @@ describe("latestTokenStats", () => {
     expect(stats.percent).toBe(21);
   });
 
+  it("ignores metadata-only Codex usage after compaction but accepts an explicit zero", () => {
+    const metadataOnlyEvents = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+    ];
+    const metadataOnlyStats = latestTokenStats(metadataOnlyEvents, 200_000);
+    expect(metadataOnlyStats.inputTokens).toBeNull();
+    expect(metadataOnlyStats.contextWindow).toBe(100_000);
+    expect(metadataOnlyStats.percent).toBeNull();
+
+    const explicitZeroStats = latestTokenStats([
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 0 }, modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ], 200_000);
+    expect(explicitZeroStats.inputTokens).toBe(0);
+    expect(explicitZeroStats.contextWindow).toBe(100_000);
+    expect(explicitZeroStats.percent).toBe(0);
+  });
+
   it("accepts an exact Claude context snapshot from the compaction turn", () => {
     const events = [
       envelope(1, {

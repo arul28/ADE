@@ -894,6 +894,9 @@ export function latestTokenStats(
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       const total = usage?.total && typeof usage.total === "object" ? usage.total as Record<string, unknown> : null;
       const last = usage?.last && typeof usage.last === "object" ? usage.last as Record<string, unknown> : null;
+      const hasContextOccupancy = typeof last?.inputTokens === "number" || typeof total?.inputTokens === "number";
+      if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
+      if (!hasContextOccupancy) continue;
       inputTokens = typeof last?.inputTokens === "number"
         ? last.inputTokens
         : typeof total?.inputTokens === "number" ? total.inputTokens : inputTokens;
@@ -904,7 +907,6 @@ export function latestTokenStats(
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
       cacheReadTokens = readCacheReadTokens(last) ?? readCacheReadTokens(total) ?? cacheReadTokens;
-      if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
       compactedTurnId = null;
     }
     if (event.type === "context_usage") {
