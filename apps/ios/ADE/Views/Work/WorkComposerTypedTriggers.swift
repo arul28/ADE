@@ -525,6 +525,7 @@ struct WorkComposerTextView: UIViewRepresentable {
       context.coordinator.setText(draftState.text, resetChips: true)
     }
     context.coordinator.applyPlaceholder(placeholder)
+    context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
     return textView
   }
@@ -544,6 +545,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     if draftState.text != textView.text {
       context.coordinator.setText(draftState.text, resetChips: false)
     }
+    context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
   }
 
@@ -559,6 +561,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     private var chips: [(range: NSRange, text: String)] = []
     private var placeholderLabel: UILabel?
     private var triggerInputTraitsActive = false
+    private var lastFocusRequest: Bool?
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -569,6 +572,23 @@ struct WorkComposerTextView: UIViewRepresentable {
         .font: UIFont.preferredFont(forTextStyle: .body),
         .foregroundColor: UIColor(ADEColor.textPrimary),
       ]
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+      if !parent.draftState.isFocused { parent.draftState.isFocused = true }
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+      if parent.draftState.isFocused { parent.draftState.isFocused = false }
+    }
+
+    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) {
+      if isFocused, !textView.isFirstResponder {
+        textView.becomeFirstResponder()
+      } else if !isFocused, lastFocusRequest == true, textView.isFirstResponder {
+        textView.resignFirstResponder()
+      }
+      lastFocusRequest = isFocused
     }
 
     private func chipAttributes(kind: WorkComposerTriggerKind) -> [NSAttributedString.Key: Any] {

@@ -679,6 +679,14 @@ struct WorkNewChatScreen: View {
 
           laneSelector
           sessionActionChips
+
+          // Keep activity in the scrollable content instead of pinning it
+          // above the composer. When the keyboard appears, the composer can
+          // expand into this space without lifting the activity card with it.
+          WorkUsageActivityCarousel()
+            .environmentObject(syncService)
+            .padding(.top, 2)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -688,15 +696,6 @@ struct WorkNewChatScreen: View {
       .refreshable {
         await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
       }
-
-      // Kept outside the scroll view so lane selection can scroll away while
-      // the activity card stays pinned immediately above the composer. The
-      // keyboard lifts the composer without coupling it to chart scrolling.
-      WorkUsageActivityCarousel()
-        .environmentObject(syncService)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 8)
-        .fixedSize(horizontal: false, vertical: true)
 
       if let autoCreateStatus, busy {
         HStack(spacing: 8) {
@@ -1378,6 +1377,7 @@ private struct WorkNewChatComposerBar: View {
     guard !text.isEmpty else { return }
     let restoredDraft = draft
     let restoredAttachments = attachments
+    composerFocused = false
     draft = ""
     attachments.removeAll()
     Task {

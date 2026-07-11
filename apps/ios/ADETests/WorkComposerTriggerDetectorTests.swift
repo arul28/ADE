@@ -156,6 +156,46 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(textView.resignCount, 1)
     XCTAssertFalse(textView.fakeIsFirstResponder)
   }
+
+  @MainActor
+  func testSendingAndRestoringChatDraftUpdatesTextAndFocus() {
+    let draft = WorkChatComposerDraftState()
+    draft.text = "  Ship this change  "
+    draft.isFocused = true
+
+    XCTAssertEqual(draft.consumeSendableText(), "Ship this change")
+    XCTAssertEqual(draft.text, "")
+    XCTAssertFalse(draft.isFocused)
+
+    draft.restoreUnsentText("Ship this change")
+    XCTAssertEqual(draft.text, "Ship this change")
+    XCTAssertTrue(draft.isFocused)
+  }
+
+  @MainActor
+  func testChatComposerAppliesRequestedFocusTransitions() {
+    let draft = WorkChatComposerDraftState()
+    let controller = WorkComposerSuggestionController()
+    var measuredHeight: CGFloat = 24
+    let parent = WorkComposerTextView(
+      draftState: draft,
+      controller: controller,
+      canCompose: true,
+      placeholder: "Message ADE…",
+      measuredHeight: Binding(get: { measuredHeight }, set: { measuredHeight = $0 })
+    )
+    let coordinator = WorkComposerTextView.Coordinator(parent)
+    let textView = FocusRecordingTextView()
+    textView.resetRecording()
+
+    coordinator.applyFocusRequest(false, to: textView)
+    coordinator.applyFocusRequest(true, to: textView)
+    coordinator.applyFocusRequest(false, to: textView)
+
+    XCTAssertEqual(textView.becomeCount, 1)
+    XCTAssertEqual(textView.resignCount, 1)
+    XCTAssertFalse(textView.fakeIsFirstResponder)
+  }
 }
 
 private final class FocusRecordingTextView: UITextView {
