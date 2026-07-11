@@ -52,11 +52,21 @@ Anthropic:
 - Any successful Keychain read (explicit refresh, provider-status checks)
   populates the shared in-memory credential cache, so background polls reuse
   the live login instead of the file.
-- A refresh token the token endpoint rejects (4xx) is negative-cached for 24 h
-  (10 min for network/5xx failures) and never re-tried per poll.
+- A refresh token the token endpoint *definitively* rejects — a non-transient
+  4xx such as `invalid_grant`, or a 200 with no `access_token` — is
+  negative-cached for 24 h and never re-tried per poll. Transient conditions
+  are cached for only 10 min so a temporary blip can't lock out an otherwise
+  valid token: 5xx, plus token-endpoint 429 (rate-limited) and 408, plus
+  network/timeout aborts. A rate-limited refresh is treated as transient, not
+  as a rejection.
 - When a token is expired and cannot be refreshed, the reader reports "no
   usable credentials" (→ reconnect state) instead of returning the dead token,
   which would guarantee a 401 plus another doomed refresh on every cycle.
+- A 401 from the usage API drops only the cached access token
+  (`invalidateCachedClaudeCredentials`) and forces the next read to re-consult
+  its sources. It deliberately preserves the refresh-token refusal memory, so a
+  revoked-but-unexpired file token can't reopen per-poll refresh attempts
+  against a refresh token the token endpoint already rejected.
 
 ## Reproducible baseline
 

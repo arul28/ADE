@@ -146,6 +146,18 @@ describe("refreshClaudeCredentials", () => {
   });
 });
 
+describe("readClaudeCredentials", () => {
+  it("skips macOS Keychain access for background reads", async () => {
+    setPlatform("darwin");
+    vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+
+    await expect(readClaudeCredentials({ allowKeychain: false })).resolves.toBeNull();
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+});
+
 describe("readClaudeCredentialsWithRefresh", () => {
   it("returns null instead of expired credentials when refresh fails", async () => {
     setPlatform("darwin");

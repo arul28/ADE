@@ -47,7 +47,6 @@ import {
   invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
-  readClaudeCredentials,
   readClaudeCredentialsWithRefresh,
   readCodexCredentials,
   refreshClaudeCredentials,
@@ -3198,7 +3197,6 @@ export function createUsageTrackingService({
 export const _testing = {
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
-  readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
   isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
