@@ -160,6 +160,7 @@ import type {
   AgentChatSessionSummary,
   CodexThreadGoal,
   AgentChatSteerArgs,
+  AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatDispatchSteerArgs,
@@ -1344,7 +1345,7 @@ declare global {
           args: AgentChatMarkCrossMachineHandoffArgs,
         ) => Promise<void>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        steer: (args: AgentChatSteerArgs) => Promise<void>;
+        steer: (args: AgentChatSteerArgs) => Promise<AgentChatSteerResult>;
         cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
         dispatchSteer: (

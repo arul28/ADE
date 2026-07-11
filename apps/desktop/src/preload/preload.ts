@@ -336,6 +336,7 @@ import type {
   AgentChatSessionSummary,
   CodexThreadGoal,
   AgentChatSteerArgs,
+  AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatDispatchSteerArgs,
@@ -5228,12 +5229,13 @@ contextBridge.exposeInMainWorld("ade", {
       }
       agentChatSummaryCache.clear();
     },
-    steer: async (args: AgentChatSteerArgs): Promise<void> => {
+    steer: async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
       agentChatSummaryCache.clear();
-      await callProjectRuntimeActionOr("chat", "steer", { args }, () =>
+      const result = await callProjectRuntimeActionOr<AgentChatSteerResult>("chat", "steer", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSteer, args),
       );
       agentChatSummaryCache.clear();
+      return result;
     },
     cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> => {
       agentChatSummaryCache.clear();

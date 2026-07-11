@@ -253,6 +253,76 @@ describe("AgentChatComposer", () => {
     expect(onCancelSteer).toHaveBeenCalledWith("steer-1");
   });
 
+  const CLAUDE_STEER_OVERRIDES = {
+    sessionProvider: "claude" as const,
+    modelId: "anthropic/claude-sonnet-5",
+    availableModelIds: ["anthropic/claude-sonnet-5"],
+  };
+
+  it("primary send folds the draft into the running Claude turn", () => {
+    const onSendSteerNow = vi.fn();
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSendSteerNow,
+      onSendSteerInterrupt: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+
+    expect(onSendSteerNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("split-button menu queues after the turn or interrupts and replaces it", () => {
+    const onSubmit = vi.fn();
+    const onSendSteerInterrupt = vi.fn();
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSubmit,
+      onSendSteerNow: vi.fn(),
+      onSendSteerInterrupt,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Queue for after turn/ }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Interrupt & replace/ }));
+    expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the active-turn send actions when the draft is whitespace-only", () => {
+    const onSendSteerNow = vi.fn();
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      draft: "   ",
+      onSendSteerNow,
+      onSendSteerInterrupt: vi.fn(),
+    });
+
+    const sendNow = screen.getByRole("button", { name: "Send now" }) as HTMLButtonElement;
+    expect(sendNow.disabled).toBe(true);
+
+    fireEvent.click(sendNow);
+    expect(onSendSteerNow).not.toHaveBeenCalled();
+  });
+
+  it("routes Enter to Send now during an active Claude turn", () => {
+    const onSendSteerNow = vi.fn();
+    const onSubmit = vi.fn();
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSendSteerNow,
+      onSendSteerInterrupt: vi.fn(),
+      onSubmit,
+    });
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSendSteerNow).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("accepts the prompt suggestion with Tab", () => {
     const onDraftChange = vi.fn();
     renderComposer({

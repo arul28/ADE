@@ -8852,6 +8852,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!conn) return;
     const steerActiveTurn = async (): Promise<void> => {
       const result = await steerChatMessage(conn, sessionId, text, attachments);
+      // A full steer queue drops the message server-side. Surface it the same way
+      // the primary messageSession path does — throw so submitPrompt restores the
+      // typed text and shows an error — instead of falsely implying it was sent.
+      if (result.reason === "queue_full") {
+        throw new Error("The Claude steer queue is full; the message was not queued.");
+      }
       if (result.queued) {
         addNotice("Staged message — sends after the current turn.", "info");
       }
@@ -13656,6 +13662,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (chatInfoDisclosureKey === "x") {
+        if (subagentPaneViewState.earlierExpanded?.[focusedSection] !== true) return;
         const clearIds = paneRows
           .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => (
             row.kind === "snapshot" && row.section === focusedSection && row.group === "earlier"

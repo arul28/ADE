@@ -202,7 +202,7 @@ describe("RightPane chat info", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toMatch(/↑\s+\d+\s+earlier/);
+    expect(frame).toMatch(/↑\s+\d+\s+completed/);
     expect(frame).toContain("agent-07");
   });
 
@@ -229,8 +229,9 @@ describe("RightPane chat info", () => {
     const collapsedFrame = stripAnsi(collapsed.lastFrame() ?? "");
 
     expect(collapsedFrame).toContain("+ show all (1)");
-    expect(collapsedFrame).toContain("▸ earlier (1)");
-    expect(collapsedFrame).toMatch(/↑\s+\d+\s+earlier/);
+    expect(collapsedFrame).toContain("▸ completed (1)");
+    expect(collapsedFrame).toMatch(/↑\s+\d+\s+completed/);
+    expect(collapsedFrame).not.toContain("x clear");
     expect(collapsedFrame).not.toContain("completed-agent");
 
     const expanded = render(
@@ -242,7 +243,9 @@ describe("RightPane chat info", () => {
         width={80}
       />,
     );
-    expect(stripAnsi(expanded.lastFrame() ?? "")).toContain("completed-agent");
+    const expandedFrame = stripAnsi(expanded.lastFrame() ?? "");
+    expect(expandedFrame).toContain("completed-agent");
+    expect(expandedFrame).toContain("x clear");
   });
 
   it("separates foreground subagents from background tasks with section headers", () => {

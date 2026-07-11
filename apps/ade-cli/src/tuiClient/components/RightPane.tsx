@@ -862,7 +862,8 @@ function ChatInfoRoster({
     : null;
   const disclosureHints = selectedHeader ? [
     ...(selectedHeader.collapsible ? ["c section"] : []),
-    ...(selectedHeader.earlierCount > 0 || selectedHeader.clearedCount > 0 ? ["e earlier"] : []),
+    ...(selectedHeader.earlierCount > 0 || selectedHeader.clearedCount > 0 ? ["e completed"] : []),
+    ...(selectedHeader.hasClear && viewState.earlierExpanded?.[selectedHeader.section] === true ? ["x clear"] : []),
     ...(paneRows.some((row) => row.kind === "show-all" && row.section === selectedSection) ? ["a all"] : []),
   ] : [];
   const { visibleRows: visibleSlice, hiddenBefore, hiddenAfter } = windowSubagentPaneRows(
@@ -890,7 +891,7 @@ function ChatInfoRoster({
       ) : (
         <>
           {hiddenBefore > 0 ? (
-            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} earlier`}</Text>
+            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} completed`}</Text>
           ) : null}
           {visibleSlice.map((row) => {
             if (row.kind === "section-header") {
@@ -899,7 +900,7 @@ function ChatInfoRoster({
             if (row.kind === "earlier-toggle") {
               return (
                 <Text key={row.key} color={theme.color.t4} dimColor>
-                  {`  ${row.expanded ? "▾" : "▸"} earlier (${row.count})${row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}`}
+                  {`  ${row.expanded ? "▾" : "▸"} completed (${row.count})${row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}`}
                 </Text>
               );
             }
@@ -988,13 +989,10 @@ function rosterFooterHint(
 // so the mouse-click line-math stays accurate.
 function RosterSectionHead({ row }: { row: Extract<SubagentPaneRow, { kind: "section-header" }> }) {
   const color = row.section === "background" ? theme.color.tool : theme.color.t4;
-  const count = row.earlierCount
-    ? `${row.activeCount} · ${row.earlierCount} earlier`
-    : `${row.activeCount}`;
   return (
     <Box marginTop={1}>
       <Text color={color} dimColor>
-        {row.collapsible ? (row.collapsed ? "▸ " : "▾ ") : ""}{row.label.toLowerCase()} {count}{row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}
+        {row.collapsible ? (row.collapsed ? "▸ " : "▾ ") : ""}{row.label.toLowerCase()} {row.activeCount}{row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}
       </Text>
     </Box>
   );
@@ -1129,7 +1127,7 @@ function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: C
   };
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="SCHEDULE" hint={grouped.earlier.length ? `${grouped.active.length} · ${grouped.earlier.length} earlier` : `${grouped.active.length}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead title="SCHEDULE" hint={`${grouped.active.length}`} color={brandColor} width={width} />
       {nextWake ? (
         <Text color={theme.color.t2} wrap="truncate-end">
           {` ⏰ next wake ${nextWake}`}
@@ -1138,7 +1136,7 @@ function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: C
       {capped.visible.map((item) => renderItem(item, false))}
       {capped.hiddenCount > 0 ? <Text color={theme.color.t4} dimColor>{`  + show all (${capped.hiddenCount})`}</Text> : null}
       {grouped.earlier.length > 0 || grouped.clearedCount > 0 ? (
-        <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} earlier (${grouped.earlier.length})${grouped.clearedCount ? ` · ${grouped.clearedCount} hidden` : ""}`}</Text>
+        <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} completed (${grouped.earlier.length})${grouped.clearedCount ? ` · ${grouped.clearedCount} hidden` : ""}`}</Text>
       ) : null}
       {earlierExpanded ? grouped.earlier.map((item) => renderItem(item, true)) : null}
       {earlierExpanded && grouped.clearedCount > 0 ? <Text color={theme.color.t4} dimColor>{`  restore (${grouped.clearedCount})`}</Text> : null}
@@ -1174,10 +1172,10 @@ function ChatInfoBackgroundBlock({ info, brandColor, width, viewState }: { info:
   };
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="BACKGROUND" hint={grouped.earlier.length ? `${grouped.active.length} · ${grouped.earlier.length} earlier` : `${grouped.active.length}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead title="BACKGROUND" hint={`${grouped.active.length}`} color={brandColor} width={width} />
       {capped.visible.map(renderItem)}
       {capped.hiddenCount > 0 ? <Text color={theme.color.t4} dimColor>{`  + show all (${capped.hiddenCount})`}</Text> : null}
-      {grouped.earlier.length > 0 || grouped.clearedCount > 0 ? <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} earlier (${grouped.earlier.length})`}</Text> : null}
+      {grouped.earlier.length > 0 || grouped.clearedCount > 0 ? <Text color={theme.color.t4} dimColor>{`  ${earlierExpanded ? "▾" : "▸"} completed (${grouped.earlier.length})`}</Text> : null}
       {earlierExpanded ? grouped.earlier.map(renderItem) : null}
     </Box>
   );

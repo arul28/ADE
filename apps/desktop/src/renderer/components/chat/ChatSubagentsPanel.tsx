@@ -141,19 +141,12 @@ function readPaneClearedState(sessionId?: string | null): PaneClearedStorageStat
 
 function paneSectionHint(args: {
   activeCount: number;
-  earlierCount: number;
-  clearedCount: number;
   runningCount?: number;
   failedCount?: number;
 }): string {
-  const active = args.runningCount && args.failedCount
+  return args.runningCount && args.failedCount
     ? `${args.runningCount} running · ${args.failedCount} failed`
     : `${args.activeCount}`;
-  return [
-    active,
-    ...(args.earlierCount ? [`${args.earlierCount} earlier`] : []),
-    ...(args.clearedCount ? [`${args.clearedCount} hidden`] : []),
-  ].join(" · ");
 }
 
 type GlyphCategory = "subagent" | "background";
@@ -307,10 +300,10 @@ function EarlierToggle({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
-      Earlier ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}
+      Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}
     </button>
   );
 }
@@ -380,8 +373,6 @@ function PaneScalableSection<T>({
   const earlierExpanded = paneUi.earlier[sectionKey] === true;
   const sectionAction = allClear ? (
     <PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction>
-  ) : groups.earlier.length > 0 ? (
-    <PaneTextAction onClick={() => onClear(groups.earlier.map(idOf))}>Clear</PaneTextAction>
   ) : null;
   const renderRows = (items: T[], renderRow: (item: T) => ReactNode, animated: boolean) => {
     const rows = items.map((item) => animated ? (
@@ -425,7 +416,14 @@ function PaneScalableSection<T>({
         ) : null}
         {groups.earlier.length > 0 || groups.clearedCount > 0 ? (
           <div className="px-2 pt-0.5">
-            <EarlierToggle count={groups.earlier.length} clearedCount={groups.clearedCount} expanded={earlierExpanded} onToggle={onToggleEarlier} />
+            <div className="flex items-center">
+              <EarlierToggle count={groups.earlier.length} clearedCount={groups.clearedCount} expanded={earlierExpanded} onToggle={onToggleEarlier} />
+              {earlierExpanded && groups.earlier.length > 0 ? (
+                <span className="shrink-0 pl-1.5 pr-1">
+                  <PaneTextAction onClick={() => onClear(groups.earlier.map(idOf))}>Clear</PaneTextAction>
+                </span>
+              ) : null}
+            </div>
             <SectionDisclosure open={earlierExpanded}>
               <div className="space-y-px pb-1">
                 {renderRows(groups.earlier, renderEarlierRow, animateEarlierRows)}
@@ -936,7 +934,6 @@ export function ChatSubagentsPanel({
   backgroundItems = [],
   schedulesPaused = false,
   onToggleSchedulesPaused,
-  onViewMainTranscript,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -969,8 +966,6 @@ export function ChatSubagentsPanel({
   schedulesPaused?: boolean;
   /** Pause or resume all durable schedules for this chat. */
   onToggleSchedulesPaused?: () => void;
-  /** Opens the provider-fidelity transcript for the parent Claude session. */
-  onViewMainTranscript?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1372,7 +1367,7 @@ export function ChatSubagentsPanel({
       {hasSubagents ? (
         <PaneScalableSection
           sectionKey="subagents" label="Subagents" tone="subagent" cap={SUBAGENTS_ACTIVE_CAP}
-          hint={paneSectionHint({ activeCount: subagentGroups.active.length, earlierCount: subagentGroups.earlier.length, clearedCount: subagentGroups.clearedCount, runningCount: subagentRunningCount, failedCount: subagentFailedCount })}
+          hint={paneSectionHint({ activeCount: subagentGroups.active.length, runningCount: subagentRunningCount, failedCount: subagentFailedCount })}
           groups={subagentGroups} capped={cappedSubagents} paneUi={paneUi} sticky={stickyHeaders}
           idOf={(snap) => snap.taskId}
           renderActiveRow={renderSubagentPaneRow} renderEarlierRow={renderSubagentPaneRow}
@@ -1388,7 +1383,7 @@ export function ChatSubagentsPanel({
       {hasBackground ? (
         <PaneScalableSection
           sectionKey="background" label="Background" tone="background" cap={BACKGROUND_ACTIVE_CAP}
-          hint={paneSectionHint({ activeCount: backgroundGroups.active.length, earlierCount: backgroundGroups.earlier.length, clearedCount: backgroundGroups.clearedCount, runningCount: backgroundRunningCount, failedCount: backgroundFailedCount })}
+          hint={paneSectionHint({ activeCount: backgroundGroups.active.length, runningCount: backgroundRunningCount, failedCount: backgroundFailedCount })}
           groups={backgroundGroups} capped={cappedBackground} paneUi={paneUi} sticky={stickyHeaders}
           idOf={(item) => item.id}
           renderActiveRow={(item) => <BackgroundCommandRow snapshot={item} />}
@@ -1404,7 +1399,7 @@ export function ChatSubagentsPanel({
       {hasScheduled ? (
         <PaneScalableSection
           sectionKey="schedule" label="Schedule" tone="scheduled" cap={SCHEDULE_ACTIVE_CAP}
-          hint={paneSectionHint({ activeCount: scheduleGroups.active.length, earlierCount: scheduleGroups.earlier.length, clearedCount: scheduleGroups.clearedCount, runningCount: scheduleRunningCount, failedCount: scheduleFailedCount })}
+          hint={paneSectionHint({ activeCount: scheduleGroups.active.length, runningCount: scheduleRunningCount, failedCount: scheduleFailedCount })}
           groups={scheduleGroups} capped={cappedSchedule} paneUi={paneUi} sticky={stickyHeaders}
           extraHeaderAction={<>{onToggleSchedulesPaused ? (
             <button
@@ -1435,18 +1430,6 @@ export function ChatSubagentsPanel({
         <div className="px-4 py-6 text-[12px] leading-5 text-fg/40">
           No agent activity for this chat.
           <span className="block pt-0.5 text-fg/25">Single-agent mode.</span>
-        </div>
-      ) : null}
-
-      {onViewMainTranscript ? (
-        <div className="mt-auto border-t border-white/[0.04] px-3 py-2">
-          <button
-            type="button"
-            onClick={onViewMainTranscript}
-            className="text-[10.5px] text-fg/40 transition-colors hover:text-fg/70"
-          >
-            View full session transcript
-          </button>
         </div>
       ) : null}
 

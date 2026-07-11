@@ -186,7 +186,12 @@ type SubagentClassificationInput = {
 export function isBackgroundShellCommand(input: SubagentClassificationInput): boolean {
   const taskType = textField(input.taskType);
   const agentType = textField(input.agentType);
-  return taskType === "background" && (!agentType || agentType === "background");
+  // The Claude Agent SDK tags a `Bash` run_in_background shell with task_type
+  // "local_bash" (older builds said "background"). Either one, with no real
+  // subagent agentType, is a background shell — it belongs in the background
+  // pane, never the subagent roster.
+  return (taskType === "background" || taskType === "local_bash")
+    && (!agentType || agentType === "background");
 }
 
 export function isRealSubagent(input: SubagentClassificationInput): boolean {
@@ -198,6 +203,32 @@ export function isRealSubagent(input: SubagentClassificationInput): boolean {
       || taskType === "subagent"
       || taskType === "local_workflow",
   );
+}
+
+/**
+ * An explicit task_type "other" with no agent metadata (no agentType, no
+ * agentId, no stashed Task/Agent tool input) is a plain Claude Code task run —
+ * e.g. "Re-run affected test files" — not a subagent, so it must never surface
+ * subagent rows. Shared so the idle-turn and foreground task_started handlers
+ * classify identically; keeping this in one place is what stops the two paths
+ * from drifting apart. A bare task_started with no task_type stays a subagent
+ * for back-compat.
+ */
+export function isNonAgentTaskRun(input: {
+  taskType?: string | null;
+  agentType?: string | null;
+  agentId?: string | null;
+  hasStashedToolInput?: boolean;
+}): boolean {
+  const taskType = textField(input.taskType);
+  const hasAgentMetadata = Boolean(
+    textField(input.agentType)
+      || textField(input.agentId)
+      || input.hasStashedToolInput
+      || taskType === "subagent"
+      || taskType === "local_workflow",
+  );
+  return taskType === "other" && !hasAgentMetadata;
 }
 
 type SubagentTimelineStatus = "running" | "completed" | "stopped" | "failed";

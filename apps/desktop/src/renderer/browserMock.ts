@@ -4832,7 +4832,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
       send: resolvedArg(undefined),
-      steer: resolvedArg(undefined),
+      steer: async () => ({
+        steerId: globalThis.crypto.randomUUID(),
+        queued: true,
+      }),
       cancelSteer: resolvedArg(undefined),
       editSteer: resolvedArg(undefined),
       dispatchSteer: resolvedArg({

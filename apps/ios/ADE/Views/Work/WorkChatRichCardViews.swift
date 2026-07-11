@@ -2683,11 +2683,7 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
-    let activeLabel = running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active)"
-    return ([activeLabel]
-      + (earlier > 0 ? ["\(earlier) earlier"] : [])
-      + (hidden > 0 ? ["\(hidden) hidden"] : []))
-      .joined(separator: " · ")
+    running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active)"
   }
 
   var body: some View {
@@ -2864,7 +2860,7 @@ struct WorkChatInfoDetailsSheet: View {
           Button("Restore (\(clearedCount))") { restore(key) }
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
-        } else if !clearIds.isEmpty {
+        } else if !clearIds.isEmpty && paneFlag("earlier", section: key) {
           Button("Clear") { clear(key, ids: clearIds) }
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
@@ -2892,7 +2888,7 @@ struct WorkChatInfoDetailsSheet: View {
         withPaneAnimation { setPaneFlag("earlier", section: section, value: !expanded) }
       } label: {
         Label(
-          "Earlier (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")",
+          "Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")",
           systemImage: expanded ? "chevron.down" : "chevron.right"
         )
       }
@@ -3435,6 +3431,101 @@ struct WorkSubagentTimelineRowView: View {
     } else {
       content()
     }
+  }
+}
+
+/// Folded card for a run of 2+ interrupt-stopped subagents — desktop parity with
+/// `SubagentStoppedGroupCard`. A mass interrupt renders as one calm amber line,
+/// "N agents stopped when you interrupted", that expands to a per-agent list;
+/// tapping a row reopens that subagent's detail (the iOS analog of the desktop
+/// "jump to start"). Never a red error block.
+struct WorkSubagentStoppedGroupCardView: View {
+  let model: WorkSubagentStoppedGroupModel
+  /// Same opener the result rows use; nil in previews/offline renders leaves the
+  /// list inert (and hides the per-row open affordance).
+  let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+
+  @State private var expanded = false
+
+  private var headline: String {
+    "\(model.count) \(model.count == 1 ? "agent" : "agents") stopped when you interrupted"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        // No height animation — mirror the desktop card, which just toggles the
+        // list, and stay calm under Reduce Motion.
+        expanded.toggle()
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: "stop.fill")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.warning)
+          Text(headline)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 6)
+          Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(headline)
+      .accessibilityHint(expanded ? "Collapse list" : "Expand list")
+
+      if expanded {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(model.rows) { row in
+            stoppedItem(row)
+          }
+        }
+        .padding(.top, 8)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .adeGlassCard(cornerRadius: 12, padding: 0)
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.16), lineWidth: 0.8)
+    )
+    .contentShape(Rectangle())
+  }
+
+  @ViewBuilder
+  private func stoppedItem(_ row: WorkSubagentTimelineRow) -> some View {
+    if let onOpen {
+      Button {
+        Task { await onOpen(row.snapshot) }
+      } label: {
+        stoppedItemLabel(row)
+      }
+      .buttonStyle(.plain)
+    } else {
+      stoppedItemLabel(row)
+    }
+  }
+
+  private func stoppedItemLabel(_ row: WorkSubagentTimelineRow) -> some View {
+    HStack(spacing: 8) {
+      Text(workSubagentMeaningfulName(row.snapshot))
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 6)
+      Image(systemName: "arrow.up.right")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .opacity(onOpen == nil ? 0 : 1)
+    }
+    .padding(.vertical, 5)
+    .contentShape(Rectangle())
   }
 }
 

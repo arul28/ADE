@@ -97,6 +97,12 @@ func syncConnectionHealth(
 enum SyncChatMessageDelivery: Equatable {
   case sent
   case queued(steerId: String?)
+  /// The host accepted the request but dropped it without delivering. Today this
+  /// only happens when a steer arrives and the pending-steer queue is already
+  /// full (`reason == "queue_full"`). Callers should restore the composer and
+  /// prompt a resend rather than clearing it as if the message went through,
+  /// mirroring desktop's queue-full handling.
+  case dropped(reason: String?)
 }
 
 struct SavedChatTempAttachment: Decodable, Equatable {
@@ -110,8 +116,16 @@ private struct PersonalChatImageData: Decodable {
 }
 
 func syncChatMessageDelivery(from response: Any) -> SyncChatMessageDelivery {
-  if let response = response as? [String: Any], response["queued"] as? Bool == true {
-    return .queued(steerId: response["steerId"] as? String)
+  if let response = response as? [String: Any] {
+    if response["queued"] as? Bool == true {
+      return .queued(steerId: response["steerId"] as? String)
+    }
+    // A full pending-steer queue makes the host drop the steer, answering
+    // `queued: false, reason: "queue_full"`. Surface it as `.dropped` so the
+    // caller can keep the user's text instead of treating it as delivered.
+    if response["reason"] as? String == "queue_full" {
+      return .dropped(reason: "queue_full")
+    }
   }
   return .sent
 }

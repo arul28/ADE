@@ -382,6 +382,11 @@ enum WorkTimelinePayload: Equatable {
   /// spawn/result rows hard timeline boundaries that tool/activity folding
   /// cannot absorb.
   case subagent(WorkSubagentTimelineRow)
+  /// A run of 2+ consecutive interrupt-stopped subagent result rows, folded into
+  /// one calm "N agents stopped when you interrupted" card (desktop parity:
+  /// `subagent_stopped_group`). Keeps a mass interrupt from rendering as a wall
+  /// of identical stopped rows.
+  case subagentStoppedGroup(WorkSubagentStoppedGroupModel)
   /// Cluster of consecutive read-only tool-like entries (tool cards,
   /// commands) collapsed into a single header-only row. Tap to reveal the
   /// member list; tap a row to reveal its output. Matches the desktop
@@ -611,6 +616,16 @@ struct WorkSubagentTimelineRow: Identifiable, Equatable {
   var id: String {
     "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
   }
+}
+
+/// Folded run of 2+ interrupt-stopped subagent result rows (desktop parity:
+/// `SubagentStoppedGroupEvent`). Carries the original result rows so the card
+/// can list each agent's title and reopen its detail on tap.
+struct WorkSubagentStoppedGroupModel: Identifiable, Equatable {
+  let id: String
+  let rows: [WorkSubagentTimelineRow]
+
+  var count: Int { rows.count }
 }
 
 struct WorkSubagentSelection: Identifiable, Equatable {

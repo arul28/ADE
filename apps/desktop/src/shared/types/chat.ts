@@ -1910,6 +1910,7 @@ export type AgentChatSteerArgs = {
 export type AgentChatSteerResult = {
   steerId: string;
   queued: boolean;
+  reason?: "queue_full";
 };
 
 export type AgentChatMessageSessionKind =

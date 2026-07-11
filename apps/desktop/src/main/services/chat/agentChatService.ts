@@ -334,6 +334,7 @@ import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots"
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   isBackgroundShellCommand,
+  isNonAgentTaskRun,
   isRealSubagent,
   preferSubagentSummary,
   subagentAgentKey,
@@ -776,6 +777,14 @@ type ClaudeActiveSubagent = {
    * symmetrically with the spawn.
    */
   skipTranscript?: boolean;
+  /**
+   * A Claude Code task run that is neither a real subagent (no agentType /
+   * agentId, task_type not "subagent"/"local_workflow") nor a background shell
+   * — e.g. a plain "Re-run affected test files" tool run. Tracked only so its
+   * completion can be consumed; it must never emit subagent_started/_result and
+   * so must never appear as a row in the Subagents roster.
+   */
+  nonAgentTaskRun?: boolean;
 };
 
 type ClaudeRuntime = {
@@ -784,10 +793,15 @@ type ClaudeRuntime = {
   forkFromSdkSessionId: string | null;
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
+  /** In-flight query start. Concurrent ensureClaudeQuery callers latch onto
+   * one start — two racing starts used to spawn twin subprocesses resuming
+   * the same SDK session. */
+  queryStartPromise: Promise<ClaudeQuery> | null;
   pendingPostResultNext: Promise<IteratorResult<SDKMessage, void>> | null;
   pendingPostResultNextSettledAt: number | null;
   idleReaderPromise: Promise<void> | null;
   idleReaderGeneration: number;
+  queryGeneration: number;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -796,6 +810,7 @@ type ClaudeRuntime = {
   /** Set to true when teardown runs to cancel an in-flight warmup. */
   warmupCancelled: boolean;
   activeSubagents: Map<string, ClaudeActiveSubagent>;
+  emittedSubagentStartIds: Set<string>;
   /**
    * Stash for Task-tool inputs captured at the assistant tool_use boundary,
    * keyed by the Task tool_use_id. Lets the `system:task_*` system-message
@@ -817,7 +832,33 @@ type ClaudeRuntime = {
    */
   workflowAgentsByTask: Map<string, Map<string, ClaudeWorkflowAgentEmitState>>;
   scheduledWorkSignatures: Map<string, string>;
+  /**
+   * Claude Code TaskCreate/TaskUpdate tracker. The harness assigns ordinal
+   * task ids ("1", "2", …) in the TaskCreate tool *result*, which this
+   * input-side tracker never sees, so creates are keyed by their tool_use id
+   * and remapped onto the ordinal id the first time an update or runtime
+   * event references it. Insertion order mirrors creation order — the
+   * ordinal remap depends on it. Lazily seeded from the transcript's latest
+   * todo_update so cross-turn updates keep resolving.
+   */
+  taskTodos: { seeded: boolean; byId: Map<string, ClaudeTaskTodoState> };
+  /**
+   * Cumulative assistant text already emitted per SDK message id + content
+   * index, shared across foreground and idle turns. The SDK re-delivers full
+   * assistant snapshots after the per-stream dedup state was reset (message
+   * interleave, steer, idle handoff), which used to double the transcript —
+   * this durable record is the guard. Bounded to the most recent messages.
+   */
+  emittedTextByAssistantMessage: Map<string, Map<number, string>>;
   seenBackgroundTaskIds: Set<string>;
+  /**
+   * Sticky per-background-task title, keyed by taskId. The first meaningful
+   * title (the spawn description) is recorded here and reused for every later
+   * update — including the terminal stopped/completed row — so a background
+   * task never loses its name to a generic "Background work" fallback or a
+   * stale progress string once it has been named.
+   */
+  backgroundTaskTitleById: Map<string, string>;
   scheduledWorkKindById: Map<string, AgentChatScheduledWorkKind>;
   scheduledWorkIdByTaskId: Map<string, string>;
   scheduledWorkIdByToolUseId: Map<string, string>;
@@ -3329,6 +3370,10 @@ const CLAUDE_TASK_TYPE_SET = new Set<ClaudeTaskType>(CLAUDE_TASK_TYPES);
 function normalizeClaudeTaskType(value: unknown): ClaudeTaskType | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
+  // The SDK tags a Bash run_in_background shell as "local_bash"; it is a
+  // background task (background-work pane, never the subagent roster), so fold
+  // it onto "background" — the id space every downstream branch already keys on.
+  if (trimmed === "local_bash") return "background";
   return CLAUDE_TASK_TYPE_SET.has(trimmed as ClaudeTaskType) ? (trimmed as ClaudeTaskType) : undefined;
 }
 
@@ -3826,6 +3871,42 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   return null;
 }
 
+const CLAUDE_EMITTED_TEXT_MESSAGE_CAP = 8;
+
+/** Durable per-(message id, content index) record of assistant text already
+ * emitted to the transcript. Consulted before emitting snapshot text so a
+ * re-delivered assistant message never doubles the transcript. */
+function claudeEmittedTextRecord(runtime: ClaudeRuntime, messageId: string): Map<number, string> {
+  let record = runtime.emittedTextByAssistantMessage.get(messageId);
+  if (!record) {
+    record = new Map();
+    runtime.emittedTextByAssistantMessage.set(messageId, record);
+    while (runtime.emittedTextByAssistantMessage.size > CLAUDE_EMITTED_TEXT_MESSAGE_CAP) {
+      const oldest = runtime.emittedTextByAssistantMessage.keys().next().value;
+      if (oldest === undefined) break;
+      runtime.emittedTextByAssistantMessage.delete(oldest);
+    }
+  }
+  return record;
+}
+
+const CLAUDE_ORDINAL_TASK_ID = /^\d{1,6}$/;
+
+/** Rekey a tracked task without moving it to the end of the map — insertion
+ * order mirrors creation order and the ordinal remap depends on it. */
+function rekeyClaudeTaskTodoPreservingOrder(
+  tasksById: Map<string, ClaudeTaskTodoState>,
+  fromId: string,
+  next: ClaudeTaskTodoState,
+): void {
+  const entries = [...tasksById.entries()];
+  tasksById.clear();
+  for (const [key, value] of entries) {
+    if (key === fromId) tasksById.set(next.id, next);
+    else tasksById.set(key, value);
+  }
+}
+
 function updateClaudeTaskTodosFromToolInput(
   tasksById: Map<string, ClaudeTaskTodoState>,
   toolName: string,
@@ -3849,13 +3930,25 @@ function updateClaudeTaskTodosFromToolInput(
   } else if (normalizedToolName === "TaskUpdate") {
     const id = firstNonEmptyString(record.taskId, record.id);
     if (!id) return null;
+    let existing = tasksById.get(id);
+    if (!existing && CLAUDE_ORDINAL_TASK_ID.test(id)) {
+      // The harness assigns ordinal ids at create time in the tool result,
+      // which never reaches this tracker — ordinal N is the Nth created task.
+      // Only remap entries still keyed by their TaskCreate tool_use id.
+      const entry = [...tasksById.entries()][Number(id) - 1];
+      if (entry && entry[0].startsWith("toolu_")) {
+        existing = { ...entry[1], id };
+        rekeyClaudeTaskTodoPreservingOrder(tasksById, entry[0], existing);
+      }
+    }
     const rawStatus = typeof record.status === "string" ? record.status.trim().toLowerCase() : "";
     if (rawStatus === "deleted") {
-      tasksById.delete(id);
+      if (!tasksById.delete(id)) return null;
     } else {
-      const existing = tasksById.get(id);
-      const description = firstNonEmptyString(record.subject, record.description, record.activeForm, existing?.description)
-        ?? id;
+      const description = firstNonEmptyString(record.subject, record.description, record.activeForm, existing?.description);
+      // Never fabricate a row from a bare id — an update for a task this
+      // tracker cannot resolve or describe changes nothing user-visible.
+      if (!description) return null;
       tasksById.set(id, {
         id,
         description,
@@ -3879,15 +3972,17 @@ function remapClaudeTaskTodoFromRuntimeEvent(
   if (!fromId || !toId) return null;
   const existing = tasksById.get(fromId);
   if (!existing) return null;
-  if (fromId !== toId) {
-    tasksById.delete(fromId);
-  }
-  tasksById.set(toId, {
+  const next: ClaudeTaskTodoState = {
     ...existing,
     id: toId,
     description: firstNonEmptyString(updates?.description, existing.description) ?? existing.description,
     status: updates?.status ?? existing.status,
-  });
+  };
+  if (fromId !== toId) {
+    rekeyClaudeTaskTodoPreservingOrder(tasksById, fromId, next);
+  } else {
+    tasksById.set(toId, next);
+  }
   return [...tasksById.values()];
 }
 
@@ -7373,6 +7468,24 @@ export function createAgentChatService(args: {
     return latest;
   };
 
+  /** Runtime-lifetime TaskCreate/TaskUpdate tracker, lazily seeded from the
+   * transcript's latest todo_update so updates in later turns (or after a
+   * host restart) still resolve to the task they reference. */
+  const claudeTaskTodoMap = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): Map<string, ClaudeTaskTodoState> => {
+    if (!runtime.taskTodos.seeded) {
+      runtime.taskTodos.seeded = true;
+      for (const item of readLatestTranscriptTodoItems(managed)) {
+        if (!runtime.taskTodos.byId.has(item.id)) {
+          runtime.taskTodos.byId.set(item.id, { ...item });
+        }
+      }
+    }
+    return runtime.taskTodos.byId;
+  };
+
   const getChatTranscript = async ({
     sessionId,
     limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
@@ -10755,19 +10868,30 @@ export function createAgentChatService(args: {
       turnId?: string;
     },
   ): void => {
+    const terminal = isTerminalClaudeScheduledStatus(args.status);
+    const explicitTitle = compactString(args.title) ?? compactString(args.command);
+    const storedTitle = runtime.backgroundTaskTitleById.get(args.taskId);
+    // First meaningful title (the spawn description) wins and sticks: record it
+    // on the first non-terminal update so terminal/stopped rows never fall back
+    // to a generic label or a stale latest-activity string.
+    if (!terminal && explicitTitle && !storedTitle) {
+      runtime.backgroundTaskTitleById.set(args.taskId, explicitTitle);
+    }
+    const title = storedTitle ?? explicitTitle ?? "Background work";
     emitClaudeScheduledWorkUpdate(managed, runtime, {
       type: "scheduled_work_update",
       id: `background:${args.taskId}`,
       kind: "background_task",
       status: args.status,
       origin: "background_task",
-      title: args.title ?? args.command ?? "Background work",
+      title,
       summary: backgroundTaskSummary(args.summary, args.command, args.durationMs),
       sourceTaskId: args.taskId,
       ...(args.turnId ? { turnId: args.turnId } : {}),
     });
-    if (isTerminalClaudeScheduledStatus(args.status)) {
+    if (terminal) {
       runtime.seenBackgroundTaskIds.delete(args.taskId);
+      runtime.backgroundTaskTitleById.delete(args.taskId);
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
     }
@@ -12099,6 +12223,7 @@ export function createAgentChatService(args: {
       // are cleared, so teardown never leaves a persisted "running" row.
       closeOpenClaudeBackgroundTasks(managed, managed.runtime, "stopped", managed.runtime.activeTurnId ?? undefined);
       managed.runtime.activeSubagents.clear();
+      managed.runtime.emittedSubagentStartIds.clear();
       managed.runtime.taskToolInputByToolUseId.clear();
       managed.runtime.workflowAgentsByTask.clear();
       for (const pending of managed.runtime.approvals.values()) {
@@ -13444,10 +13569,12 @@ export function createAgentChatService(args: {
       });
     }
     state.openToolUses.clear();
-    // Close any background shell tasks (e.g. Monitor-spawned background shells)
-    // still open when the idle background turn finalizes — otherwise their
-    // background_task rows stay "running" forever.
-    closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
+    // Background shell tasks are NOT closed at the turn boundary: a
+    // run_in_background shell keeps running across turns, and the SDK query
+    // stays alive between them and will deliver the real completion
+    // (system:task_notification) — which auto-starts a fresh idle turn. Closing
+    // them here would falsely stop still-running work. Genuine orphaning events
+    // (interrupt, reset/dispose, host-restart rebind) settle them instead.
     for (const event of finalizeClaudeStructuredActivities(state.structuredActivity, turnId, status)) {
       emitChatEvent(managed, event);
     }
@@ -13497,7 +13624,10 @@ export function createAgentChatService(args: {
     if (!taskId) return true;
     const notificationAgentId = compactString(msg.agent_id);
     const existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
-    if (existing?.skipTranscript) {
+    // Ambient (skip_transcript) tasks and non-agent task runs are both tracked
+    // but never surfaced — swallow every follow-up subtype, deleting on the
+    // terminal one so the entry does not leak.
+    if (existing?.skipTranscript || existing?.nonAgentTaskRun) {
       if (subtype === "task_notification") {
         runtime.activeSubagents.delete(taskId);
         if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
@@ -13590,6 +13720,26 @@ export function createAgentChatService(args: {
     }
     if (subtype === "task_started") {
       const background = taskType === "background" || taskType === "cron" || taskType === "local_workflow" || isBackgroundTask(msg);
+      // An explicit task_type "other" with no agent metadata is a plain Claude
+      // Code task run, not a subagent — track it for cleanup but never emit
+      // subagent rows. Uses the same shared predicate as the foreground path
+      // (including the stashed Task-tool-input check) so the two never diverge.
+      if (isNonAgentTaskRun({
+        taskType,
+        agentType,
+        agentId,
+        hasStashedToolInput: parentToolUseId ? runtime.taskToolInputByToolUseId.has(parentToolUseId) : false,
+      })) {
+        runtime.activeSubagents.set(taskId, {
+          taskId,
+          description,
+          parentToolUseId,
+          background,
+          ...(taskType ? { taskType } : {}),
+          nonAgentTaskRun: true,
+        });
+        return true;
+      }
       runtime.activeSubagents.set(taskId, {
         taskId,
         description,
@@ -13617,7 +13767,7 @@ export function createAgentChatService(args: {
           });
         }
       }
-      emitChatEvent(managed, {
+      emitClaudeSubagentStarted(managed, runtime, {
         type: "subagent_started",
         taskId,
         ...(agentId ? { agentId } : {}),
@@ -13660,7 +13810,7 @@ export function createAgentChatService(args: {
           });
         }
       }
-      emitChatEvent(managed, {
+      emitClaudeSubagentResult(managed, runtime, {
         type: "subagent_result",
         taskId,
         ...(agentId ? { agentId } : {}),
@@ -13701,7 +13851,7 @@ export function createAgentChatService(args: {
           });
         }
       }
-      emitChatEvent(managed, {
+      emitClaudeSubagentResult(managed, runtime, {
         type: "subagent_result",
         taskId,
         ...(agentId ? { agentId } : {}),
@@ -13858,12 +14008,21 @@ export function createAgentChatService(args: {
         }
         if (block.type === "text") {
           const text = typeof block.text === "string" ? block.text : "";
-          const streamedPrefix = snapshotMatchesCurrentStream
-            ? state.streamedTextByContentIndex.get(index) ?? ""
-            : "";
-          const textToEmit = streamedPrefix.length > 0 && text.startsWith(streamedPrefix)
-            ? text.slice(streamedPrefix.length)
-            : text;
+          const emittedRecord = providerMessageId ? claudeEmittedTextRecord(runtime, providerMessageId) : null;
+          const streamedPrefix = emittedRecord?.get(index)
+            ?? (snapshotMatchesCurrentStream ? state.streamedTextByContentIndex.get(index) ?? "" : "");
+          let textToEmit: string;
+          if (!streamedPrefix.length) {
+            textToEmit = text;
+          } else if (text.startsWith(streamedPrefix)) {
+            textToEmit = text.slice(streamedPrefix.length);
+          } else if (streamedPrefix === text || streamedPrefix.startsWith(text)) {
+            // Re-delivered snapshot of text that already went out.
+            textToEmit = "";
+          } else {
+            // Divergent reuse of a message id — treat as a new response.
+            textToEmit = text;
+          }
           if (textToEmit.length) {
             state.assistantText += textToEmit;
             emitChatEvent(managed, {
@@ -13873,6 +14032,7 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
+          emittedRecord?.set(index, textToEmit.length ? text : streamedPrefix);
           if (snapshotMatchesCurrentStream) {
             state.streamedTextByContentIndex.set(index, text);
           }
@@ -13900,6 +14060,12 @@ export function createAgentChatService(args: {
               turnId,
             });
             maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, toolName, block.input, itemId, turnId);
+            const todoItems = toolName === "TodoWrite"
+              ? normalizeClaudeTodoItems(block.input ?? {})
+              : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, block.input ?? {}, itemId);
+            if (todoItems) {
+              emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
+            }
           }
         }
       }
@@ -13938,6 +14104,10 @@ export function createAgentChatService(args: {
               );
             }
             const providerMessageId = state.currentStreamMessageId ?? compactString(streamMsg.uuid);
+            if (providerMessageId && contentIndex != null) {
+              const record = claudeEmittedTextRecord(runtime, providerMessageId);
+              record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
+            }
             emitChatEvent(managed, {
               type: "text",
               text,
@@ -14327,7 +14497,6 @@ export function createAgentChatService(args: {
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>();
     const emittedClaudeTodoIds = new Set<string>();
-    const claudeTaskTodosById = new Map<string, ClaudeTaskTodoState>();
     const emitClaudeToolCompletion = (
       itemId: string,
       result: Record<string, unknown>,
@@ -14394,7 +14563,7 @@ export function createAgentChatService(args: {
       if (emittedClaudeTodoIds.has(itemId)) return;
       const todoItems = toolName === "TodoWrite"
         ? normalizeClaudeTodoItems(input ?? {})
-        : updateClaudeTaskTodosFromToolInput(claudeTaskTodosById, toolName, input ?? {}, itemId);
+        : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
       if (!todoItems) return;
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
@@ -15118,9 +15287,10 @@ export function createAgentChatService(args: {
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
           const existing = runtime.activeSubagents.get(taskId);
-          // If the spawn was filtered as ambient/housekeeping, drop progress
-          // notifications too so the panel stays symmetrical.
-          if (existing?.skipTranscript) continue;
+          // If the spawn was filtered as ambient/housekeeping or classified as a
+          // non-agent task run, drop progress notifications too so the panel
+          // stays symmetrical.
+          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           // Background shell commands never surface as subagents — their spawn
           // emitted a background scheduled_work row, and progress ticks add
           // nothing to the background pane. Swallow them.
@@ -15185,7 +15355,7 @@ export function createAgentChatService(args: {
               runtime.workflowAgentsByTask.set(taskId, tracked);
             }
             for (const transition of planClaudeWorkflowAgentTransitions(tracked, workflowProgress.agents)) {
-              emitClaudeWorkflowAgentEvent(managed, transition, {
+              emitClaudeWorkflowAgentEvent(managed, runtime, transition, {
                 workflowTaskId: taskId,
                 background: existing?.background === true,
                 workflowName,
@@ -15201,7 +15371,7 @@ export function createAgentChatService(args: {
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
           const existing = runtime.activeSubagents.get(taskId);
-          if (existing?.skipTranscript) continue;
+          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           const patch = asRecord(taskMsg.patch) ?? {};
           const status = compactString(patch.status);
           const description = compactString(patch.description) ?? existing?.description ?? "Task update";
@@ -15253,7 +15423,7 @@ export function createAgentChatService(args: {
                 });
               }
             }
-            emitChatEvent(managed, {
+            emitClaudeSubagentResult(managed, runtime, {
               type: "subagent_result",
               taskId,
               ...(agentId ? { agentId } : {}),
@@ -15344,9 +15514,9 @@ export function createAgentChatService(args: {
             || isBackgroundTask(taskMsg as Record<string, unknown>)
             || stashed?.isBackground === true;
           const command = compactString(taskMsg.command);
-          // A background *shell* command (Bash run_in_background) has taskType
-          // "background" and no real subagent agentType. It must NOT surface as a
-          // subagent row; it belongs in the background-work pane instead.
+          // A background *shell* command (Bash run_in_background) has task_type
+          // "local_bash"/"background" and no real subagent agentType. It must NOT
+          // surface as a subagent row; it belongs in the background-work pane.
           if (isBackgroundShellCommand({ taskType, agentType, command, description })) {
             runtime.activeSubagents.set(taskId, {
               taskId,
@@ -15383,19 +15553,40 @@ export function createAgentChatService(args: {
               });
             }
           }
-          runtime.activeSubagents.set(taskId, {
-            taskId,
-            description,
-            parentToolUseId,
-            background,
-            ...(agentType ? { agentType } : {}),
-            ...(agentId ? { agentId } : {}),
-            ...(parentAgentId ? { parentAgentId } : {}),
-            ...(taskType ? { taskType } : {}),
-            ...(workflowName ? { workflowName } : {}),
+          // An explicit task_type "other" with no agent metadata (no agentType,
+          // no agentId, no Task/Agent tool stash) is a plain Claude Code task run
+          // — e.g. "Re-run affected test files" — not a subagent. Track it so its
+          // completion is consumed, but never emit subagent rows for it (it would
+          // otherwise pollute the Subagents roster). A bare task_started with no
+          // task_type stays a subagent for back-compat; cron keeps its own row.
+          const nonAgentTaskRun = isNonAgentTaskRun({
+            taskType,
+            agentType,
+            agentId,
+            hasStashedToolInput: Boolean(stashed),
           });
+          runtime.activeSubagents.set(taskId, nonAgentTaskRun
+            ? {
+              taskId,
+              description,
+              parentToolUseId,
+              background,
+              ...(taskType ? { taskType } : {}),
+              nonAgentTaskRun: true,
+            }
+            : {
+              taskId,
+              description,
+              parentToolUseId,
+              background,
+              ...(agentType ? { agentType } : {}),
+              ...(agentId ? { agentId } : {}),
+              ...(parentAgentId ? { parentAgentId } : {}),
+              ...(taskType ? { taskType } : {}),
+              ...(workflowName ? { workflowName } : {}),
+            });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
-            claudeTaskTodosById,
+            claudeTaskTodoMap(managed, runtime),
             parentToolUseId,
             taskId,
             {
@@ -15406,7 +15597,10 @@ export function createAgentChatService(args: {
           if (remappedTodoItems) {
             emitChatEvent(managed, { type: "todo_update", items: remappedTodoItems, turnId });
           }
-          emitChatEvent(managed, {
+          // Non-agent task runs get their todo update (above) but never a
+          // subagent row.
+          if (nonAgentTaskRun) continue;
+          emitClaudeSubagentStarted(managed, runtime, {
             type: "subagent_started",
             taskId,
             ...(agentId ? { agentId } : {}),
@@ -15432,7 +15626,7 @@ export function createAgentChatService(args: {
             ? taskMsg.agent_id.trim()
             : undefined;
           const existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
-          if (existing?.skipTranscript) {
+          if (existing?.skipTranscript || existing?.nonAgentTaskRun) {
             runtime.activeSubagents.delete(taskId);
             if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
             continue;
@@ -15490,7 +15684,7 @@ export function createAgentChatService(args: {
           runtime.activeSubagents.delete(taskId);
           if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
           if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
-          emitChatEvent(managed, {
+          emitClaudeSubagentResult(managed, runtime, {
             type: "subagent_result",
             taskId,
             ...(agentId ? { agentId } : {}),
@@ -15515,7 +15709,7 @@ export function createAgentChatService(args: {
           if (workflowTracker) {
             runtime.workflowAgentsByTask.delete(taskId);
             for (const { agent, agentId: workflowAgentId } of drainRunningClaudeWorkflowAgents(workflowTracker)) {
-              emitChatEvent(managed, {
+              emitClaudeSubagentResult(managed, runtime, {
                 type: "subagent_result",
                 taskId: `${taskId}::a${agent.index}`,
                 agentId: workflowAgentId,
@@ -15588,16 +15782,24 @@ export function createAgentChatService(args: {
                 // bubble in the renderer.
                 const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
                 const fallbackTextKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
+                const emittedRecord = assistantProviderMessageId
+                  ? claudeEmittedTextRecord(runtime, assistantProviderMessageId)
+                  : null;
+                const previouslyEmitted = emittedRecord?.get(blockIndex) ?? "";
                 const alreadyStreamed =
                   (textKey ? streamedClaudeTextContentKeys.has(textKey) : false)
-                  || (fallbackTextKey ? streamedClaudeTextContentKeys.has(fallbackTextKey) : false);
+                  || (fallbackTextKey ? streamedClaudeTextContentKeys.has(fallbackTextKey) : false)
+                  || (previouslyEmitted.length > 0 && (previouslyEmitted === blockText || previouslyEmitted.startsWith(blockText)));
                 const replayedStreamPrefix = recentClaudeTextDeltaBuffer.length > 0 && blockText.startsWith(recentClaudeTextDeltaBuffer);
                 const replayedSnapshotPrefix = recentClaudeTextDeltaBuffer.length > 0 && recentClaudeTextDeltaBuffer.startsWith(blockText);
+                const replayedRecordPrefix = previouslyEmitted.length > 0 && blockText.startsWith(previouslyEmitted);
                 const textToEmit = alreadyStreamed || replayedSnapshotPrefix
                   ? ""
                   : replayedStreamPrefix
                     ? blockText.slice(recentClaudeTextDeltaBuffer.length)
-                    : blockText;
+                    : replayedRecordPrefix
+                      ? blockText.slice(previouslyEmitted.length)
+                      : blockText;
                 if (textToEmit.length > 0) {
                   assistantText += textToEmit;
                   emitChatEvent(managed, {
@@ -15606,6 +15808,9 @@ export function createAgentChatService(args: {
                     ...(assistantProviderMessageId ? { messageId: assistantProviderMessageId } : {}),
                     turnId,
                   });
+                }
+                if (emittedRecord) {
+                  emittedRecord.set(blockIndex, blockText.length >= previouslyEmitted.length ? blockText : previouslyEmitted);
                 }
                 if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 if (fallbackTextKey) streamedClaudeTextContentKeys.add(fallbackTextKey);
@@ -15703,6 +15908,10 @@ export function createAgentChatService(args: {
                   recentClaudeTextDeltaBuffer += text;
                   assistantText += text;
                   const streamProviderMessageId = currentClaudeStreamMessageId ?? compactString(streamMsg.uuid);
+                  if (streamProviderMessageId && contentIndex != null) {
+                    const record = claudeEmittedTextRecord(runtime, streamProviderMessageId);
+                    record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
+                  }
                   emitChatEvent(managed, {
                     type: "text",
                     text,
@@ -16082,11 +16291,12 @@ export function createAgentChatService(args: {
 
       const doneModel = buildDoneModelPayload();
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
-      // Nothing may survive a turn as a "running" background row: any background
-      // shell task still open when the turn ends is settled as stopped. The
-      // hook diff-close and task_notification paths usually beat this; the sweep
-      // is the last-write-wins guarantee.
-      closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
+      // A background shell survives the turn boundary as a "running" row on
+      // purpose: the query is NOT closed here (see above), so its real
+      // completion still arrives on a later turn via system:task_notification.
+      // Only true teardown paths (interrupt — handled above via
+      // stopActiveClaudeSubagents — reset/dispose, host-restart rebind) settle
+      // them as stopped.
       if (!runtime.interruptEventsEmitted) {
         emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
         void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -18446,6 +18656,32 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const emitClaudeSubagentStarted = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    event: Extract<AgentChatEvent, { type: "subagent_started" }>,
+  ): void => {
+    runtime.emittedSubagentStartIds.add(event.taskId);
+    if (event.agentId) runtime.emittedSubagentStartIds.add(event.agentId);
+    emitChatEvent(managed, event);
+  };
+
+  const emitClaudeSubagentResult = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    event: Extract<AgentChatEvent, { type: "subagent_result" }>,
+  ): void => {
+    if (
+      !runtime.emittedSubagentStartIds.has(event.taskId)
+      && (!event.agentId || !runtime.emittedSubagentStartIds.has(event.agentId))
+    ) {
+      return;
+    }
+    emitChatEvent(managed, event);
+    runtime.emittedSubagentStartIds.delete(event.taskId);
+    if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
+  };
+
   /**
    * Emit one workflow-agent transition (from claudeWorkflowProgress.ts) as
    * the matching legacy `subagent_*` event so Workflow runs flow through the
@@ -18457,6 +18693,7 @@ export function createAgentChatService(args: {
    */
   const emitClaudeWorkflowAgentEvent = (
     managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
     transition: ClaudeWorkflowAgentTransition,
     context: { workflowTaskId: string; background: boolean; workflowName?: string; turnId?: string },
   ): void => {
@@ -18470,7 +18707,7 @@ export function createAgentChatService(args: {
       }
       : undefined;
     if (transition.kind === "started") {
-      emitChatEvent(managed, {
+      emitClaudeSubagentStarted(managed, runtime, {
         type: "subagent_started",
         taskId,
         agentId,
@@ -18501,7 +18738,7 @@ export function createAgentChatService(args: {
       });
       return;
     }
-    emitChatEvent(managed, {
+    emitClaudeSubagentResult(managed, runtime, {
       type: "subagent_result",
       taskId,
       agentId,
@@ -18530,7 +18767,7 @@ export function createAgentChatService(args: {
       runtime.workflowAgentsByTask.delete(workflowTaskId);
       const workflowName = runtime.activeSubagents.get(workflowTaskId)?.workflowName;
       for (const { agent, agentId } of drainRunningClaudeWorkflowAgents(tracked)) {
-        emitChatEvent(managed, {
+        emitClaudeSubagentResult(managed, runtime, {
           type: "subagent_result",
           taskId: `${workflowTaskId}::a${agent.index}`,
           agentId,
@@ -18556,6 +18793,13 @@ export function createAgentChatService(args: {
     const control = getClaudeQueryControl(runtime.query);
     for (const subagent of activeSubagents) {
       if (!runtime.activeSubagents.has(subagent.taskId)) continue;
+      // Ambient (skip_transcript) and non-agent task runs never surfaced as
+      // subagent rows, so they must not emit a stopped subagent_result here —
+      // just drop the tracking entry.
+      if (subagent.skipTranscript || subagent.nonAgentTaskRun) {
+        runtime.activeSubagents.delete(subagent.taskId);
+        continue;
+      }
       // A background shell entry with no real subagent agentType must not emit a
       // subagent_result — closeOpenClaudeBackgroundTasks already settled it.
       if (isBackgroundShellCommand({
@@ -18594,9 +18838,10 @@ export function createAgentChatService(args: {
           if (timeoutHandle) clearTimeout(timeoutHandle);
         }
       }
-      emitChatEvent(managed, {
+      emitClaudeSubagentResult(managed, runtime, {
         type: "subagent_result",
         taskId: subagent.taskId,
+        ...(subagent.agentId ? { agentId: subagent.agentId } : {}),
         parentToolUseId: subagent.parentToolUseId ?? undefined,
         status: "stopped",
         summary,
@@ -21697,7 +21942,7 @@ export function createAgentChatService(args: {
                 description: input.agent_type,
                 parentToolUseId: null,
               });
-              emitChatEvent(managed, {
+              emitClaudeSubagentStarted(managed, runtime, {
                 type: "subagent_started",
                 taskId,
                 agentId: input.agent_id,
@@ -22087,11 +22332,32 @@ export function createAgentChatService(args: {
     runtime.inputPump?.close();
     runtime.query = null;
     runtime.inputPump = null;
+    runtime.queryGeneration += 1;
+    runtime.queryStartPromise = null;
     runtime.pendingPostResultNext = null;
     runtime.pendingPostResultNextSettledAt = null;
+    // close() only ends iteration — enforce that no SDK subprocess outlives
+    // the reset. A leaked twin keeps streaming the same resumed session into a
+    // dead reader, and its background children die silently later.
+    claudeSubprocessReaper.reapForSession(managed.session.id, `claude_${reason}`);
+    const hadOpenBackgroundTasks = runtime.seenBackgroundTaskIds.size > 0;
+    // Tearing down the query orphans any still-open background shell: its
+    // completion notification can only ever arrive on THIS query, so settle the
+    // rows as stopped before the tracking maps are cleared. (Turn boundaries do
+    // NOT do this — the query survives them and delivers the real completion.)
+    closeOpenClaudeBackgroundTasks(managed, runtime, "stopped");
+    if (hadOpenBackgroundTasks) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "The Claude session restarted, so its running background tasks were stopped and will not report completion. Ask the agent to re-check or re-arm them if they are still needed.",
+      });
+    }
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
+    runtime.emittedSubagentStartIds.clear();
     runtime.seenBackgroundTaskIds.clear();
+    runtime.backgroundTaskTitleById.clear();
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
     runtime.activeProviderCronIds.clear();
@@ -22262,8 +22528,26 @@ export function createAgentChatService(args: {
 
   const ensureClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     if (runtime.query && runtime.inputPump) return runtime.query;
+    if (runtime.queryStartPromise) return runtime.queryStartPromise;
+    const startPromise = startClaudeQuery(managed, runtime);
+    runtime.queryStartPromise = startPromise;
+    try {
+      return await startPromise;
+    } finally {
+      if (runtime.queryStartPromise === startPromise) runtime.queryStartPromise = null;
+    }
+  };
 
+  const startClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
+    const startGeneration = runtime.queryGeneration;
     const pump = new ClaudeInputPump();
+    const assertCurrentStart = (spawnedQuery?: ClaudeQuery): void => {
+      if (runtime.queryGeneration === startGeneration) return;
+      try { spawnedQuery?.close(); } catch { /* ignore */ }
+      pump.close();
+      claudeSubprocessReaper.reapForSession(managed.session.id, "claude_stale_start");
+      throw new Error("Claude query start superseded by reset/interrupt");
+    };
     const options = buildClaudeQueryOptions(managed, runtime);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
@@ -22301,10 +22585,12 @@ export function createAgentChatService(args: {
           at: "resume",
         });
       }
+      assertCurrentStart();
       // Must run AFTER the thinking-transcript repair: that repair can rekey
       // SDK message ids, and the splice repair keys rebuilt envelopes to the
       // post-rekey ids it reads via getSessionMessages.
       await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
+      assertCurrentStart();
     }
 
     let sessionQuery: ClaudeQuery;
@@ -22319,9 +22605,10 @@ export function createAgentChatService(args: {
       }
       throw error;
     }
-    runtime.warmQuery = null;
+    assertCurrentStart(sessionQuery);
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
+    runtime.warmQuery = null;
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
       persistChatState(managed);
@@ -22398,6 +22685,13 @@ export function createAgentChatService(args: {
     // Apply the per-send execution/interaction mode captured when the steer was
     // queued, mirroring prepareSendMessage's session mutation + directives.
     if (managed.session.provider === "claude") {
+      // Reasoning effort is intentionally NOT re-derived from the queued steer
+      // here: a live Claude query keeps its launch-time effort across resume, so
+      // honoring a per-steer effort would require tearing the query down mid-
+      // delivery (extra latency + orphaned background tasks) for a rare edge —
+      // queueing a steer, then changing the session effort before the turn ends.
+      // The delivered steer runs at the session's current effort by design.
+      managed.session.reasoningEffort = normalizeReasoningEffort(managed.session.reasoningEffort);
       managed.session.interactionMode = nextSteer.interactionMode ?? managed.session.interactionMode ?? "default";
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }
@@ -22830,19 +23124,25 @@ export function createAgentChatService(args: {
       forkFromSdkSessionId,
       query: null,
         inputPump: null,
+        queryStartPromise: null,
         pendingPostResultNext: null,
         pendingPostResultNextSettledAt: null,
         idleReaderPromise: null,
         idleReaderGeneration: 0,
+        queryGeneration: 0,
         warmQuery: null,
       warmupDone: null,
       warmupCancel: null,
       warmupCancelled: false,
       activeSubagents: new Map(),
+      emittedSubagentStartIds: new Set(),
       taskToolInputByToolUseId: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
+      taskTodos: { seeded: false, byId: new Map() },
+      emittedTextByAssistantMessage: new Map(),
       seenBackgroundTaskIds: new Set(),
+      backgroundTaskTitleById: new Map(),
       scheduledWorkKindById: new Map(),
       scheduledWorkIdByTaskId: new Map(),
       scheduledWorkIdByToolUseId: new Map(),
@@ -28668,7 +28968,7 @@ export function createAgentChatService(args: {
         if (!preparedSteer) {
           return { steerId, queued: false };
         }
-        enqueueSteerOrDrop(
+        const queued = enqueueSteerOrDrop(
           managed,
           runtime,
           sessionId,
@@ -28680,7 +28980,9 @@ export function createAgentChatService(args: {
           preparedSteer.metadata,
           { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
-        return { steerId, queued: true };
+        return queued
+          ? { steerId, queued: true }
+          : { steerId, queued: false, reason: "queue_full" };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -28720,7 +29022,7 @@ export function createAgentChatService(args: {
             message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
             turnId: rt.activeTurnId ?? undefined,
           });
-          return { steerId, queued: false };
+          return { steerId, queued: false, reason: "queue_full" };
         }
         rt.pendingSteers.push({
           steerId,
@@ -28792,7 +29094,7 @@ export function createAgentChatService(args: {
             message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
             turnId: rt.activeTurnId ?? undefined,
           });
-          return { steerId, queued: false };
+          return { steerId, queued: false, reason: "queue_full" };
         }
         rt.pendingSteers.push({
           steerId,
@@ -28946,7 +29248,7 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
       if (runtime.busy || managed.session.status === "active") {
-        enqueueSteerOrDrop(
+        const queued = enqueueSteerOrDrop(
           managed,
           runtime,
           sessionId,
@@ -28958,7 +29260,9 @@ export function createAgentChatService(args: {
           preparedSteer.metadata,
           { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
-        return { steerId, queued: true };
+        return queued
+          ? { steerId, queued: true }
+          : { steerId, queued: false, reason: "queue_full" };
       }
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
@@ -29002,6 +29306,9 @@ export function createAgentChatService(args: {
         contextAttachments,
         metadata,
       });
+      if (result.reason === "queue_full") {
+        throw new Error("The Claude steer queue is full; the message was not queued.");
+      }
       return {
         sessionId,
         kind: normalizedKind,
@@ -29015,18 +29322,41 @@ export function createAgentChatService(args: {
     }
 
     if (normalizedKind === "interrupt-replace") {
-      await interrupt({ sessionId });
-      await waitForCursorDroidTurnToSettleAfterInterrupt(managed, sessionId);
-      await sendMessage(
-        {
-          sessionId,
-          text,
-          attachments,
-          contextAttachments,
-          metadata,
-        },
-        { awaitDispatch: false },
-      );
+      if (managed.session.provider !== "claude") {
+        await interrupt({ sessionId });
+        await waitForCursorDroidTurnToSettleAfterInterrupt(managed, sessionId);
+        await sendMessage(
+          {
+            sessionId,
+            text,
+            attachments,
+            contextAttachments,
+            metadata,
+          },
+          { awaitDispatch: false },
+        );
+      } else {
+        try {
+          await interrupt({ sessionId }, { requireClaudeProviderInterrupt: true });
+          await sendMessage(
+            {
+              sessionId,
+              text,
+              attachments,
+              contextAttachments,
+              metadata,
+            },
+            { awaitBackendDispatch: true },
+          );
+        } catch (error) {
+          logger.warn("agent_chat.interrupt_replace_failed", {
+            sessionId,
+            provider: managed.session.provider,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      }
       return {
         sessionId,
         kind: normalizedKind,
@@ -29214,47 +29544,48 @@ export function createAgentChatService(args: {
     }
 
     if (mode === "interrupt") {
-      // Move to head of queue so the existing post-turn flush at the end of
-      // runClaudeTurn (`if (runtime.pendingSteers.length) deliverNextQueuedSteer`)
-      // delivers our message as the next turn after the abort drains.
-      if (idx !== 0) {
-        queue.splice(idx, 1);
-        queue.unshift(steer);
-      }
+      const prepared = prepareSendMessage({
+        sessionId,
+        text: steer.text,
+        displayText: steer.displayText ?? steer.text,
+        attachments: steer.attachments,
+        contextAttachments: steer.contextAttachments,
+        metadata: steer.metadata,
+        reasoningEffort: normalizeReasoningEffort(managed.session.reasoningEffort),
+        executionMode: steer.executionMode,
+        interactionMode: steer.interactionMode,
+        allowActiveSession: true,
+      });
+      if (!prepared) return { dispatchedAt: null };
 
-      runtime.interrupted = true;
-      await stopActiveClaudeSubagents(
-        managed,
-        runtime,
-        runtime.activeTurnId ?? undefined,
-        "Interrupted by queued message",
-      );
-      const control = getClaudeQueryControl(runtime.query);
-      if (control.interrupt) {
-        try {
-          await control.interrupt();
-        } catch (err) {
-          logger.warn("agent_chat.dispatch_steer_interrupt_failed", {
-            sessionId,
-            steerId,
-            err: err instanceof Error ? err.message : String(err),
-          });
+      // Keep the replacement out of interrupt()'s queued-steer cancellation,
+      // then acknowledge only after Claude has accepted the replacement turn.
+      queue.splice(idx, 1);
+      try {
+        await interrupt({ sessionId }, { requireClaudeProviderInterrupt: true });
+        await sendMessage({
+          sessionId,
+          text: prepared.submittedText,
+          displayText: prepared.visibleText,
+          attachments: prepared.attachments,
+          contextAttachments: prepared.contextAttachments,
+          metadata: prepared.metadata,
+          reasoningEffort: normalizeReasoningEffort(managed.session.reasoningEffort),
+          executionMode: steer.executionMode,
+          interactionMode: steer.interactionMode,
+        }, { awaitBackendDispatch: true });
+      } catch (error) {
+        if (!queue.some((entry) => entry.steerId === steerId)) {
+          queue.splice(Math.min(idx, queue.length), 0, steer);
+          persistChatState(managed);
         }
-      } else {
-        logger.warn("agent_chat.dispatch_steer_interrupt_unavailable", {
+        logger.warn("agent_chat.dispatch_steer_interrupt_replace_failed", {
           sessionId,
           steerId,
+          error: error instanceof Error ? error.message : String(error),
         });
+        return { dispatchedAt: null };
       }
-
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        steerId,
-        message: "Interrupting current turn to run queued message.",
-        turnId: runtime.activeTurnId ?? undefined,
-      });
-      persistChatState(managed);
       return { dispatchedAt: Date.now() };
     }
 
@@ -29287,7 +29618,10 @@ export function createAgentChatService(args: {
     return { cancelled: false };
   };
 
-  const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
+  const interrupt = async (
+    { sessionId }: AgentChatInterruptArgs,
+    internalOptions: { requireClaudeProviderInterrupt?: boolean } = {},
+  ): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session interrupt requested.");
 
@@ -29472,6 +29806,13 @@ export function createAgentChatService(args: {
       busy: runtime.busy,
       warmupInFlight: Boolean(runtime.warmupDone),
     });
+    const claudeControl = getClaudeQueryControl(runtime.query);
+    if (internalOptions.requireClaudeProviderInterrupt) {
+      if (!claudeControl.interrupt) {
+        throw new Error("Claude interrupt is unavailable; the replacement was not sent.");
+      }
+      await claudeControl.interrupt();
+    }
     // Set interrupted before touching the runtime so the streaming loop can
     // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
@@ -29489,8 +29830,17 @@ export function createAgentChatService(args: {
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
     await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
-    try { await runtime.query?.interrupt(); } catch { /* ignore */ }
+    runtime.queryGeneration += 1;
+    runtime.queryStartPromise = null;
+    if (!internalOptions.requireClaudeProviderInterrupt) {
+      try { await claudeControl.interrupt?.(); } catch { /* ignore */ }
+    }
     try { runtime.query?.close(); } catch { /* ignore */ }
+    // close() only ends stream iteration — it does not guarantee the SDK
+    // subprocess exits. Reap it so an interrupted turn never leaves a live
+    // `claude --resume` twin streaming into a dead reader (the same enforcement
+    // resetClaudeQuerySession applies on reset/remodel).
+    claudeSubprocessReaper.reapForSession(managed.session.id, "claude_interrupt");
     runtime.inputPump?.close();
     runtime.query = null;
     runtime.inputPump = null;

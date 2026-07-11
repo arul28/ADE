@@ -21,6 +21,8 @@ import {
   type AgentChatContextAttachment,
   type AgentChatFileRef,
   type AgentChatInteractionMode,
+  type AgentChatDispatchSteerMode,
+  type AgentChatSteerResult,
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
@@ -3168,7 +3170,6 @@ export function AgentChatPane({
     status: "running" | "completed" | "failed" | "stopped";
     background: boolean;
   } | null>(null);
-  const [mainTranscriptView, setMainTranscriptView] = useState(false);
   const [rewindConfirmDialog, setRewindConfirmDialog] = useState<RewindFilesConfirmDialogState | null>(null);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
   const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
@@ -3793,9 +3794,6 @@ export function AgentChatPane({
   const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
   const [subagentMetadata, setSubagentMetadata] = useState<AgentChatSubagentMetadata | null>(null);
-  const [mainTranscript, setMainTranscript] = useState<AgentChatSubagentTranscriptMessage[] | null>(null);
-  const [mainTranscriptLoading, setMainTranscriptLoading] = useState(false);
-  const [mainTranscriptUnsupported, setMainTranscriptUnsupported] = useState(false);
 
   // Drill-in (subagent takeover) view-model. Computed here, before any early
   // return, so the useMemo below is an unconditional hook (react-hooks rules).
@@ -3840,19 +3838,6 @@ export function AgentChatPane({
     subagentTranscriptUnsupported,
     subagentView,
   ]);
-
-  const mainTranscriptEventsForDisplay = useMemo(() => {
-    if (!mainTranscriptView) return EMPTY_CHAT_EVENTS;
-    return buildSubagentEventHistory({
-      sessionId: selectedSessionId,
-      subagentId: selectedSessionId ?? "main",
-      subagentName: "Full session transcript",
-      prompt: null,
-      messages: mainTranscript,
-      loading: mainTranscriptLoading,
-      unsupported: mainTranscriptUnsupported,
-    });
-  }, [mainTranscript, mainTranscriptLoading, mainTranscriptUnsupported, mainTranscriptView, selectedSessionId]);
 
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
@@ -3914,49 +3899,6 @@ export function AgentChatPane({
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
 
   useEffect(() => {
-    if (!mainTranscriptView || !selectedSessionId) {
-      setMainTranscript(null);
-      setMainTranscriptLoading(false);
-      setMainTranscriptUnsupported(false);
-      return;
-    }
-    const fetchTranscript = window.ade?.agentChat?.getMainTranscript;
-    if (typeof fetchTranscript !== "function") {
-      setMainTranscript(null);
-      setMainTranscriptUnsupported(true);
-      return;
-    }
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        setMainTranscriptLoading(true);
-        const result = await fetchTranscript({ sessionId: selectedSessionId });
-        if (cancelled) return;
-        setMainTranscriptUnsupported(result === null);
-        setMainTranscript(result);
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error("agentChat.getMainTranscript failed", error);
-        if (!cancelled) setMainTranscript([]);
-      } finally {
-        if (!cancelled) setMainTranscriptLoading(false);
-      }
-    };
-    void tick();
-    const intervalId = selectedSession?.status === "active"
-      ? window.setInterval(() => { void tick(); }, 1500)
-      : null;
-    return () => {
-      cancelled = true;
-      if (intervalId !== null) window.clearInterval(intervalId);
-    };
-  }, [mainTranscriptView, selectedSession?.status, selectedSessionId]);
-
-  useEffect(() => {
-    setMainTranscriptView(false);
-  }, [selectedSessionId]);
-
-  useEffect(() => {
     if (subagentView && !chatActionsOpen) {
       setSubagentView(null);
     }
@@ -3989,7 +3931,6 @@ export function AgentChatPane({
         status: snapshot.status,
         background: snapshot.background ?? false,
       });
-      setMainTranscriptView(false);
     };
     window.addEventListener("ade:chat:open-info", handler);
     return () => window.removeEventListener("ade:chat:open-info", handler);
@@ -8782,6 +8723,10 @@ export function AgentChatPane({
     const isCodexGoalSlashCommand = sessionProvider === "codex" && isCodexGoalSlashInput(text);
     const suppressOptimisticOutgoing = isCodexGoalSlashCommand;
     const deferComposerClear = selectedSessionId == null;
+    // Populated only when the draft is submitted as a steer; returned to the
+    // caller so the active-turn "Send now" / "Interrupt & replace" actions can
+    // dispatch the exact steer id the backend minted.
+    let steerResult: AgentChatSteerResult | null = null;
 
     submitInFlightRef.current = true;
     setBusy(true);
@@ -8912,8 +8857,8 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
       });
 
-      const steerMessage = async () => {
-        await window.ade.agentChat.steer({
+      const steerMessage = async (): Promise<AgentChatSteerResult> => {
+        return await window.ade.agentChat.steer({
           sessionId,
           text: finalText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
@@ -8949,7 +8894,10 @@ export function AgentChatPane({
           // instead of surfacing a confusing error to the user.
           if (!isCodexGoalSlashCommand && isTurnAlreadyActiveError(sendError)) {
             try {
-              await steerMessage();
+              // Capture the result so a stale-turn-active race still flows
+              // through the queue_full restore path and the inline send-now
+              // dispatch, exactly like the direct steer branch below.
+              steerResult = await steerMessage();
             } catch (steerError) {
               if (!isNoActiveTurnToSteerError(steerError) || !retryOnStaleSteer) throw steerError;
               setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
@@ -8964,7 +8912,7 @@ export function AgentChatPane({
       if (turnActiveBySession[sessionId] && !isCodexGoalSlashCommand) {
         setOptimisticOutgoingMessageSynced(null);
         try {
-          await steerMessage();
+          steerResult = await steerMessage();
         } catch (steerError) {
           if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
           setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
@@ -8972,6 +8920,20 @@ export function AgentChatPane({
         }
       } else {
         await sendMessageOrSteerIfBusy();
+      }
+      if (steerResult?.reason === "queue_full") {
+        // The steer queue is full — the backend dropped the message (and emitted
+        // its own notice). Restore the composer rather than clearing it as if the
+        // send succeeded, and surface a brief inline notice. Returning null keeps
+        // the caller from dispatching a message that was never accepted.
+        setDraft((current) => (current.trim().length ? current : draftSnapshot));
+        setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+        setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
+        setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
+        setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
+        setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
+        setError("Message not sent — the queue is full. Wait for the current turn to finish, then resend.");
+        return null;
       }
       // Skip refresh when we just created the session — createSession already triggered one.
       // A redundant refresh here causes flicker as it re-resolves session selection.
@@ -9002,6 +8964,7 @@ export function AgentChatPane({
       submitInFlightRef.current = false;
       setBusy(false);
     }
+    return steerResult;
   }, [
     attachments,
     buildNativeControlPayload,
@@ -9064,6 +9027,35 @@ export function AgentChatPane({
     workDraftKind,
     orchestratorEnabled,
   ]);
+
+  // Active-turn "Send now" / "Interrupt & replace": submit the draft as a steer,
+  // then dispatch the exact steer id the backend minted. submit() returns the
+  // steer result only when the draft was queued; we dispatch that id inline or
+  // as an interrupt so the message folds into the live turn (Claude Code parity).
+  // A queue-full or already-delivered submit returns no dispatchable steer, so
+  // nothing is dispatched.
+  // Steer dispatch/edit are fire-and-forget IPC. Surface a rejection (e.g. a
+  // non-Claude session or a pending-input block) instead of silently swallowing
+  // it, so the user learns their Send now / Interrupt / edit did not land.
+  const dispatchSteerSafely = useCallback(
+    (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
+      void window.ade.agentChat.dispatchSteer(args).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setError(`Couldn't deliver the message to the running turn: ${message}`);
+      });
+    },
+    [],
+  );
+
+  const armAndSubmitSteerDispatch = useCallback(
+    async (mode: AgentChatDispatchSteerMode) => {
+      const sid = selectedSessionId;
+      const result = await submit();
+      if (!sid || !result || !result.queued) return;
+      dispatchSteerSafely({ sessionId: sid, steerId: result.steerId, mode });
+    },
+    [selectedSessionId, submit, dispatchSteerSafely],
+  );
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
     rewindConfirmResolveRef.current?.(false);
@@ -9445,9 +9437,7 @@ export function AgentChatPane({
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const canViewMainTranscript = selectedSession?.provider === "claude"
-    && selectedSubagentCapability.canViewFullTranscript;
-  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 || canViewMainTranscript ? (
+  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
@@ -9473,7 +9463,6 @@ export function AgentChatPane({
       variant="pane"
       className="h-full"
       onSelectSubagent={(selection) => {
-        setMainTranscriptView(false);
         setSubagentView({
           taskId: selection.taskId,
           agentId: selection.agentId,
@@ -9483,10 +9472,6 @@ export function AgentChatPane({
         });
       }}
       onClearSelectedSubagent={() => setSubagentView(null)}
-      onViewMainTranscript={canViewMainTranscript ? () => {
-        setSubagentView(null);
-        setMainTranscriptView(true);
-      } : undefined}
       probeSubagentTranscript={probeSubagentTranscript}
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
@@ -10290,16 +10275,14 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
-            inputLockMessage={mainTranscriptView
-              ? "Viewing full session transcript"
-              : subagentView
-                ? `Viewing ${subagentMetadata?.label
-                ?? subagentMetadata?.agentNickname
-                ?? subagentView.agentType
-                ?? subagentViewSnapshot?.description
-                ?? subagentView.agentId
-                ?? subagentView.taskId}`
-                : null}
+            inputLockMessage={subagentView
+              ? `Viewing ${subagentMetadata?.label
+              ?? subagentMetadata?.agentNickname
+              ?? subagentView.agentType
+              ?? subagentViewSnapshot?.description
+              ?? subagentView.agentId
+              ?? subagentView.taskId}`
+              : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
@@ -10486,19 +10469,23 @@ export function AgentChatPane({
             }}
             onEditSteer={(steerId, text) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
+                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text }).catch((error: unknown) => {
+                  setError(`Couldn't update the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                });
               }
             }}
             onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "inline" });
+                dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
               }
             } : undefined}
             onDispatchSteerInterrupt={selectedSession?.provider === "claude" ? (steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
+                dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
               }
             } : undefined}
+            onSendSteerNow={selectedSession?.provider === "claude" ? () => armAndSubmitSteerDispatch("inline") : undefined}
+            onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => armAndSubmitSteerDispatch("interrupt") : undefined}
             sessionId={selectedSessionId}
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && workDraftKind === "chat" && !lockSessionId && !initialSessionId && selectedSessionId == null,
@@ -11091,37 +11078,16 @@ export function AgentChatPane({
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
                     ) : null}
-                    {mainTranscriptView ? (
-                      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 font-sans">
-                        <div className="min-w-0">
-                          <div className="truncate text-[11px] font-medium text-fg/80">Full session transcript (SDK)</div>
-                          <div className="truncate text-[10px] text-fg/40">Provider-fidelity view — ADE events (approvals, schedules, notices) are not shown.</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setMainTranscriptView(false)}
-                          className="shrink-0 rounded-sm border border-white/[0.08] px-2 py-1 text-[10px] text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80"
-                        >
-                          Return to chat
-                        </button>
-                      </div>
-                    ) : null}
                     {/* Codex chat goal is rendered in the Agents tab via
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
                     <AgentChatMessageList
-                      key={mainTranscriptView
-                        ? `main-transcript-${selectedSessionId}`
-                        : subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
-                      events={mainTranscriptView
-                        ? mainTranscriptEventsForDisplay
-                        : subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
-                      showStreamingIndicator={mainTranscriptView
-                        ? mainTranscriptLoading || selectedSession?.status === "active"
-                        : subagentView
-                          ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
-                          : turnActive && selectedSession?.status !== "ended"}
+                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
+                      events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                      showStreamingIndicator={subagentView
+                        ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
+                        : turnActive && selectedSession?.status !== "ended"}
                       sessionTurnActive={turnActive}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
@@ -11130,17 +11096,15 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       hasOlderHistory={Boolean(
                         !subagentView
-                        && !mainTranscriptView
                         && selectedSessionId
                         && (olderHistoryCursorBySession[selectedSessionId] ?? 0) > 0,
                       )}
                       loadingOlderHistory={Boolean(
                         !subagentView
-                        && !mainTranscriptView
                         && selectedSessionId
                         && olderHistoryLoadingBySession[selectedSessionId],
                       )}
-                      onLoadOlderHistory={!subagentView && !mainTranscriptView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
+                      onLoadOlderHistory={!subagentView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}
@@ -11169,8 +11133,8 @@ export function AgentChatPane({
                           laneId,
                         }));
                       }}
-                      mosaic={subagentView || mainTranscriptView ? undefined : mosaicContext}
-                      scrollToRowKeyRequest={subagentView || mainTranscriptView ? null : wakeJumpRequest}
+                      mosaic={subagentView ? undefined : mosaicContext}
+                      scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">

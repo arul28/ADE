@@ -1884,6 +1884,14 @@ struct WorkSessionDestinationView: View {
         updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: nil)
         await refreshChatStateAfterAction(forceRemote: true)
         reconcileLocalEchoMessages()
+      case .dropped:
+        // Opening prompt steered into a full queue; the host dropped it. Remove
+        // the optimistic echo and surface the queue-full notice instead of
+        // leaving it as if delivered.
+        ADEHaptics.error()
+        localEchoMessages.removeAll { $0.id == echo.id }
+        errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
+        return
       }
       errorMessage = nil
     } catch {

@@ -90,6 +90,15 @@ extension WorkSessionDestinationView {
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
         await refreshChatStateAfterAction(forceRemote: true)
         reconcileLocalEchoMessages()
+      case .dropped:
+        // The steer queue is full; the host dropped the message (and emitted its
+        // own transcript notice). Pull the optimistic echo so it doesn't linger
+        // as if delivered, and return false so the composer restores the text
+        // for a resend — matching desktop.
+        ADEHaptics.error()
+        localEchoMessages.removeAll { $0.id == echoId }
+        errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
+        return false
       }
       errorMessage = nil
       return true
