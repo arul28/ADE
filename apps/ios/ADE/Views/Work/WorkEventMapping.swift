@@ -371,6 +371,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .codexTokenUsage(let usage, let turnId):
     let last = usage.last
     let total = usage.total
+    let hasContextOccupancy = last?.inputTokens != nil || total?.inputTokens != nil
     return .tokens(
       usage: makeWorkUsageSummary(
         inputTokens: last?.inputTokens ?? total?.inputTokens,
@@ -381,7 +382,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         totalTokens: total?.totalTokens ?? last?.totalTokens,
         contextWindow: usage.modelContextWindow,
         costUsd: nil,
-        isContextSnapshot: true
+        isContextSnapshot: hasContextOccupancy
       ) ?? WorkUsageSummary(
         turnCount: 1,
         inputTokens: 0,
@@ -391,7 +392,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         totalTokens: total?.totalTokens ?? last?.totalTokens ?? 0,
         contextWindow: usage.modelContextWindow,
         costUsd: 0,
-        isContextSnapshot: true
+        isContextSnapshot: hasContextOccupancy
       ),
       turnId: turnId ?? usage.turnId ?? "",
       itemId: nil

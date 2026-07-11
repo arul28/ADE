@@ -3128,6 +3128,53 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
   }
 
+  func testCodexMetadataOnlyUsageIsNotAnExactZeroSnapshot() throws {
+    let metadataOnlyJSON = """
+    {
+      "sessionId": "session-usage",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 15,
+      "event": {
+        "type": "codex_token_usage",
+        "turnId": "turn-usage",
+        "usage": { "modelContextWindow": 258400 }
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(metadataOnlyJSON.utf8))
+    guard case .tokens(let liveUsage, _, _) = makeWorkChatEvent(from: envelope.event) else {
+      return XCTFail("Expected live Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertFalse(liveUsage.isContextSnapshot)
+
+    let fallbackTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:00.000Z","sequence":1,"event":{"type":"context_compact","state":"completed","turnId":"turn-usage"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:01.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-usage","usage":{"modelContextWindow":258400}}}
+    """)
+    guard case .tokens(let fallbackUsage, _, _) = fallbackTranscript.last?.event else {
+      return XCTFail("Expected fallback Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertFalse(fallbackUsage.isContextSnapshot)
+    XCTAssertNil(workContextUsageViewModel(transcript: fallbackTranscript, provider: "codex", fallbackContextWindow: 258_400))
+
+    let explicitZeroTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:00.000Z","sequence":1,"event":{"type":"context_compact","state":"completed","turnId":"turn-usage"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:01.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-usage","usage":{"modelContextWindow":258400,"last":{"inputTokens":0}}}}
+    """)
+    guard case .tokens(let explicitZeroUsage, _, _) = explicitZeroTranscript.last?.event else {
+      return XCTFail("Expected explicit-zero Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertTrue(explicitZeroUsage.isContextSnapshot)
+    let zeroViewModel = workContextUsageViewModel(
+      transcript: explicitZeroTranscript,
+      provider: "codex",
+      fallbackContextWindow: 258_400
+    )
+    XCTAssertEqual(zeroViewModel?.usedTokens, 0)
+    XCTAssertEqual(zeroViewModel?.ratio, 0)
+  }
+
   func testAgentChatEventEnvelopeDecodesMinimalClaudeContextUsageSnapshotAcrossCompaction() throws {
     let json = """
     {

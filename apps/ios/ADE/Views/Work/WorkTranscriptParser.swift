@@ -415,6 +415,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         let lastUsage = usageDict["last"] as? [String: Any]
         let totalUsage = usageDict["total"] as? [String: Any]
         let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
+        let hasContextOccupancy = optionalWorkInt(lastUsage?["inputTokens"]) != nil
+          || optionalWorkInt(totalUsage?["inputTokens"]) != nil
         event = .tokens(
           usage: makeWorkUsageSummary(
             inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
@@ -425,7 +427,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
             contextWindow: contextWindow,
             costUsd: nil,
-            isContextSnapshot: true
+            isContextSnapshot: hasContextOccupancy
           ) ?? WorkUsageSummary(
             turnCount: 1,
             inputTokens: 0,
@@ -435,7 +437,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]) ?? 0,
             contextWindow: contextWindow,
             costUsd: 0,
-            isContextSnapshot: true
+            isContextSnapshot: hasContextOccupancy
           ),
           turnId: turnId ?? optionalString(usageDict["turnId"]) ?? "",
           itemId: nil
