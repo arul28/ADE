@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.22] - 2026-07-11
+
+### Changed
+
+- ADE's Claude Agent SDK chats now behave like Claude Code, with correct subagent counts and no chats stopping at turn boundaries.
+- Brought the iOS Work composer to parity with desktop typed-trigger behavior.
+
+### Fixed
+
+- Removed a leaked duplicate `claude --resume` background process from ADE Claude chats.
+- Stopped a stale-credentials token-refresh storm that could rate-limit the Claude usage endpoint.
+- Fixed chat keyboard dismissal on iOS.
+
 ## [1.2.21] - 2026-07-10
 
 ### Changed
@@ -692,7 +705,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.21...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.22...HEAD
+[1.2.22]: https://github.com/arul28/ADE/compare/v1.2.21...v1.2.22
 [1.2.21]: https://github.com/arul28/ADE/compare/v1.2.20...v1.2.21
 [1.2.20]: https://github.com/arul28/ADE/compare/v1.2.19...v1.2.20
 [1.2.19]: https://github.com/arul28/ADE/compare/v1.2.18...v1.2.19

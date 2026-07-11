@@ -1,0 +1,20 @@
+---
+title: "v1.2.22"
+description: "Release notes for ADE v1.2.22 - July 11, 2026"
+---
+
+v1.2.22 makes ADE's Claude chats behave like Claude Code, ends a credential-refresh storm that could rate-limit usage stats, and smooths mobile chat input.
+
+---
+
+## Desktop and CLI
+
+- **Claude chats behave like Claude Code.** ADE's Claude Agent SDK chats now match Claude Code's behavior end to end: no more leaked duplicate `claude --resume` background process, correct subagent counts (no phantom subagents or interrupt card pile-ups), and chats no longer stop at turn boundaries.
+- **No more usage refresh storm.** A stale credentials file could trigger a token-refresh storm that got the Claude usage endpoint rate-limited. Credential reads are now cached and failed refreshes are backed off, keeping usage stats reliable.
+
+---
+
+## iOS
+
+- **Composer parity.** The mobile Work composer picks up the same typed-trigger behavior as desktop, keeping chat input consistent across devices.
+- **Keyboard dismissal.** Fixed chat keyboard dismissal so the composer gets out of the way cleanly.
