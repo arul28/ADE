@@ -1,4 +1,4 @@
-import type { CodexThreadTokenUsage } from "../../../../shared/types";
+import type { AgentChatEventEnvelope, CodexThreadTokenUsage } from "../../../../shared/types";
 
 /**
  * Provider-agnostic context-usage view-model consumed by `ContextUsageDial`.
@@ -30,6 +30,8 @@ export type ContextUsageViewModel = {
 };
 
 export type GenericUsageInput = {
+  /** Exact context occupancy snapshot (for example Claude post-compaction usage). */
+  usedTokens?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
   cacheReadTokens?: number | null;
@@ -46,13 +48,17 @@ function positive(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function nonNegative(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-/** Compact token count: `1.2M`, `42.7k`, or the integer. Returns null for non-positive. */
+/** Compact token count: `1.2M`, `42.7k`, or the integer. Returns null for negative/missing. */
 export function formatContextTokens(value: number | null | undefined): string | null {
-  const n = positive(value);
+  const n = nonNegative(value);
   if (n == null) return null;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -91,6 +97,7 @@ export function toUsageViewModel(
   if (input.kind === "codex") {
     const last = input.usage.last ?? {};
     const total = input.usage.total ?? {};
+    const exactInputTokens = nonNegative(last.inputTokens) ?? nonNegative(total.inputTokens);
     inputTokens = positive(last.inputTokens) ?? positive(total.inputTokens);
     outputTokens = positive(last.outputTokens) ?? positive(total.outputTokens);
     cacheReadTokens = positive(last.cacheReadTokens) ?? positive(total.cacheReadTokens);
@@ -100,7 +107,7 @@ export function toUsageViewModel(
     runtimeWindow = positive(input.usage.modelContextWindow);
     // Codex inputTokens already includes the cached portion → it is the occupancy.
     usedTokens =
-      inputTokens
+      exactInputTokens
       ?? (positive(last.outputTokens) != null ? (last.inputTokens ?? 0) + (last.outputTokens ?? 0) || null : null)
       ?? totalTokens;
   } else {
@@ -112,9 +119,12 @@ export function toUsageViewModel(
     reasoningTokens = positive(u.reasoningTokens);
     totalTokens = positive(u.totalTokens);
     runtimeWindow = positive(input.contextWindow);
-    // Non-codex providers report cache separately from input → sum for occupancy.
+    // Exact snapshots beat the provider-specific fallback math. This is used at
+    // compaction boundaries, where per-turn counters can still describe the
+    // pre-compaction request even though the active context was replaced.
+    const exactOccupancy = nonNegative(u.usedTokens);
     const occupancy = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
-    usedTokens = occupancy > 0 ? occupancy : totalTokens;
+    usedTokens = exactOccupancy ?? (occupancy > 0 ? occupancy : totalTokens);
   }
 
   const contextWindow = runtimeWindow ?? positive(fallbackContextWindow);
@@ -141,4 +151,107 @@ export function toUsageViewModel(
     ratio,
     windowSource,
   };
+}
+
+/**
+ * Reduce the event stream to the newest trustworthy context-occupancy signal.
+ *
+ * A completed compaction invalidates all earlier usage. Generic SDK `done` /
+ * `tokens` events are deliberately ignored until an explicit later turn starts: Cursor,
+ * OpenCode, Droid, and Claude can report per-turn or cumulative counters after
+ * the history has already been replaced. Claude's `postTokens` boundary and
+ * `context_usage`, plus Codex's live thread usage notification, are exact
+ * snapshots and may update the meter immediately.
+ */
+export function latestContextUsageInput(
+  events: AgentChatEventEnvelope[],
+  provider: string,
+  fallbackCodexUsage?: CodexThreadTokenUsage | null,
+): ContextUsageInput | null {
+  let current: ContextUsageInput | null =
+    fallbackCodexUsage && provider === "codex"
+      ? { kind: "codex", provider, usage: fallbackCodexUsage }
+      : null;
+  let lastRuntimeWindow = positive(fallbackCodexUsage?.modelContextWindow);
+  let compactionProtected = false;
+  let protectedCompactionTurnId: string | null = null;
+
+  const acceptGeneric = (
+    usage: GenericUsageInput,
+    contextWindow?: number | null,
+  ): void => {
+    if (compactionProtected) return;
+    const runtimeWindow = positive(contextWindow);
+    if (runtimeWindow != null) lastRuntimeWindow = runtimeWindow;
+    current = { kind: "generic", provider, usage, contextWindow };
+  };
+
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "status" && event.turnStatus === "started"
+      && compactionProtected && event.turnId
+      && (!protectedCompactionTurnId || event.turnId !== protectedCompactionTurnId)) {
+      compactionProtected = false;
+      protectedCompactionTurnId = null;
+    }
+    if (event.type === "codex_token_usage") {
+      if (positive(event.usage.modelContextWindow) != null) {
+        lastRuntimeWindow = positive(event.usage.modelContextWindow);
+      }
+      const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number"
+        || typeof event.usage.total?.inputTokens === "number";
+      if (!hasContextOccupancy) continue;
+      current = { kind: "codex", provider: provider || "codex", usage: event.usage };
+      continue;
+    }
+    if (event.type === "context_usage") {
+      lastRuntimeWindow = positive(event.usage.maxTokens) ?? lastRuntimeWindow;
+      current = {
+        kind: "generic",
+        provider,
+        usage: {
+          usedTokens: event.usage.totalTokens,
+          inputTokens: event.usage.totalTokens,
+          totalTokens: event.usage.totalTokens,
+        },
+        contextWindow: event.usage.maxTokens,
+      };
+      continue;
+    }
+    const completedCompaction = (event.type === "context_compact" && event.state !== "started")
+      || (event.type === "codex_context_compaction" && event.state === "completed");
+    if (completedCompaction) {
+      compactionProtected = true;
+      protectedCompactionTurnId = event.turnId ?? null;
+      current = event.type === "context_compact" && event.postTokens != null
+        ? {
+            kind: "generic",
+            provider,
+            usage: { usedTokens: event.postTokens, inputTokens: event.postTokens },
+            contextWindow: lastRuntimeWindow,
+          }
+        : null;
+      continue;
+    }
+    if (event.type === "done" && event.usage) {
+      acceptGeneric({
+        inputTokens: event.usage.inputTokens,
+        outputTokens: event.usage.outputTokens,
+        cacheReadTokens: event.usage.cacheReadTokens,
+        cacheWriteTokens: event.usage.cacheCreationTokens,
+        reasoningTokens: event.usage.reasoningTokens,
+      }, event.usage.contextWindow);
+      continue;
+    }
+    if (event.type === "tokens") {
+      acceptGeneric({
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
+      }, event.contextWindow);
+    }
+  }
+
+  return current;
 }

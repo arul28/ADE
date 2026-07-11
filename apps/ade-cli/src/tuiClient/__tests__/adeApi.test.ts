@@ -352,6 +352,304 @@ describe("latestTokenStats", () => {
     const stats = latestTokenStats(events);
     expect(stats.cacheReadTokens).toBe(350);
   });
+
+  it.each(["claude", "codex", "opencode", "cursor", "droid"])(
+    "clears stale %s usage at a completed compaction boundary",
+    (provider) => {
+      const events = [
+        envelope(1, {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+        }),
+        envelope(2, {
+          type: "context_compact",
+          trigger: "auto",
+          state: "completed",
+          provider,
+          turnId: "turn-1",
+        } as AgentChatEventEnvelope["event"]),
+        envelope(3, {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+        }),
+      ];
+      const before = latestTokenStats(events.slice(0, 1), 100_000);
+      expect(before.inputTokens).toBe(100_000);
+      expect(before.percent).toBe(100);
+      expect(latestTokenStats(events, 100_000).percent).toBeNull();
+    },
+  );
+
+  it("uses postTokens from a completed compaction and ignores stale same-turn totals", () => {
+    const events = [
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+      envelope(2, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+        postTokens: 18_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+    ];
+    const stats = latestTokenStats(events, 100_000);
+    expect(stats.inputTokens).toBe(18_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(18);
+  });
+
+  it("accepts an exact Codex usage update from the compaction turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 21_000 }, modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events, 100_000);
+    expect(stats.inputTokens).toBe(21_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(21);
+  });
+
+  it("ignores metadata-only Codex usage after compaction but accepts an explicit zero", () => {
+    const metadataOnlyEvents = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+    ];
+    const metadataOnlyStats = latestTokenStats(metadataOnlyEvents, 200_000);
+    expect(metadataOnlyStats.inputTokens).toBeNull();
+    expect(metadataOnlyStats.contextWindow).toBe(100_000);
+    expect(metadataOnlyStats.percent).toBeNull();
+
+    const explicitZeroStats = latestTokenStats([
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 0 }, modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ], 200_000);
+    expect(explicitZeroStats.inputTokens).toBe(0);
+    expect(explicitZeroStats.contextWindow).toBe(100_000);
+    expect(explicitZeroStats.percent).toBe(0);
+  });
+
+  it("protects an exact Codex refill across legacy compaction until a later turn", () => {
+    const events = [
+      envelope(1, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 190_000 }, modelContextWindow: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_context_compaction",
+        trigger: "auto",
+        state: "completed",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 26_000 }, modelContextWindow: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "tokens",
+        turnId: "turn-1",
+        inputTokens: 190_000,
+        outputTokens: 1_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(5, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 190_000, outputTokens: 1_000, contextWindow: 200_000 },
+      }),
+      envelope(6, {
+        type: "tokens",
+        turnId: "turn-old",
+        inputTokens: 180_000,
+        outputTokens: 500,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(7, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(8, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 32_000,
+        outputTokens: 500,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    expect(latestTokenStats(events.slice(0, 2), 200_000).percent).toBeNull();
+
+    const exactRefill = latestTokenStats(events.slice(0, 6), 200_000);
+    expect(exactRefill.inputTokens).toBe(26_000);
+    expect(exactRefill.percent).toBe(13);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(32_000);
+    expect(laterTurn.percent).toBe(16);
+  });
+
+  it("protects an exact Claude snapshot until a later turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "context_usage",
+        usage: { totalTokens: 24_000, maxTokens: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "tokens",
+        turnId: "turn-1",
+        inputTokens: 190_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 190_000, contextWindow: 200_000 },
+      }),
+      envelope(5, {
+        type: "tokens",
+        turnId: "turn-old",
+        inputTokens: 180_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(6, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(7, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 30_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const exactSnapshot = latestTokenStats(events.slice(0, 5), 200_000);
+    expect(exactSnapshot.inputTokens).toBe(24_000);
+    expect(exactSnapshot.percent).toBe(12);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(30_000);
+    expect(laterTurn.percent).toBe(15);
+  });
+
+  it("protects a compaction without a turn id until a later turn starts", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        postTokens: 24_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "done",
+        turnId: "turn-old",
+        status: "completed",
+        usage: { inputTokens: 190_000, contextWindow: 200_000 },
+      }),
+      envelope(3, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 30_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const protectedSnapshot = latestTokenStats(events.slice(0, 2), 200_000);
+    expect(protectedSnapshot.inputTokens).toBe(24_000);
+    expect(protectedSnapshot.percent).toBe(12);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(30_000);
+    expect(laterTurn.percent).toBe(15);
+  });
+
+  it("accepts an exact Claude context snapshot from the compaction turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "context_usage",
+        usage: { totalTokens: 24_000, maxTokens: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events, 200_000);
+    expect(stats.inputTokens).toBe(24_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(24);
+  });
 });
 
 describe("latestGoal", () => {

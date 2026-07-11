@@ -415,6 +415,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         let lastUsage = usageDict["last"] as? [String: Any]
         let totalUsage = usageDict["total"] as? [String: Any]
         let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
+        let hasContextOccupancy = optionalWorkInt(lastUsage?["inputTokens"]) != nil
+          || optionalWorkInt(totalUsage?["inputTokens"]) != nil
         event = .tokens(
           usage: makeWorkUsageSummary(
             inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
@@ -424,7 +426,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             reasoningTokens: optionalWorkInt(lastUsage?["reasoningTokens"]) ?? optionalWorkInt(totalUsage?["reasoningTokens"]),
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
             contextWindow: contextWindow,
-            costUsd: nil
+            costUsd: nil,
+            isContextSnapshot: hasContextOccupancy
           ) ?? WorkUsageSummary(
             turnCount: 1,
             inputTokens: 0,
@@ -433,9 +436,28 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             cacheCreationTokens: 0,
             totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]) ?? 0,
             contextWindow: contextWindow,
-            costUsd: 0
+            costUsd: 0,
+            isContextSnapshot: hasContextOccupancy
           ),
           turnId: turnId ?? optionalString(usageDict["turnId"]) ?? "",
+          itemId: nil
+        )
+      case "context_usage":
+        let usageDict = eventDict["usage"] as? [String: Any] ?? [:]
+        let totalTokens = optionalWorkInt(usageDict["totalTokens"]) ?? 0
+        event = .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: totalTokens,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: totalTokens,
+            contextWindow: optionalWorkInt(usageDict["maxTokens"]),
+            costUsd: 0,
+            isContextSnapshot: true
+          ),
+          turnId: turnId ?? "",
           itemId: nil
         )
       case "codex_turn_stalled":
@@ -468,6 +490,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .contextCompact(
           summary: workContextCompactSummary(from: eventDict),
           isInProgress: isInProgress,
+          postTokens: optionalWorkInt(eventDict["postTokens"]),
           turnId: turnId,
           compactionId: workContextCompactMergeId(from: eventDict, turnId: turnId)
         )
@@ -476,6 +499,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .contextCompact(
           summary: workContextCompactSummary(from: eventDict),
           isInProgress: isInProgress,
+          postTokens: nil,
           turnId: turnId,
           compactionId: workContextCompactMergeId(from: eventDict, turnId: turnId)
         )

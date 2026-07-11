@@ -867,6 +867,8 @@ export function latestTokenStats(
   let cacheCreationTokens: number | null = null;
   let costUsd: number | null = null;
   let eventLimit: number | null = null;
+  let compactionProtected = false;
+  let protectedCompactionTurnId: string | null = null;
   let rateLimit: TokenStats["rateLimit"] = null;
   const readCacheReadTokens = (bucket: Record<string, unknown> | null): number | null => {
     if (!bucket) return null;
@@ -878,9 +880,17 @@ export function latestTokenStats(
   };
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
-    if (event.type === "status" && event.turnStatus === "started") streaming = true;
+    if (event.type === "status" && event.turnStatus === "started") {
+      streaming = true;
+      if (compactionProtected && typeof event.turnId === "string"
+        && (!protectedCompactionTurnId || event.turnId !== protectedCompactionTurnId)) {
+        compactionProtected = false;
+        protectedCompactionTurnId = null;
+      }
+    }
     if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) streaming = false;
     if (event.type === "tokens") {
+      if (compactionProtected) continue;
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
       cacheReadTokens = readCacheReadTokens(event) ?? cacheReadTokens;
@@ -891,6 +901,9 @@ export function latestTokenStats(
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       const total = usage?.total && typeof usage.total === "object" ? usage.total as Record<string, unknown> : null;
       const last = usage?.last && typeof usage.last === "object" ? usage.last as Record<string, unknown> : null;
+      const hasContextOccupancy = typeof last?.inputTokens === "number" || typeof total?.inputTokens === "number";
+      if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
+      if (!hasContextOccupancy) continue;
       inputTokens = typeof last?.inputTokens === "number"
         ? last.inputTokens
         : typeof total?.inputTokens === "number" ? total.inputTokens : inputTokens;
@@ -901,9 +914,17 @@ export function latestTokenStats(
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
       cacheReadTokens = readCacheReadTokens(last) ?? readCacheReadTokens(total) ?? cacheReadTokens;
-      if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
+    }
+    if (event.type === "context_usage") {
+      const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
+      inputTokens = typeof usage?.totalTokens === "number" ? usage.totalTokens : inputTokens;
+      outputTokens = null;
+      cacheReadTokens = null;
+      cacheCreationTokens = null;
+      if (typeof usage?.maxTokens === "number") eventLimit = usage.maxTokens;
     }
     if (event.type === "done") {
+      if (compactionProtected) continue;
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
@@ -914,6 +935,16 @@ export function latestTokenStats(
       // effective context window to the terminal `done` event, so honor it for the
       // dial when present (runtime-reported window beats the registry fallback).
       if (typeof usage?.contextWindow === "number") eventLimit = usage.contextWindow;
+    }
+    const completedCompaction = (event.type === "context_compact" && event.state !== "started")
+      || (event.type === "codex_context_compaction" && event.state === "completed");
+    if (completedCompaction) {
+      compactionProtected = true;
+      protectedCompactionTurnId = typeof event.turnId === "string" ? event.turnId : null;
+      inputTokens = event.type === "context_compact" && typeof event.postTokens === "number" ? event.postTokens : null;
+      outputTokens = null;
+      cacheReadTokens = null;
+      cacheCreationTokens = null;
     }
     if (event.type === "system_notice" && event.noticeKind === "rate_limit") {
       const detail = typeof event.detail === "string" ? event.detail : "";

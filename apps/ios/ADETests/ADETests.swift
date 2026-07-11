@@ -3128,6 +3128,119 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
   }
 
+  func testCodexMetadataOnlyUsageIsNotAnExactZeroSnapshot() throws {
+    let metadataOnlyJSON = """
+    {
+      "sessionId": "session-usage",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 15,
+      "event": {
+        "type": "codex_token_usage",
+        "turnId": "turn-usage",
+        "usage": { "modelContextWindow": 258400 }
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(metadataOnlyJSON.utf8))
+    guard case .tokens(let liveUsage, _, _) = makeWorkChatEvent(from: envelope.event) else {
+      return XCTFail("Expected live Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertFalse(liveUsage.isContextSnapshot)
+
+    let fallbackTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:00.000Z","sequence":1,"event":{"type":"context_compact","state":"completed","turnId":"turn-usage"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:01.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-usage","usage":{"modelContextWindow":258400}}}
+    """)
+    guard case .tokens(let fallbackUsage, _, _) = fallbackTranscript.last?.event else {
+      return XCTFail("Expected fallback Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertFalse(fallbackUsage.isContextSnapshot)
+    XCTAssertNil(workContextUsageViewModel(transcript: fallbackTranscript, provider: "codex", fallbackContextWindow: 258_400))
+
+    let explicitZeroTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:00.000Z","sequence":1,"event":{"type":"context_compact","state":"completed","turnId":"turn-usage"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-17T00:00:01.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-usage","usage":{"modelContextWindow":258400,"last":{"inputTokens":0}}}}
+    """)
+    guard case .tokens(let explicitZeroUsage, _, _) = explicitZeroTranscript.last?.event else {
+      return XCTFail("Expected explicit-zero Codex usage to normalize to a tokens event.")
+    }
+    XCTAssertTrue(explicitZeroUsage.isContextSnapshot)
+    let zeroViewModel = workContextUsageViewModel(
+      transcript: explicitZeroTranscript,
+      provider: "codex",
+      fallbackContextWindow: 258_400
+    )
+    XCTAssertEqual(zeroViewModel?.usedTokens, 0)
+    XCTAssertEqual(zeroViewModel?.ratio, 0)
+  }
+
+  func testAgentChatEventEnvelopeDecodesMinimalClaudeContextUsageSnapshotAcrossCompaction() throws {
+    let json = """
+    {
+      "sessionId": "session-usage",
+      "timestamp": "2026-03-17T00:00:01.000Z",
+      "sequence": 16,
+      "event": {
+        "type": "context_usage",
+        "turnId": "turn-usage",
+        "usage": {
+          "totalTokens": 31000,
+          "maxTokens": 200000
+        }
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .contextUsage(let decodedUsage, let decodedTurnId) = envelope.event else {
+      return XCTFail("Expected a context usage event.")
+    }
+    XCTAssertTrue(decodedUsage.categories.isEmpty)
+    XCTAssertEqual(decodedUsage.percentage, 15.5, accuracy: 0.0001)
+    XCTAssertNil(decodedUsage.rawMaxTokens)
+    XCTAssertNil(decodedUsage.model)
+    XCTAssertEqual(decodedTurnId, "turn-usage")
+
+    let event = makeWorkChatEvent(from: envelope.event)
+    guard case .tokens(let usage, let turnId, let itemId) = event else {
+      return XCTFail("Expected Claude context usage to normalize to a tokens event.")
+    }
+    XCTAssertTrue(usage.isContextSnapshot)
+    XCTAssertEqual(usage.inputTokens, 31_000)
+    XCTAssertEqual(usage.contextWindow, 200_000)
+    XCTAssertEqual(turnId, "turn-usage")
+    XCTAssertNil(itemId)
+
+    let viewModel = workContextUsageViewModel(
+      transcript: [
+        WorkChatEnvelope(
+          sessionId: envelope.sessionId,
+          timestamp: "2026-03-17T00:00:00.000Z",
+          sequence: 15,
+          event: .contextCompact(
+            summary: "Context compacted",
+            isInProgress: false,
+            postTokens: nil,
+            turnId: "turn-usage",
+            compactionId: "compact-1"
+          )
+        ),
+        WorkChatEnvelope(
+          sessionId: envelope.sessionId,
+          timestamp: envelope.timestamp,
+          sequence: envelope.sequence,
+          event: event
+        ),
+      ],
+      provider: "claude",
+      fallbackContextWindow: nil
+    )
+    XCTAssertEqual(viewModel?.usedTokens, 31_000)
+    XCTAssertEqual(viewModel?.contextWindow, 200_000)
+    XCTAssertEqual(viewModel?.ratio ?? 0, 0.155, accuracy: 0.0001)
+  }
+
   @MainActor
   func testChatSubscriptionStateSurvivesDisconnectAndReplaysPayloads() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -11089,11 +11202,12 @@ final class ADETests: XCTestCase {
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3,"reasoningTokens":7,"contextWindow":200000},"costUsd":1.23}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":5,"event":{"type":"tokens","turnId":"turn-1","itemId":"tok-1","inputTokens":169600,"outputTokens":701,"cacheReadTokens":168300,"cacheWriteTokens":1200,"contextWindow":258400}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":6,"event":{"type":"codex_token_usage","turnId":"turn-2","usage":{"threadId":"thread-1","turnId":"turn-2","modelContextWindow":258400,"last":{"inputTokens":170000,"outputTokens":800,"cacheReadTokens":168500,"cacheWriteTokens":1300,"reasoningTokens":21},"total":{"totalTokens":170800}}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:06.000Z","sequence":7,"event":{"type":"context_usage","turnId":"turn-3","usage":{"categories":[],"totalTokens":31000,"maxTokens":200000,"percentage":15.5}}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
 
-    XCTAssertEqual(transcript.count, 6)
+    XCTAssertEqual(transcript.count, 7)
 
     guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = transcript[0].event else {
       return XCTFail("Expected command event.")
@@ -11163,8 +11277,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codexUsage.reasoningTokens, 21)
     XCTAssertEqual(codexUsage.totalTokens, 170800)
     XCTAssertEqual(codexUsage.contextWindow, 258400)
+    XCTAssertTrue(codexUsage.isContextSnapshot)
     XCTAssertEqual(codexTurnId, "turn-2")
     XCTAssertEqual(codexItemId, nil)
+
+    guard case .tokens(let contextUsage, let contextTurnId, let contextItemId) = transcript[6].event else {
+      return XCTFail("Expected Claude context usage to normalize to a tokens event.")
+    }
+    XCTAssertTrue(contextUsage.isContextSnapshot)
+    XCTAssertEqual(contextUsage.inputTokens, 31_000)
+    XCTAssertEqual(contextUsage.totalTokens, 31_000)
+    XCTAssertEqual(contextUsage.contextWindow, 200_000)
+    XCTAssertEqual(contextTurnId, "turn-3")
+    XCTAssertNil(contextItemId)
 
     let sessionUsage = summarizeWorkSessionUsage(from: transcript)
     XCTAssertEqual(sessionUsage?.turnCount, 1)
@@ -11281,6 +11406,189 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.cacheWriteTokens, 5)
     XCTAssertEqual(viewModel?.contextWindow, 100)
     XCTAssertEqual(viewModel?.ratio ?? 0, 0.35, accuracy: 0.0001)
+  }
+
+  func testWorkContextUsageViewModelInvalidatesStaleUsageAcrossAllProviderCompactions() {
+    for provider in ["claude", "codex", "opencode", "cursor", "droid"] {
+      let transcript = [
+        WorkChatEnvelope(
+          sessionId: "chat-1",
+          timestamp: "2026-03-25T00:00:01.000Z",
+          sequence: 1,
+          event: .done(
+            status: "completed",
+            summary: "Full",
+            usage: WorkUsageSummary(
+              turnCount: 1,
+              inputTokens: 100_000,
+              outputTokens: 1_000,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              contextWindow: 100_000,
+              costUsd: 0
+            ),
+            turnId: "turn-1",
+            model: nil,
+            modelId: nil
+          )
+        ),
+        WorkChatEnvelope(
+          sessionId: "chat-1",
+          timestamp: "2026-03-25T00:00:02.000Z",
+          sequence: 2,
+          event: .contextCompact(
+            summary: "Context compacted",
+            isInProgress: false,
+            postTokens: nil,
+            turnId: "turn-1",
+            compactionId: "compact-1"
+          )
+        ),
+        WorkChatEnvelope(
+          sessionId: "chat-1",
+          timestamp: "2026-03-25T00:00:03.000Z",
+          sequence: 3,
+          event: .done(
+            status: "completed",
+            summary: "Stale turn total",
+            usage: WorkUsageSummary(
+              turnCount: 1,
+              inputTokens: 100_000,
+              outputTokens: 1_000,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              contextWindow: 100_000,
+              costUsd: 0
+            ),
+            turnId: "turn-1",
+            model: nil,
+            modelId: nil
+          )
+        ),
+      ]
+
+      XCTAssertNil(
+        workContextUsageViewModel(
+          transcript: transcript,
+          provider: provider,
+          fallbackContextWindow: 100_000
+        ),
+        "Expected stale usage to be cleared for \(provider)"
+      )
+    }
+  }
+
+  func testWorkContextUsageViewModelUsesPostCompactionTokensAndIgnoresSameTurnTotals() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(
+          summary: "Context compacted",
+          isInProgress: false,
+          postTokens: 18_000,
+          turnId: "turn-1",
+          compactionId: "compact-1"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .done(
+          status: "completed",
+          summary: "Stale turn total",
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 100_000,
+            outputTokens: 1_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 100_000,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          model: nil,
+          modelId: nil
+        )
+      ),
+    ]
+
+    let viewModel = workContextUsageViewModel(
+      transcript: transcript,
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(viewModel?.usedTokens, 18_000)
+    XCTAssertEqual(viewModel?.contextWindow, 100_000)
+    XCTAssertEqual(viewModel?.ratio ?? 0, 0.18, accuracy: 0.0001)
+  }
+
+  func testWorkContextUsageViewModelProtectsExactSnapshotsUntilLaterTurn() {
+    let cases = [
+      (
+        provider: "claude",
+        boundary: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"context_compact","trigger":"auto","state":"completed","turnId":"turn-1"}}"#,
+        snapshot: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"context_usage","turnId":"turn-1","usage":{"totalTokens":24000,"maxTokens":100000}}}"#,
+        exactTokens: 24_000
+      ),
+      (
+        provider: "codex",
+        boundary: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"codex_context_compaction","trigger":"auto","state":"completed","turnId":"turn-1"}}"#,
+        snapshot: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-1","usage":{"modelContextWindow":100000,"last":{"inputTokens":21000}}}}"#,
+        exactTokens: 21_000
+      ),
+    ]
+
+    for testCase in cases {
+      let transcript = parseWorkChatTranscript("""
+      \(testCase.boundary)
+      \(testCase.snapshot)
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"done","turnId":"turn-1","status":"completed","usage":{"inputTokens":100000,"contextWindow":100000}}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-old","inputTokens":90000,"contextWindow":100000}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":5,"event":{"type":"status","turnStatus":"started","turnId":"turn-2"}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:06.000Z","sequence":6,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
+      """)
+
+      let exactViewModel = workContextUsageViewModel(
+        transcript: Array(transcript.prefix(4)),
+        provider: testCase.provider,
+        fallbackContextWindow: 100_000
+      )
+      XCTAssertEqual(exactViewModel?.usedTokens, testCase.exactTokens, "Expected protected \(testCase.provider) snapshot")
+      XCTAssertEqual(exactViewModel?.contextWindow, 100_000)
+
+      let laterTurnViewModel = workContextUsageViewModel(
+        transcript: transcript,
+        provider: testCase.provider,
+        fallbackContextWindow: 100_000
+      )
+      XCTAssertEqual(laterTurnViewModel?.usedTokens, 30_000, "Expected later \(testCase.provider) turn to replace snapshot")
+      XCTAssertEqual(laterTurnViewModel?.ratio ?? 0, 0.3, accuracy: 0.0001)
+    }
+
+    let noTurnIdTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"context_compact","trigger":"auto","state":"completed","postTokens":24000}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"done","turnId":"turn-old","status":"completed","usage":{"inputTokens":90000,"contextWindow":100000}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"status","turnStatus":"started","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
+    """)
+    let protectedSnapshot = workContextUsageViewModel(
+      transcript: Array(noTurnIdTranscript.prefix(2)),
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(protectedSnapshot?.usedTokens, 24_000)
+    XCTAssertEqual(protectedSnapshot?.ratio ?? 0, 0.24, accuracy: 0.0001)
+
+    let laterTurn = workContextUsageViewModel(
+      transcript: noTurnIdTranscript,
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(laterTurn?.usedTokens, 30_000)
+    XCTAssertEqual(laterTurn?.ratio ?? 0, 0.3, accuracy: 0.0001)
   }
 
   func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {
@@ -15909,13 +16217,13 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-06-15T00:00:01.000Z",
         sequence: 1,
-        event: .contextCompact(summary: "Manual", isInProgress: true, turnId: "turn-compact", compactionId: "turn-compact")
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-06-15T00:00:02.000Z",
         sequence: 2,
-        event: .contextCompact(summary: "Manual\nPre-compact tokens: 12000", isInProgress: false, turnId: "turn-compact", compactionId: "turn-compact")
+        event: .contextCompact(summary: "Manual\nPre-compact tokens: 12000", isInProgress: false, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
       ),
     ]
 
@@ -15934,7 +16242,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-06-15T00:00:01.000Z",
         sequence: 1,
-        event: .contextCompact(summary: "Auto", isInProgress: true, turnId: "turn-1", compactionId: "item-1")
+        event: .contextCompact(summary: "Auto", isInProgress: true, postTokens: nil, turnId: "turn-1", compactionId: "item-1")
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -15943,6 +16251,7 @@ final class ADETests: XCTestCase {
         event: .contextCompact(
           summary: "Auto\nprovider:codex\n142k → 38k\nduration:12000ms",
           isInProgress: false,
+          postTokens: 38_000,
           turnId: "turn-2",
           compactionId: "item-1"
         )
@@ -15987,10 +16296,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(turnId, "turn-2")
 
     let mapped = makeWorkChatEvent(from: event)
-    guard case let .contextCompact(summary, isInProgress, mappedTurnId, mappedCompactionId) = mapped else {
+    guard case let .contextCompact(summary, isInProgress, mappedPostTokens, mappedTurnId, mappedCompactionId) = mapped else {
       return XCTFail("Expected mapped contextCompact event")
     }
     XCTAssertFalse(isInProgress)
+    XCTAssertEqual(mappedPostTokens, 38_000)
     XCTAssertEqual(mappedTurnId, "turn-2")
     XCTAssertEqual(mappedCompactionId, "item-1")
     XCTAssertTrue(summary.contains("provider:codex"))

@@ -279,9 +279,10 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
   case .promptSuggestion(let text, let turnId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .contextCompact(let summary, let isInProgress, let turnId, let compactionId):
+  case .contextCompact(let summary, let isInProgress, let postTokens, let turnId, let compactionId):
     combineLongTextSignature(summary, into: &hasher)
     hasher.combine(isInProgress)
+    combineOptional(postTokens, into: &hasher)
     combineOptional(turnId, into: &hasher)
     combineOptional(compactionId, into: &hasher)
   case .autoApprovalReview(let summary, let turnId):
@@ -412,6 +413,7 @@ private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout 
   hasher.combine(usage.totalTokens)
   combineOptional(usage.contextWindow, into: &hasher)
   hasher.combine(usage.costUsd)
+  hasher.combine(usage.isContextSnapshot)
 }
 
 private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactModel], into hasher: inout Hasher) {
@@ -2647,7 +2649,7 @@ private func eventCard(
         bullets: [],
         metadata: []
       )
-    case .contextCompact(let summary, let isInProgress, let turnId, let compactionId):
+    case .contextCompact(let summary, let isInProgress, _, let turnId, let compactionId):
       return WorkEventCardModel(
         // Prefer compactionId so started/completed pairs merge even when Codex
         // finishes on a different turn. Falls back to turnId, then envelope id.
@@ -2966,7 +2968,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .systemNotice(_, _, _, let turnId, _),
        .error(_, _, _, let turnId),
        .promptSuggestion(_, let turnId),
-       .contextCompact(_, _, let turnId, _),
+       .contextCompact(_, _, _, let turnId, _),
        .autoApprovalReview(_, let turnId),
        .webSearch(_, _, _, _, _, let turnId),
        .codexState(_, _, _, let turnId),
@@ -3093,7 +3095,8 @@ func makeWorkUsageSummary(
   reasoningTokens: Int? = nil,
   totalTokens: Int? = nil,
   contextWindow: Int? = nil,
-  costUsd: Double?
+  costUsd: Double?,
+  isContextSnapshot: Bool = false
 ) -> WorkUsageSummary? {
   guard inputTokens != nil
     || outputTokens != nil
@@ -3116,7 +3119,8 @@ func makeWorkUsageSummary(
     reasoningTokens: reasoningTokens ?? 0,
     totalTokens: totalTokens ?? 0,
     contextWindow: contextWindow,
-    costUsd: costUsd ?? 0
+    costUsd: costUsd ?? 0,
+    isContextSnapshot: isContextSnapshot
   )
 }
 
@@ -3167,28 +3171,54 @@ func workContextUsageViewModel(
   fallbackContextWindow: Int?
 ) -> WorkContextUsageViewModel? {
 
-  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+  var latestUsage: WorkUsageSummary?
+  var compactionProtected = false
+  var protectedCompactionTurnId: String?
+
+  for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
+    case .contextCompact(_, let isInProgress, let postTokens, let turnId, _):
+      guard !isInProgress else { continue }
+      compactionProtected = true
+      protectedCompactionTurnId = turnId
+      latestUsage = postTokens.map {
+        WorkUsageSummary(
+          turnCount: 1,
+          inputTokens: $0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          totalTokens: $0,
+          contextWindow: latestUsage?.contextWindow,
+          costUsd: 0,
+          isContextSnapshot: true
+        )
+      }
     case .tokens(let usage, _, _):
-      return makeWorkContextUsageViewModel(
-        usage: usage,
-        provider: provider,
-        fallbackContextWindow: fallbackContextWindow
-      )
+      if compactionProtected && !usage.isContextSnapshot { continue }
+      latestUsage = usage
     case .done(_, _, let usage, _, _, _):
       if let usage {
-        return makeWorkContextUsageViewModel(
-          usage: usage,
-          provider: provider,
-          fallbackContextWindow: fallbackContextWindow
-        )
+        if compactionProtected && !usage.isContextSnapshot { continue }
+        latestUsage = usage
+      }
+    case .status(let turnStatus, _, let turnId):
+      if turnStatus == "started", compactionProtected, let turnId,
+         protectedCompactionTurnId == nil || turnId != protectedCompactionTurnId {
+        compactionProtected = false
+        protectedCompactionTurnId = nil
       }
     default:
       continue
     }
   }
 
-  return nil
+  guard let latestUsage else { return nil }
+  return makeWorkContextUsageViewModel(
+    usage: latestUsage,
+    provider: provider,
+    fallbackContextWindow: fallbackContextWindow
+  )
 }
 
 private func makeWorkContextUsageViewModel(
@@ -3205,6 +3235,9 @@ private func makeWorkContextUsageViewModel(
   let runtimeWindow = positiveWorkTokenCount(usage.contextWindow)
   let contextWindow = runtimeWindow ?? positiveWorkTokenCount(fallbackContextWindow)
   let usedTokens: Int? = {
+    if usage.isContextSnapshot {
+      return max(0, usage.inputTokens)
+    }
     if workProviderUsesCodexTokenOccupancy(provider) {
       return inputTokens ?? positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
     }

@@ -284,9 +284,11 @@ The Work model/activity parity path is concentrated in these files:
 - `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
   host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
   and the Ultra usage warning.
-- `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`, and
+- `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`,
+  `WorkModels.swift`, `WorkTimelineHelpers.swift`, and
   `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
-  both live Codable events and persisted JSONL fallback.
+  both live Codable events and persisted JSONL fallback, plus the Work context
+  meter's provider-neutral usage and compaction-boundary reduction.
 - `ADE/Services/SyncService.swift` and `ADE/Views/Work/WorkSessionDestinationView+Actions.swift`
   — host-advertised `chat.recoverCodexTurn` dispatch for stalled-turn buttons.
 
@@ -1488,6 +1490,15 @@ different machine's cached limits.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
+- **The Work context meter treats completed compaction as a usage boundary.**
+  `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
+  retain `context_compact.postTokens`. `workContextUsageViewModel` in
+  `WorkTimelineHelpers.swift` walks the ordered event stream, clears usage from
+  before a completed compaction for Claude, Codex, OpenCode, Cursor, and Droid,
+  and rejects generic `tokens` / `done` counters from the compacted turn. An
+  exact post-compaction token count or Codex context snapshot can refill the
+  meter immediately; otherwise it stays empty until a trustworthy later usage
+  event arrives.
 - **Subagent lifecycle is rendered as chat structure, not event spam.**
   `RemoteModels.swift` accepts both legacy `subagent_started` /
   `subagent_progress` / `subagent_result` events and the canonical dotted
