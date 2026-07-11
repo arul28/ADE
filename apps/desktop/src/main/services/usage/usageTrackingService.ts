@@ -2527,7 +2527,9 @@ function buildProviderWindows(
       ...(nextRetryAt ? { nextRetryAt } : {}),
       message: prevWindows.length > 0
         ? `Couldn't refresh ${name} — last reading expired`
-        : `Couldn't reach ${name} — retrying`,
+        : errorKind === "rate_limited"
+          ? `${name} is rate-limiting usage checks — waiting to retry`
+          : `Couldn't reach ${name} — retrying`,
     },
     lastSuccessAt: prevLastSuccessAt,
   };

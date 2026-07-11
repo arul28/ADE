@@ -41,6 +41,23 @@ quota HTTP, CLI fallback, and history phases, including provider, trigger,
 duration, outcome, and error kind. These entries identify network/auth latency
 without logging credentials or quota payloads.
 
+## Claude credential hygiene (refresh storms)
+
+`~/.claude/.credentials.json` can be a stale leftover while the live login sits
+in the macOS Keychain (the Claude CLI's default store). Because background
+polls must not touch the Keychain, three rules prevent a dead file token from
+turning into an OAuth storm that gets the whole client rate-limited (429) by
+Anthropic:
+
+- Any successful Keychain read (explicit refresh, provider-status checks)
+  populates the shared in-memory credential cache, so background polls reuse
+  the live login instead of the file.
+- A refresh token the token endpoint rejects (4xx) is negative-cached for 24 h
+  (10 min for network/5xx failures) and never re-tried per poll.
+- When a token is expired and cannot be refreshed, the reader reports "no
+  usable credentials" (→ reconnect state) instead of returning the dead token,
+  which would guarantee a 401 plus another doomed refresh on every cycle.
+
 ## Reproducible baseline
 
 The pre-change baseline came from ADE structured logs for 2026-07-10. Measure
