@@ -8894,7 +8894,10 @@ export function AgentChatPane({
           // instead of surfacing a confusing error to the user.
           if (!isCodexGoalSlashCommand && isTurnAlreadyActiveError(sendError)) {
             try {
-              await steerMessage();
+              // Capture the result so a stale-turn-active race still flows
+              // through the queue_full restore path and the inline send-now
+              // dispatch, exactly like the direct steer branch below.
+              steerResult = await steerMessage();
             } catch (steerError) {
               if (!isNoActiveTurnToSteerError(steerError) || !retryOnStaleSteer) throw steerError;
               setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
@@ -9031,18 +9034,27 @@ export function AgentChatPane({
   // as an interrupt so the message folds into the live turn (Claude Code parity).
   // A queue-full or already-delivered submit returns no dispatchable steer, so
   // nothing is dispatched.
+  // Steer dispatch/edit are fire-and-forget IPC. Surface a rejection (e.g. a
+  // non-Claude session or a pending-input block) instead of silently swallowing
+  // it, so the user learns their Send now / Interrupt / edit did not land.
+  const dispatchSteerSafely = useCallback(
+    (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
+      void window.ade.agentChat.dispatchSteer(args).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setError(`Couldn't deliver the message to the running turn: ${message}`);
+      });
+    },
+    [],
+  );
+
   const armAndSubmitSteerDispatch = useCallback(
     async (mode: AgentChatDispatchSteerMode) => {
       const sid = selectedSessionId;
       const result = await submit();
       if (!sid || !result || !result.queued) return;
-      void window.ade.agentChat.dispatchSteer({
-        sessionId: sid,
-        steerId: result.steerId,
-        mode,
-      });
+      dispatchSteerSafely({ sessionId: sid, steerId: result.steerId, mode });
     },
-    [selectedSessionId, submit],
+    [selectedSessionId, submit, dispatchSteerSafely],
   );
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
@@ -10457,17 +10469,19 @@ export function AgentChatPane({
             }}
             onEditSteer={(steerId, text) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
+                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text }).catch((error: unknown) => {
+                  setError(`Couldn't update the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                });
               }
             }}
             onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "inline" });
+                dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
               }
             } : undefined}
             onDispatchSteerInterrupt={selectedSession?.provider === "claude" ? (steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
+                dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
               }
             } : undefined}
             onSendSteerNow={selectedSession?.provider === "claude" ? () => armAndSubmitSteerDispatch("inline") : undefined}

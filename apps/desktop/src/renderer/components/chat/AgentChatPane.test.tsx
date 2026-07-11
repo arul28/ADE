@@ -2636,6 +2636,44 @@ describe("AgentChatPane submit recovery", () => {
     expect(dispatchSteer).not.toHaveBeenCalled();
   });
 
+  it("restores the draft on a stale-turn-active race when the fallback steer is queue-full", async () => {
+    // Regression: local state thinks the turn is idle (normal Send), but the
+    // backend turn is actually active — send() rejects turn-already-active and
+    // the pane falls back to steer. If that fallback steer is dropped
+    // (queue_full), its result must still flow through the restore/notice path
+    // instead of being lost (which cleared the draft as if it had sent).
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      status: "idle",
+      awaitingInput: false,
+    });
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+      sendError: new Error("turn is already active"),
+      steerResult: { steerId: "steer-dropped", queued: false, reason: "queue_full" },
+    });
+
+    renderPane(session);
+
+    const textbox = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    fireEvent.change(textbox, { target: { value: "Bounce me on the race." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/the queue is full/i)).toBeTruthy();
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Bounce me on the race.");
+  });
+
   it("keeps active-turn controls when hydrated history starts after the turn-start marker", async () => {
     const session = buildSession("session-1", { status: "active", awaitingInput: false });
     installAdeMocks({
