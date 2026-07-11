@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.20] - 2026-07-10
+
+### Added
+
+- Cross-machine session handoff to move an active session between paired machines.
+- Machine-level Chats tab with a redesigned projectless-chat flow.
+- Per-source Automations delivery warnings, an actionable trust banner, and per-source brand identity.
+- Mobile chat UI overhaul: staged send, question cards, and artifact cards, plus an iOS usage/activity carousel.
+- GPT-5.6 Max reasoning across ADE.
+
+### Changed
+
+- Claude chat: scalable actions pane, copy-turn, full-fidelity transcript view, and chat tags.
+- Desktop auto-update now surfaces disk-space failures and recovery steps.
+- Files tab is always editable; removed view-only mode.
+
+### Fixed
+
+- Fixed Claude chat end-chat teardown and added SessionStore self-heal.
+- Made usage refresh reliable and lifetime totals accurate across clients.
+- Fixed remote workspace-id staleness that could strand paired machines.
+- Restored copying from macOS CLI terminals.
+- Fixed Linear batch launch readiness and blank chats.
+- Made Codex app-server failures recover automatically.
+
 ## [1.2.19] - 2026-07-10
 
 ### Added
@@ -655,7 +680,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.19...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.20...HEAD
+[1.2.20]: https://github.com/arul28/ADE/compare/v1.2.19...v1.2.20
 [1.2.19]: https://github.com/arul28/ADE/compare/v1.2.18...v1.2.19
 [1.2.18]: https://github.com/arul28/ADE/compare/v1.2.17...v1.2.18
 [1.2.17]: https://github.com/arul28/ADE/compare/v1.2.16...v1.2.17

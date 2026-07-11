@@ -1,0 +1,28 @@
+---
+title: "v1.2.20"
+description: "Release notes for ADE v1.2.20 - July 10, 2026"
+---
+
+v1.2.20 lands cross-machine session handoff, a mobile chat UI overhaul, sharper Automations delivery warnings, and a batch of chat, usage, and reliability fixes.
+
+---
+
+## Desktop and CLI
+
+- **Cross-machine session handoff.** Hand an active session off from one paired machine to another and pick up where you left off.
+- **Claude chat polish.** Fixed end-chat teardown, added a scalable actions pane, copy-turn, SessionStore self-heal, a full-fidelity transcript view, and chat tags.
+- **Sharper Automations delivery warnings.** Per-source delivery warnings replace gateway-only alerts, an actionable trust banner points at the exact setup step, and each source carries its own brand identity.
+- **Reliable usage stats.** Usage refresh is now reliable and lifetime totals stay accurate across clients.
+- **Machine-level Chats tab.** A real machine-level Chats tab with a redesigned projectless-chat flow.
+- **Disk-space aware auto-update.** Desktop auto-update surfaces disk-space failures and recovery steps instead of failing silently.
+- **Files tab always editable.** Removed view-only mode and fixed remote workspace-id staleness that could strand paired machines.
+- **GPT-5.6 Max reasoning.** Exposed GPT-5.6 Max reasoning across ADE.
+- **Fixes.** Restored copying from macOS CLI terminals, fixed Linear batch launch readiness and blank chats, and made Codex app-server failures recover automatically.
+
+---
+
+## iOS
+
+- **Mobile chat UI overhaul.** Staged send, question cards, and artifact cards across the Work chat surfaces.
+- **Cross-machine handoff and usage.** iOS follows cross-machine session handoff and gains a usage/activity carousel backed by a mobile usage quota store.
+- **GPT-5.6 in the catalog.** The Work model catalog includes the GPT-5.6 family.
