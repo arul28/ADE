@@ -11546,11 +11546,13 @@ final class ADETests: XCTestCase {
       \(testCase.boundary)
       \(testCase.snapshot)
       {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"done","turnId":"turn-1","status":"completed","usage":{"inputTokens":100000,"contextWindow":100000}}}
-      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-old","inputTokens":90000,"contextWindow":100000}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":5,"event":{"type":"status","turnStatus":"started","turnId":"turn-2"}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:06.000Z","sequence":6,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
       """)
 
       let exactViewModel = workContextUsageViewModel(
-        transcript: Array(transcript.prefix(3)),
+        transcript: Array(transcript.prefix(4)),
         provider: testCase.provider,
         fallbackContextWindow: 100_000
       )
@@ -11565,6 +11567,28 @@ final class ADETests: XCTestCase {
       XCTAssertEqual(laterTurnViewModel?.usedTokens, 30_000, "Expected later \(testCase.provider) turn to replace snapshot")
       XCTAssertEqual(laterTurnViewModel?.ratio ?? 0, 0.3, accuracy: 0.0001)
     }
+
+    let noTurnIdTranscript = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"context_compact","trigger":"auto","state":"completed","postTokens":24000}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"done","turnId":"turn-old","status":"completed","usage":{"inputTokens":90000,"contextWindow":100000}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"status","turnStatus":"started","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
+    """)
+    let protectedSnapshot = workContextUsageViewModel(
+      transcript: Array(noTurnIdTranscript.prefix(2)),
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(protectedSnapshot?.usedTokens, 24_000)
+    XCTAssertEqual(protectedSnapshot?.ratio ?? 0, 0.24, accuracy: 0.0001)
+
+    let laterTurn = workContextUsageViewModel(
+      transcript: noTurnIdTranscript,
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(laterTurn?.usedTokens, 30_000)
+    XCTAssertEqual(laterTurn?.ratio ?? 0, 0.3, accuracy: 0.0001)
   }
 
   func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {

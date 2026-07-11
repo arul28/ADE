@@ -512,6 +512,18 @@ describe("latestTokenStats", () => {
       }),
       envelope(6, {
         type: "tokens",
+        turnId: "turn-old",
+        inputTokens: 180_000,
+        outputTokens: 500,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(7, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(8, {
+        type: "tokens",
         turnId: "turn-2",
         inputTokens: 32_000,
         outputTokens: 500,
@@ -520,7 +532,7 @@ describe("latestTokenStats", () => {
     ];
     expect(latestTokenStats(events.slice(0, 2), 200_000).percent).toBeNull();
 
-    const exactRefill = latestTokenStats(events.slice(0, 5), 200_000);
+    const exactRefill = latestTokenStats(events.slice(0, 6), 200_000);
     expect(exactRefill.inputTokens).toBe(26_000);
     expect(exactRefill.percent).toBe(13);
 
@@ -557,14 +569,61 @@ describe("latestTokenStats", () => {
       }),
       envelope(5, {
         type: "tokens",
+        turnId: "turn-old",
+        inputTokens: 180_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(6, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(7, {
+        type: "tokens",
         turnId: "turn-2",
         inputTokens: 30_000,
         contextWindow: 200_000,
       } as AgentChatEventEnvelope["event"]),
     ];
-    const exactSnapshot = latestTokenStats(events.slice(0, 4), 200_000);
+    const exactSnapshot = latestTokenStats(events.slice(0, 5), 200_000);
     expect(exactSnapshot.inputTokens).toBe(24_000);
     expect(exactSnapshot.percent).toBe(12);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(30_000);
+    expect(laterTurn.percent).toBe(15);
+  });
+
+  it("protects a compaction without a turn id until a later turn starts", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        postTokens: 24_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "done",
+        turnId: "turn-old",
+        status: "completed",
+        usage: { inputTokens: 190_000, contextWindow: 200_000 },
+      }),
+      envelope(3, {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 30_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const protectedSnapshot = latestTokenStats(events.slice(0, 2), 200_000);
+    expect(protectedSnapshot.inputTokens).toBe(24_000);
+    expect(protectedSnapshot.percent).toBe(12);
 
     const laterTurn = latestTokenStats(events, 200_000);
     expect(laterTurn.inputTokens).toBe(30_000);

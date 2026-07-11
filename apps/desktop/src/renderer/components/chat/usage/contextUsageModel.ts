@@ -157,7 +157,7 @@ export function toUsageViewModel(
  * Reduce the event stream to the newest trustworthy context-occupancy signal.
  *
  * A completed compaction invalidates all earlier usage. Generic SDK `done` /
- * `tokens` events from that same turn are deliberately ignored: Cursor,
+ * `tokens` events are deliberately ignored until an explicit later turn starts: Cursor,
  * OpenCode, Droid, and Claude can report per-turn or cumulative counters after
  * the history has already been replaced. Claude's `postTokens` boundary and
  * `context_usage`, plus Codex's live thread usage notification, are exact
@@ -173,25 +173,27 @@ export function latestContextUsageInput(
       ? { kind: "codex", provider, usage: fallbackCodexUsage }
       : null;
   let lastRuntimeWindow = positive(fallbackCodexUsage?.modelContextWindow);
-  let compactedTurnId: string | null = null;
-  const releaseCompactionForLaterTurn = (turnId: string | undefined): void => {
-    if (compactedTurnId && turnId && turnId !== compactedTurnId) compactedTurnId = null;
-  };
+  let compactionProtected = false;
+  let protectedCompactionTurnId: string | null = null;
 
   const acceptGeneric = (
-    turnId: string | undefined,
     usage: GenericUsageInput,
     contextWindow?: number | null,
   ): void => {
-    if (compactedTurnId && (!turnId || turnId === compactedTurnId)) return;
+    if (compactionProtected) return;
     const runtimeWindow = positive(contextWindow);
     if (runtimeWindow != null) lastRuntimeWindow = runtimeWindow;
     current = { kind: "generic", provider, usage, contextWindow };
-    compactedTurnId = null;
   };
 
   for (const envelope of events) {
     const event = envelope.event;
+    if (event.type === "status" && event.turnStatus === "started"
+      && compactionProtected && event.turnId
+      && (!protectedCompactionTurnId || event.turnId !== protectedCompactionTurnId)) {
+      compactionProtected = false;
+      protectedCompactionTurnId = null;
+    }
     if (event.type === "codex_token_usage") {
       if (positive(event.usage.modelContextWindow) != null) {
         lastRuntimeWindow = positive(event.usage.modelContextWindow);
@@ -200,8 +202,6 @@ export function latestContextUsageInput(
         || typeof event.usage.total?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
       current = { kind: "codex", provider: provider || "codex", usage: event.usage };
-      const usageTurnId = event.turnId ?? event.usage.turnId ?? undefined;
-      releaseCompactionForLaterTurn(usageTurnId);
       continue;
     }
     if (event.type === "context_usage") {
@@ -216,13 +216,13 @@ export function latestContextUsageInput(
         },
         contextWindow: event.usage.maxTokens,
       };
-      releaseCompactionForLaterTurn(event.turnId);
       continue;
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")
       || (event.type === "codex_context_compaction" && event.state === "completed");
     if (completedCompaction) {
-      compactedTurnId = event.turnId ?? null;
+      compactionProtected = true;
+      protectedCompactionTurnId = event.turnId ?? null;
       current = event.type === "context_compact" && event.postTokens != null
         ? {
             kind: "generic",
@@ -234,7 +234,7 @@ export function latestContextUsageInput(
       continue;
     }
     if (event.type === "done" && event.usage) {
-      acceptGeneric(event.turnId, {
+      acceptGeneric({
         inputTokens: event.usage.inputTokens,
         outputTokens: event.usage.outputTokens,
         cacheReadTokens: event.usage.cacheReadTokens,
@@ -244,7 +244,7 @@ export function latestContextUsageInput(
       continue;
     }
     if (event.type === "tokens") {
-      acceptGeneric(event.turnId, {
+      acceptGeneric({
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,
         cacheReadTokens: event.cacheReadTokens,

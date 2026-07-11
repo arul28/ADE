@@ -175,11 +175,13 @@ describe("latestContextUsageInput", () => {
       envelope(3, { type: "codex_token_usage", usage: { last: { inputTokens: 26_000 }, modelContextWindow: 200_000 }, turnId: "turn-1" }),
       envelope(4, { type: "tokens", turnId: "turn-1", inputTokens: 190_000, outputTokens: 1_000, contextWindow: 200_000 }),
       envelope(5, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
-      envelope(6, { type: "tokens", turnId: "turn-2", inputTokens: 32_000, outputTokens: 500, contextWindow: 200_000 }),
+      envelope(6, { type: "tokens", turnId: "turn-old", inputTokens: 180_000, outputTokens: 500, contextWindow: 200_000 }),
+      envelope(7, { type: "status", turnStatus: "started", turnId: "turn-2" }),
+      envelope(8, { type: "tokens", turnId: "turn-2", inputTokens: 32_000, outputTokens: 500, contextWindow: 200_000 }),
     ] as any;
     expect(latestContextUsageInput(events.slice(0, 2), "codex")).toBeNull();
 
-    const exactRefill = toUsageViewModel(latestContextUsageInput(events.slice(0, 5), "codex"));
+    const exactRefill = toUsageViewModel(latestContextUsageInput(events.slice(0, 6), "codex"));
     expect(exactRefill?.usedTokens).toBe(26_000);
     expect(exactRefill?.ratio).toBe(0.13);
 
@@ -194,13 +196,31 @@ describe("latestContextUsageInput", () => {
       envelope(2, { type: "context_usage", usage: { totalTokens: 24_000, maxTokens: 200_000 }, turnId: "turn-1" }),
       envelope(3, { type: "tokens", turnId: "turn-1", inputTokens: 190_000, contextWindow: 200_000 }),
       envelope(4, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
-      envelope(5, { type: "tokens", turnId: "turn-2", inputTokens: 30_000, contextWindow: 200_000 }),
+      envelope(5, { type: "tokens", turnId: "turn-old", inputTokens: 180_000, contextWindow: 200_000 }),
+      envelope(6, { type: "status", turnStatus: "started", turnId: "turn-2" }),
+      envelope(7, { type: "tokens", turnId: "turn-2", inputTokens: 30_000, contextWindow: 200_000 }),
     ] as any;
-    const exactSnapshot = toUsageViewModel(latestContextUsageInput(events.slice(0, 4), "claude"));
+    const exactSnapshot = toUsageViewModel(latestContextUsageInput(events.slice(0, 5), "claude"));
     expect(exactSnapshot?.usedTokens).toBe(24_000);
     expect(exactSnapshot?.ratio).toBe(0.12);
 
     const laterTurn = toUsageViewModel(latestContextUsageInput(events, "claude"));
+    expect(laterTurn?.usedTokens).toBe(30_000);
+    expect(laterTurn?.ratio).toBe(0.15);
+  });
+
+  it("protects a compaction without a turn id until a later turn starts", () => {
+    const events = [
+      envelope(1, { type: "context_compact", trigger: "auto", state: "completed", postTokens: 24_000 }),
+      envelope(2, { type: "done", turnId: "turn-old", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
+      envelope(3, { type: "status", turnStatus: "started", turnId: "turn-2" }),
+      envelope(4, { type: "tokens", turnId: "turn-2", inputTokens: 30_000, contextWindow: 200_000 }),
+    ] as any;
+    const protectedSnapshot = toUsageViewModel(latestContextUsageInput(events.slice(0, 2), "claude"), 200_000);
+    expect(protectedSnapshot?.usedTokens).toBe(24_000);
+    expect(protectedSnapshot?.ratio).toBe(0.12);
+
+    const laterTurn = toUsageViewModel(latestContextUsageInput(events, "claude"), 200_000);
     expect(laterTurn?.usedTokens).toBe(30_000);
     expect(laterTurn?.ratio).toBe(0.15);
   });

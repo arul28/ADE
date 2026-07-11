@@ -3172,13 +3172,15 @@ func workContextUsageViewModel(
 ) -> WorkContextUsageViewModel? {
 
   var latestUsage: WorkUsageSummary?
-  var compactedTurnId: String?
+  var compactionProtected = false
+  var protectedCompactionTurnId: String?
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .contextCompact(_, let isInProgress, let postTokens, let turnId, _):
       guard !isInProgress else { continue }
-      compactedTurnId = turnId
+      compactionProtected = true
+      protectedCompactionTurnId = turnId
       latestUsage = postTokens.map {
         WorkUsageSummary(
           turnCount: 1,
@@ -3192,19 +3194,19 @@ func workContextUsageViewModel(
           isContextSnapshot: true
         )
       }
-    case .tokens(let usage, let turnId, _):
-      if let protectedTurnId = compactedTurnId {
-        if protectedTurnId == turnId && !usage.isContextSnapshot { continue }
-        if protectedTurnId != turnId { compactedTurnId = nil }
-      }
+    case .tokens(let usage, _, _):
+      if compactionProtected && !usage.isContextSnapshot { continue }
       latestUsage = usage
-    case .done(_, _, let usage, let turnId, _, _):
+    case .done(_, _, let usage, _, _, _):
       if let usage {
-        if let protectedTurnId = compactedTurnId {
-          if protectedTurnId == turnId && !usage.isContextSnapshot { continue }
-          if protectedTurnId != turnId { compactedTurnId = nil }
-        }
+        if compactionProtected && !usage.isContextSnapshot { continue }
         latestUsage = usage
+      }
+    case .status(let turnStatus, _, let turnId):
+      if turnStatus == "started", compactionProtected, let turnId,
+         protectedCompactionTurnId == nil || turnId != protectedCompactionTurnId {
+        compactionProtected = false
+        protectedCompactionTurnId = nil
       }
     default:
       continue

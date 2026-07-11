@@ -867,13 +867,9 @@ export function latestTokenStats(
   let cacheCreationTokens: number | null = null;
   let costUsd: number | null = null;
   let eventLimit: number | null = null;
-  let compactedTurnId: string | null = null;
+  let compactionProtected = false;
+  let protectedCompactionTurnId: string | null = null;
   let rateLimit: TokenStats["rateLimit"] = null;
-  const blocksCompactedTurn = (turnId: unknown): boolean => compactedTurnId != null
-    && (typeof turnId !== "string" || turnId === compactedTurnId);
-  const releaseCompactionForLaterTurn = (turnId: unknown): void => {
-    if (compactedTurnId && typeof turnId === "string" && turnId !== compactedTurnId) compactedTurnId = null;
-  };
   const readCacheReadTokens = (bucket: Record<string, unknown> | null): number | null => {
     if (!bucket) return null;
     if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
@@ -884,16 +880,22 @@ export function latestTokenStats(
   };
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
-    if (event.type === "status" && event.turnStatus === "started") streaming = true;
+    if (event.type === "status" && event.turnStatus === "started") {
+      streaming = true;
+      if (compactionProtected && typeof event.turnId === "string"
+        && (!protectedCompactionTurnId || event.turnId !== protectedCompactionTurnId)) {
+        compactionProtected = false;
+        protectedCompactionTurnId = null;
+      }
+    }
     if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) streaming = false;
     if (event.type === "tokens") {
-      if (blocksCompactedTurn(event.turnId)) continue;
+      if (compactionProtected) continue;
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
       cacheReadTokens = readCacheReadTokens(event) ?? cacheReadTokens;
       cacheCreationTokens = typeof event.cacheWriteTokens === "number" ? event.cacheWriteTokens : cacheCreationTokens;
       if (typeof event.contextWindow === "number") eventLimit = event.contextWindow;
-      compactedTurnId = null;
     }
     if (event.type === "codex_token_usage") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
@@ -912,10 +914,6 @@ export function latestTokenStats(
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
       cacheReadTokens = readCacheReadTokens(last) ?? readCacheReadTokens(total) ?? cacheReadTokens;
-      const usageTurnId = typeof event.turnId === "string"
-        ? event.turnId
-        : typeof usage?.turnId === "string" ? usage.turnId : null;
-      releaseCompactionForLaterTurn(usageTurnId);
     }
     if (event.type === "context_usage") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
@@ -924,10 +922,9 @@ export function latestTokenStats(
       cacheReadTokens = null;
       cacheCreationTokens = null;
       if (typeof usage?.maxTokens === "number") eventLimit = usage.maxTokens;
-      releaseCompactionForLaterTurn(event.turnId);
     }
     if (event.type === "done") {
-      if (blocksCompactedTurn(event.turnId)) continue;
+      if (compactionProtected) continue;
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
@@ -938,12 +935,12 @@ export function latestTokenStats(
       // effective context window to the terminal `done` event, so honor it for the
       // dial when present (runtime-reported window beats the registry fallback).
       if (typeof usage?.contextWindow === "number") eventLimit = usage.contextWindow;
-      compactedTurnId = null;
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")
       || (event.type === "codex_context_compaction" && event.state === "completed");
     if (completedCompaction) {
-      compactedTurnId = typeof event.turnId === "string" ? event.turnId : null;
+      compactionProtected = true;
+      protectedCompactionTurnId = typeof event.turnId === "string" ? event.turnId : null;
       inputTokens = event.type === "context_compact" && typeof event.postTokens === "number" ? event.postTokens : null;
       outputTokens = null;
       cacheReadTokens = null;
