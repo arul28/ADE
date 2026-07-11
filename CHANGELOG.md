@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.21] - 2026-07-10
+
+### Changed
+
+- Redesigned the Stats activity module and aligned the iOS Work activity carousel with the expanded usage model.
+- Kept desktop IPC, ADE CLI sync, and iOS remote models in parity for activity data.
+
+### Fixed
+
+- Fixed usage activity history and lifetime totals across refreshes, restarts, and paired machines.
+- Added end-to-end and cross-client regression coverage for the corrected usage accounting.
+
 ## [1.2.20] - 2026-07-10
 
 ### Added
@@ -680,7 +692,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.20...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.21...HEAD
+[1.2.21]: https://github.com/arul28/ADE/compare/v1.2.20...v1.2.21
 [1.2.20]: https://github.com/arul28/ADE/compare/v1.2.19...v1.2.20
 [1.2.19]: https://github.com/arul28/ADE/compare/v1.2.18...v1.2.19
 [1.2.18]: https://github.com/arul28/ADE/compare/v1.2.17...v1.2.18

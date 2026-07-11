@@ -1,0 +1,21 @@
+---
+title: "v1.2.21"
+description: "Release notes for ADE v1.2.21 - July 10, 2026"
+---
+
+v1.2.21 completes the ADE Stats accuracy overhaul across desktop, CLI, and iOS, with a redesigned activity module and stronger sync coverage.
+
+---
+
+## Desktop and CLI
+
+- **Accurate activity accounting.** Usage tracking now preserves complete activity history and lifetime totals across refreshes, restarts, and paired machines.
+- **Redesigned activity module.** The Stats activity view is clearer, denser, and better aligned with the underlying usage timeline.
+- **Remote sync parity.** Desktop IPC and ADE CLI sync paths now carry the expanded usage model consistently, with additional end-to-end regression coverage.
+
+---
+
+## iOS
+
+- **Activity carousel parity.** The mobile Work activity carousel understands the expanded usage model and presents the same corrected activity data as desktop.
+- **Sync model coverage.** Remote usage payload decoding and iOS regression tests were updated for the new activity fields.
