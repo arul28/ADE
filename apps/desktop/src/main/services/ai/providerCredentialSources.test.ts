@@ -105,6 +105,45 @@ describe("refreshClaudeCredentials", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("treats a token-endpoint 429 as transient, not a 24h rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(429, { error: "rate_limited" }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Still blocked inside the 10-minute transient window…
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // …but retried once the transient window has passed.
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a rejected (4xx) token blocked past the transient window", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(400, { error: "invalid_grant" }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("readClaudeCredentialsWithRefresh", () => {
@@ -132,6 +171,23 @@ describe("readClaudeCredentialsWithRefresh", () => {
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a usable file token when the Keychain read fails on a user-initiated read", async () => {
+    setPlatform("darwin");
+    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
+    const fileCreds = {
+      claudeAiOauth: {
+        accessToken: "file-access",
+        refreshToken: "file-refresh",
+        expiresAt: Date.now() + 8 * 60 * 60_000,
+      },
+    };
+    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify(fileCreds));
+
+    const creds = await readClaudeCredentials();
+    expect(creds?.accessToken).toBe("file-access");
+    expect(creds?.source).toBe("claude-credentials-file");
   });
 
   it("lets background polls reuse credentials cached from a Keychain read", async () => {

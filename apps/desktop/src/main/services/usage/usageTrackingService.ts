@@ -44,7 +44,7 @@ import {
 } from "../../../shared/modelRegistry";
 import {
   cacheClaudeCredentials,
-  clearClaudeCredentialCache,
+  invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
   readClaudeCredentials,
@@ -772,7 +772,7 @@ async function pollClaudeUsage(
     if (!result.ok) {
       if (result.status === 401 && creds.refreshToken) {
         logger.info("usage.token_refresh.401_retry");
-        clearClaudeCredentialCache();
+        invalidateCachedClaudeCredentials();
         const refreshed = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "token_refresh", reason: context.reason },

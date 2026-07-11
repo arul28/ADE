@@ -228,9 +228,12 @@ export async function refreshClaudeCredentials(refreshToken: string): Promise<Cl
       signal: controller.signal,
     });
     if (!response.ok) {
+      // 5xx/429/408 are transient endpoint conditions; other 4xx mean the
+      // token itself was rejected (rotated or revoked) and will never work.
+      const transient = response.status >= 500 || response.status === 429 || response.status === 408;
       noteClaudeRefreshFailure(
         refreshToken,
-        response.status >= 500 ? CLAUDE_REFRESH_TRANSIENT_TTL_MS : CLAUDE_REFRESH_REJECTED_TTL_MS,
+        transient ? CLAUDE_REFRESH_TRANSIENT_TTL_MS : CLAUDE_REFRESH_REJECTED_TTL_MS,
       );
       return null;
     }
@@ -268,6 +271,17 @@ export function clearClaudeCredentialCache(): void {
   cachedClaudeCreds = null;
   cachedClaudeMissUntilMs = 0;
   failedClaudeRefresh = null;
+}
+
+/**
+ * Drop only the cached access token so the next read re-reads sources.
+ * Keeps the refresh-token refusal memory intact — a 401 on the usage API
+ * must not reopen per-poll refresh attempts for a token the token endpoint
+ * already rejected.
+ */
+export function invalidateCachedClaudeCredentials(): void {
+  cachedClaudeCreds = null;
+  cachedClaudeMissUntilMs = 0;
 }
 
 export function cacheClaudeCredentials(credentials: ClaudeLocalAuthCredentials): void {
