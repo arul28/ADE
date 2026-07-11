@@ -352,6 +352,108 @@ describe("latestTokenStats", () => {
     const stats = latestTokenStats(events);
     expect(stats.cacheReadTokens).toBe(350);
   });
+
+  it.each(["claude", "codex", "opencode", "cursor", "droid"])(
+    "clears stale %s usage at a completed compaction boundary",
+    (provider) => {
+      const events = [
+        envelope(1, {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+        }),
+        envelope(2, {
+          type: "context_compact",
+          trigger: "auto",
+          state: "completed",
+          provider,
+          turnId: "turn-1",
+        } as AgentChatEventEnvelope["event"]),
+        envelope(3, {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+        }),
+      ];
+      const before = latestTokenStats(events.slice(0, 1), 100_000);
+      expect(before.inputTokens).toBe(100_000);
+      expect(before.percent).toBe(100);
+      expect(latestTokenStats(events, 100_000).percent).toBeNull();
+    },
+  );
+
+  it("uses postTokens from a completed compaction and ignores stale same-turn totals", () => {
+    const events = [
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+      envelope(2, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+        postTokens: 18_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 100_000, outputTokens: 1_000, contextWindow: 100_000 },
+      }),
+    ];
+    const stats = latestTokenStats(events, 100_000);
+    expect(stats.inputTokens).toBe(18_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(18);
+  });
+
+  it("accepts an exact Codex usage update from the compaction turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "codex",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 21_000 }, modelContextWindow: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events, 100_000);
+    expect(stats.inputTokens).toBe(21_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(21);
+  });
+
+  it("accepts an exact Claude context snapshot from the compaction turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "context_usage",
+        usage: { totalTokens: 24_000, maxTokens: 100_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events, 200_000);
+    expect(stats.inputTokens).toBe(24_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(24);
+  });
 });
 
 describe("latestGoal", () => {

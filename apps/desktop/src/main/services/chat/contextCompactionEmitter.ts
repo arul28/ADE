@@ -45,6 +45,7 @@ export function buildContextCompactEvent(
     preTokens?: number;
     postTokens?: number;
     tokensRemoved?: number;
+    durationMs?: number;
     completedAtMs?: number;
   },
 ): ContextCompactEvent {
@@ -68,7 +69,7 @@ export function buildContextCompactEvent(
 
   const startedAt = state.startedAtByKey.get(mergeKey);
   state.startedAtByKey.delete(mergeKey);
-  const durationMs = startedAt != null && now > startedAt ? now - startedAt : undefined;
+  const durationMs = input.durationMs ?? (startedAt != null && now > startedAt ? now - startedAt : undefined);
   state.sessionCompactionCount += 1;
 
   return {
@@ -101,6 +102,7 @@ export function mapLegacyCompactionEvent(
       preTokens: event.preTokens,
       postTokens: event.postTokens,
       tokensRemoved: event.tokensRemoved,
+      durationMs: event.durationMs,
     });
   }
   if (event.type === "codex_context_compaction") {

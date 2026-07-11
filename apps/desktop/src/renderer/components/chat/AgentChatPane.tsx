@@ -37,7 +37,6 @@ import {
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type CodexThreadGoal,
-  type CodexThreadTokenUsage,
   type BuiltInBrowserContextItem,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
@@ -90,7 +89,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
-import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
@@ -3671,18 +3670,6 @@ export function AgentChatPane({
     }
     return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
-  const selectedCodexTokenUsage = useMemo<CodexThreadTokenUsage | null>(() => {
-    let usageFromEvents: CodexThreadTokenUsage | null = null;
-    let sawUsageEvent = false;
-    for (const envelope of selectedEventsForDisplay) {
-      const event = envelope.event;
-      if (event.type === "codex_token_usage") {
-        usageFromEvents = event.usage;
-        sawUsageEvent = true;
-      }
-    }
-    return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
-  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedScheduledWorkSnapshots = useMemo(() => deriveScheduledWorkSnapshots(selectedEvents), [selectedEvents]);
   // Partition scheduled work into schedule kinds (wakeup/cron/loop/remote_trigger)
@@ -4443,53 +4430,18 @@ export function AgentChatPane({
     turnActive,
   ]);
   // Provider-agnostic context-usage for the composer dial. Codex pushes a live
-  // CodexThreadTokenUsage (with modelContextWindow); the other runtimes report a
-  // 4-field breakdown on the terminal `done`/`tokens` events. We take the
-  // freshest signal, fall back to the active model's registry context window
-  // when the runtime doesn't report one, and flatten everything into one VM so a
-  // single dial renders for every provider.
+  // Reduce provider telemetry across compaction boundaries before flattening it
+  // into the shared dial view-model. Exact post-compaction snapshots win;
+  // stale same-turn cumulative counters are ignored.
   const selectedUsageViewModel = useMemo<ContextUsageViewModel | null>(() => {
-    let genericUsage:
-      | { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null; reasoningTokens?: number | null; contextWindow?: number | null }
-      | null = null;
-    for (const envelope of selectedEventsForDisplay) {
-      const event = envelope.event;
-      if (event.type === "done" && event.usage) {
-        const u = event.usage;
-        genericUsage = {
-          inputTokens: u.inputTokens ?? null,
-          outputTokens: u.outputTokens ?? null,
-          cacheReadTokens: u.cacheReadTokens ?? null,
-          cacheWriteTokens: u.cacheCreationTokens ?? null,
-          reasoningTokens: u.reasoningTokens ?? null,
-          contextWindow: u.contextWindow ?? null,
-        };
-      } else if (event.type === "tokens") {
-        genericUsage = {
-          inputTokens: event.inputTokens ?? null,
-          outputTokens: event.outputTokens ?? null,
-          cacheReadTokens: event.cacheReadTokens ?? null,
-          cacheWriteTokens: event.cacheWriteTokens ?? null,
-          contextWindow: event.contextWindow ?? null,
-        };
-      }
-    }
     const provider = sessionProvider ?? selectedSession?.provider ?? "";
     const descriptor = modelId ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId)) : null;
     const fallbackWindow = descriptor?.contextWindow ?? null;
-
-    if (selectedCodexTokenUsage && (provider === "codex" || !genericUsage)) {
-      return toUsageViewModel(
-        { kind: "codex", provider: provider || "codex", usage: selectedCodexTokenUsage },
-        fallbackWindow,
-      );
-    }
-    if (genericUsage) {
-      const { contextWindow, ...rest } = genericUsage;
-      return toUsageViewModel({ kind: "generic", provider, usage: rest, contextWindow }, fallbackWindow);
-    }
-    return null;
-  }, [selectedEventsForDisplay, selectedCodexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
+    return toUsageViewModel(
+      latestContextUsageInput(selectedEventsForDisplay, provider, selectedSession?.codexTokenUsage),
+      fallbackWindow,
+    );
+  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
 
   const [contextCompactionPulse, setContextCompactionPulse] = useState(false);
   const compactionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

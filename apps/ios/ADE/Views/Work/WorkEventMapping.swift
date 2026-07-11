@@ -380,7 +380,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         reasoningTokens: last?.reasoningTokens ?? total?.reasoningTokens,
         totalTokens: total?.totalTokens ?? last?.totalTokens,
         contextWindow: usage.modelContextWindow,
-        costUsd: nil
+        costUsd: nil,
+        isContextSnapshot: true
       ) ?? WorkUsageSummary(
         turnCount: 1,
         inputTokens: 0,
@@ -389,9 +390,26 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         cacheCreationTokens: 0,
         totalTokens: total?.totalTokens ?? last?.totalTokens ?? 0,
         contextWindow: usage.modelContextWindow,
-        costUsd: 0
+        costUsd: 0,
+        isContextSnapshot: true
       ),
       turnId: turnId ?? usage.turnId ?? "",
+      itemId: nil
+    )
+  case .contextUsage(let usage, let turnId):
+    return .tokens(
+      usage: WorkUsageSummary(
+        turnCount: 1,
+        inputTokens: usage.totalTokens,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: usage.totalTokens,
+        contextWindow: usage.maxTokens,
+        costUsd: 0,
+        isContextSnapshot: true
+      ),
+      turnId: turnId ?? "",
       itemId: nil
     )
   case .promptSuggestion(let suggestion, let turnId):
@@ -419,6 +437,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .contextCompact(
       summary: summary,
       isInProgress: isInProgress,
+      postTokens: postTokens,
       turnId: turnId,
       compactionId: compactionId ?? turnId
     )
@@ -427,6 +446,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .contextCompact(
       summary: summary,
       isInProgress: state == .started,
+      postTokens: nil,
       turnId: turnId,
       compactionId: compactionId ?? turnId
     )

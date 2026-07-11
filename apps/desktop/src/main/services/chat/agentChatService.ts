@@ -14946,6 +14946,8 @@ export function createAgentChatService(args: {
             type: "context_compact",
             trigger: compactMsg.compact_metadata?.trigger === "manual" ? "manual" : "auto",
             preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
+            postTokens: typeof compactMsg.compact_metadata?.post_tokens === "number" ? compactMsg.compact_metadata.post_tokens : undefined,
+            durationMs: typeof compactMsg.compact_metadata?.duration_ms === "number" ? compactMsg.compact_metadata.duration_ms : undefined,
             state: "completed",
             turnId,
           });

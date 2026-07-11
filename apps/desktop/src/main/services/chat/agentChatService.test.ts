@@ -6425,7 +6425,12 @@ describe("createAgentChatService", () => {
           type: "system",
           subtype: "compact_boundary",
           session_id: "sdk-session-compacting",
-          compact_metadata: { trigger: "manual", pre_tokens: 120_000 },
+          compact_metadata: {
+            trigger: "manual",
+            pre_tokens: 120_000,
+            post_tokens: 18_000,
+            duration_ms: 1_250,
+          },
         };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
@@ -6450,7 +6455,14 @@ describe("createAgentChatService", () => {
       // A live begin, then a completed end — no longer a plain gray "Compacting..." notice.
       expect(compactEvents).toEqual([
         expect.objectContaining({ type: "context_compact", state: "started" }),
-        expect.objectContaining({ type: "context_compact", state: "completed", trigger: "manual", preTokens: 120_000 }),
+        expect.objectContaining({
+          type: "context_compact",
+          state: "completed",
+          trigger: "manual",
+          preTokens: 120_000,
+          postTokens: 18_000,
+          durationMs: 1_250,
+        }),
       ]);
       const compactingNotices = onEvent.mock.calls
         .map((call) => call[0])
