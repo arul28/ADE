@@ -1,4 +1,5 @@
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
+import type { AgentChatSteerResult } from "../../../shared/types/chat";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 
@@ -115,7 +116,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
     steer: async (args: unknown) => {
-      await call("chat.steer", args, undefined, false);
+      return await call<AgentChatSteerResult>("chat.steer", args, {
+        steerId: globalThis.crypto.randomUUID(),
+        queued: true,
+      }, false);
     },
     cancelSteer: async (args: unknown) => {
       await call("chat.cancelSteer", args, undefined, false);

@@ -8562,7 +8562,10 @@ describe("createAgentChatService", () => {
       expect(terminalStatuses.length).toBeGreaterThanOrEqual(1);
     });
 
-    it("stops still-open background ids at turn end when the notification never arrives", async () => {
+    it("keeps a still-open background task running across a normal turn boundary (no turn-end stop)", async () => {
+      // A run_in_background shell keeps running across turns: the SDK query
+      // stays alive and delivers the real completion on a later turn. Turn end
+      // must NOT falsely settle it as stopped.
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -8605,15 +8608,231 @@ describe("createAgentChatService", () => {
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
-
-      // The turn-end sweep must settle the orphan as stopped.
+      // Wait for the turn to actually settle so any (erroneous) turn-end sweep
+      // would have fired by now.
       await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "done" && (e.event as any).status === "completed");
+
+      // The background row must NOT have been settled at the turn boundary.
+      const terminalBgRows = events.filter((e) =>
         e.event.type === "scheduled_work_update"
         && (e.event as any).id === "background:bg-orphan"
-        && (e.event as any).status === "stopped");
+        && ((e.event as any).status === "stopped" || (e.event as any).status === "completed"));
+      expect(terminalBgRows).toEqual([]);
       // And no subagent_result leaked for the background shell.
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "bg-orphan")).toBe(false);
+    });
+
+    it("settles a still-open background task as stopped on interrupt (genuine teardown)", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-int", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-int",
+          description: "long lived background",
+          command: "tail -f log",
+          task_type: "background",
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-int", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start bg" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-int"
+        && (e.event as any).status === "running");
+
+      await service.interrupt({ sessionId: session.id });
+
+      // Interrupt is a genuine teardown — the query is gone, so settle stopped.
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-int"
+        && (e.event as any).status === "stopped");
+      // Still never a subagent_result for a background shell.
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "bg-int")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("routes a local_bash run_in_background shell to background_task rows, not subagent events, with background flag", async () => {
+      // The Claude Agent SDK tags Bash run_in_background with task_type
+      // "local_bash". It must land in the background pane (never the roster) and
+      // its scheduled_work row must be a background_task.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-lbash-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bgo5i8f6y",
+          description: "Run codex gpt-5.6-sol backend implementation (background)",
+          command: "codex exec -m gpt-5.6-sol",
+          task_type: "local_bash",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "bgo5i8f6y",
+          status: "completed",
+          summary: "Process exited",
+          usage: { duration_ms: 9000 },
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-lbash-1", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "run codex in background" });
+
+      const runningRow = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bgo5i8f6y"
+        && (e.event as any).status === "running");
+      expect((runningRow.event as any).kind).toBe("background_task");
+      expect((runningRow.event as any).title).toBe("Run codex gpt-5.6-sol backend implementation (background)");
+
+      // No subagent_* events for a background shell (this is the background:false
+      // spawn-flag pollution the classifier now prevents).
+      const subagentEvents = events.filter((e) =>
+        (e.event.type === "subagent_started"
+          || e.event.type === "subagent_progress"
+          || e.event.type === "subagent_result")
+        && (e.event as any).taskId === "bgo5i8f6y");
+      expect(subagentEvents).toEqual([]);
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("suppresses subagent rows for a plain Claude Code task run (no agent metadata)", async () => {
+      // A task run like "Re-run affected test files" carries no agentType /
+      // agentId and a non-subagent task type — it must never pollute the roster.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-nonagent-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bwguvejv9",
+          description: "Re-run affected test files",
+          task_type: "other",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "bwguvejv9",
+          summary: "running vitest",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "bwguvejv9",
+          status: "completed",
+          summary: "3 files passed",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-nonagent-1", setPermissionMode,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "run tests" });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "status")).toBe(true);
+      });
+
+      // No subagent_* events AND no background_task row for a plain task run.
+      const subagentEvents = events.filter((e) =>
+        (e.event.type === "subagent_started"
+          || e.event.type === "subagent_progress"
+          || e.event.type === "subagent_result")
+        && (e.event as any).taskId === "bwguvejv9");
+      expect(subagentEvents).toEqual([]);
+      const bgRows = events.filter((e) =>
+        e.event.type === "scheduled_work_update" && (e.event as any).id === "background:bwguvejv9");
+      expect(bgRows).toEqual([]);
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("preserves the spawn title on a terminal background row when the hook diff-close omits it", async () => {
+      // The hook diff-close terminal row carries no title; the sticky per-task
+      // title must supply the original spawn description instead of a generic
+      // "Background work" fallback.
+      const { events, fireSnapshot } = await bootClaudeHooks("sdk-bg-title-1");
+
+      await fireSnapshot([{
+        id: "bg-title",
+        type: "shell",
+        status: "running",
+        description: "Run codex gpt-5.6-sol backend implementation",
+      }]);
+      await fireSnapshot([]);
+
+      const terminal = events.find((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-title"
+        && ((e.event as any).status === "completed" || (e.event as any).status === "stopped"));
+      expect(terminal).toBeDefined();
+      expect((terminal!.event as any).title).toBe("Run codex gpt-5.6-sol backend implementation");
     });
 
     it("does not cross-wire finalSummary between two concurrent subagents on an empty task_notification", async () => {

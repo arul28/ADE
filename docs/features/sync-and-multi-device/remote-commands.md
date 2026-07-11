@@ -248,6 +248,10 @@ explicit `force` / `refresh-stale` calls trigger a runtime probe.
 `{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds
 a queued steer into the active turn or interrupts the active turn so
 the queued message runs next; it returns `{ ok, dispatchedAt }`.
+`interrupt` mode acknowledges only after the SDK accepts the replacement
+turn — it prepares the send, interrupts the live turn, dispatches the
+replacement, and re-queues the message (returning `dispatchedAt: null`)
+if the provider interrupt fails.
 `chat.cancelDispatchedSteer` rescinds an inline dispatch before the
 model reads it, returning `{ ok, cancelled }`. The iOS companion uses
 both via `SyncService.dispatchChatSteer` /
@@ -628,8 +632,9 @@ can be sensitive.
   `routeActiveToSteer: true` into `agentChatService.sendMessage`, so a send
   that lands while a turn is already active is converted into a steer
   instead of racing the live turn; when that happens the ack carries the
-  steer's `{ steerId, queued }` alongside `ok: true` (a plain new-turn send
-  still returns just `{ ok: true }`). The extra fields are additive — older
+  steer's `{ steerId, queued, reason?: "queue_full" }` alongside `ok: true`
+  (a plain new-turn send still returns just `{ ok: true }`; a steer queue
+  already at its cap comes back `queued: false, reason: "queue_full"`). The extra fields are additive — older
   clients ignore them, and the phone uses them to reconcile the message it
   echoed optimistically. Personal chat uses the same
   envelopes but sends `chatScope: "personal"`; that explicit discriminator

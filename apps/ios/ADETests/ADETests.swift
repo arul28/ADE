@@ -8961,6 +8961,10 @@ final class ADETests: XCTestCase {
   func testSyncChatMessageDeliveryParsesQueuedSteerResult() {
     XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": true]), .queued(steerId: "steer-1"))
     XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": false]), .sent)
+    XCTAssertEqual(
+      syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": false, "reason": "queue_full"]),
+      .dropped(reason: "queue_full")
+    )
     XCTAssertEqual(syncChatMessageDelivery(from: NSNull()), .sent)
   }
 
@@ -17969,5 +17973,99 @@ final class LinearPaneTests: XCTestCase {
     XCTAssertFalse(path.isEmpty)
     XCTAssertGreaterThan(path.boundingRect.width, 18)
     XCTAssertGreaterThan(path.boundingRect.height, 18)
+  }
+}
+
+/// Parity coverage for the iOS mirror of the desktop `groupStoppedSubagentResultCards`
+/// fold: a mass interrupt collapses a run of 2+ consecutive stopped result rows
+/// into one `.subagentStoppedGroup`, while lone stops and non-stopped rows stay
+/// individual and break runs.
+final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
+  private func resultEntry(
+    _ id: String,
+    _ title: String,
+    status: WorkSubagentSnapshot.Status,
+    rank: Int
+  ) -> WorkTimelineEntry {
+    let snapshot = WorkSubagentSnapshot(
+      taskId: id,
+      agentId: id,
+      agentType: nil,
+      parentToolUseId: nil,
+      description: title,
+      background: false,
+      label: nil,
+      model: nil,
+      reasoningEffort: nil,
+      status: status,
+      lastToolName: nil,
+      latestSummary: nil,
+      turnId: nil,
+      startedAt: nil,
+      updatedAt: nil
+    )
+    let row = WorkSubagentTimelineRow(
+      kind: .result,
+      snapshot: snapshot,
+      timestamp: "2026-07-11T00:00:0\(rank)Z",
+      summary: nil,
+      commandLabel: nil,
+      exitLabel: nil
+    )
+    return WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: rank, payload: .subagent(row))
+  }
+
+  private func stopped(_ id: String, _ title: String, rank: Int) -> WorkTimelineEntry {
+    resultEntry(id, title, status: .stopped, rank: rank)
+  }
+
+  private func isGroup(_ entry: WorkTimelineEntry) -> Bool {
+    if case .subagentStoppedGroup = entry.payload { return true }
+    return false
+  }
+
+  func testFoldsRunOfStoppedResultsIntoOneGroup() {
+    let folded = collapseInterruptStoppedSubagentEntries([
+      stopped("a", "Alpha", rank: 0),
+      stopped("b", "Bravo", rank: 1),
+      stopped("c", "Charlie", rank: 2),
+    ])
+    XCTAssertEqual(folded.count, 1)
+    guard case .subagentStoppedGroup(let model) = folded[0].payload else {
+      return XCTFail("expected a stopped group")
+    }
+    XCTAssertEqual(model.count, 3)
+    XCTAssertEqual(model.rows.map { $0.snapshot.description }, ["Alpha", "Bravo", "Charlie"])
+    // Group key derives from the first agent so it stays stable as the run grows.
+    XCTAssertEqual(folded[0].id, "subagent-stopped-group-a")
+  }
+
+  func testLoneStoppedResultStaysIndividual() {
+    let folded = collapseInterruptStoppedSubagentEntries([
+      resultEntry("a", "Alpha", status: .succeeded, rank: 0),
+      stopped("b", "Bravo", rank: 1),
+      resultEntry("c", "Charlie", status: .succeeded, rank: 2),
+    ])
+    XCTAssertEqual(folded.count, 3)
+    XCTAssertFalse(folded.contains(where: isGroup))
+  }
+
+  func testNonStoppedRowBreaksRunIntoSeparateGroups() {
+    let folded = collapseInterruptStoppedSubagentEntries([
+      stopped("a", "Alpha", rank: 0),
+      stopped("b", "Bravo", rank: 1),
+      resultEntry("x", "Interloper", status: .succeeded, rank: 2),
+      stopped("c", "Charlie", rank: 3),
+      stopped("d", "Delta", rank: 4),
+    ])
+    // group(a,b) · succeeded(x) · group(c,d)
+    XCTAssertEqual(folded.count, 3)
+    XCTAssertFalse(isGroup(folded[1]))
+    guard case .subagentStoppedGroup(let first) = folded[0].payload,
+          case .subagentStoppedGroup(let last) = folded[2].payload else {
+      return XCTFail("expected two stopped groups around the boundary")
+    }
+    XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
+    XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
   }
 }

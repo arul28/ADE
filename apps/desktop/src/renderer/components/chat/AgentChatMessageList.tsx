@@ -85,10 +85,11 @@ import {
   type ScheduledWakeDividerRenderEvent,
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
+  type SubagentStoppedGroupEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
-import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard } from "./SubagentActivityCards";
+import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
@@ -640,6 +641,7 @@ type RenderEnvelope = {
   }
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
+  | SubagentStoppedGroupEvent
   | BackgroundFinishChipRenderEvent
   | ScheduledWakeDividerRenderEvent;
 };
@@ -3019,6 +3021,16 @@ function renderEvent(
             ? () => options!.onScrollToRowKey?.(`subagent-spawn:${event.agentKey}`)
             : undefined
         }
+      />
+    );
+  }
+
+  /* ── Grouped interrupt-stopped subagents ── */
+  if (event.type === "subagent_stopped_group") {
+    return (
+      <SubagentStoppedGroupCard
+        event={event}
+        onJumpToStart={options?.onScrollToRowKey}
       />
     );
   }

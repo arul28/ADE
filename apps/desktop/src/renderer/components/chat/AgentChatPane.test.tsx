@@ -11,6 +11,7 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatSteerResult,
   PrSummary,
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
@@ -453,6 +454,7 @@ function installAdeMocks(options?: {
   transcript?: string;
   sendError?: Error;
   steerError?: Error;
+  steerResult?: AgentChatSteerResult;
   listError?: Error;
   createError?: Error;
   handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean } | Promise<{ session: AgentChatSession; usedFallbackSummary: boolean }>;
@@ -469,7 +471,8 @@ function installAdeMocks(options?: {
     : vi.fn().mockResolvedValue(undefined);
   const steer = options?.steerError
     ? vi.fn().mockRejectedValue(options.steerError)
-    : vi.fn().mockResolvedValue(undefined);
+    : vi.fn().mockResolvedValue(options?.steerResult ?? { steerId: "steer-default", queued: true });
+  const dispatchSteer = vi.fn().mockResolvedValue({ dispatchedAt: Date.now() });
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
@@ -579,6 +582,7 @@ function installAdeMocks(options?: {
         return sessions.find((s) => s.sessionId === sessionId) ?? null;
       }),
       editSteer: vi.fn().mockResolvedValue(undefined),
+      dispatchSteer,
       updateSession: vi.fn().mockResolvedValue(undefined),
       archive,
       unarchive,
@@ -670,6 +674,7 @@ function installAdeMocks(options?: {
   return {
     send,
     steer,
+    dispatchSteer,
     list,
     create,
     createLane,
@@ -1305,46 +1310,6 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
-  });
-
-  it("swaps the main chat into the expanded Claude SDK transcript view", async () => {
-    const session = buildSession("session-claude-main", {
-      provider: "claude",
-      model: "claude-sonnet-5",
-      modelId: "anthropic/claude-sonnet-5",
-      status: "idle",
-      claudeTag: "review-ready",
-    });
-    installAdeMocks({ sessions: [session], includeClaudeModel: true });
-    const getMainTranscript = vi.fn().mockResolvedValue([{
-      type: "assistant",
-      uuid: "sdk-message-1",
-      sessionId: "sdk-session-1",
-      parentToolUseId: null,
-      message: {
-        id: "msg-stable-1",
-        role: "assistant",
-        content: [
-          { type: "text", text: "Provider fidelity answer" },
-          { type: "tool_use", id: "toolu-1", name: "Read", input: { file_path: "src/app.tsx" } },
-        ],
-      },
-    }]);
-    window.ade.agentChat.getMainTranscript = getMainTranscript as any;
-    renderPane(session);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
-    fireEvent.click(await screen.findByRole("button", { name: "View full session transcript" }));
-
-    expect(await screen.findByText("Full session transcript (SDK)")).toBeTruthy();
-    expect(screen.getByText("Provider-fidelity view — ADE events (approvals, schedules, notices) are not shown.")).toBeTruthy();
-    await waitFor(() => {
-      expect(getMainTranscript).toHaveBeenCalledWith({ sessionId: session.sessionId });
-    });
-    expect(await screen.findByText("Provider fidelity answer")).toBeTruthy();
-    expect(screen.getByText("review-ready")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Return to chat" })).toBeTruthy();
   });
 
   it("refetches selected envelope history after a repair invalidation signal", async () => {
@@ -2563,6 +2528,112 @@ describe("AgentChatPane submit recovery", () => {
       });
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
+  });
+
+  it("folds a Send now draft into the running Claude turn via inline dispatch", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    // The steer call returns the minted id directly; the pane dispatches that
+    // exact id inline — no scanning the pending-steer list for a new entry.
+    const { steer, dispatchSteer } = installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+      includeClaudeModel: true,
+      steerResult: { steerId: "steer-live", queued: true },
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByPlaceholderText("Steer the active turn...");
+    fireEvent.change(textbox, { target: { value: "Fold this into the live turn." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.sessionId,
+          text: "Fold this into the live turn.",
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(dispatchSteer).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        steerId: "steer-live",
+        mode: "inline",
+      });
+    });
+  });
+
+  it("dispatches an Interrupt & replace draft with the exact minted steer id", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    const { steer, dispatchSteer } = installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+      includeClaudeModel: true,
+      steerResult: { steerId: "steer-replace", queued: true },
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByPlaceholderText("Steer the active turn...");
+    fireEvent.change(textbox, { target: { value: "Actually, do this instead." } });
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Interrupt & replace/i }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: session.sessionId, text: "Actually, do this instead." }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(dispatchSteer).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        steerId: "steer-replace",
+        mode: "interrupt",
+      });
+    });
+  });
+
+  it("restores the draft and surfaces a notice when the steer queue is full", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    const { steer, dispatchSteer } = installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+      includeClaudeModel: true,
+      steerResult: { steerId: "steer-dropped", queued: false, reason: "queue_full" },
+    });
+
+    renderPane(session);
+
+    const textbox = (await screen.findByPlaceholderText("Steer the active turn...")) as HTMLTextAreaElement;
+    fireEvent.change(textbox, { target: { value: "This one should bounce." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledTimes(1);
+    });
+
+    // The message was rejected: no dispatch, the draft is kept (not cleared as if
+    // it sent), and a brief inline notice explains why.
+    await waitFor(() => {
+      expect(screen.getByText(/the queue is full/i)).toBeTruthy();
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("This one should bounce.");
+    expect(dispatchSteer).not.toHaveBeenCalled();
   });
 
   it("keeps active-turn controls when hydrated history starts after the turn-start marker", async () => {

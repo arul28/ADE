@@ -1161,7 +1161,10 @@ struct WorkNewChatScreen: View {
         switch delivery {
         case .queued:
           deliveryState = "queued"
-        case .sent:
+        case .sent, .dropped:
+          // `.dropped` (queue_full) is steer-only; a new chat's opener goes
+          // through sendChatMessage, so it is unreachable here. Fold it into the
+          // delivered path to keep the switch exhaustive.
           deliveryState = nil
         }
         await onStarted(summary, opener, true, deliveryState, attachmentRefs)

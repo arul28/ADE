@@ -2391,3 +2391,52 @@ describe("subagent two-row rendering", () => {
     expect(rows[1]?.event.type).toBe("user_message");
   });
 });
+
+describe("interrupt-stopped subagent grouping", () => {
+  it("folds a run of 3 stopped-interrupted results into one group while a completed result stays individual", () => {
+    const grouped = groupEvents([
+      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-07-11T10:00:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "explorer", description: "Explore the UI" }),
+      env("2026-07-11T10:00:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "builder", description: "Build the widget" }),
+      // agent-d finishes for real; then the user interrupts and the rest are swept to "stopped".
+      env("2026-07-11T10:00:05.000Z", { type: "subagent_result", taskId: "agent-d", status: "completed", summary: "Widget built" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+    ]);
+
+    // Exactly one folded group — never a wall of identical stopped cards.
+    const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
+    expect(groups).toHaveLength(1);
+    const group = groups[0]!;
+    if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
+    expect(group.key).toBe("subagent-stopped-group:agent-a");
+    expect(group.event.count).toBe(3);
+    expect(group.event.items).toEqual([
+      { agentKey: "agent-a", title: "Explore auth flow", jumpToStartRowKey: "subagent-spawn:agent-a" },
+      { agentKey: "agent-b", title: "Explore sync flow", jumpToStartRowKey: "subagent-spawn:agent-b" },
+      { agentKey: "agent-c", title: "Explore the UI", jumpToStartRowKey: "subagent-spawn:agent-c" },
+    ]);
+
+    // The completed agent keeps its own result card (real summary the user wants to read).
+    const resultCards = grouped.filter((row) => row.event.type === "subagent_result_card");
+    expect(resultCards).toHaveLength(1);
+    if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(resultCards[0]!.event.status).toBe("completed");
+    expect(resultCards[0]!.event.summaryPreview).toBe("Widget built");
+  });
+
+  it("keeps a single lone stopped result as a normal result card (no group of one)", () => {
+    const grouped = groupEvents([
+      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+    ]);
+
+    expect(grouped.some((row) => row.event.type === "subagent_stopped_group")).toBe(false);
+    const resultCards = grouped.filter((row) => row.event.type === "subagent_result_card");
+    expect(resultCards).toHaveLength(1);
+    if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(resultCards[0]!.event.status).toBe("stopped");
+  });
+});

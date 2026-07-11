@@ -1502,10 +1502,14 @@ different machine's cached limits.
   subagent never repaints per tick. `WorkChatRichCardViews` renders those
   rows plus the unified Chat Info sheet, whose ordered Subagents /
   Background / Schedule sections mirror the desktop Chat Info pane —
-  including the same active caps (12 / 8 / 10), the single `Earlier`
+  including the same active caps (12 / 8 / 10), the single **Completed**
   disclosure that folds terminal rows without reordering survivors, and
   the per-session Clear/Restore filter (persisted under
-  `ade.chat.paneCleared.v1:<sessionId>`).
+  `ade.chat.paneCleared.v1:<sessionId>`). A run of two or more
+  interrupt-stopped subagents folds into one `WorkSubagentStoppedGroupCardView`
+  (`.subagentStoppedGroup`, mirroring the desktop `SubagentStoppedGroupCard`):
+  a calm "N agents stopped when you interrupted" line that expands to a
+  per-agent list, and tapping a row reopens that subagent's detail.
 - **Long Work chats must keep row work and root polling cheap.** The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible

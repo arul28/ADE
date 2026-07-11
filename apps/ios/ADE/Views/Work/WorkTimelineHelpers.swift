@@ -516,12 +516,15 @@ func workChatIsStreaming(
   return sessionStatus == "active"
 }
 
-/// Mirrors desktop `chatSubagents.ts` `isBackgroundShellCommand` exactly:
-/// background task type plus an absent or literal background agent type.
+/// Mirrors desktop `chatSubagents.ts` `isBackgroundShellCommand` exactly: a
+/// background task type plus an absent or literal background agent type. The
+/// Claude Agent SDK tags a `Bash` run_in_background shell with task_type
+/// "local_bash" (older builds said "background"); either one belongs in the
+/// background pane, never the subagent roster.
 func isBackgroundShellCommand(taskType: String?, agentType: String?) -> Bool {
   let normalizedTaskType = nonEmptyWorkTimelineText(taskType)?.lowercased()
   let normalizedAgentType = nonEmptyWorkTimelineText(agentType)?.lowercased()
-  return normalizedTaskType == "background"
+  return (normalizedTaskType == "background" || normalizedTaskType == "local_bash")
     && (normalizedAgentType == nil || normalizedAgentType == "background")
 }
 
@@ -1484,9 +1487,61 @@ func buildWorkTimeline(
       deduped.append(entry)
     }
   }
-  return collapseActivityPhaseTimelineEntries(
-    collapseConsecutiveWorkActivityEntries(collapseConsecutiveWorkToolEntries(deduped))
+  return collapseInterruptStoppedSubagentEntries(
+    collapseActivityPhaseTimelineEntries(
+      collapseConsecutiveWorkActivityEntries(collapseConsecutiveWorkToolEntries(deduped))
+    )
   )
+}
+
+/// Fold a run of 2+ consecutive interrupt-stopped subagent result rows into one
+/// compact `.subagentStoppedGroup` entry — desktop parity with
+/// `groupStoppedSubagentResultCards`. A `.stopped` result row is always an
+/// interrupt casualty (the runtime settles every live subagent with status
+/// `stopped` on cancel), carrying no summary worth reading on its own, so a mass
+/// interrupt collapses to a single calm line instead of a wall of identical
+/// stopped cards. A lone stopped row stays a normal result card.
+func collapseInterruptStoppedSubagentEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var index = 0
+  while index < entries.count {
+    guard isInterruptStoppedSubagentResultEntry(entries[index]) else {
+      result.append(entries[index])
+      index += 1
+      continue
+    }
+    var end = index
+    while end < entries.count && isInterruptStoppedSubagentResultEntry(entries[end]) {
+      end += 1
+    }
+    let run = Array(entries[index..<end])
+    index = end
+    guard run.count >= 2 else {
+      result.append(run[0])
+      continue
+    }
+    let rows: [WorkSubagentTimelineRow] = run.compactMap { member in
+      if case .subagent(let row) = member.payload { return row }
+      return nil
+    }
+    let firstKey = rows.first.map { $0.snapshot.agentId ?? $0.snapshot.taskId } ?? run[0].id
+    let model = WorkSubagentStoppedGroupModel(id: "subagent-stopped-group-\(firstKey)", rows: rows)
+    result.append(WorkTimelineEntry(
+      id: model.id,
+      timestamp: run[run.count - 1].timestamp,
+      rank: run[0].rank,
+      payload: .subagentStoppedGroup(model)
+    ))
+  }
+  return result
+}
+
+private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -> Bool {
+  if case .subagent(let row) = entry.payload {
+    return row.kind == .result && row.snapshot.status == .stopped
+  }
+  return false
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into

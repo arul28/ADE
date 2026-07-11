@@ -6,6 +6,7 @@ import {
   isEarlierSubagentSnapshot,
   deriveSubagentTimelineRows,
   isBackgroundShellCommand,
+  isNonAgentTaskRun,
   isRealSubagent,
   preferSubagentSummary,
   subagentAgentKey,
@@ -101,6 +102,50 @@ describe("chatSubagents timeline helpers", () => {
     expect(isBackgroundShellCommand(backgroundSubagent)).toBe(false);
     expect(isRealSubagent(backgroundSubagent)).toBe(true);
     expect(isRealSubagent({ taskType: "local_workflow" })).toBe(true);
+  });
+
+  it("treats a local_bash run_in_background shell as a background shell, never a subagent", () => {
+    // The Claude Agent SDK tags Bash run_in_background with task_type
+    // "local_bash"; it must land in the background pane, not the roster.
+    expect(isBackgroundShellCommand({ taskType: "local_bash" })).toBe(true);
+    expect(isBackgroundShellCommand({ taskType: "local_bash", command: "codex exec …" })).toBe(true);
+    expect(isRealSubagent({ taskType: "local_bash" })).toBe(false);
+    // A local_bash task that somehow carried a real agent type is still not a
+    // background shell (agentType wins), staying available as a real subagent.
+    expect(isBackgroundShellCommand({ taskType: "local_bash", agentType: "Explore" })).toBe(false);
+    expect(isRealSubagent({ taskType: "local_bash", agentType: "Explore" })).toBe(true);
+  });
+
+  it("classifies a task_type 'other' run without agent metadata as a non-agent task run", () => {
+    // A plain Claude Code TaskCreate run (e.g. "Re-run affected test files")
+    // reports task_type "other" with no agent identity — it must never surface
+    // subagent rows. A bare task_started (no task_type) stays a subagent.
+    expect(isNonAgentTaskRun({ taskType: "other" })).toBe(true);
+    expect(isNonAgentTaskRun({ taskType: "other", agentType: "general-purpose" })).toBe(false);
+    expect(isNonAgentTaskRun({ taskType: "other", agentId: "a123" })).toBe(false);
+    expect(isNonAgentTaskRun({ taskType: "subagent" })).toBe(false);
+    expect(isNonAgentTaskRun({})).toBe(false);
+  });
+
+  it("keeps idle and foreground paths aligned by counting a stashed Task-tool input as agent metadata", () => {
+    // Regression: the idle-turn task_started handler used to omit the stashed
+    // check, so a Task subagent reported as task_type "other" with a stashed
+    // tool input was suppressed on idle turns but shown on foreground turns.
+    // Both paths now share this predicate — a stashed input means it is a real
+    // subagent, not a non-agent task run.
+    expect(isNonAgentTaskRun({ taskType: "other", hasStashedToolInput: true })).toBe(false);
+    expect(isNonAgentTaskRun({ taskType: "other", hasStashedToolInput: false })).toBe(true);
+  });
+
+  it("omits non-agent task runs (no agentType/agentId, non-subagent task type) from the timeline", () => {
+    // A plain Claude Code task run like "Re-run affected test files" carries no
+    // agent metadata and a non-subagent task type — it must not render as a
+    // spawn/result card.
+    const rows = deriveSubagentTimelineRows([
+      { type: "subagent_started", taskId: "bwguvejv9", description: "Re-run affected test files" },
+      { type: "subagent_result", taskId: "bwguvejv9", status: "completed", summary: "done" },
+    ]);
+    expect(rows).toEqual([]);
   });
 
   it("coalesces hook and task starts by alias while enriching the first spawn row", () => {

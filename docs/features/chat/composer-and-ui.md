@@ -33,7 +33,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex uses `thread/rollback` for the latest user message and restores files through ADE's git plan. |
-| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Large sections cap active rows and add Show all; terminal rows move into one Earlier fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. The Schedule header keeps the per-chat pause/play action beside Clear. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
+| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. See [iOS Simulator feature](../ios-simulator/README.md). |
@@ -354,6 +354,16 @@ and a footer that contains the composer.
   turn so the queued message runs as the next turn. Both buttons are
   hidden for non-Claude providers (Codex, OpenCode, Cursor) which only
   support post-turn delivery.
+- **Mid-turn split Send button.** While a Claude turn is active, the
+  composer's primary send control is a split button
+  (`ActiveTurnSendButton`, Claude Code parity): the primary click — and
+  Enter — **Send now**, submitting the draft as a steer and immediately
+  inline-dispatching the exact `steerId` that `steer()` returned into the
+  running turn; the caret menu offers **Queue for after turn** and
+  **Interrupt & replace**. All controls carry force-enabled tooltips so
+  hover always explains the action, and the button disables on an
+  empty/whitespace-only draft. Providers without inline-steer dispatch
+  (Codex, OpenCode, Cursor) keep the single queue-on-send affordance.
 - **Question answering.** When a question-type pending input is active,
   the user answers (or declines) it through the inline question card.
   Multi-select questions render a toggle list plus a preview pane
@@ -570,12 +580,13 @@ overdue work fires once. Cron rows show `last ran <time> · next <relative>`.
 Large Chat Info rosters use the shared stable partition in
 `shared/chatSubagents.ts`: Subagents cap at 12 active rows, Background at 8,
 Schedule at 10, Progress at 14, and Tasks at 12. Terminal rows move into a
-single `Earlier (N)` disclosure without sorting either group; failed and
-pinned rows remain active and cap-exempt. Clear only hides clearable terminal
-ids, Restore brings them back, collapse/Earlier/clear state is scoped to the
-chat session, and Show all resets when the surface remounts. Small sections
+single `Completed (N)` disclosure without sorting either group; failed and
+pinned rows remain active and cap-exempt. Clear (shown beside the toggle only
+while the fold is expanded) hides clearable terminal ids, Restore brings them
+back, collapse/Completed/clear state is scoped to the chat session, and Show
+all resets when the surface remounts. Small sections
 retain the original static header without disclosure chrome. Fired one-shot
-wakeups keep their fired time and optional `late` marker in the dim Earlier
+wakeups keep their fired time and optional `late` marker in the dim Completed
 row. ADE Code mirrors the grouped row model in-memory, while iOS mirrors the
 same predicates, caps, persistence semantics, and fired/late decoding.
 
@@ -586,7 +597,10 @@ timers: all controls mutate the project runtime's durable scheduler.
 
 Interrupt transitions all running subagents to `stopped` by emitting a
 `subagent_result` with `status: "stopped"` for each, matching the
-Claude Code CLI behavior.
+Claude Code CLI behavior. Each such `subagent_result` is only emitted when
+its `subagent_started` was, and in the transcript a run of two or more
+stopped cards folds into one `SubagentStoppedGroupCard` instead of a wall of
+identical stopped rows.
 
 Claude Workflow runs (the SDK's multi-agent orchestration tool) render in
 the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes

@@ -178,6 +178,7 @@ type HeadlessLinearServices = {
     steer: (args: { sessionId: string; text: string }) => Promise<{
       steerId: string;
       queued: boolean;
+      reason?: "queue_full";
     }>;
     interrupt: (args: { sessionId: string }) => Promise<void>;
     resumeSession: (args: {

@@ -148,12 +148,35 @@ export type SubagentSpawnAnchorRenderEvent = {
 export type SubagentResultCardRenderEvent = {
   type: "subagent_result_card";
   agentKey: string;
+  /** Task title, carried so the stopped-group card can label each folded agent. */
+  description: string | null;
   status: SubagentCardTerminalStatus;
   summaryPreview: string | null;
   error: string | null;
   startedAt: string | null;
   endedAt: string;
   durationMs: number | null;
+};
+
+/** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
+export type SubagentStoppedGroupItem = {
+  agentKey: string;
+  title: string;
+  /** Stable row key of this agent's spawn anchor (`subagent-spawn:${agentKey}`). */
+  jumpToStartRowKey: string;
+};
+
+/**
+ * A run of 2+ consecutive interrupt-stopped subagent result cards, folded into
+ * one calm card so a mass interrupt (a dozen — or fifty — agents) renders as a
+ * single line instead of a wall of identical "stopped" cards. Produced by the
+ * second-layer grouping pass; never emitted by the first-layer collapse.
+ * Row key: `subagent-stopped-group:${firstAgentKey}`.
+ */
+export type SubagentStoppedGroupEvent = {
+  type: "subagent_stopped_group";
+  count: number;
+  items: SubagentStoppedGroupItem[];
 };
 
 /**
@@ -199,7 +222,11 @@ export type ChatTranscriptRenderEnvelope = {
 export type ChatTranscriptGroupedEnvelope = {
   key: string;
   timestamp: string;
-  event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent | ChatActivityBundleEvent;
+  event:
+    | ChatTranscriptRenderEvent
+    | ChatWorkLogGroupEvent
+    | ChatActivityBundleEvent
+    | SubagentStoppedGroupEvent;
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
@@ -1047,6 +1074,7 @@ function handleSubagentLifecycleEvent(
   const resultEvent: SubagentResultCardRenderEvent = {
     type: "subagent_result_card",
     agentKey: state.renderKeyBase,
+    description: state.description,
     status: terminalStatus,
     summaryPreview: state.resultSummary,
     error: terminalStatus === "failed" ? state.error : null,
@@ -1752,7 +1780,66 @@ export function collapseGroupedActivityPhaseRows(
 export function groupChatTranscriptRows(
   rows: ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptGroupedEnvelope[] {
-  return collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows));
+  return groupStoppedSubagentResultCards(
+    collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows)),
+  );
+}
+
+// A `stopped` terminal status is only ever emitted when the user interrupts a
+// turn (see stopActiveClaudeSubagents — it settles every live subagent with
+// status "stopped" + summary "Interrupted"). So a stopped result card is always
+// an interrupt casualty carrying no summary the user needs to read individually.
+function isInterruptStoppedResultCard(
+  event: ChatTranscriptGroupedEnvelope["event"],
+): event is SubagentResultCardRenderEvent {
+  return event.type === "subagent_result_card" && event.status === "stopped";
+}
+
+// Fold a run of 2+ consecutive interrupt-stopped result cards into one compact
+// `subagent_stopped_group` card. Completed/failed cards (which carry real
+// summaries) and a lone stopped card stay individual. The group key is derived
+// from the first agent so it stays stable across the virtualizer's re-renders.
+function groupStoppedSubagentResultCards(
+  rows: ChatTranscriptGroupedEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  const result: ChatTranscriptGroupedEnvelope[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const row = rows[index]!;
+    if (!isInterruptStoppedResultCard(row.event)) {
+      result.push(row);
+      index += 1;
+      continue;
+    }
+
+    let end = index;
+    while (end < rows.length && isInterruptStoppedResultCard(rows[end]!.event)) end += 1;
+    const run = rows.slice(index, end);
+    index = end;
+
+    if (run.length < 2) {
+      // A single lone stopped result stays a normal result card (no group of one).
+      result.push(run[0]!);
+      continue;
+    }
+
+    const items: SubagentStoppedGroupItem[] = run.map((entry) => {
+      const event = entry.event as SubagentResultCardRenderEvent;
+      return {
+        agentKey: event.agentKey,
+        title: event.description?.trim() || "Subagent task",
+        jumpToStartRowKey: subagentSpawnKey(event.agentKey),
+      };
+    });
+    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
+    const lastInRun = run[run.length - 1]!;
+    result.push({
+      key: `subagent-stopped-group:${firstAgentKey}`,
+      timestamp: lastInRun.timestamp,
+      event: { type: "subagent_stopped_group", count: run.length, items },
+    });
+  }
+  return result;
 }
 
 // Collapse consecutive interrupted/failed status + done rows (parent turn + N subagents)
