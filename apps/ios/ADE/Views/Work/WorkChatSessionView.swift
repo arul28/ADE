@@ -2081,12 +2081,14 @@ final class WorkChatComposerDraftState: ObservableObject {
 
   func restoreUnsentText(_ value: String) {
     let currentDraft = trimmedText
-    guard currentDraft != value else { return }
-    if currentDraft.isEmpty {
-      text = value
-    } else {
-      text = "\(value)\n\(text)"
+    if currentDraft != value {
+      if currentDraft.isEmpty {
+        text = value
+      } else {
+        text = "\(value)\n\(text)"
+      }
     }
+    isFocused = true
   }
 }
 
@@ -2146,8 +2148,8 @@ private struct WorkChatComposerSendButton: View {
         if sent {
           onSent()
         } else {
-          draftState.restoreUnsentText(originalText)
           attachments = restoredAttachments
+          draftState.restoreUnsentText(originalText)
         }
       }
     }

@@ -158,7 +158,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   }
 
   @MainActor
-  func testSendingChatDraftClearsTextAndDismissesComposerFocus() {
+  func testSendingAndRestoringChatDraftUpdatesTextAndFocus() {
     let draft = WorkChatComposerDraftState()
     draft.text = "  Ship this change  "
     draft.isFocused = true
@@ -166,6 +166,10 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(draft.consumeSendableText(), "Ship this change")
     XCTAssertEqual(draft.text, "")
     XCTAssertFalse(draft.isFocused)
+
+    draft.restoreUnsentText("Ship this change")
+    XCTAssertEqual(draft.text, "Ship this change")
+    XCTAssertTrue(draft.isFocused)
   }
 
   @MainActor
