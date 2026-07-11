@@ -143,13 +143,14 @@ private struct WorkUsageBucketDetail: Equatable {
   var inputTokens: Int
   var outputTokens: Int
   var cachedTokens: Int
+  var unsplitTokens: Int = 0
   var insertions: Int
   var deletions: Int
   var githubAdditions: Int
   var githubDeletions: Int
   var sessions: Int
 
-  var totalTokens: Int { inputTokens + outputTokens + cachedTokens }
+  var totalTokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
   var githubCode: Int { githubAdditions + githubDeletions }
 }
@@ -604,6 +605,7 @@ private struct WorkUsageHeatmap: View {
       inputTokens: bucket.inputTokens,
       outputTokens: bucket.outputTokens,
       cachedTokens: bucket.cachedTokens,
+      unsplitTokens: bucket.unsplitTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
       githubAdditions: bucket.githubAdditions,
@@ -742,6 +744,7 @@ private struct WorkUsageBars: View {
       inputTokens: bucket.inputTokens,
       outputTokens: bucket.outputTokens,
       cachedTokens: bucket.cachedTokens,
+      unsplitTokens: bucket.unsplitTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
       githubAdditions: bucket.githubAdditions,
