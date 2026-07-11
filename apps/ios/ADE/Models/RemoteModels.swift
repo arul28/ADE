@@ -1735,6 +1735,26 @@ struct AgentChatContextUsage: Codable, Equatable {
   var rawMaxTokens: Int?
   var percentage: Double
   var model: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case categories
+    case totalTokens
+    case maxTokens
+    case rawMaxTokens
+    case percentage
+    case model
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    totalTokens = try container.decode(Int.self, forKey: .totalTokens)
+    maxTokens = try container.decode(Int.self, forKey: .maxTokens)
+    categories = try container.decodeIfPresent([AgentChatContextUsageCategory].self, forKey: .categories) ?? []
+    rawMaxTokens = try container.decodeIfPresent(Int.self, forKey: .rawMaxTokens)
+    percentage = try container.decodeIfPresent(Double.self, forKey: .percentage)
+      ?? (maxTokens > 0 ? Double(totalTokens) / Double(maxTokens) * 100 : 0)
+    model = try container.decodeIfPresent(String.self, forKey: .model)
+  }
 }
 
 struct CodexWebSearchAction: Codable, Equatable {

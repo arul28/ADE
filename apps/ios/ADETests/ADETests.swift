@@ -3128,7 +3128,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
   }
 
-  func testAgentChatEventEnvelopeMapsClaudeContextUsageSnapshotAcrossCompaction() throws {
+  func testAgentChatEventEnvelopeDecodesMinimalClaudeContextUsageSnapshotAcrossCompaction() throws {
     let json = """
     {
       "sessionId": "session-usage",
@@ -3138,20 +3138,23 @@ final class ADETests: XCTestCase {
         "type": "context_usage",
         "turnId": "turn-usage",
         "usage": {
-          "categories": [
-            { "name": "messages", "tokens": 31000, "percentage": 15.5 }
-          ],
           "totalTokens": 31000,
-          "maxTokens": 200000,
-          "rawMaxTokens": 200000,
-          "percentage": 15.5,
-          "model": "claude-sonnet-4"
+          "maxTokens": 200000
         }
       }
     }
     """
 
     let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .contextUsage(let decodedUsage, let decodedTurnId) = envelope.event else {
+      return XCTFail("Expected a context usage event.")
+    }
+    XCTAssertTrue(decodedUsage.categories.isEmpty)
+    XCTAssertEqual(decodedUsage.percentage, 15.5, accuracy: 0.0001)
+    XCTAssertNil(decodedUsage.rawMaxTokens)
+    XCTAssertNil(decodedUsage.model)
+    XCTAssertEqual(decodedTurnId, "turn-usage")
+
     let event = makeWorkChatEvent(from: envelope.event)
     guard case .tokens(let usage, let turnId, let itemId) = event else {
       return XCTFail("Expected Claude context usage to normalize to a tokens event.")
