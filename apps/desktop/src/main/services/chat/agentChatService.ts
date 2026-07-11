@@ -22685,7 +22685,10 @@ export function createAgentChatService(args: {
     // Apply the per-send execution/interaction mode captured when the steer was
     // queued, mirroring prepareSendMessage's session mutation + directives.
     if (managed.session.provider === "claude") {
-      managed.session.reasoningEffort = normalizeReasoningEffort(managed.session.reasoningEffort);
+      // Apply the reasoning effort captured when the steer was queued (the same
+      // way the execution/interaction modes below are), so a queued steer runs
+      // at the effort the user chose for it, not a later session change.
+      managed.session.reasoningEffort = normalizeReasoningEffort(nextSteer.reasoningEffort ?? managed.session.reasoningEffort);
       managed.session.interactionMode = nextSteer.interactionMode ?? managed.session.interactionMode ?? "default";
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }

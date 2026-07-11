@@ -116,10 +116,21 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
     steer: async (args: unknown) => {
-      return await call<AgentChatSteerResult>("chat.steer", args, {
-        steerId: globalThis.crypto.randomUUID(),
-        queued: true,
+      // Do NOT fabricate a queued success when chat.steer can't execute
+      // (missing descriptor, disconnected/host_unavailable). A fake
+      // `queued: true` would clear the draft and, for Send now, try to dispatch
+      // a steer id that never existed — silently losing the message. Use an
+      // unreachable-sentinel fallback and throw so the composer restores the
+      // draft and surfaces the connection error instead.
+      const UNSENT_SENTINEL = "__ade_steer_unsent__";
+      const result = await call<AgentChatSteerResult>("chat.steer", args, {
+        steerId: UNSENT_SENTINEL,
+        queued: false,
       }, false);
+      if (result.steerId === UNSENT_SENTINEL) {
+        throw new Error("Couldn't reach the ADE host to send this message. Check the connection and resend.");
+      }
+      return result;
     },
     cancelSteer: async (args: unknown) => {
       await call("chat.cancelSteer", args, undefined, false);
