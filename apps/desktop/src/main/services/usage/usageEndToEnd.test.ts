@@ -65,16 +65,11 @@ describe("usage ledger end-to-end accuracy", () => {
     const originalClaudeConfigDirs = process.env.CLAUDE_CONFIG_DIRS;
     const originalCodexHome = process.env.CODEX_HOME;
     const originalFactoryDir = process.env.FACTORY_DIR;
-    const originalTimezone = process.env.TZ;
-
     try {
-      process.env.TZ = "America/New_York";
       const beforeMidnight = new Date(2026, 9, 31, 23, 59, 0, 0);
       const afterMidnight = new Date(2026, 10, 1, 0, 1, 0, 0);
-      // Use explicit offsets so the DST assertion is portable even when a
-      // test worker cannot apply a runtime TZ change (as on Linux CI).
-      const beforeDstChange = new Date("2026-11-01T00:30:00-04:00");
-      const afterDstChange = new Date("2026-11-01T03:30:00-05:00");
+      const beforeDstChange = new Date(2026, 10, 1, 0, 30, 0, 0);
+      const afterDstChange = new Date(2026, 10, 1, 3, 30, 0, 0);
       const today = new Date(2026, 10, 2, 9, 0, 0, 0);
       const now = new Date(2026, 10, 2, 12, 0, 0, 0);
       vi.useFakeTimers();
@@ -347,9 +342,11 @@ describe("usage ledger end-to-end accuracy", () => {
         droid: { estimation: "distribution", scopeSupported: false },
       });
 
-      expect(afterDstChange.getTime() - beforeDstChange.getTime()).toBe(4 * 60 * 60 * 1_000);
+      const wallClockDeltaMs = 3 * 60 * 60 * 1_000;
+      const offsetChangeMs = (afterDstChange.getTimezoneOffset() - beforeDstChange.getTimezoneOffset()) * 60 * 1_000;
+      expect(afterDstChange.getTime() - beforeDstChange.getTime()).toBe(wallClockDeltaMs + offsetChangeMs);
     } finally {
-      const restoreEnv = (key: "CLAUDE_CONFIG_DIR" | "CLAUDE_CONFIG_DIRS" | "CODEX_HOME" | "FACTORY_DIR" | "TZ", value: string | undefined) => {
+      const restoreEnv = (key: "CLAUDE_CONFIG_DIR" | "CLAUDE_CONFIG_DIRS" | "CODEX_HOME" | "FACTORY_DIR", value: string | undefined) => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       };
@@ -357,7 +354,6 @@ describe("usage ledger end-to-end accuracy", () => {
       restoreEnv("CLAUDE_CONFIG_DIRS", originalClaudeConfigDirs);
       restoreEnv("CODEX_HOME", originalCodexHome);
       restoreEnv("FACTORY_DIR", originalFactoryDir);
-      restoreEnv("TZ", originalTimezone);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

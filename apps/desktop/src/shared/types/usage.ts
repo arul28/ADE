@@ -88,7 +88,9 @@ export type AdeUsageEstimationKind = "exact" | "chars" | "distribution" | "mixed
 
 export type GetAdeUsageStatsArgs = {
   preset?: AdeUsageRangePreset;
+  /** Custom timestamps are widened to include the whole machine-local calendar day. */
   since?: string | null;
+  /** Custom timestamps are widened to include the whole machine-local calendar day. */
   until?: string | null;
   /** Defaults to "machine" (legacy behavior). */
   scope?: AdeUsageScope;
@@ -426,6 +428,8 @@ export type CostSnapshot = {
   scopeSupported?: boolean;
   /** Tokens attributed to ADE-originated sessions, by preset. */
   adeOriginatedTokensByPreset?: Partial<Record<AdeUsageRangePreset, number>>;
+  /** Tokens attributed to ADE-originated sessions by local day, by preset. */
+  adeOriginatedDailyTokensByPreset?: Partial<Record<AdeUsageRangePreset, Record<string, number>>>;
 };
 
 export type ExtraUsage = {

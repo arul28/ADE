@@ -4722,9 +4722,19 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (scope && !isAdeUsageScope(scope)) {
       throw new Error("usage.getAdeStats scope must be machine or project.");
     }
+    const since = asTrimmedString(payload.since);
+    if (since && Number.isNaN(Date.parse(since))) {
+      throw new Error("usage.getAdeStats since must be an ISO timestamp.");
+    }
+    const until = asTrimmedString(payload.until);
+    if (until && Number.isNaN(Date.parse(until))) {
+      throw new Error("usage.getAdeStats until must be an ISO timestamp.");
+    }
     return await args.usageTrackingService.getAdeUsageStats({
       ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
       ...(isAdeUsageScope(scope) ? { scope } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
     });
   });
 

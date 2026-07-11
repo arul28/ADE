@@ -61,23 +61,80 @@ private enum WorkUsageColors {
   ]
 }
 
+/// Single source of truth for a day's activity magnitude. Both the heatmap
+/// intensity (bucket `activity`) and the has-activity predicate derive from
+/// this, so the two can never drift over which daily-point dimensions count.
+/// Every dimension is covered — tokens, sessions, interactions, local git
+/// commits/PRs/files/lines, and the GitHub-reported counterparts — with counts
+/// weighted heavier than raw additive line counts. Kept internal (not private)
+/// so ADETests can assert the field coverage.
+func workUsageActivityScore(
+  tokens: Int, sessions: Int, interactions: Int,
+  commits: Int, prs: Int, filesChanged: Int, insertions: Int, deletions: Int,
+  githubCommits: Int, githubPrs: Int, githubAdditions: Int, githubDeletions: Int
+) -> Int {
+  tokens
+    + sessions * 4_000 + interactions * 1_500
+    + commits * 3_000 + prs * 5_000 + filesChanged * 500
+    + insertions + deletions
+    + githubCommits * 3_000 + githubPrs * 5_000
+    + githubAdditions + githubDeletions
+}
+
+func workUsageDayActivityScore(_ point: MobileAdeUsageDailyPoint) -> Int {
+  // Current hosts send per-day input/output/cached tokens; older hosts and
+  // cached payloads may carry only totalTokens. Use whichever is larger so
+  // token-only days from either era count as active.
+  let splitTokens = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
+  return workUsageActivityScore(
+    tokens: max(splitTokens, point.totalTokens ?? 0),
+    sessions: point.sessions ?? 0,
+    interactions: point.interactions ?? 0,
+    commits: point.commits ?? 0,
+    prs: point.prs ?? 0,
+    filesChanged: point.filesChanged ?? 0,
+    insertions: point.insertions ?? 0,
+    deletions: point.deletions ?? 0,
+    githubCommits: point.githubCommits ?? 0,
+    githubPrs: point.githubPrs ?? 0,
+    githubAdditions: point.githubAdditions ?? 0,
+    githubDeletions: point.githubDeletions ?? 0
+  )
+}
+
 private struct WorkUsageVisualBucket: Identifiable {
   var id: String
   var date: String
   var inputTokens: Int
   var outputTokens: Int
   var cachedTokens: Int
+  var commits: Int
+  var prs: Int
+  var filesChanged: Int
   var insertions: Int
   var deletions: Int
+  var githubCommits: Int
+  var githubPrs: Int
   var githubAdditions: Int
   var githubDeletions: Int
   var sessions: Int
   var interactions: Int
+  /// Legacy hosts send only per-day totalTokens; this carries the portion not
+  /// covered by the input/output/cache split so total-only days still render.
+  var unsplitTokens: Int
 
-  var tokens: Int { inputTokens + outputTokens + cachedTokens }
+  var tokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
   var githubCode: Int { githubAdditions + githubDeletions }
-  var activity: Int { tokens + sessions * 4_000 + interactions * 1_500 }
+  var activity: Int {
+    workUsageActivityScore(
+      tokens: tokens, sessions: sessions, interactions: interactions,
+      commits: commits, prs: prs, filesChanged: filesChanged,
+      insertions: insertions, deletions: deletions,
+      githubCommits: githubCommits, githubPrs: githubPrs,
+      githubAdditions: githubAdditions, githubDeletions: githubDeletions
+    )
+  }
 }
 
 /// Compact day detail surfaced by a tap on a bar or heatmap cell.
@@ -86,12 +143,16 @@ private struct WorkUsageBucketDetail: Equatable {
   var inputTokens: Int
   var outputTokens: Int
   var cachedTokens: Int
+  var unsplitTokens: Int = 0
   var insertions: Int
   var deletions: Int
+  var githubAdditions: Int
+  var githubDeletions: Int
   var sessions: Int
 
-  var totalTokens: Int { inputTokens + outputTokens + cachedTokens }
+  var totalTokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
+  var githubCode: Int { githubAdditions + githubDeletions }
 }
 
 private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: Int) -> [WorkUsageVisualBucket] {
@@ -106,12 +167,21 @@ private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: In
       inputTokens: chunk.reduce(0) { $0 + ($1.inputTokens ?? 0) },
       outputTokens: chunk.reduce(0) { $0 + ($1.outputTokens ?? 0) },
       cachedTokens: chunk.reduce(0) { $0 + ($1.cachedTokens ?? 0) },
+      commits: chunk.reduce(0) { $0 + ($1.commits ?? 0) },
+      prs: chunk.reduce(0) { $0 + ($1.prs ?? 0) },
+      filesChanged: chunk.reduce(0) { $0 + ($1.filesChanged ?? 0) },
       insertions: chunk.reduce(0) { $0 + ($1.insertions ?? 0) },
       deletions: chunk.reduce(0) { $0 + ($1.deletions ?? 0) },
+      githubCommits: chunk.reduce(0) { $0 + ($1.githubCommits ?? 0) },
+      githubPrs: chunk.reduce(0) { $0 + ($1.githubPrs ?? 0) },
       githubAdditions: chunk.reduce(0) { $0 + ($1.githubAdditions ?? 0) },
       githubDeletions: chunk.reduce(0) { $0 + ($1.githubDeletions ?? 0) },
       sessions: chunk.reduce(0) { $0 + ($1.sessions ?? 0) },
-      interactions: chunk.reduce(0) { $0 + ($1.interactions ?? 0) }
+      interactions: chunk.reduce(0) { $0 + ($1.interactions ?? 0) },
+      unsplitTokens: chunk.reduce(0) { sum, point in
+        let split = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
+        return sum + max(0, (point.totalTokens ?? 0) - split)
+      }
     )
   }
 }
@@ -162,13 +232,9 @@ struct WorkUsageActivityCarousel: View {
 
   private var hasActivity: Bool {
     guard let daily = stats?.daily else { return false }
-    return daily.contains { point in
-      (point.totalTokens ?? 0) > 0 || (point.sessions ?? 0) > 0
-        || (point.insertions ?? 0) > 0 || (point.deletions ?? 0) > 0
-        || (point.githubCommits ?? 0) > 0 || (point.githubPrs ?? 0) > 0
-        || (point.githubAdditions ?? 0) > 0 || (point.githubDeletions ?? 0) > 0
-        || (point.interactions ?? 0) > 0
-    }
+    // Derived from the same score as the heatmap intensity, so the predicate and
+    // the intensity can never disagree over which daily-point dimensions count.
+    return daily.contains { workUsageDayActivityScore($0) > 0 }
   }
 
   private var footerChip: (system: String, label: String)? {
@@ -416,6 +482,11 @@ private struct WorkUsageTooltip: View {
           .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
       }
+      if detail.githubCode > 0 {
+        Text("GitHub +\(workUsageCompact(detail.githubAdditions)) / -\(workUsageCompact(detail.githubDeletions))")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
@@ -479,7 +550,6 @@ private func mobileUsageStatusLabel(_ status: MobileUsageProviderStatus?) -> Str
   let source = status.source?.uppercased() ?? "UNKNOWN"
   return status.state == "ok" ? source : "\(status.state.uppercased()) · \(source)"
 }
-
 private struct WorkUsageHeatmap: View {
   let points: [MobileAdeUsageDailyPoint]
   let selectedId: String?
@@ -535,8 +605,11 @@ private struct WorkUsageHeatmap: View {
       inputTokens: bucket.inputTokens,
       outputTokens: bucket.outputTokens,
       cachedTokens: bucket.cachedTokens,
+      unsplitTokens: bucket.unsplitTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
+      githubAdditions: bucket.githubAdditions,
+      githubDeletions: bucket.githubDeletions,
       sessions: bucket.sessions
     )
   }
@@ -620,6 +693,8 @@ private struct WorkUsageBars: View {
     if mode == .tokens {
       let total = CGFloat(max(1, bucket.tokens))
       VStack(spacing: 0) {
+        Rectangle().fill(WorkUsageColors.tokenCache.opacity(0.45))
+          .frame(height: barHeight * CGFloat(bucket.unsplitTokens) / total)
         Rectangle().fill(WorkUsageColors.tokenCache)
           .frame(height: barHeight * CGFloat(bucket.cachedTokens) / total)
         Rectangle().fill(WorkUsageColors.tokenOutput)
@@ -669,8 +744,11 @@ private struct WorkUsageBars: View {
       inputTokens: bucket.inputTokens,
       outputTokens: bucket.outputTokens,
       cachedTokens: bucket.cachedTokens,
+      unsplitTokens: bucket.unsplitTokens,
       insertions: bucket.insertions,
       deletions: bucket.deletions,
+      githubAdditions: bucket.githubAdditions,
+      githubDeletions: bucket.githubDeletions,
       sessions: bucket.sessions
     )
   }

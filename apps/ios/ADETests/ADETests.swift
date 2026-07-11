@@ -4107,6 +4107,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(stats.providers?.last?.scopeSupported, false)
   }
 
+  func testWorkUsageDayActivityScoreCoversEveryDimension() throws {
+    func point(_ json: String) throws -> MobileAdeUsageDailyPoint {
+      try JSONDecoder().decode(MobileAdeUsageDailyPoint.self, from: Data(json.utf8))
+    }
+
+    // A day with ONLY local git operations (no tokens/sessions) must score > 0
+    // so it escapes the warm-empty state and paints a non-zero heatmap cell.
+    let localGitOnly = try point("""
+    { "date": "2026-07-10", "commits": 4, "prs": 1, "filesChanged": 3, "insertions": 120, "deletions": 8 }
+    """)
+    // A GitHub-commit-only day (no additions/deletions) must also score > 0.
+    let githubCommitOnly = try point("""
+    { "date": "2026-07-10", "githubCommits": 5 }
+    """)
+    // A tokens-only day (host sends input/output/cached, never per-day total).
+    let tokensOnly = try point("""
+    { "date": "2026-07-10", "inputTokens": 10, "outputTokens": 5, "cachedTokens": 2 }
+    """)
+    // Legacy hosts/cached payloads may send only a per-day totalTokens with
+    // no split fields — must still count as an active day.
+    let legacyTotalOnly = try point("""
+    { "date": "2026-07-10", "totalTokens": 500 }
+    """)
+    let empty = try point("""
+    { "date": "2026-07-10" }
+    """)
+
+    XCTAssertGreaterThan(workUsageDayActivityScore(localGitOnly), 0)
+    XCTAssertGreaterThan(workUsageDayActivityScore(githubCommitOnly), 0)
+    XCTAssertGreaterThan(workUsageDayActivityScore(tokensOnly), 0)
+    XCTAssertGreaterThan(workUsageDayActivityScore(legacyTotalOnly), 0)
+    XCTAssertEqual(workUsageDayActivityScore(empty), 0)
+  }
+
   func testMobileUsageQuotaSnapshotDecodesSourceFreshnessAndUnknownFields() throws {
     let json = """
     {

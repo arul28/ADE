@@ -1206,12 +1206,14 @@ function aggregateCosts(
     dailyTokens: {} as DailyTokenBreakdown,
     dailyModelTokens: {} as DailyModelTokenBreakdown,
     adeOriginatedTokens: 0,
+    adeOriginatedDailyTokens: {} as DailyTokenBreakdown,
   }])) as Record<AdeUsageRangePreset, {
     costUsd: number;
     tokenBreakdown: TokenBreakdown;
     dailyTokens: DailyTokenBreakdown;
     dailyModelTokens: DailyModelTokenBreakdown;
     adeOriginatedTokens: number;
+    adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
   for (const entry of entries) {
@@ -1225,10 +1227,16 @@ function aggregateCosts(
       addDailyTokenEntry(accumulator.dailyTokens, entry);
       addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
-        accumulator.adeOriginatedTokens += entry.inputTokens
+        const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
           + entry.cachedTokens
           + toNonNegativeInt(entry.cacheWriteTokens);
+        accumulator.adeOriginatedTokens += adeOriginatedTokens;
+        const date = localDayKey(entry.timestamp);
+        if (date) {
+          accumulator.adeOriginatedDailyTokens[date] = (accumulator.adeOriginatedDailyTokens[date] ?? 0)
+            + adeOriginatedTokens;
+        }
       }
     }
   }
@@ -1254,6 +1262,9 @@ function aggregateCosts(
     ...(options.scopeSupported != null ? { scopeSupported: options.scopeSupported } : {}),
     adeOriginatedTokensByPreset: Object.fromEntries(
       ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedTokens]),
+    ),
+    adeOriginatedDailyTokensByPreset: Object.fromEntries(
+      ADE_USAGE_RANGE_PRESETS.map((preset) => [preset, accumulators[preset].adeOriginatedDailyTokens]),
     ),
   };
 }
@@ -1353,6 +1364,17 @@ function startOfLocalDayOffsetIso(nowMs: number, daysBack: number): string {
   return localDayOffset(nowMs, -Math.max(0, daysBack))?.toISOString() ?? new Date(nowMs).toISOString();
 }
 
+function widenRangeToLocalDays(range: ResolvedAdeUsageRange): ResolvedAdeUsageRange {
+  const since = range.since
+    ? localDayOffset(range.since, 0)?.toISOString() ?? range.since
+    : null;
+  const nextDay = localDayOffset(range.until, 1);
+  const until = nextDay
+    ? new Date(nextDay.getTime() - 1).toISOString()
+    : range.until;
+  return { ...range, since, until };
+}
+
 function normalizePreset(value: unknown): AdeUsageRangePreset {
   return isAdeUsageRangePreset(value) ? value : "7d";
 }
@@ -1372,27 +1394,37 @@ function resolveAdeUsageRange(args: GetAdeUsageStatsArgs | undefined, nowMs: num
   const until = validIsoOrNull(args?.until ?? null) ?? new Date(nowMs).toISOString();
   const untilMs = Date.parse(until);
   const explicitSince = validIsoOrNull(args?.since ?? null);
+  let range: ResolvedAdeUsageRange;
   if (explicitSince) {
-    return {
+    range = {
       preset,
       since: Date.parse(explicitSince) > untilMs ? until : explicitSince,
       until,
     };
+  } else {
+    switch (preset) {
+      case "today":
+        range = { preset, since: startOfLocalDayIso(untilMs), until };
+        break;
+      case "30d":
+        range = { preset, since: startOfLocalDayOffsetIso(untilMs, 29), until };
+        break;
+      case "year":
+        range = { preset, since: startOfLocalDayOffsetIso(untilMs, 364), until };
+        break;
+      case "all":
+        range = { preset, since: null, until };
+        break;
+      case "7d":
+      default:
+        range = { preset: "7d", since: startOfLocalDayOffsetIso(untilMs, 6), until };
+        break;
+    }
   }
 
-  switch (preset) {
-    case "today":
-      return { preset, since: startOfLocalDayIso(untilMs), until };
-    case "30d":
-      return { preset, since: startOfLocalDayOffsetIso(untilMs, 29), until };
-    case "year":
-      return { preset, since: startOfLocalDayOffsetIso(untilMs, 364), until };
-    case "all":
-      return { preset, since: null, until };
-    case "7d":
-    default:
-      return { preset: "7d", since: startOfLocalDayOffsetIso(untilMs, 6), until };
-  }
+  // Provider snapshots are calendar-day buckets. Widen custom timestamps here
+  // so provider, database, and GitHub sources all use the same local-day range.
+  return args?.since || args?.until ? widenRangeToLocalDays(range) : range;
 }
 
 type ProviderModelAggregation = {
@@ -1560,12 +1592,16 @@ function addCostSnapshotsProviderUsage(
     }
     if (cost.estimation) providerSummary.estimation = cost.estimation;
     if (cost.scopeSupported != null) providerSummary.scopeSupported = cost.scopeSupported;
-    const adeOriginatedTokens = Math.min(
-      providerTotalTokens,
-      toNonNegativeInt(cost.adeOriginatedTokensByPreset?.[range.preset]),
-    );
-    providerSummary.adeOriginatedTokens = toNonNegativeInt(providerSummary.adeOriginatedTokens) + adeOriginatedTokens;
-    providerSummary.externalTokens = toNonNegativeInt(providerSummary.externalTokens) + providerTotalTokens - adeOriginatedTokens;
+    const adeOriginatedTokens = exactRange
+      ? adeOriginatedTokensForExactRange(cost, range)
+      : toNonNegativeInt(cost.adeOriginatedTokensByPreset?.[range.preset]);
+    if (adeOriginatedTokens != null) {
+      const narrowedAdeOriginatedTokens = Math.min(providerTotalTokens, adeOriginatedTokens);
+      providerSummary.adeOriginatedTokens = toNonNegativeInt(providerSummary.adeOriginatedTokens) + narrowedAdeOriginatedTokens;
+      providerSummary.externalTokens = toNonNegativeInt(providerSummary.externalTokens)
+        + providerTotalTokens
+        - narrowedAdeOriginatedTokens;
+    }
     for (const [model, tokens] of Object.entries(tokenBreakdown)) {
       const modelInput = toNonNegativeInt(tokens.input);
       const modelOutput = toNonNegativeInt(tokens.output);
@@ -1584,6 +1620,14 @@ function addCostSnapshotsProviderUsage(
       });
     }
   }
+}
+
+function adeOriginatedTokensForExactRange(cost: CostSnapshot, range: ResolvedAdeUsageRange): number | null {
+  const dailyTokens = cost.adeOriginatedDailyTokensByPreset?.all;
+  if (!dailyTokens) return null;
+  return Object.entries(dailyTokens).reduce((sum, [date, tokens]) => (
+    dateIntersectsRange(date, range) ? sum + toNonNegativeInt(tokens) : sum
+  ), 0);
 }
 
 function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsageRange): Record<string, CostTokenBreakdown> {

@@ -126,38 +126,38 @@ function formatDay(date: string): string {
   return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function dayValue(point: AdeUsageDailyPoint): number {
+/**
+ * Single source of truth for a day's activity magnitude. Both the heatmap
+ * intensity (dayValue) and the has-activity predicate (dayHasActivity) derive
+ * from this, so the two can never drift over which daily-point dimensions
+ * count. Every activity dimension is covered: tokens, sessions, interactions,
+ * local git commits/PRs/files/lines, and the GitHub-reported counterparts.
+ * Counts (sessions, commits, PRs, files) carry heavier weights than raw line
+ * counts, which are additive.
+ */
+function dayActivityScore(point: AdeUsageDailyPoint): number {
   return (
-    point.totalTokens +
-    point.sessions * 4_000 +
-    (point.interactions ?? 0) * 1_500 +
-    point.commits * 4_000 +
-    point.prs * 8_000 +
-    point.filesChanged * 500 +
-    point.insertions +
-    point.deletions +
-    (point.githubCommits ?? 0) * 4_000 +
-    (point.githubPrs ?? 0) * 8_000 +
-    (point.githubAdditions ?? 0) +
-    (point.githubDeletions ?? 0)
+    point.totalTokens
+    + point.sessions * 4_000
+    + (point.interactions ?? 0) * 1_500
+    + point.commits * 3_000
+    + point.prs * 5_000
+    + point.filesChanged * 500
+    + point.insertions
+    + point.deletions
+    + (point.githubCommits ?? 0) * 3_000
+    + (point.githubPrs ?? 0) * 5_000
+    + (point.githubAdditions ?? 0)
+    + (point.githubDeletions ?? 0)
   );
 }
 
+function dayValue(point: AdeUsageDailyPoint): number {
+  return dayActivityScore(point);
+}
+
 function dayHasActivity(point: AdeUsageDailyPoint): boolean {
-  return (
-    point.totalTokens > 0 ||
-    point.sessions > 0 ||
-    point.commits > 0 ||
-    point.prs > 0 ||
-    point.filesChanged > 0 ||
-    point.insertions > 0 ||
-    point.deletions > 0 ||
-    (point.githubCommits ?? 0) > 0 ||
-    (point.githubPrs ?? 0) > 0 ||
-    (point.githubAdditions ?? 0) > 0 ||
-    (point.githubDeletions ?? 0) > 0 ||
-    (point.interactions ?? 0) > 0
-  );
+  return dayActivityScore(point) > 0;
 }
 
 function sessionsTotal(stats: AdeUsageStats): number {
@@ -355,6 +355,7 @@ function ActivityHeatmap({
         <span
           key={point.date}
           className="rounded-[2px]"
+          data-intensity={intensity.toFixed(2)}
           style={{
             background:
               intensity === 0
