@@ -11525,20 +11525,46 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, 0.18, accuracy: 0.0001)
   }
 
-  func testWorkContextUsageViewModelAcceptsExactCodexSnapshotFromCompactionTurn() {
-    let transcript = parseWorkChatTranscript("""
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"context_compact","trigger":"auto","state":"completed","turnId":"turn-1","compactionId":"compact-1"}}
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-1","usage":{"modelContextWindow":100000,"last":{"inputTokens":21000}}}}
-    """)
+  func testWorkContextUsageViewModelProtectsExactSnapshotsUntilLaterTurn() {
+    let cases = [
+      (
+        provider: "claude",
+        boundary: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"context_compact","trigger":"auto","state":"completed","turnId":"turn-1"}}"#,
+        snapshot: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"context_usage","turnId":"turn-1","usage":{"totalTokens":24000,"maxTokens":100000}}}"#,
+        exactTokens: 24_000
+      ),
+      (
+        provider: "codex",
+        boundary: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"codex_context_compaction","trigger":"auto","state":"completed","turnId":"turn-1"}}"#,
+        snapshot: #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"codex_token_usage","turnId":"turn-1","usage":{"modelContextWindow":100000,"last":{"inputTokens":21000}}}}"#,
+        exactTokens: 21_000
+      ),
+    ]
 
-    let viewModel = workContextUsageViewModel(
-      transcript: transcript,
-      provider: "codex",
-      fallbackContextWindow: 100_000
-    )
-    XCTAssertEqual(viewModel?.usedTokens, 21_000)
-    XCTAssertEqual(viewModel?.contextWindow, 100_000)
-    XCTAssertEqual(viewModel?.ratio ?? 0, 0.21, accuracy: 0.0001)
+    for testCase in cases {
+      let transcript = parseWorkChatTranscript("""
+      \(testCase.boundary)
+      \(testCase.snapshot)
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"done","turnId":"turn-1","status":"completed","usage":{"inputTokens":100000,"contextWindow":100000}}}
+      {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"tokens","turnId":"turn-2","inputTokens":30000,"contextWindow":100000}}
+      """)
+
+      let exactViewModel = workContextUsageViewModel(
+        transcript: Array(transcript.prefix(3)),
+        provider: testCase.provider,
+        fallbackContextWindow: 100_000
+      )
+      XCTAssertEqual(exactViewModel?.usedTokens, testCase.exactTokens, "Expected protected \(testCase.provider) snapshot")
+      XCTAssertEqual(exactViewModel?.contextWindow, 100_000)
+
+      let laterTurnViewModel = workContextUsageViewModel(
+        transcript: transcript,
+        provider: testCase.provider,
+        fallbackContextWindow: 100_000
+      )
+      XCTAssertEqual(laterTurnViewModel?.usedTokens, 30_000, "Expected later \(testCase.provider) turn to replace snapshot")
+      XCTAssertEqual(laterTurnViewModel?.ratio ?? 0, 0.3, accuracy: 0.0001)
+    }
   }
 
   func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {

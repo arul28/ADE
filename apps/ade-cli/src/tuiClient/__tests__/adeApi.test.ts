@@ -479,6 +479,98 @@ describe("latestTokenStats", () => {
     expect(explicitZeroStats.percent).toBe(0);
   });
 
+  it("protects an exact Codex refill across legacy compaction until a later turn", () => {
+    const events = [
+      envelope(1, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 190_000 }, modelContextWindow: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_context_compaction",
+        trigger: "auto",
+        state: "completed",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "codex_token_usage",
+        usage: { last: { inputTokens: 26_000 }, modelContextWindow: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "tokens",
+        turnId: "turn-1",
+        inputTokens: 190_000,
+        outputTokens: 1_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(5, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 190_000, outputTokens: 1_000, contextWindow: 200_000 },
+      }),
+      envelope(6, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 32_000,
+        outputTokens: 500,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    expect(latestTokenStats(events.slice(0, 2), 200_000).percent).toBeNull();
+
+    const exactRefill = latestTokenStats(events.slice(0, 5), 200_000);
+    expect(exactRefill.inputTokens).toBe(26_000);
+    expect(exactRefill.percent).toBe(13);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(32_000);
+    expect(laterTurn.percent).toBe(16);
+  });
+
+  it("protects an exact Claude snapshot until a later turn", () => {
+    const events = [
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "context_usage",
+        usage: { totalTokens: 24_000, maxTokens: 200_000 },
+        turnId: "turn-1",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(3, {
+        type: "tokens",
+        turnId: "turn-1",
+        inputTokens: 190_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(4, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 190_000, contextWindow: 200_000 },
+      }),
+      envelope(5, {
+        type: "tokens",
+        turnId: "turn-2",
+        inputTokens: 30_000,
+        contextWindow: 200_000,
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const exactSnapshot = latestTokenStats(events.slice(0, 4), 200_000);
+    expect(exactSnapshot.inputTokens).toBe(24_000);
+    expect(exactSnapshot.percent).toBe(12);
+
+    const laterTurn = latestTokenStats(events, 200_000);
+    expect(laterTurn.inputTokens).toBe(30_000);
+    expect(laterTurn.percent).toBe(15);
+  });
+
   it("accepts an exact Claude context snapshot from the compaction turn", () => {
     const events = [
       envelope(1, {

@@ -869,6 +869,11 @@ export function latestTokenStats(
   let eventLimit: number | null = null;
   let compactedTurnId: string | null = null;
   let rateLimit: TokenStats["rateLimit"] = null;
+  const blocksCompactedTurn = (turnId: unknown): boolean => compactedTurnId != null
+    && (typeof turnId !== "string" || turnId === compactedTurnId);
+  const releaseCompactionForLaterTurn = (turnId: unknown): void => {
+    if (compactedTurnId && typeof turnId === "string" && turnId !== compactedTurnId) compactedTurnId = null;
+  };
   const readCacheReadTokens = (bucket: Record<string, unknown> | null): number | null => {
     if (!bucket) return null;
     if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
@@ -882,7 +887,7 @@ export function latestTokenStats(
     if (event.type === "status" && event.turnStatus === "started") streaming = true;
     if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) streaming = false;
     if (event.type === "tokens") {
-      if (compactedTurnId && event.turnId === compactedTurnId) continue;
+      if (blocksCompactedTurn(event.turnId)) continue;
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
       cacheReadTokens = readCacheReadTokens(event) ?? cacheReadTokens;
@@ -907,7 +912,10 @@ export function latestTokenStats(
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
       cacheReadTokens = readCacheReadTokens(last) ?? readCacheReadTokens(total) ?? cacheReadTokens;
-      compactedTurnId = null;
+      const usageTurnId = typeof event.turnId === "string"
+        ? event.turnId
+        : typeof usage?.turnId === "string" ? usage.turnId : null;
+      releaseCompactionForLaterTurn(usageTurnId);
     }
     if (event.type === "context_usage") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
@@ -916,10 +924,10 @@ export function latestTokenStats(
       cacheReadTokens = null;
       cacheCreationTokens = null;
       if (typeof usage?.maxTokens === "number") eventLimit = usage.maxTokens;
-      compactedTurnId = null;
+      releaseCompactionForLaterTurn(event.turnId);
     }
     if (event.type === "done") {
-      if (compactedTurnId && event.turnId === compactedTurnId) continue;
+      if (blocksCompactedTurn(event.turnId)) continue;
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
@@ -932,9 +940,11 @@ export function latestTokenStats(
       if (typeof usage?.contextWindow === "number") eventLimit = usage.contextWindow;
       compactedTurnId = null;
     }
-    if (event.type === "context_compact" && event.state === "completed") {
+    const completedCompaction = (event.type === "context_compact" && event.state !== "started")
+      || (event.type === "codex_context_compaction" && event.state === "completed");
+    if (completedCompaction) {
       compactedTurnId = typeof event.turnId === "string" ? event.turnId : null;
-      inputTokens = typeof event.postTokens === "number" ? event.postTokens : null;
+      inputTokens = event.type === "context_compact" && typeof event.postTokens === "number" ? event.postTokens : null;
       outputTokens = null;
       cacheReadTokens = null;
       cacheCreationTokens = null;

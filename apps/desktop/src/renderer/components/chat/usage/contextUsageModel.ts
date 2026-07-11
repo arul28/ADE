@@ -174,13 +174,16 @@ export function latestContextUsageInput(
       : null;
   let lastRuntimeWindow = positive(fallbackCodexUsage?.modelContextWindow);
   let compactedTurnId: string | null = null;
+  const releaseCompactionForLaterTurn = (turnId: string | undefined): void => {
+    if (compactedTurnId && turnId && turnId !== compactedTurnId) compactedTurnId = null;
+  };
 
   const acceptGeneric = (
     turnId: string | undefined,
     usage: GenericUsageInput,
     contextWindow?: number | null,
   ): void => {
-    if (compactedTurnId && turnId === compactedTurnId) return;
+    if (compactedTurnId && (!turnId || turnId === compactedTurnId)) return;
     const runtimeWindow = positive(contextWindow);
     if (runtimeWindow != null) lastRuntimeWindow = runtimeWindow;
     current = { kind: "generic", provider, usage, contextWindow };
@@ -197,7 +200,8 @@ export function latestContextUsageInput(
         || typeof event.usage.total?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
       current = { kind: "codex", provider: provider || "codex", usage: event.usage };
-      compactedTurnId = null;
+      const usageTurnId = event.turnId ?? event.usage.turnId ?? undefined;
+      releaseCompactionForLaterTurn(usageTurnId);
       continue;
     }
     if (event.type === "context_usage") {
@@ -212,12 +216,14 @@ export function latestContextUsageInput(
         },
         contextWindow: event.usage.maxTokens,
       };
-      compactedTurnId = null;
+      releaseCompactionForLaterTurn(event.turnId);
       continue;
     }
-    if (event.type === "context_compact" && event.state === "completed") {
+    const completedCompaction = (event.type === "context_compact" && event.state !== "started")
+      || (event.type === "codex_context_compaction" && event.state === "completed");
+    if (completedCompaction) {
       compactedTurnId = event.turnId ?? null;
-      current = event.postTokens != null
+      current = event.type === "context_compact" && event.postTokens != null
         ? {
             kind: "generic",
             provider,

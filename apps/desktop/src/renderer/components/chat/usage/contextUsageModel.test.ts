@@ -168,6 +168,43 @@ describe("latestContextUsageInput", () => {
     expect(viewModel?.ratio).toBe(0);
   });
 
+  it("protects an exact Codex refill across legacy compaction until a later turn", () => {
+    const events = [
+      envelope(1, { type: "codex_token_usage", usage: { last: { inputTokens: 190_000 }, modelContextWindow: 200_000 }, turnId: "turn-1" }),
+      envelope(2, { type: "codex_context_compaction", trigger: "auto", state: "completed", turnId: "turn-1" }),
+      envelope(3, { type: "codex_token_usage", usage: { last: { inputTokens: 26_000 }, modelContextWindow: 200_000 }, turnId: "turn-1" }),
+      envelope(4, { type: "tokens", turnId: "turn-1", inputTokens: 190_000, outputTokens: 1_000, contextWindow: 200_000 }),
+      envelope(5, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
+      envelope(6, { type: "tokens", turnId: "turn-2", inputTokens: 32_000, outputTokens: 500, contextWindow: 200_000 }),
+    ] as any;
+    expect(latestContextUsageInput(events.slice(0, 2), "codex")).toBeNull();
+
+    const exactRefill = toUsageViewModel(latestContextUsageInput(events.slice(0, 5), "codex"));
+    expect(exactRefill?.usedTokens).toBe(26_000);
+    expect(exactRefill?.ratio).toBe(0.13);
+
+    const laterTurn = toUsageViewModel(latestContextUsageInput(events, "codex"));
+    expect(laterTurn?.usedTokens).toBe(32_000);
+    expect(laterTurn?.ratio).toBe(0.16);
+  });
+
+  it("protects an exact Claude snapshot until a later turn", () => {
+    const events = [
+      envelope(1, { type: "context_compact", trigger: "auto", state: "completed", turnId: "turn-1" }),
+      envelope(2, { type: "context_usage", usage: { totalTokens: 24_000, maxTokens: 200_000 }, turnId: "turn-1" }),
+      envelope(3, { type: "tokens", turnId: "turn-1", inputTokens: 190_000, contextWindow: 200_000 }),
+      envelope(4, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
+      envelope(5, { type: "tokens", turnId: "turn-2", inputTokens: 30_000, contextWindow: 200_000 }),
+    ] as any;
+    const exactSnapshot = toUsageViewModel(latestContextUsageInput(events.slice(0, 4), "claude"));
+    expect(exactSnapshot?.usedTokens).toBe(24_000);
+    expect(exactSnapshot?.ratio).toBe(0.12);
+
+    const laterTurn = toUsageViewModel(latestContextUsageInput(events, "claude"));
+    expect(laterTurn?.usedTokens).toBe(30_000);
+    expect(laterTurn?.ratio).toBe(0.15);
+  });
+
   it("prefers Claude's exact context_usage snapshot", () => {
     const input = latestContextUsageInput([
       envelope(1, { type: "context_usage", usage: { categories: [], totalTokens: 31_000, maxTokens: 200_000, percentage: 15.5 } }),

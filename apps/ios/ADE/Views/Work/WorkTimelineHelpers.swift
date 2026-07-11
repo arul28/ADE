@@ -3193,14 +3193,18 @@ func workContextUsageViewModel(
         )
       }
     case .tokens(let usage, let turnId, _):
-      if compactedTurnId == turnId && !usage.isContextSnapshot { continue }
+      if let protectedTurnId = compactedTurnId {
+        if protectedTurnId == turnId && !usage.isContextSnapshot { continue }
+        if protectedTurnId != turnId { compactedTurnId = nil }
+      }
       latestUsage = usage
-      compactedTurnId = nil
     case .done(_, _, let usage, let turnId, _, _):
       if let usage {
-        if compactedTurnId == turnId && !usage.isContextSnapshot { continue }
+        if let protectedTurnId = compactedTurnId {
+          if protectedTurnId == turnId && !usage.isContextSnapshot { continue }
+          if protectedTurnId != turnId { compactedTurnId = nil }
+        }
         latestUsage = usage
-        compactedTurnId = nil
       }
     default:
       continue
