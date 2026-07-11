@@ -22685,10 +22685,13 @@ export function createAgentChatService(args: {
     // Apply the per-send execution/interaction mode captured when the steer was
     // queued, mirroring prepareSendMessage's session mutation + directives.
     if (managed.session.provider === "claude") {
-      // Apply the reasoning effort captured when the steer was queued (the same
-      // way the execution/interaction modes below are), so a queued steer runs
-      // at the effort the user chose for it, not a later session change.
-      managed.session.reasoningEffort = normalizeReasoningEffort(nextSteer.reasoningEffort ?? managed.session.reasoningEffort);
+      // Reasoning effort is intentionally NOT re-derived from the queued steer
+      // here: a live Claude query keeps its launch-time effort across resume, so
+      // honoring a per-steer effort would require tearing the query down mid-
+      // delivery (extra latency + orphaned background tasks) for a rare edge —
+      // queueing a steer, then changing the session effort before the turn ends.
+      // The delivered steer runs at the session's current effort by design.
+      managed.session.reasoningEffort = normalizeReasoningEffort(managed.session.reasoningEffort);
       managed.session.interactionMode = nextSteer.interactionMode ?? managed.session.interactionMode ?? "default";
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     }
