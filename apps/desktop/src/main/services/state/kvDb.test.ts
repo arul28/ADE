@@ -372,6 +372,21 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     const first = await openKvDb(dbPath, createLogger() as any);
     insertProjectGraph(first);
     insertSessionAndPr(first);
+    // Old builds' schema retrofit stripped checked FK constraints from every
+    // non-CRR table, so a DB that an older build mis-converted to CRR has the
+    // FK-less shape on disk. Recreate that legacy shape here — the current
+    // retrofit intentionally no longer rewrites CRR-excluded tables, and
+    // crsql_as_crr refuses tables with checked foreign keys.
+    first.run("drop table pull_request_ai_summaries");
+    first.run(`
+      create table pull_request_ai_summaries (
+        pr_id text not null,
+        head_sha text not null,
+        summary_json text not null default '',
+        generated_at text not null default '',
+        primary key(pr_id, head_sha)
+      )
+    `);
     first.get("select crsql_as_crr(?)", ["pull_request_ai_summaries"]);
     first.run(
       `insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at)
@@ -428,7 +443,29 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
 
     // Simulate a DB written by an older build that incorrectly converted the
     // config-snapshot table to a CRR (installs triggers calling
-    // crsql_internal_sync_bit + clock/pks shadow tables).
+    // crsql_internal_sync_bit + clock/pks shadow tables). Older builds' schema
+    // retrofit had rewritten the table with a NOT NULL primary key and no FK
+    // lines, so recreate that legacy shape first — the current retrofit
+    // intentionally no longer rewrites CRR-excluded tables, and crsql_as_crr
+    // refuses nullable primary keys.
+    first.run("drop table process_definitions");
+    first.run(`
+      create table process_definitions (
+        id text not null primary key,
+        project_id text not null default '',
+        key text not null default '',
+        name text not null default '',
+        command_json text not null default '',
+        cwd text not null default '',
+        env_json text not null default '',
+        autostart integer not null default 0,
+        restart_policy text not null default '',
+        graceful_shutdown_ms integer not null default 0,
+        depends_on_json text not null default '',
+        readiness_json text not null default '',
+        updated_at text not null default ''
+      )
+    `);
     first.get("select crsql_as_crr(?)", ["process_definitions"]);
     first.run(
       `insert into process_definitions(
