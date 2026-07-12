@@ -1539,6 +1539,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat goal <session> --status paused       Update a Codex goal status
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
                                                     Start a new chat with an extra handoff note
+    $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
+                                                    Brief handoff into a different lane (same project)
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Fork full provider history into a new chat
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
@@ -6944,6 +6946,10 @@ function buildChatPlan(args: string[]): CliPlan {
         firstStandalonePositional(args),
       "targetModelId",
     );
+    const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
+    if (targetLaneId !== null && mode === "fork") {
+      throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
+    }
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const fastMode = readFastModeFlag(args);
     const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
@@ -6963,6 +6969,7 @@ function buildChatPlan(args: string[]): CliPlan {
             sourceSessionId: requireSession(),
             targetModelId,
             mode,
+            ...(targetLaneId !== null ? { targetLaneId } : {}),
             ...(reasoningEffort !== null ? { reasoningEffort } : {}),
             ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
             ...(permissionMode !== null ? { permissionMode } : {}),

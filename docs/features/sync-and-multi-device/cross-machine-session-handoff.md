@@ -60,7 +60,9 @@ ADE redacts common secret-shaped values and replaces source-only absolute reposi
 
 ## Fork mode
 
-Fork mode transports the provider-native session data needed to continue full history, plus ADE transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and ADE envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for ADE transcript envelopes. Encoded payloads also have independent bounds so validation can reject oversized input before decoding.
+Fork mode transports the provider-native session data needed to continue full history, plus ADE transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and ADE envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for ADE transcript envelopes. Encoded payloads also have independent base64 bounds so validation can reject oversized input before decoding.
+
+Beyond the per-part limits, the whole fork capsule's base64 payload is held under a single ~20 MiB transport budget so it fits inside the sync envelope and WebSocket payload caps (both 25 MiB). When the main history plus transcript already fit but the Claude sidecars would push the total over budget, the sidecar group is dropped and the main conversation still travels. When the main history plus transcript alone exceed the budget, ADE returns the same "too large" failure the 18 MiB main-file cap produces, so the source can offer a brief instead.
 
 Provider handling is explicit:
 
@@ -109,6 +111,8 @@ The transaction states are:
 `failed` retains any known lane/chat identifiers so retry can reconcile instead of restarting blindly.
 
 The chat session ID is deterministically derived from the handoff replay key. A retry therefore returns the same compatible chat. Lane import is reconciled by branch and exact commit. Destination acceptance is serialized by handoff ID, and the durable `dispatched` state is written only after the provider backend acknowledges the prompt; an optimistic user-message event is never treated as acknowledgement.
+
+Fork re-materialization is guarded by the same durable state. Installing the provider-native session files, calling the provider fork (`thread/fork`, `session.fork`, or the Claude resume rewrite), and seeding the ADE transcript envelopes run only when the record is not already `dispatched` or `complete`. A retry that finds the record past that point re-marks `dispatched` without importing again, so a resumed or reconnected fork never creates a duplicate forked thread or session. A fork whose continuation note is ADE's default sends no first turn — materializing the history and transcript is the continuation — and reaches `dispatched` directly; only a non-default note is dispatched as an acknowledged first user turn.
 
 This covers process restarts and mid-transfer disconnects at each boundary:
 
