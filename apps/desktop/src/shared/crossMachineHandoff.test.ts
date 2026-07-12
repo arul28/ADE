@@ -51,4 +51,33 @@ describe("cross-machine handoff boundaries", () => {
       reusedSession: false,
     })).toThrow(/destination chat lane is missing/i);
   });
+
+  it("passes fork handoff support through the preflight decoder and treats absence as absent", () => {
+    const base = {
+      providerAuthorized: true,
+      modelAvailable: true,
+      remoteBranchHeadSha: null,
+      existingLaneId: null,
+      blockingErrors: [],
+      warnings: [],
+    };
+    // Older ADE destinations omit the field entirely — it must stay absent so
+    // callers treat the machine as fork-unsupported.
+    expect(decodeCrossMachineDestinationPreflightResult(base)).not.toHaveProperty("forkHandoffSupport");
+    expect(decodeCrossMachineDestinationPreflightResult({
+      ...base,
+      forkHandoffSupport: { supported: true },
+    }).forkHandoffSupport).toEqual({ supported: true });
+    expect(decodeCrossMachineDestinationPreflightResult({
+      ...base,
+      forkHandoffSupport: { supported: false, reason: "Droid sessions aren't portable between machines yet" },
+    }).forkHandoffSupport).toEqual({
+      supported: false,
+      reason: "Droid sessions aren't portable between machines yet",
+    });
+    expect(() => decodeCrossMachineDestinationPreflightResult({
+      ...base,
+      forkHandoffSupport: { supported: "yes" },
+    })).toThrow(/fork handoff supported flag is invalid/i);
+  });
 });

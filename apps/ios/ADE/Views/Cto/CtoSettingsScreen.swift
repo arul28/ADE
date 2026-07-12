@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// CTO settings sheet: identity (name, personality, work style, model), a
+/// CTO settings sheet: identity, live model selection, a
 /// read-only Linear connection status, a "what the CTO remembers" memory
 /// summary, and an advanced re-run-onboarding action. Presented as a sheet
 /// from the CTO tab's gear button.
@@ -18,6 +18,9 @@ struct CtoSettingsScreen: View {
   @State private var isResettingOnboarding = false
   @State private var errorMessage: String?
   @State private var showingIdentityEditor = false
+  @State private var showingModelPicker = false
+  @State private var modelUpdateInFlight = false
+  @State private var ctoSession: AgentChatSessionSummary?
 
   init(snapshot: CtoSnapshot? = nil, onSnapshotChanged: @escaping (CtoSnapshot) -> Void) {
     _snapshot = State(initialValue: snapshot)
@@ -48,6 +51,7 @@ struct CtoSettingsScreen: View {
 
           if let snapshot {
             identitySection(snapshot)
+            modelSection(snapshot)
           }
 
           integrationsSection
@@ -75,6 +79,7 @@ struct CtoSettingsScreen: View {
           // Still refresh the side data (Linear, memory) even if identity was
           // seeded from the parent snapshot.
           await loadSideData()
+          await loadCtoSession()
           return
         }
         await reload()
@@ -85,6 +90,26 @@ struct CtoSettingsScreen: View {
           onSnapshotChanged(updated)
         }
         .environmentObject(syncService)
+      }
+      .sheet(isPresented: $showingModelPicker) {
+        WorkModelPickerSheet(
+          currentModelId: currentModelId,
+          currentProvider: currentProvider,
+          currentReasoningEffort: currentReasoningEffort,
+          currentCodexFastMode: currentFastMode,
+          lanes: [],
+          commandScope: .project,
+          isBusy: modelUpdateInFlight,
+          onSelect: { option, reasoningEffort, _, fastMode in
+            Task { @MainActor in
+              await updateModel(
+                modelId: option.id,
+                reasoningEffort: reasoningEffort ?? "",
+                fastMode: option.supportsCodexFastMode ? fastMode : false
+              )
+            }
+          }
+        )
       }
     }
   }
@@ -100,6 +125,126 @@ struct CtoSettingsScreen: View {
         onEdit: { showingIdentityEditor = true }
       )
     }
+  }
+
+  // MARK: - Model
+
+  private func modelSection(_ snapshot: CtoSnapshot) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      SectionHeader(title: "Model")
+      Button {
+        showingModelPicker = true
+      } label: {
+        HStack(spacing: 12) {
+          Image(systemName: "cpu")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.ctoAccent)
+            .frame(width: 32, height: 32)
+            .background(
+              ADEColor.ctoAccent.opacity(0.12),
+              in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+
+          VStack(alignment: .leading, spacing: 2) {
+            Text(prettyWorkChatModelName(currentModelId))
+              .font(.system(size: 13.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Text(modelDetailText(snapshot))
+              .font(.system(size: 10.5, design: .monospaced))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+
+          Spacer(minLength: 8)
+
+          if modelUpdateInFlight {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(modelUpdateInFlight)
+      .accessibilityLabel("Change CTO model")
+      .adeListCard(padding: 0)
+    }
+  }
+
+  private var currentModelId: String {
+    ctoSession?.modelId
+      ?? ctoSession?.model
+      ?? snapshot?.identity.modelPreferences.model
+      ?? ""
+  }
+
+  private var currentProvider: String {
+    ctoSession?.provider
+      ?? snapshot?.identity.modelPreferences.provider
+      ?? "claude"
+  }
+
+  private var currentReasoningEffort: String {
+    ctoSession?.reasoningEffort
+      ?? snapshot?.identity.modelPreferences.reasoningEffort
+      ?? ""
+  }
+
+  private var currentFastMode: Bool {
+    ctoSession?.effectiveFastMode ?? false
+  }
+
+  private func modelDetailText(_ snapshot: CtoSnapshot) -> String {
+    var details = [currentProvider]
+    if !currentReasoningEffort.isEmpty {
+      details.append(currentReasoningEffort)
+    }
+    if currentFastMode {
+      details.append("fast")
+    }
+    return details.isEmpty
+      ? snapshot.identity.modelPreferences.model
+      : details.joined(separator: " · ")
+  }
+
+  @MainActor
+  private func updateModel(modelId: String, reasoningEffort: String, fastMode: Bool) async {
+    guard !modelUpdateInFlight else { return }
+    modelUpdateInFlight = true
+    errorMessage = nil
+    defer { modelUpdateInFlight = false }
+
+    do {
+      let session = try await currentCtoSession()
+      _ = try await syncService.updateChatSession(
+        sessionId: session.sessionId,
+        modelId: modelId,
+        reasoningEffort: reasoningEffort,
+        codexFastMode: fastMode
+      )
+      ctoSession = try await syncService.ensureCtoSession()
+      let updated = try await syncService.fetchCtoState()
+      snapshot = updated
+      onSnapshotChanged(updated)
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+  }
+
+  @MainActor
+  private func currentCtoSession() async throws -> AgentChatSessionSummary {
+    if let ctoSession { return ctoSession }
+    let ensured = try await syncService.ensureCtoSession()
+    ctoSession = ensured
+    return ensured
   }
 
   // MARK: - Integrations (read-only)
@@ -207,6 +352,16 @@ struct CtoSettingsScreen: View {
       }
     }
     await loadSideData()
+    await loadCtoSession()
+  }
+
+  /// The live CTO chat is the source of truth for model, reasoning, and fast
+  /// mode. Keep identity preferences as an offline fallback, but do not let a
+  /// failed session refresh make the rest of CTO settings unusable.
+  private func loadCtoSession() async {
+    if let session = try? await syncService.ensureCtoSession() {
+      ctoSession = session
+    }
   }
 
   /// Linear status + memory. Both tolerate failure: Linear falls back to

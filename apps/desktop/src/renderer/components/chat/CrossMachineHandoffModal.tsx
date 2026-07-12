@@ -8,6 +8,7 @@ import {
   CloudArrowUp,
   Desktop,
   GitBranch,
+  GitFork,
   HardDrives,
   LockKey,
   ShieldWarning,
@@ -19,6 +20,7 @@ import type {
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineTargetConfig,
   AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatProvider,
   GitUpstreamSyncStatus,
   LaneSummary,
   RemoteRuntimeConnectionStatus,
@@ -31,6 +33,10 @@ import {
   normalizeGitRemoteIdentity,
   requireRemoteRuntimeRouteKind,
 } from "../../../shared/crossMachineHandoff";
+import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
+import type { ProviderFamily } from "../../../shared/modelRegistry";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { cn } from "../ui/cn";
 
 type SourceCheck = {
@@ -44,6 +50,32 @@ type SourceCheck = {
 };
 
 type ModalStage = "choose" | "clone" | "review" | "sending" | "complete";
+type HandoffMode = "brief" | "fork";
+
+type ForkHandoffSupport = { supported: boolean; reason?: string };
+
+function providerDisplayLabel(provider: AgentChatProvider | null | undefined): string {
+  return providerDisplayLabelShared(provider, "This chat");
+}
+
+/**
+ * Prepare errors that mean "this chat can't fork, but a brief always can" — the
+ * source history is over the transport cap ("too large"), or the provider's
+ * native session file can't be forked at all (e.g. a Codex `.zst` rollout). Both
+ * get the one-click brief fallback; the plain-language reason differs by cause.
+ */
+function forkFallbackReasonForPrepareError(message: string): string | null {
+  if (/too large|too big/i.test(message)) {
+    return "This chat's history is too big to send — a brief works everywhere.";
+  }
+  if (/can'?t be forked|cannot be forked|not forkable/i.test(message)) {
+    return "This chat's history can't be forked — a brief works everywhere.";
+  }
+  if (/aren'?t portable|not portable/i.test(message)) {
+    return "This chat's history can't move between machines — a brief works everywhere.";
+  }
+  return null;
+}
 
 const EMPTY_SOURCE_CHECK: SourceCheck = {
   lane: null,
@@ -121,7 +153,13 @@ export function CrossMachineHandoffModal({
   open,
   sourceSessionId,
   sourceLaneId,
+  sourceProvider,
   target,
+  modelId,
+  onModelChange,
+  availableModelIds,
+  forkAvailableModelIds,
+  onOpenSignIn,
   turnActive,
   awaitingInput,
   onStopTurn,
@@ -131,7 +169,16 @@ export function CrossMachineHandoffModal({
   open: boolean;
   sourceSessionId: string;
   sourceLaneId: string;
+  /** Source chat provider; drives whether forking history is offered. */
+  sourceProvider?: AgentChatProvider | null;
   target: AgentChatCrossMachineTargetConfig;
+  /** Destination model for the new chat; the modal owns this choice now. */
+  modelId?: string;
+  onModelChange?: (modelId: string) => void;
+  availableModelIds?: string[];
+  /** Same-provider models offered when forking (fork must stay on one provider). */
+  forkAvailableModelIds?: string[];
+  onOpenSignIn?: (family?: ProviderFamily) => void;
   turnActive: boolean;
   awaitingInput: boolean;
   onStopTurn: () => Promise<void>;
@@ -154,6 +201,17 @@ export function CrossMachineHandoffModal({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentChatAcceptCrossMachineHandoffResult | null>(null);
   const [sourceMarkerWarning, setSourceMarkerWarning] = useState<string | null>(null);
+  const sourceProviderSupportsFork = providerSupportsHandoffFork(sourceProvider);
+  const [mode, setMode] = useState<HandoffMode>(sourceProviderSupportsFork ? "fork" : "brief");
+  // Destination fork capability, learned only after preflight. `null` = not yet
+  // checked; absent field on the response resolves to { supported: false }.
+  const [forkHandoffSupport, setForkHandoffSupport] = useState<ForkHandoffSupport | null>(null);
+  // Plain reason the current fork attempt fell back to brief (oversize history or
+  // an older/unsupported destination); drives the one-click "send as brief" offer.
+  const [forkFallbackReason, setForkFallbackReason] = useState<string | null>(null);
+  const providerLabel = providerDisplayLabel(sourceProvider);
+  const forkModelIds = forkAvailableModelIds ?? availableModelIds;
+  const modelIdsForMode = mode === "fork" ? forkModelIds : availableModelIds;
 
   const selectedConnection = useMemo(
     () => connections.find((connection) => connection.target.id === selectedTargetId) ?? null,
@@ -232,8 +290,11 @@ export function CrossMachineHandoffModal({
     setRouteApproved(false);
     setResult(null);
     setSourceMarkerWarning(null);
+    setMode(sourceProvider === "droid" ? "brief" : (sourceProviderSupportsFork ? "fork" : "brief"));
+    setForkHandoffSupport(null);
+    setForkFallbackReason(null);
     void loadInitial();
-  }, [loadInitial, open]);
+  }, [loadInitial, open, sourceProvider, sourceProviderSupportsFork]);
 
   useEffect(() => {
     if (!open) return;
@@ -262,6 +323,7 @@ export function CrossMachineHandoffModal({
     connection: RemoteRuntimeConnectionStatus,
     project: RemoteRuntimeProjectRecord,
     handoff: AgentChatPrepareCrossMachineHandoffResult,
+    requestedMode: HandoffMode,
   ) => {
     const response = await window.ade.remoteRuntime.callAction(connection.target.id, project.projectId, {
       domain: "chat",
@@ -270,16 +332,27 @@ export function CrossMachineHandoffModal({
         targetModelId: handoff.capsule.target.targetModelId,
         sourceBranchRef: handoff.capsule.source.branchRef,
         sourceHeadSha: handoff.capsule.source.headSha,
+        mode: requestedMode,
+        ...(sourceProvider ? { sourceProvider } : {}),
       },
     });
     const next = decodeCrossMachineDestinationPreflightResult(response.result);
+    // Absent field = older destination that predates fork handoff.
+    const forkSupport = requestedMode === "fork"
+      ? (next.forkHandoffSupport
+        ?? { supported: false, reason: "That machine needs an ADE update for fork handoff." })
+      : null;
     setDestinationPreflight(next);
+    setForkHandoffSupport(forkSupport);
+    if (requestedMode === "fork" && forkSupport && !forkSupport.supported) {
+      setForkFallbackReason(forkSupport.reason ?? "That machine needs an ADE update for fork handoff.");
+    }
     setDestinationProject(project);
     setStage("review");
     return next;
-  }, []);
+  }, [sourceProvider]);
 
-  const prepareDestination = useCallback(async () => {
+  const prepareDestination = useCallback(async (requestedMode: HandoffMode = mode) => {
     if (!selectedConnection || sourceCheck.blockingErrors.length || sourceCheck.needsPush) return;
     if (turnActive || awaitingInput) {
       setError(turnActive
@@ -287,13 +360,15 @@ export function CrossMachineHandoffModal({
         : "Resolve the current approval or question before preparing the handoff.");
       return;
     }
-    setBusyLabel("Building a bounded handoff brief…");
+    setBusyLabel(requestedMode === "fork" ? "Packaging this chat's history…" : "Preparing the handoff…");
     setError(null);
+    setForkFallbackReason(null);
     try {
       const handoff = await window.ade.agentChat.prepareCrossMachineHandoff({
         sourceSessionId,
         handoffId: crypto.randomUUID(),
         continuationPrompt,
+        mode: requestedMode,
         ...target,
       });
       setPrepared(handoff);
@@ -301,7 +376,7 @@ export function CrossMachineHandoffModal({
       const sourceOrigin = normalizeGitRemoteIdentity(handoff.capsule.source.originUrl);
       const matchingProject = projects.find((project) => normalizeGitRemoteIdentity(project.gitOriginUrl) === sourceOrigin) ?? null;
       if (matchingProject) {
-        await runDestinationPreflight(selectedConnection, matchingProject, handoff);
+        await runDestinationPreflight(selectedConnection, matchingProject, handoff, requestedMode);
         return;
       }
       if (!sourceOrigin?.startsWith("github.com/")) {
@@ -318,13 +393,23 @@ export function CrossMachineHandoffModal({
       setStoragePreflight(storage);
       setStage("clone");
     } catch (prepareError) {
-      setError(prepareError instanceof Error ? prepareError.message : String(prepareError));
+      const message = prepareError instanceof Error ? prepareError.message : String(prepareError);
+      // A fork that can't be packaged (oversize, or an unforkable provider file)
+      // still works as a brief — offer the one-click swap instead of a dead end.
+      const fallbackReason = requestedMode === "fork" ? forkFallbackReasonForPrepareError(message) : null;
+      if (fallbackReason) {
+        setForkFallbackReason(fallbackReason);
+        setError(null);
+      } else {
+        setError(message);
+      }
     } finally {
       setBusyLabel(null);
     }
   }, [
     awaitingInput,
     continuationPrompt,
+    mode,
     runDestinationPreflight,
     selectedConnection,
     sourceCheck.blockingErrors.length,
@@ -333,6 +418,36 @@ export function CrossMachineHandoffModal({
     target,
     turnActive,
   ]);
+
+  const switchMode = useCallback((next: HandoffMode) => {
+    setMode(next);
+    setPrepared(null);
+    setDestinationProject(null);
+    setDestinationPreflight(null);
+    setForkHandoffSupport(null);
+    setForkFallbackReason(null);
+    setStoragePreflight(null);
+    setCloneApproved(false);
+    setError(null);
+    if (next === "fork" && modelId && forkModelIds && forkModelIds.length > 0 && !forkModelIds.includes(modelId)) {
+      onModelChange?.(forkModelIds[0]!);
+    }
+  }, [forkModelIds, modelId, onModelChange]);
+
+  // One-click recovery: drop to a brief and re-run prepare + preflight. Used both
+  // when the source history is too big and when the destination can't fork.
+  const sendAsBrief = useCallback(() => {
+    setStage("choose");
+    setMode("brief");
+    setForkHandoffSupport(null);
+    setForkFallbackReason(null);
+    setPrepared(null);
+    setDestinationProject(null);
+    setDestinationPreflight(null);
+    setStoragePreflight(null);
+    setCloneApproved(false);
+    void prepareDestination("brief");
+  }, [prepareDestination]);
 
   const publishBranch = useCallback(async () => {
     setBusyLabel("Publishing source branch…");
@@ -360,7 +475,7 @@ export function CrossMachineHandoffModal({
         parentDir: storagePreflight.parentDir,
         name: repoNameFromRemote(prepared.capsule.source.originUrl),
       }, { credentialMode: "destination_only" });
-      await runDestinationPreflight(selectedConnection, project, prepared);
+      await runDestinationPreflight(selectedConnection, project, prepared, mode);
     } catch (cloneError) {
       const expectedOrigin = normalizeGitRemoteIdentity(prepared.capsule.source.originUrl);
       try {
@@ -369,7 +484,7 @@ export function CrossMachineHandoffModal({
           normalizeGitRemoteIdentity(project.gitOriginUrl) === expectedOrigin,
         ) ?? null;
         if (recovered) {
-          await runDestinationPreflight(selectedConnection, recovered, prepared);
+          await runDestinationPreflight(selectedConnection, recovered, prepared, mode);
           return;
         }
       } catch {
@@ -380,7 +495,7 @@ export function CrossMachineHandoffModal({
     } finally {
       setBusyLabel(null);
     }
-  }, [cloneApproved, prepared, runDestinationPreflight, selectedConnection, storagePreflight]);
+  }, [cloneApproved, mode, prepared, runDestinationPreflight, selectedConnection, storagePreflight]);
 
   const markSource = useCallback(async (
     accepted: AgentChatAcceptCrossMachineHandoffResult,
@@ -456,8 +571,15 @@ export function CrossMachineHandoffModal({
   if (!open) return null;
 
   const hasSourceBlock = sourceCheck.blockingErrors.length > 0;
-  const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length);
+  // A fork prepared against a destination that can't fork must not send as-is;
+  // the user switches to a brief (one click) or backs out.
+  const forkUnsupportedAtReview = mode === "fork" && forkHandoffSupport != null && !forkHandoffSupport.supported;
+  const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length) || forkUnsupportedAtReview;
   const routeNeedsApproval = isInsecureRoute(selectedConnection);
+  const reviewIsFork = prepared?.capsule.mode === "fork";
+  const insecureConsentLine = reviewIsFork
+    ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
+    : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
   return (
     <div
@@ -480,10 +602,10 @@ export function CrossMachineHandoffModal({
             </div>
             <div className="min-w-0">
               <h2 id="cross-machine-handoff-title" className="font-sans text-[14px] font-semibold text-fg/92">
-                Send chat to another machine
+                Continue on another computer
               </h2>
               <p className="mt-1 text-[11px] leading-4 text-fg/48">
-                ADE publishes the exact source commit, recreates the lane, and starts a new chat from a bounded brief.
+                Continue this chat on one of your other computers. ADE copies your branch over and starts a new chat where this one left off.
               </p>
             </div>
           </div>
@@ -535,26 +657,60 @@ export function CrossMachineHandoffModal({
           ) : null}
 
           {stage === "choose" ? (
-            <div className="grid gap-5 md:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+            <div className="space-y-5">
+              <div>
+                <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
+                  {([
+                    { value: "fork" as const, label: "Fork", disabled: !sourceProviderSupportsFork },
+                    { value: "brief" as const, label: "Brief", disabled: false },
+                  ]).map(({ value, label, disabled }) => {
+                    const active = mode === value;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={disabled}
+                        aria-pressed={active}
+                        onClick={() => switchMode(value)}
+                        className={cn(
+                          "flex-1 rounded-md px-3 py-1.5 font-sans text-[11px] font-semibold transition-colors",
+                          active ? "bg-sky-400/[0.14] text-sky-50 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.28)]" : "text-fg/52 hover:text-fg/78",
+                          disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-1.5 text-[10px] leading-4 text-fg/46">
+                  {!sourceProviderSupportsFork
+                    ? `${providerLabel} can't fork chat history — send a brief instead.`
+                    : mode === "fork"
+                      ? "Sends the full history so the new chat picks up exactly where this one left off."
+                      : "Sends a short summary; the new chat starts fresh from it."}
+                </div>
+              </div>
+              <div className="grid gap-5 md:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
               <div className="space-y-3">
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">1 · Source readiness</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Nothing is transferred until every source check passes.</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Get this machine ready</div>
+                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Your work needs to be committed and pushed so the other machine can pick it up.</div>
                 </div>
                 {loading ? <CheckRow label="Inspecting source lane" detail="Checking Git state and publication" state="pending" /> : (
                   <>
                     <CheckRow
                       label="Working tree"
-                      detail={sourceCheck.lane?.status.dirty ? "Uncommitted files must be committed or discarded" : "No uncommitted source changes"}
+                      detail={sourceCheck.lane?.status.dirty ? "Commit or discard your changes first" : "No uncommitted changes"}
                       state={sourceCheck.lane?.status.dirty ? "error" : sourceCheck.lane ? "ok" : "pending"}
                     />
                     <CheckRow
                       label="Remote branch"
-                      detail={sourceCheck.needsPush ? "The source branch still needs to be published" : sourceCheck.branch ? `${sourceCheck.branch} is published` : "Branch unavailable"}
+                      detail={sourceCheck.needsPush ? "This branch still needs to be pushed" : sourceCheck.branch ? `${sourceCheck.branch} is pushed` : "Branch unavailable"}
                       state={sourceCheck.needsPush ? "warn" : sourceCheck.branch ? "ok" : "error"}
                     />
                     <CheckRow
-                      label="Repository identity"
+                      label="Repository"
                       detail={sourceCheck.originUrl ? normalizeGitRemoteIdentity(sourceCheck.originUrl) ?? sourceCheck.originUrl : "No origin remote configured"}
                       state={sourceCheck.originUrl ? "ok" : "error"}
                     />
@@ -597,8 +753,8 @@ export function CrossMachineHandoffModal({
 
               <div className="space-y-3">
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">2 · Destination</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Choose a connected ADE machine with a compatible runtime.</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Choose a machine</div>
+                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Computers connected to ADE appear here.</div>
                 </div>
                 <div className="space-y-2">
                   {eligibleConnections.map((connection) => {
@@ -645,19 +801,54 @@ export function CrossMachineHandoffModal({
                     </div>
                   ) : null}
                 </div>
+                {onModelChange && modelId != null ? (
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Model for the new chat</span>
+                    <div>
+                      <ModelPicker
+                        value={modelId}
+                        onChange={onModelChange}
+                        surfaceKey="cross-machine-handoff"
+                        compact
+                        {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
+                        {...(mode === "fork" ? { constrainToAvailableModelIds: true } : {})}
+                        {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                      />
+                    </div>
+                    {mode === "fork" ? (
+                      <span className="text-[10px] leading-4 text-fg/40">Forked history stays with {providerLabel}; any {providerLabel} model is fine.</span>
+                    ) : null}
+                  </div>
+                ) : null}
                 <label className="block">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Continuation note</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Note for the new chat</span>
                   <textarea
                     value={continuationPrompt}
                     onChange={(event) => setContinuationPrompt(event.target.value)}
                     maxLength={4000}
                     rows={4}
-                    placeholder="Optional. ADE will otherwise tell the destination chat to continue from the handoff brief."
+                    placeholder={mode === "fork"
+                      ? "Optional. Tell the new chat what to do next; otherwise it just keeps going from the full history."
+                      : "Optional. Tell the new chat what to do next; otherwise it just continues from the summary."}
                     className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-white/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
                   />
                   <span className="mt-1 block text-right text-[9px] text-fg/28">{continuationPrompt.length} / 4,000</span>
                 </label>
               </div>
+              </div>
+              {forkFallbackReason ? (
+                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
+                  <div className="text-[10.5px] leading-4 text-amber-100/80">{forkFallbackReason}</div>
+                  <button
+                    type="button"
+                    disabled={Boolean(busyLabel)}
+                    onClick={sendAsBrief}
+                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
+                  >
+                    Send as brief instead
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -667,7 +858,7 @@ export function CrossMachineHandoffModal({
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Repository setup</div>
                 <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Clone on {selectedConnection.target.name}?</h3>
                 <p className="mt-1 text-[11px] leading-5 text-fg/48">
-                  ADE did not find this repository in the destination project registry. It can clone the published origin before creating the lane.
+                  This repository isn&rsquo;t on {selectedConnection.target.name} yet. ADE will clone it there first.
                 </p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
@@ -683,7 +874,7 @@ export function CrossMachineHandoffModal({
               ))}
               {routeNeedsApproval ? (
                 <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {routeLabel(selectedConnection)} is authenticated, but ADE does not provide end-to-end transport encryption on this route. The capsule excludes secrets and full provider history.
+                  {insecureConsentLine}
                 </div>
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
@@ -694,7 +885,7 @@ export function CrossMachineHandoffModal({
                   className="mt-0.5 accent-sky-400"
                 />
                 <span className="text-[10px] leading-4 text-fg/58">
-                  Clone the repository and create local ADE metadata on {selectedConnection.target.name}. No source secrets, caches, terminals, or uncommitted files will be copied.
+                  Clone the repository on {selectedConnection.target.name}. Nothing uncommitted or secret leaves this machine.
                 </span>
               </label>
             </div>
@@ -705,13 +896,28 @@ export function CrossMachineHandoffModal({
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Final review</div>
                 <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Ready to continue on {selectedConnection.target.name}</h3>
-                <p className="mt-1 text-[11px] leading-5 text-fg/48">ADE rechecks these conditions when you send. A retry uses the same handoff ID, so it cannot create duplicate lanes or chats.</p>
+                <p className="mt-1 text-[11px] leading-5 text-fg/48">ADE double-checks everything when you send. Retrying is safe — it never creates duplicates.</p>
               </div>
+              {forkUnsupportedAtReview ? (
+                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
+                  <div className="text-[10.5px] leading-4 text-amber-100/80">
+                    {forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff."}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={Boolean(busyLabel)}
+                    onClick={sendAsBrief}
+                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
+                  >
+                    Send as brief instead
+                  </button>
+                </div>
+              ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
-                <CheckRow label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Destination project ready"} state="ok" />
+                <CheckRow label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
                 <CheckRow label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
-                <CheckRow label="Model access" detail={destinationPreflight.modelAvailable ? "Destination model and provider are available" : "Destination model access is missing"} state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"} />
-                <CheckRow label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Create a new lane from the remote branch"} state="ok" />
+                <CheckRow label="Model access" detail={destinationPreflight.modelAvailable ? "The model is available there" : "That model isn't available there yet"} state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"} />
+                <CheckRow label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
               {destinationPreflight.warnings.map((message) => (
                 <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
@@ -721,25 +927,37 @@ export function CrossMachineHandoffModal({
               ))}
               <div className="rounded-xl border border-white/[0.065] bg-white/[0.025] p-3">
                 <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/42">
-                  <HardDrives size={13} /> Portable context only
+                  <HardDrives size={13} /> What gets sent
                 </div>
                 <div className="mt-2 grid gap-x-6 gap-y-1 text-[10px] leading-4 text-fg/48 sm:grid-cols-2">
-                  <span>Included: bounded brief and recent file/command/error references</span>
-                  <span>Included: branch, exact commit, model settings, and user note</span>
-                  <span>Excluded: provider-native session IDs and full transcripts</span>
-                  <span>Excluded: secrets, terminals, caches, and local artifacts</span>
+                  {reviewIsFork ? (
+                    <>
+                      <span>Sent: the full conversation history</span>
+                      <span>Sent: the branch and commit, plus your note</span>
+                      <span>The history is sent exactly as recorded — anything pasted into this conversation is included.</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Sent: a short summary of this chat</span>
+                      <span>Sent: the branch and commit, plus your note</span>
+                      <span>Never sent: secrets, terminals, and caches</span>
+                      <span>Never sent: the raw transcript</span>
+                    </>
+                  )}
                 </div>
                 {prepared.sanitizedSensitiveContext ? (
                   <div className="mt-2 flex items-center gap-1.5 text-[10px] leading-4 text-emerald-200/65">
-                    <CheckCircle size={12} weight="fill" /> ADE removed detected secret-shaped values or source-only absolute paths from the capsule.
+                    <CheckCircle size={12} weight="fill" /> {reviewIsFork
+                      ? "ADE removed secret-shaped values from your note."
+                      : "ADE removed detected secret-shaped values or source-only absolute paths from the summary."}
                   </div>
                 ) : null}
               </div>
               {routeNeedsApproval ? (
                 <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5">
                   <input type="checkbox" checked={routeApproved} onChange={(event) => setRouteApproved(event.target.checked)} className="mt-0.5 accent-amber-400" />
-                  <span className="text-[10px] leading-4 text-amber-100/72">
-                    I understand {routeLabel(selectedConnection)} is authenticated but not end-to-end encrypted by ADE, and I want to send this bounded capsule.
+                  <span className="text-[10px] leading-4 text-amber-100/72" data-testid="insecure-consent-review">
+                    {insecureConsentLine}
                   </span>
                 </label>
               ) : null}
@@ -757,7 +975,7 @@ export function CrossMachineHandoffModal({
           <div className="min-w-0 text-[10px] text-fg/38">
             {busyLabel ? (
               <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
-            ) : stage === "choose" ? "Source data stays untouched until final confirmation." : stage === "complete" ? "The source chat remains available." : "Retry is safe after a disconnect."}
+            ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {stage === "clone" || stage === "review" ? (
@@ -785,7 +1003,7 @@ export function CrossMachineHandoffModal({
                 onClick={() => void prepareDestination()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 transition-colors hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Review destination <ArrowRight size={12} />
+                Continue <ArrowRight size={12} />
               </button>
             ) : null}
             {stage === "clone" ? (
@@ -805,7 +1023,7 @@ export function CrossMachineHandoffModal({
                 onClick={() => void sendHandoff()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Send and continue <ArrowRight size={12} />
+                Send chat <ArrowRight size={12} />
               </button>
             ) : null}
             {stage === "complete" ? (

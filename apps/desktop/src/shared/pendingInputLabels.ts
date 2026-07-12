@@ -28,6 +28,30 @@ export function providerDisplayName(source: string | null | undefined): string {
     .join(" ");
 }
 
+const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  droid: "Droid",
+  opencode: "OpenCode",
+};
+
+export function providerDisplayLabel(
+  provider: string | null | undefined,
+  fallback: string,
+): string {
+  const key = (provider ?? "").trim().toLowerCase();
+  if (!key) return fallback;
+  const known = CHAT_PROVIDER_DISPLAY_NAMES[key];
+  if (known) return known;
+  return key
+    .replace(/[-_]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 // One-line header label for a pending input, derived from the source + kind.
 // Questions read "{Provider} asks"; plans read "{Provider} · Plan ready".
 // This replaces the old "Input needed · {source}" + "Question from {provider}"

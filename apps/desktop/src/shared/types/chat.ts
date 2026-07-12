@@ -1727,10 +1727,31 @@ export type AgentChatLaunchCliResult = {
 
 export type AgentChatRuntimeMode = "interactive" | "print";
 
+/**
+ * Providers whose runtime exposes a native "fork this thread" operation that
+ * ADE can drive for local handoff: Claude (SDK `resume` + `forkSession`),
+ * Codex (app-server `thread/fork`), OpenCode (`POST /session/{id}/fork`), and
+ * Droid (SDK `droid.fork_session`). Cursor has no fork surface (resume only),
+ * so Cursor handoffs are brief-only. Fork requires source and target on the
+ * same provider; the model may still change within that provider.
+ */
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid"] as const;
+
+export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
+  return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
+}
+
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
   mode?: "brief" | "fork";
+  /**
+   * Lane for the new chat. Brief handoffs may target any lane in the same
+   * project (the renderer creates a new lane first when the user picks
+   * "new lane"). Fork handoffs must stay in the source lane because provider
+   * transcripts are keyed to the lane worktree; a differing value is rejected.
+   */
+  targetLaneId?: string | null;
   /** Optional user-authored note appended to the handoff prompt. Blank notes are ignored. */
   handoffNote?: string | null;
   /**
@@ -1801,12 +1822,49 @@ export type AgentChatCrossMachineHandoffCapsule = {
     url: string | null;
   }>;
   continuationPrompt: string;
+  /**
+   * Absent = brief (v1 capsules). Fork capsules carry the provider-native
+   * session history in `forkTransport` and the ADE transcript in
+   * `transcriptEnvelopes`. Fork is only sent to destinations whose preflight
+   * advertised `forkHandoffSupport.supported`, so older ADE builds never
+   * silently downgrade a fork to a brief.
+   */
+  mode?: "brief" | "fork";
+  forkTransport?: AgentChatCrossMachineForkTransport;
+  transcriptEnvelopes?: {
+    /** Gzipped JSONL of AgentChatEventEnvelope lines, base64-encoded. */
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+    /** True when older events were dropped to fit the transport cap. */
+    truncated: boolean;
+  };
+};
+
+/** Provider-native session files shipped inside a fork-mode capsule. */
+export type AgentChatCrossMachineForkTransport = {
+  provider: AgentChatProvider;
+  /** Source provider session/thread id the destination forks from. */
+  nativeSessionId: string;
+  kind: "claude-jsonl" | "codex-rollout" | "opencode-export" | "droid-jsonl";
+  mainFile: {
+    name: string;
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+  };
+  /** Claude subagent/tool-result sidecars, Droid settings sidecar, etc. */
+  sideFiles?: Array<{
+    relPath: string;
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+  }>;
 };
 
 export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
   sourceSessionId: string;
   handoffId: string;
   continuationPrompt?: string | null;
+  /** Absent = brief. */
+  mode?: "brief" | "fork";
 };
 
 export type AgentChatPrepareCrossMachineHandoffResult = {
@@ -1826,6 +1884,10 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
   targetModelId: ModelId;
   sourceBranchRef: string;
   sourceHeadSha: string;
+  /** Absent = brief (older sources). */
+  mode?: "brief" | "fork";
+  /** Source chat provider, required for fork-support evaluation. */
+  sourceProvider?: AgentChatProvider;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -1835,6 +1897,14 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
   existingLaneId: string | null;
   blockingErrors: string[];
   warnings: string[];
+  /**
+   * Absent on older ADE destinations — the source must treat that as
+   * fork-unsupported ("that machine needs an ADE update").
+   */
+  forkHandoffSupport?: {
+    supported: boolean;
+    reason?: string;
+  };
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {

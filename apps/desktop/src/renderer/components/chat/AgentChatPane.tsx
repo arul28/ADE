@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { CircleNotch, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CaretRight, CircleNotch, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -48,6 +48,8 @@ import {
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
+import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
   buildChatContextAttachmentPrompt,
@@ -133,7 +135,7 @@ import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoIt
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
-import { findUserMessageForTurn, resolveTurnActive } from "./chatTurnState";
+import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
@@ -239,6 +241,76 @@ const AUTO_CREATE_LANE_OPTION = {
   color: null,
   branchRef: null,
 };
+
+function handoffProviderDisplayName(provider: string | null | undefined): string {
+  return providerDisplayLabel(provider, "this provider");
+}
+
+/**
+ * One of the two landing cards on the handoff tab (remote / local). Rich icon
+ * plate + a single line of copy; the parent owns the disabled/gated states.
+ */
+function HandoffMenuCard({
+  tone,
+  icon: Icon,
+  title,
+  description,
+  footnote,
+  disabled,
+  onClick,
+}: {
+  tone: "remote" | "local";
+  icon: Icon;
+  title: string;
+  description: string;
+  footnote?: string | null;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const toneCls = tone === "remote"
+    ? {
+        border: "border-sky-300/18",
+        wash: "bg-[linear-gradient(150deg,rgba(56,189,248,0.10),rgba(255,255,255,0.014)_62%)]",
+        hover: "hover:border-sky-300/34 hover:bg-[linear-gradient(150deg,rgba(56,189,248,0.17),rgba(255,255,255,0.02)_62%)]",
+        plate: "border-sky-300/24 bg-sky-400/12 text-sky-100",
+      }
+    : {
+        border: "border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)]",
+        wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_13%,transparent),rgba(255,255,255,0.014)_62%)]",
+        hover:
+          "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_20%,transparent),rgba(255,255,255,0.02)_62%)]",
+        plate:
+          "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_15%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white)]",
+      };
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      className={cn(
+        "group flex w-full items-start gap-3 rounded-xl border px-3.5 py-3.5 text-left transition-all",
+        toneCls.border,
+        toneCls.wash,
+        disabled ? "cursor-not-allowed opacity-55" : cn("cursor-pointer", toneCls.hover),
+      )}
+    >
+      <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg border", toneCls.plate)}>
+        <Icon size={18} weight="duotone" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[12.5px] font-semibold text-fg/88">{title}</div>
+        <div className="mt-1 text-[11px] leading-4 text-fg/52">{description}</div>
+        {footnote ? <div className="mt-1.5 text-[10px] leading-4 text-fg/40">{footnote}</div> : null}
+      </div>
+      {!disabled ? (
+        <CaretRight
+          size={13}
+          className="mt-0.5 shrink-0 text-fg/28 transition-transform group-hover:translate-x-0.5 group-hover:text-fg/45"
+        />
+      ) : null}
+    </button>
+  );
+}
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
@@ -2779,6 +2851,7 @@ export function AgentChatPane({
   lockSessionId,
   hideSessionTabs = false,
   hideNativeControls = false,
+  hideModelControls = false,
   hideWorkspaceChrome = false,
   hideSurfaceHeader = false,
   hideLaneToolDrawers = false,
@@ -2824,6 +2897,8 @@ export function AgentChatPane({
   lockSessionId?: string | null;
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
+  /** Hide model/reasoning/fast controls when the embedding surface owns them. */
+  hideModelControls?: boolean;
   hideWorkspaceChrome?: boolean;
   /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
   hideSurfaceHeader?: boolean;
@@ -3325,6 +3400,16 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  // Two-view handoff tab: the landing menu (remote vs local) and the local
+  // handoff surface (fork | brief). Both reset each time the tab is opened.
+  const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
+  const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
+  // Brief handoffs may target a different lane (or a freshly created one); fork
+  // always stays in the source lane. Seeded to the current lane on tab open.
+  const [handoffTargetLaneId, setHandoffTargetLaneId] = useState<string>("");
+  // Cross-machine modal owns its own model selection now that the menu no
+  // longer preselects one; defaulted to the source session model on tab open.
+  const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
@@ -4886,11 +4971,19 @@ export function AgentChatPane({
     () => (handoffTargetDescriptor ? resolveProviderGroupForModel(handoffTargetDescriptor) : null),
     [handoffTargetDescriptor],
   );
-  const handoffSupportsFullHistoryFork = Boolean(
-    handoffTargetProvider
-      && selectedSession?.provider === handoffTargetProvider
-      && (handoffTargetProvider === "claude" || handoffTargetProvider === "codex"),
-  );
+  // Whether the SOURCE provider exposes a native fork surface at all (claude,
+  // codex, opencode, droid). Fork keeps the target in the same provider — the
+  // model may still change within it — so the fork model picker is constrained
+  // to same-provider models below.
+  const handoffForkSupported = providerSupportsHandoffFork(selectedSession?.provider);
+  const handoffForkAvailableModelIds = useMemo(() => {
+    const sourceProvider = selectedSession?.provider;
+    if (!sourceProvider) return [] as string[];
+    return handoffAvailableModelIds.filter((id) => {
+      const desc = getModelById(id);
+      return desc ? resolveProviderGroupForModel(desc) === sourceProvider : false;
+    });
+  }, [handoffAvailableModelIds, selectedSession?.provider]);
   const handoffNativeControlState = useMemo((): NativeControlState => ({
     interactionMode,
     claudePermissionMode: handoffClaudePermissionMode,
@@ -4932,10 +5025,26 @@ export function AgentChatPane({
   const handoffButtonTitle = handoffBlocked
     ? "Wait for the current output or approval to finish before handing off this chat."
     : "Create a new work chat on another model and seed it with a summary of this chat.";
+  // The cross-machine modal picks its own destination model, so derive its
+  // provider independently of the local-handoff picker. Reasoning/permission
+  // fields still inherit the source-session-derived handoff defaults.
+  const remoteHandoffTargetDescriptor = useMemo(
+    () => (remoteHandoffModelId ? (getModelById(remoteHandoffModelId) ?? null) : null),
+    [remoteHandoffModelId],
+  );
+  const remoteHandoffTargetProvider = useMemo(
+    () => (remoteHandoffTargetDescriptor ? resolveProviderGroupForModel(remoteHandoffTargetDescriptor) : null),
+    [remoteHandoffTargetDescriptor],
+  );
+  const remoteHandoffNativePermissionMode = useMemo((): AgentChatPermissionMode | undefined | null => {
+    if (!remoteHandoffTargetProvider) return null;
+    return summarizeNativeControls(remoteHandoffTargetProvider, handoffNativeControlState).permissionMode
+      ?? undefined;
+  }, [remoteHandoffTargetProvider, handoffNativeControlState]);
   const crossMachineHandoffTarget = useMemo(() => ({
-    targetModelId: handoffModelId,
+    targetModelId: remoteHandoffModelId,
     reasoningEffort: handoffReasoningEffort,
-    ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
+    ...(remoteHandoffTargetProvider === "codex" || remoteHandoffTargetProvider === "opencode"
       ? { fastMode: handoffFastMode }
       : {}),
     claudePermissionMode: handoffClaudePermissionMode,
@@ -4944,7 +5053,7 @@ export function AgentChatPane({
     codexConfigSource: handoffCodexConfigSource,
     opencodePermissionMode: handoffOpenCodePermissionMode,
     droidPermissionMode: handoffDroidPermissionMode,
-    ...(handoffNativePermissionMode != null ? { permissionMode: handoffNativePermissionMode } : {}),
+    ...(remoteHandoffNativePermissionMode != null ? { permissionMode: remoteHandoffNativePermissionMode } : {}),
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
   }), [
@@ -4956,11 +5065,11 @@ export function AgentChatPane({
     handoffCursorModeId,
     handoffDroidPermissionMode,
     handoffFastMode,
-    handoffModelId,
-    handoffNativePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
-    handoffTargetProvider,
+    remoteHandoffModelId,
+    remoteHandoffNativePermissionMode,
+    remoteHandoffTargetProvider,
   ]);
   const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
     provider: selectedSession?.provider ?? null,
@@ -5831,11 +5940,58 @@ export function AgentChatPane({
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
       setHandoffNote("");
+      // Land on the menu each open; default the local mode to fork when the
+      // source provider can fork, else brief. Seed lane + remote model.
+      setHandoffView("menu");
+      setHandoffLocalMode(providerSupportsHandoffFork(selectedSession?.provider) ? "fork" : "brief");
+      setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
+      setRemoteHandoffModelId(
+        selectedSessionModelId
+          || handoffAvailableModelIds[0]
+          || "",
+      );
     }
     prevHandoffOpenRef.current = chatActionsHandoffActive;
     // Intentional: one-shot on open; avoid resetting the handoff form when underlying composer state changes while the menu is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatActionsHandoffActive]);
+
+  // The one-shot open effect above can run before the model catalog loads,
+  // seeding the remote model to "". Backfill it when models arrive so the
+  // cross-machine modal never prepares with an empty targetModelId.
+  useEffect(() => {
+    if (!chatActionsHandoffActive || handoffAvailableModelIds.length === 0) return;
+    setRemoteHandoffModelId((current) => {
+      if (current && handoffAvailableModelIds.includes(current)) return current;
+      if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
+        return selectedSessionModelId;
+      }
+      return handoffAvailableModelIds[0] ?? current;
+    });
+  }, [chatActionsHandoffActive, handoffAvailableModelIds, selectedSessionModelId]);
+
+  // Keep the fork model picker on a same-provider model. When the local view is
+  // in fork mode, snap handoffModelId into the constrained list (preferring the
+  // source model) so the picker value never falls outside the fork catalog.
+  useEffect(() => {
+    if (!chatActionsHandoffActive) return;
+    if (handoffView !== "local" || handoffLocalMode !== "fork" || !handoffForkSupported) return;
+    if (handoffForkAvailableModelIds.length === 0) return;
+    setHandoffModelId((current) => {
+      if (current && handoffForkAvailableModelIds.includes(current)) return current;
+      if (selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)) {
+        return selectedSessionModelId;
+      }
+      return handoffForkAvailableModelIds[0] ?? current;
+    });
+  }, [
+    chatActionsHandoffActive,
+    handoffForkAvailableModelIds,
+    handoffForkSupported,
+    handoffLocalMode,
+    handoffView,
+    selectedSessionModelId,
+  ]);
 
   useEffect(() => {
     if (!chatActionsHandoffActive || !handoffModelId) return;
@@ -6664,7 +6820,12 @@ export function AgentChatPane({
     if (!failedTurnId) {
       for (let index = events.length - 1; index >= 0; index -= 1) {
         const evt = events[index]?.event;
-        if (evt?.type === "user_message" && !evt.steerId && typeof evt.text === "string" && evt.text.trim().length > 0) {
+        if (
+          evt != null
+          && isParentUserMessage(evt)
+          && typeof evt.text === "string"
+          && evt.text.trim().length > 0
+        ) {
           userEvent = evt;
           break;
         }
@@ -8128,10 +8289,26 @@ export function AgentChatPane({
     try {
       const resolvedHandoffPermissionMode = handoffNativePermissionMode ?? selectedSession?.permissionMode;
       const trimmedHandoffNote = handoffNote.trim();
+      // Brief handoffs may target another lane (or a freshly created one); fork
+      // always stays in the source lane because provider transcripts are keyed
+      // to the source worktree.
+      let resolvedTargetLaneId: string | undefined;
+      if (mode === "brief") {
+        if (handoffTargetLaneId === AUTO_CREATE_LANE_OPTION_ID) {
+          const seed = trimmedHandoffNote || (selectedSession ? chatSessionTitle(selectedSession) : "") || "handoff";
+          const laneName = createDeterministicAutoLaneName(seed, { genericSuffix: autoLaneGenericSuffix() });
+          const createdLane = await window.ade.lanes.create({ name: laneName });
+          resolvedTargetLaneId = createdLane.id;
+          await refreshLanesStore().catch(() => {});
+        } else if (handoffTargetLaneId && handoffTargetLaneId !== sourceLaneId) {
+          resolvedTargetLaneId = handoffTargetLaneId;
+        }
+      }
       const result = await window.ade.agentChat.handoff({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
         mode,
+        ...(resolvedTargetLaneId ? { targetLaneId: resolvedTargetLaneId } : {}),
         ...(trimmedHandoffNote ? { handoffNote: trimmedHandoffNote } : {}),
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
@@ -8183,14 +8360,15 @@ export function AgentChatPane({
     handoffNativePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
+    handoffTargetLaneId,
     handoffTargetProvider,
     invalidateCurrentChatSessionList,
     laneDisplayLabel,
     laneId,
     notifySessionCreated,
+    refreshLanesStore,
     refreshSessions,
-    selectedSession?.permissionMode,
-    selectedSession?.laneId,
+    selectedSession,
     selectedSessionId,
     setHandoffLaunchJobs,
   ]);
@@ -9497,235 +9675,321 @@ export function AgentChatPane({
       />
     </div>
   );
-  const handoffTabContent = canShowHandoff ? (
-    <div className="min-h-0 flex-1 overflow-auto p-4">
-      {!isRemoteProject ? (
-        <div className="mb-4 rounded-xl border border-sky-300/15 bg-[linear-gradient(145deg,rgba(56,189,248,0.09),rgba(255,255,255,0.018))] p-3.5">
-          <div className="flex items-start gap-3">
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-sky-300/18 bg-sky-400/10 text-sky-200">
-              <Desktop size={16} weight="duotone" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-sans text-[12px] font-semibold text-fg/86">Continue on another machine</div>
-              <div className="mt-1 text-[10px] leading-4 text-fg/48">
-                Check Git publication, destination storage, runtime compatibility, model access, and route security before ADE recreates the lane and chat.
-              </div>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setCrossMachineHandoffOpen(true)}
-            disabled={!handoffModelId || handoffBusy}
-            className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-sky-300/22 bg-sky-400/11 px-3 font-sans text-[11px] font-semibold text-sky-100 transition-colors hover:bg-sky-400/16 disabled:cursor-not-allowed disabled:opacity-38"
+  const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
+  const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
+  const handoffLaneSourceLanes = availableLanes ?? lanes;
+  const handoffLaneOptions = handoffLaneSourceLanes.length
+    ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]
+    : [AUTO_CREATE_LANE_OPTION];
+  // Provider-native permission controls, shared by the fork and brief tabs.
+  const handoffPermissionControls = handoffTargetProvider ? (
+    <div className="space-y-1.5">
+      <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
+      {handoffTargetProvider === "claude" ? (
+        <select
+          value={handoffClaudePermissionMode}
+          onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
+          className={handoffSelectCls}
+          aria-label="Claude permission mode for handoff"
+        >
+          {HANDOFF_CLAUDE_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {handoffTargetProvider === "codex" ? (
+        <div className="space-y-0.5">
+          <select
+            value={handoffCodexSelectValue}
+            title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a mode replaces it." : undefined}
+            onChange={(e) => {
+              const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
+              const updated = handoffApplyCodexPreset(next, {
+                cap: handoffCodexApprovalPolicy,
+                sandbox: handoffCodexSandbox,
+              });
+              setHandoffCodexApprovalPolicy(updated.codexApprovalPolicy);
+              setHandoffCodexSandbox(updated.codexSandbox);
+              setHandoffCodexConfigSource(updated.codexConfigSource);
+            }}
+            className={handoffSelectCls}
+            aria-label="Codex permission mode for handoff"
           >
-            Send to machine
-            <ArrowBendUpRight size={13} />
-          </button>
-          {!handoffModelId ? (
-            <div className="mt-1.5 text-center text-[9px] text-fg/34">Choose the destination model below first.</div>
-          ) : null}
-        </div>
-      ) : (
-        <div className="mb-4 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2.5 text-[10px] leading-4 text-fg/42">
-          Cross-machine handoff starts from a project open on this machine. Open the source project locally to send it elsewhere.
-        </div>
-      )}
-      <div className="space-y-1">
-        <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
-        <div className="text-[11px] leading-5 text-fg/54">
-          {handoffSupportsFullHistoryFork
-            ? handoffTargetProvider === "codex"
-              ? "ADE can fork the Codex thread history, or start a brief handoff that sends a compact summary."
-              : "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
-            : "ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab."}
-        </div>
-        {laneId ? (
-          <div className="text-[10px] leading-4 text-fg/40">
-            New session stays in this lane ({laneDisplayLabel}).
-          </div>
-        ) : null}
-      </div>
-      <div className="mt-3 inline-flex items-center gap-1.5">
-        <ModelPicker
-          value={handoffModelId}
-          onChange={setHandoffModelId}
-          surfaceKey="chat-handoff"
-          {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
-          onOpenSignIn={openProviderSignIn}
-        />
-        <ReasoningEffortPicker
-          modelId={handoffModelId}
-          reasoningEffort={handoffReasoningEffort}
-          onChange={setHandoffReasoningEffort}
-        />
-      </div>
-      {handoffTargetProvider ? (
-        <div className="mt-2 space-y-1.5">
-          <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
-          {handoffTargetProvider === "claude" ? (
-            <select
-              value={handoffClaudePermissionMode}
-              onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
-              className={handoffSelectCls}
-              aria-label="Claude permission mode for handoff"
+            <option value="default">Default — write + prompts on risk</option>
+            <option value="plan">Plan — read only + prompts</option>
+            <option value="full-auto">Full auto — no prompts</option>
+            <option value="config-toml">Use codex config.toml</option>
+          </select>
+          {modelSupportsFastMode(handoffTargetDescriptor) ? (
+            <button
+              type="button"
+              className={cn(
+                "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
+                handoffFastMode
+                  ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
+                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
+              )}
+              aria-pressed={handoffFastMode}
+              aria-label="Fast mode for handoff"
+              onClick={() => setHandoffFastMode((current) => !current)}
             >
-              {HANDOFF_CLAUDE_MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+              <Lightning size={12} weight="fill" />
+              Fast
+            </button>
           ) : null}
-          {handoffTargetProvider === "codex" ? (
-            <div className="space-y-0.5">
-              <select
-                value={handoffCodexSelectValue}
-                title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a mode replaces it." : undefined}
-                onChange={(e) => {
-                  const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
-                  const updated = handoffApplyCodexPreset(next, {
-                    cap: handoffCodexApprovalPolicy,
-                    sandbox: handoffCodexSandbox,
-                  });
-                  setHandoffCodexApprovalPolicy(updated.codexApprovalPolicy);
-                  setHandoffCodexSandbox(updated.codexSandbox);
-                  setHandoffCodexConfigSource(updated.codexConfigSource);
-                }}
-                className={handoffSelectCls}
-                aria-label="Codex permission mode for handoff"
-              >
-                <option value="default">Default — write + prompts on risk</option>
-                <option value="plan">Plan — read only + prompts</option>
-                <option value="full-auto">Full auto — no prompts</option>
-                <option value="config-toml">Use codex config.toml</option>
-              </select>
-              {modelSupportsFastMode(handoffTargetDescriptor) ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
-                    handoffFastMode
-                      ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
-                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
-                  )}
-                  aria-pressed={handoffFastMode}
-                  aria-label="Fast mode for handoff"
-                  onClick={() => setHandoffFastMode((current) => !current)}
-                >
-                  <Lightning size={12} weight="fill" />
-                  Fast
-                </button>
-              ) : null}
-              {handoffCodexPermissionPreset === "custom" ? (
-                <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard mode to apply to the new chat.</div>
-              ) : null}
-            </div>
-          ) : null}
-          {handoffTargetProvider === "opencode" ? (
-            <select
-              value={handoffOpenCodePermissionMode}
-              onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
-              className={handoffSelectCls}
-              aria-label="OpenCode permission mode for handoff"
-            >
-              {HANDOFF_OPENCODE_MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          {handoffTargetProvider === "droid" ? (
-            <select
-              value={handoffDroidPermissionMode}
-              onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
-              className={handoffSelectCls}
-              aria-label="Droid autonomy mode for handoff"
-            >
-              {HANDOFF_DROID_MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          {handoffTargetProvider === "cursor" ? (
-            <select
-              value={handoffCursorModeId?.trim() || "agent"}
-              onChange={(e) => {
-                setHandoffCursorModeId(e.target.value || "agent");
-              }}
-              className={handoffSelectCls}
-              aria-label="Cursor agent mode for handoff"
-            >
-              {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
-                <option key={modeId} value={modeId}>
-                  {modeId}
-                </option>
-              ))}
-            </select>
+          {handoffCodexPermissionPreset === "custom" ? (
+            <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard mode to apply to the new chat.</div>
           ) : null}
         </div>
       ) : null}
-      <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
-        {handoffSupportsFullHistoryFork
-          ? handoffTargetProvider === "codex"
-            ? "Fork keeps the Codex provider thread history. Brief sends a summary as the first message."
-            : "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
-          : "Create opens the new work chat and sends the handoff summary as its first message."}
-      </div>
-      <label className="mt-3 block space-y-1">
-        <span className="font-sans text-[10px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Handoff note</span>
+      {handoffTargetProvider === "opencode" ? (
+        <select
+          value={handoffOpenCodePermissionMode}
+          onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
+          className={handoffSelectCls}
+          aria-label="OpenCode permission mode for handoff"
+        >
+          {HANDOFF_OPENCODE_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {handoffTargetProvider === "droid" ? (
+        <select
+          value={handoffDroidPermissionMode}
+          onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
+          className={handoffSelectCls}
+          aria-label="Droid autonomy mode for handoff"
+        >
+          {HANDOFF_DROID_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {handoffTargetProvider === "cursor" ? (
+        <select
+          value={handoffCursorModeId?.trim() || "agent"}
+          onChange={(e) => {
+            setHandoffCursorModeId(e.target.value || "agent");
+          }}
+          className={handoffSelectCls}
+          aria-label="Cursor agent mode for handoff"
+        >
+          {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
+            <option key={modeId} value={modeId}>
+              {modeId}
+            </option>
+          ))}
+        </select>
+      ) : null}
+    </div>
+  ) : null;
+  const handoffNoteField = (caption: string) => (
+    <div className="space-y-1">
+      <label className="block space-y-1">
+        <span className="font-sans text-[10px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Extra instructions</span>
         <textarea
           value={handoffNote}
           onChange={(event) => setHandoffNote(event.target.value)}
           rows={3}
           maxLength={4000}
-          placeholder="Optional extra instructions for the new model"
-          className="min-h-[72px] w-full resize-y rounded-md border border-white/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
+          placeholder="What should the new chat pick up from here?"
+          className="min-h-[68px] w-full resize-y rounded-md border border-white/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
         />
       </label>
-      <div className="mt-3 flex items-center justify-end gap-2">
-        {handoffSupportsFullHistoryFork ? (
-          <>
-            <button
-              type="button"
-              className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/72 transition-colors hover:border-white/[0.14] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={() => {
-                void handoffSession("brief");
-              }}
-              disabled={!handoffModelId || handoffBusy || handoffBlocked}
-            >
-              {handoffBusy ? "Starting..." : "Brief handoff"}
-            </button>
-            <button
-              type="button"
-              className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={() => {
-                void handoffSession("fork");
-              }}
-              disabled={!handoffModelId || handoffBusy || handoffBlocked}
-            >
-              {handoffBusy ? "Starting..." : handoffTargetProvider === "codex" ? "Fork thread" : "Fork full history"}
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={() => {
-              void handoffSession();
-            }}
-            disabled={!handoffModelId || handoffBusy || handoffBlocked}
-          >
-            {handoffBusy ? "Starting..." : "Create handoff chat"}
-          </button>
-        )}
-      </div>
-      {handoffBlocked ? (
-        <div className="mt-3 text-[10px] leading-4 text-fg/40">{handoffButtonTitle}</div>
-      ) : null}
+      <span className="block text-[10px] leading-4 text-fg/38">{caption}</span>
     </div>
+  );
+  const handoffMenuView = (
+    <div data-testid="handoff-menu" className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="mb-3 space-y-0.5">
+        <div className="font-sans text-[12px] font-semibold text-fg/82">Hand off this chat</div>
+        <div className="text-[11px] leading-4 text-fg/50">Continue the work somewhere new — another machine, or a fresh chat here.</div>
+      </div>
+      <div className="relative">
+        <div
+          className={cn("space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
+          aria-disabled={handoffTurnGate || undefined}
+        >
+          <HandoffMenuCard
+            tone="remote"
+            icon={Desktop}
+            title="Continue on another machine"
+            description="Move this chat to another computer running ADE."
+            disabled={isRemoteProject || handoffTurnGate}
+            footnote={isRemoteProject ? "Start this from the machine that owns the project." : null}
+            onClick={() => setCrossMachineHandoffOpen(true)}
+          />
+          <HandoffMenuCard
+            tone="local"
+            icon={GitFork}
+            title="Hand off locally"
+            description="Start a new chat from this one — fork the thread or send a brief."
+            disabled={handoffTurnGate}
+            onClick={() => {
+              setHandoffLocalMode(handoffForkSupported ? "fork" : "brief");
+              setHandoffView("local");
+            }}
+          />
+        </div>
+        {handoffTurnGate ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
+            <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
+              A turn is running — wait for it to finish before handing off.
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+  const handoffForkTabDisabled = !handoffForkSupported;
+  const handoffLocalView = (
+    <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
+      <div className="flex items-start gap-2.5 border-b border-white/[0.06] px-4 py-3">
+        <button
+          type="button"
+          aria-label="Back to handoff options"
+          onClick={() => setHandoffView("menu")}
+          className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+        >
+          <ArrowLeft size={13} />
+        </button>
+        <div className="min-w-0">
+          <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
+          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">Fork copies the whole conversation. Brief summarizes it and starts fresh.</div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
+          {([
+            { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
+            { mode: "brief" as const, label: "Brief", disabled: false },
+          ]).map(({ mode, label, disabled }) => {
+            const active = handoffLocalMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                disabled={disabled}
+                aria-pressed={active}
+                onClick={() => setHandoffLocalMode(mode)}
+                className={cn(
+                  "flex-1 rounded-md px-3 py-1.5 font-sans text-[11px] font-semibold transition-colors",
+                  active
+                    ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_26%,transparent)]"
+                    : "text-fg/52 hover:text-fg/78",
+                  disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
+                )}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {handoffForkTabDisabled ? (
+          <div className="mt-1.5 text-[10px] leading-4 text-fg/42">
+            {handoffSourceProviderLabel} can&rsquo;t fork chat history — use a brief instead.
+          </div>
+        ) : null}
+
+        {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
+          <div className="mt-3 space-y-3">
+            <div className="text-[11px] leading-5 text-fg/54">
+              Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.
+            </div>
+            <div className="inline-flex items-center gap-1.5">
+              <ModelPicker
+                value={handoffModelId}
+                onChange={setHandoffModelId}
+                surfaceKey="chat-handoff"
+                availableModelIds={handoffForkAvailableModelIds}
+                constrainToAvailableModelIds
+                onOpenSignIn={openProviderSignIn}
+              />
+              <ReasoningEffortPicker
+                modelId={handoffModelId}
+                reasoningEffort={handoffReasoningEffort}
+                onChange={setHandoffReasoningEffort}
+              />
+            </div>
+            <div className="text-[10px] leading-4 text-fg/40">
+              Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.
+            </div>
+            {handoffPermissionControls}
+            {handoffNoteField("Optional. Sent to the new chat so it knows what to do next.")}
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                  void handoffSession("fork");
+                }}
+                disabled={!handoffModelId || handoffBusy || handoffBlocked}
+              >
+                {handoffBusy ? "Starting…" : "Fork chat"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            <div className="text-[11px] leading-5 text-fg/54">
+              ADE summarizes this chat and starts a new one from that brief — any model, any lane.
+            </div>
+            <div className="inline-flex items-center gap-1.5">
+              <ModelPicker
+                value={handoffModelId}
+                onChange={setHandoffModelId}
+                surfaceKey="chat-handoff"
+                availableModelIds={handoffAvailableModelIds}
+                onOpenSignIn={openProviderSignIn}
+              />
+              <ReasoningEffortPicker
+                modelId={handoffModelId}
+                reasoningEffort={handoffReasoningEffort}
+                onChange={setHandoffReasoningEffort}
+              />
+            </div>
+            {handoffPermissionControls}
+            <div className="space-y-1">
+              <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Destination lane</div>
+              <LaneCombobox
+                lanes={handoffLaneOptions}
+                value={handoffTargetLaneId || laneId || ""}
+                onChange={setHandoffTargetLaneId}
+                fullWidth
+                aria-label="Destination lane for handoff"
+              />
+              <div className="text-[10px] leading-4 text-fg/40">Where the new chat starts. Pick another lane or create a fresh one.</div>
+            </div>
+            {handoffNoteField("Optional. Added to the brief as extra instructions.")}
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                  void handoffSession("brief");
+                }}
+                disabled={!handoffModelId || handoffBusy || handoffBlocked}
+              >
+                {handoffBusy ? "Starting…" : "Start brief handoff"}
+              </button>
+            </div>
+          </div>
+        )}
+        {handoffBlocked ? (
+          <div className="mt-3 text-[10px] leading-4 text-fg/40">{handoffButtonTitle}</div>
+        ) : null}
+      </div>
+    </div>
+  );
+  const handoffTabContent = canShowHandoff ? (
+    handoffView === "local" ? handoffLocalView : handoffMenuView
   ) : (
     <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
       <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
@@ -10258,6 +10522,7 @@ export function AgentChatPane({
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
+            hideModelControls={hideModelControls}
             messagePlaceholder={effectiveMessagePlaceholder}
             inputLockMessage={subagentView
               ? `Viewing ${subagentMetadata?.label
@@ -10889,7 +11154,10 @@ export function AgentChatPane({
 
   const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
   const FLOATING_PANE_CARD_CLASS =
-    "ade-floating-side-pane flex w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+    // `min-h-0` lets the card shrink below its content inside the max-h-capped
+    // motion.div, so the inner overflow-auto engages instead of the content
+    // clipping at the max-h boundary.
+    "ade-floating-side-pane flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
@@ -11385,7 +11653,13 @@ export function AgentChatPane({
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
+          sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
+          modelId={remoteHandoffModelId}
+          onModelChange={setRemoteHandoffModelId}
+          availableModelIds={handoffAvailableModelIds}
+          forkAvailableModelIds={handoffForkAvailableModelIds}
+          onOpenSignIn={openProviderSignIn}
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}
           onStopTurn={interrupt}

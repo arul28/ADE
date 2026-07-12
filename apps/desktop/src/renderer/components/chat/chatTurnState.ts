@@ -8,6 +8,13 @@ function chatEventEndsTurn(event: AgentChatEventEnvelope["event"]): boolean {
   return event.type === "done" || (event.type === "status" && event.turnStatus !== "started");
 }
 
+export function isParentUserMessage(
+  event: AgentChatEventEnvelope["event"],
+): event is Extract<AgentChatEvent, { type: "user_message" }> {
+  return event.type === "user_message"
+    && (!event.steerId || Boolean(event.messageId?.trim()));
+}
+
 export function findUserMessageForTurn(
   events: AgentChatEventEnvelope[],
   turnId: string,
@@ -25,8 +32,7 @@ export function findUserMessageForTurn(
   for (let index = turnAnchor; index >= 0; index -= 1) {
     const event = events[index]!.event;
     if (
-      event.type === "user_message"
-      && !event.steerId
+      isParentUserMessage(event)
       && typeof event.text === "string"
       && event.text.trim().length > 0
       && (!event.turnId || event.turnId === turnId)

@@ -335,6 +335,8 @@ ade chat steer session-id --text "active-turn context"
 ade chat schedules session-id --pause              # pause this chat's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # wait | nudge | retry | resume
+ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
+ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded

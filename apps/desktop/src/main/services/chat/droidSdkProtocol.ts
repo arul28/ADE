@@ -121,6 +121,7 @@ export type DroidSdkWorkerRequest =
   | { type: "cancel"; requestId: string }
   | { type: "dispose"; requestId: string }
   | { type: "kill_worker"; requestId: string; payload: { workerSessionId: string } }
+  | { type: "fork_session"; requestId: string }
   | { type: "permission_response"; requestId: string; payload: DroidSdkPermissionDecision }
   | { type: "ask_user_response"; requestId: string; payload: DroidSdkAskUserResponse };
 

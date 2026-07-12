@@ -2762,6 +2762,42 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes --target-lane through a brief handoff and rejects it for fork", () => {
+    const handoff = expectExecutePlan(buildCliPlan([
+      "chat",
+      "handoff",
+      "chat-1",
+      "--model",
+      "openai/gpt-5.5-codex",
+      "--target-lane",
+      "lane-42",
+    ]));
+    expect(handoff.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "handoffSession",
+        args: {
+          sourceSessionId: "chat-1",
+          targetModelId: "openai/gpt-5.5-codex",
+          mode: "brief",
+          targetLaneId: "lane-42",
+        },
+      },
+    });
+
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "fork",
+        "chat-1",
+        "openai/gpt-5.5-codex",
+        "--target-lane",
+        "lane-42",
+      ]),
+    ).toThrow(/--target-lane is only valid for brief handoffs/);
+  });
+
   it("builds typed chat rewind and subagent commands", () => {
     const rewind = expectExecutePlan(buildCliPlan([
       "chat",

@@ -343,6 +343,16 @@ async function killWorker(workerSessionId: string): Promise<void> {
   await client.killWorkerSession({ workerSessionId: id });
 }
 
+async function forkSession(): Promise<{ newSessionId: string }> {
+  if (!session) throw new Error("Droid SDK worker is not initialized.");
+  const result = await session.forkSession();
+  const newSessionId = typeof result?.newSessionId === "string" ? result.newSessionId.trim() : "";
+  if (!newSessionId) {
+    throw new Error("Droid forkSession returned no newSessionId.");
+  }
+  return { newSessionId };
+}
+
 async function cancelRun(): Promise<void> {
   for (const [, resolve] of permissionWaiters) resolve({ selectedOption: "cancel" });
   permissionWaiters.clear();
@@ -375,6 +385,8 @@ async function dispatch(req: DroidSdkWorkerRequest): Promise<unknown> {
     case "kill_worker":
       await killWorker(req.payload.workerSessionId);
       return {};
+    case "fork_session":
+      return await forkSession();
     case "dispose":
       await dispose();
       return {};

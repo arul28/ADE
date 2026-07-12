@@ -45,6 +45,7 @@ import {
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { findUserMessageForTurn, isParentUserMessage } from "./chatTurnState";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -3866,7 +3867,8 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    expect(await screen.findByText("Start a sibling chat on another model")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Hand off locally/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Continue on another machine/i })).toBeTruthy();
 
     cleanup();
     installAdeMocks();
@@ -3890,10 +3892,12 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    // Brief tab has the unconstrained model picker where Cursor models appear.
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
-    const handoffTextEl = await screen.findByText("Start a sibling chat on another model");
-    const handoffMenu = handoffTextEl.parentElement!.parentElement!;
-    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
+    const localView1 = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView1).getByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
 
     await waitFor(() => {
@@ -3923,7 +3927,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Handoff is not available for this chat.")).toBeTruthy();
   });
 
-  it("disables chat handoff while the current turn is still active", async () => {
+  it("greys out both handoff menu cards with a notice while the turn is active", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
       transcript: buildStatusStartedTranscript(session.sessionId),
@@ -3933,12 +3937,17 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    const forkBtn = await screen.findByRole("button", { name: "Fork thread" });
-    const briefBtn = await screen.findByRole("button", { name: "Brief handoff" });
+    const remoteCard = await screen.findByRole("button", { name: /Continue on another machine/i });
+    const localCard = await screen.findByRole("button", { name: /Hand off locally/i });
     await waitFor(() => {
-      expect((forkBtn as HTMLButtonElement).disabled).toBe(true);
-      expect((briefBtn as HTMLButtonElement).disabled).toBe(true);
+      expect((remoteCard as HTMLButtonElement).disabled).toBe(true);
+      expect((localCard as HTMLButtonElement).disabled).toBe(true);
     });
+    expect(screen.getByText(/A turn is running — wait for it to finish/i)).toBeTruthy();
+
+    // Clicking the disabled local card must not navigate into the local view.
+    fireEvent.click(localCard);
+    expect(screen.queryByText("Local handoff")).toBeNull();
   });
 
   it("creates a sibling handoff chat and opens the returned work tab", async () => {
@@ -3965,11 +3974,12 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    expect(await screen.findByText("Fork keeps the Codex provider thread history. Brief sends a summary as the first message.")).toBeTruthy();
-    fireEvent.change(await screen.findByLabelText("Handoff note"), {
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.change(await screen.findByLabelText("Extra instructions"), {
       target: { value: "Prioritize the drawer regression before broad cleanup." },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -4006,7 +4016,9 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
       const jobs = Object.values(useAppStore.getState().handoffLaunchJobsByScope).flat();
@@ -4054,20 +4066,20 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    // Cross-provider (codex → Claude) selection is only offered in Brief mode.
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
 
-    const handoffTextEl = await screen.findByText("Start a sibling chat on another model");
-    const handoffMenu = handoffTextEl.parentElement!.parentElement!;
-    expect(handoffMenu).toBeTruthy();
-    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
+    const localView3 = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView3).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-    expect(screen.getByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
 
     const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
     expect(within(permissionSelect).getByRole("option", { name: "Auto" })).toBeTruthy();
     fireEvent.change(permissionSelect, { target: { value: "plan" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -4104,15 +4116,15 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    // Claude source lands on the Fork tab by default; the picker is same-provider.
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
-    const handoffTextEl2 = await screen.findByText("Start a sibling chat on another model");
-    const handoffMenu = handoffTextEl2.parentElement!.parentElement!;
-    expect(handoffMenu).toBeTruthy();
-    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
+    const localViewFork = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localViewFork).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-    fireEvent.click(await screen.findByRole("button", { name: "Fork full history" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -4121,6 +4133,130 @@ describe("AgentChatPane submit recovery", () => {
         mode: "fork",
       }));
     });
+  });
+
+  it("disables the fork tab and defaults to brief for a Cursor source", async () => {
+    const { bothId } = seedCursorRuntimeModelCatalog();
+    const session = buildSession("session-1", {
+      provider: "cursor",
+      model: "cursor-both",
+      modelId: bothId,
+      status: "idle",
+    });
+    installAdeMocks({ cursorModels: [{ id: bothId }], sessions: [session] });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+
+    const forkTab = await screen.findByRole("button", { name: /^Fork$/ });
+    const briefTab = await screen.findByRole("button", { name: /^Brief$/ });
+    expect((forkTab as HTMLButtonElement).disabled).toBe(true);
+    expect(briefTab.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText(/Cursor can.t fork chat history/i)).toBeTruthy();
+    // The brief-only lane selector is present.
+    expect(screen.getByRole("button", { name: "Destination lane for handoff" })).toBeTruthy();
+  });
+
+  it("constrains the fork model picker to the source provider", async () => {
+    const session = buildSession("session-1", { status: "idle" }); // codex source
+    installAdeMocks({ includeClaudeModel: true, sessions: [session] });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+
+    // Fork tab is active for a codex source; its picker excludes cross-provider models.
+    const localViewConstrained = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localViewConstrained).getByRole("button", { name: /^Select model/ }));
+    const anthropicTab = screen.queryByRole("tab", { name: /^Anthropic$/i });
+    if (anthropicTab) fireEvent.click(anthropicTab);
+    const claudeForkOptions = screen.queryAllByRole("option", { name: /Claude/i });
+    expect(claudeForkOptions.some((option) => option.getAttribute("aria-disabled") !== "true")).toBe(false);
+  });
+
+  it("routes a brief handoff into a newly auto-created lane", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff, createLane } = installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
+    fireEvent.click(await screen.findByText("Auto-create lane"));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }));
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        mode: "brief",
+        targetLaneId: "lane-created",
+      }));
+    });
+  });
+
+  it("routes a brief handoff into another selected lane", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({ sessions: [session] });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+          availableLanes={[
+            { id: "lane-1", name: "first lane", branchRef: "refs/heads/first-lane" },
+            { id: "lane-2", name: "second lane", branchRef: "refs/heads/second-lane" },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
+    fireEvent.click(await screen.findByText("second lane"));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        mode: "brief",
+        targetLaneId: "lane-2",
+      }));
+    });
+  });
+
+  it("opens the cross-machine modal from the remote card without preselecting a model", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+    (window.ade as any).remoteRuntime = {
+      onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
+      getConnectionSnapshot: vi.fn().mockResolvedValue({ connections: [] }),
+    };
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Continue on another machine/i }));
+
+    expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
   });
 
   it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {
@@ -7244,6 +7380,48 @@ describe("AgentChatPane submit recovery", () => {
 // ---------------------------------------------------------------------------
 // Pure function unit tests (consolidated from AgentChatPane.test.ts)
 // ---------------------------------------------------------------------------
+
+describe("correlated parent turn messages", () => {
+  it("keeps a fresh idle-steer parent retryable without promoting child steers", () => {
+    const parent = {
+      type: "user_message" as const,
+      text: "Retry this parent turn",
+      steerId: "idle-steer-correlation",
+      messageId: "durable-parent-message",
+      deliveryState: "delivered" as const,
+      turnId: "turn-parent",
+    };
+    const childSteer = {
+      type: "user_message" as const,
+      text: "Adjust the active turn",
+      steerId: "active-steer-correlation",
+      deliveryState: "delivered" as const,
+      turnId: "turn-parent",
+    };
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-parent",
+        timestamp: "2026-07-12T12:00:00.000Z",
+        sequence: 1,
+        event: parent,
+      },
+      {
+        sessionId: "session-parent",
+        timestamp: "2026-07-12T12:00:01.000Z",
+        sequence: 2,
+        event: childSteer,
+      },
+    ];
+
+    expect(isParentUserMessage(parent)).toBe(true);
+    expect(isParentUserMessage(childSteer)).toBe(false);
+    expect(findUserMessageForTurn(events, "turn-parent")).toMatchObject({
+      text: "Retry this parent turn",
+      steerId: "idle-steer-correlation",
+      messageId: "durable-parent-message",
+    });
+  });
+});
 
 describe("resolveNextSelectedSessionId", () => {
   function buildMinimalSession(sessionId: string): AgentChatSessionSummary {

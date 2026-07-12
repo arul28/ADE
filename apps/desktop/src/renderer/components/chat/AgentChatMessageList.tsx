@@ -9,6 +9,7 @@ import {
   CaretRight,
   Bug,
   CloudArrowUp,
+  GitFork,
   Warning,
   Terminal,
   FileCode,
@@ -71,6 +72,8 @@ import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import {
+  buildRenderKey,
+  buildTextRenderKey,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncrementalWithContext,
   formatStructuredValue,
@@ -288,6 +291,48 @@ function getEventTurnId(event: AgentChatEvent): string | null {
   if (!("turnId" in event) || typeof event.turnId !== "string") return null;
   const turnId = event.turnId.trim();
   return turnId.length ? turnId : null;
+}
+
+/**
+ * Envelopes seeded into a forked chat as pre-fork history carry this origin so
+ * the transcript can draw a single "forked from here" divider between the
+ * transported history and the first live event.
+ */
+const FORK_HISTORY_PROVIDER_ORIGIN = "handoff_fork";
+
+function isForkHistoryEnvelope(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.provenance?.providerOrigin === FORK_HISTORY_PROVIDER_ORIGIN;
+}
+
+/**
+ * Locates the single grouped-row key that should carry the fork-history divider:
+ * the first live (non-fork) row that follows at least one seeded fork-history
+ * envelope. Reconstructs candidate row keys the same way {@link collapseChatTranscriptEvents}
+ * does (sequence == source index) and returns the first that survived collapse,
+ * so the divider stays pinned to a real, measured row under virtualization.
+ */
+export function computeForkHistoryDividerRowKey(
+  events: readonly AgentChatEventEnvelope[],
+  groupedRowKeys: readonly string[],
+): string | null {
+  let boundary = -1;
+  for (let index = 0; index < events.length; index += 1) {
+    if (!isForkHistoryEnvelope(events[index]!)) {
+      boundary = index;
+      break;
+    }
+  }
+  // boundary <= 0 means either no live events, or no fork history preceding them.
+  if (boundary <= 0) return null;
+  const keySet = new Set(groupedRowKeys);
+  for (let index = boundary; index < events.length; index += 1) {
+    const envelope = events[index]!;
+    const candidate = envelope.event.type === "text"
+      ? buildTextRenderKey(envelope.event, envelope, index)
+      : buildRenderKey(envelope, index);
+    if (keySet.has(candidate)) return candidate;
+  }
+  return null;
 }
 
 export type AssistantTurnCopyInfo = {
@@ -2732,11 +2777,34 @@ function renderEvent(
           {(() => {
             const displayText = event.displayText?.trim();
             if (event.metadata?.hideFullPrompt === true) {
-              return displayText ? (
-                <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white">
-                  {displayText}
+              const metadataKind = typeof event.metadata?.kind === "string" ? event.metadata.kind : null;
+              const isHandoffBrief = metadataKind === "handoff" || metadataKind === "cross_machine_handoff";
+              const briefChip = isHandoffBrief ? (
+                <div
+                  className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_26%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-4 text-[color:color-mix(in_srgb,var(--chat-accent)_78%,var(--chat-fg,#e6e6e6))]"
+                  data-testid="handoff-brief-chip"
+                >
+                  <CloudArrowUp size={12} weight="regular" className="shrink-0 opacity-85" aria-hidden />
+                  Previous chat summarized into this chat&rsquo;s context
                 </div>
               ) : null;
+              if (!briefChip) {
+                return displayText ? (
+                  <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white">
+                    {displayText}
+                  </div>
+                ) : null;
+              }
+              return (
+                <div>
+                  {briefChip}
+                  {displayText ? (
+                    <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white">
+                      {displayText}
+                    </div>
+                  ) : null}
+                </div>
+              );
             }
             if (displayText && displayText !== event.text.trim()) {
               return (
@@ -4188,6 +4256,7 @@ type EventRowProps = {
   envelope: TranscriptGroupedEnvelope;
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
+  showForkHistoryDivider?: boolean;
   turnModel: { label: string; modelId?: string; model?: string } | null;
   turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
@@ -4224,6 +4293,7 @@ const EventRow = React.memo(function EventRow({
   envelope,
   showTurnDivider,
   turnDividerLabel,
+  showForkHistoryDivider,
   turnModel,
   turnEndDurationMs,
   onApproval,
@@ -4266,6 +4336,19 @@ const EventRow = React.memo(function EventRow({
         anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
       )}
     >
+      {showForkHistoryDivider ? (
+        <div
+          className="my-3 flex items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]"
+          data-testid="fork-history-divider"
+        >
+          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+          <span className="inline-flex shrink-0 items-center gap-1.5">
+            <GitFork size={12} weight="regular" className="opacity-80" aria-hidden />
+            Forked from the previous chat — full history above
+          </span>
+          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+        </div>
+      ) : null}
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
           <span className="h-px flex-1 bg-white/[0.06]" />
@@ -4814,6 +4897,10 @@ function AgentChatMessageListMain({
   }, [rows]);
   const groupedRows = useMemo(() => groupChatTranscriptRows(rows), [rows]);
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
+  const forkHistoryDividerRowKey = useMemo(
+    () => computeForkHistoryDividerRowKey(events, groupedRowKeys),
+    [events, groupedRowKeys],
+  );
   const prevGroupedRowKeysRef = useRef<readonly string[] | null>(null);
   if (prevGroupedRowKeysRef.current !== groupedRowKeys) {
     const liveKeys = new Set(groupedRowKeys);
@@ -5447,6 +5534,7 @@ function AgentChatMessageListMain({
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
     const assistantTurnCopy = assistantTurnCopyByRowKey.get(envelope.key) ?? null;
+    const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
     if (virtualized) {
       return (
@@ -5457,6 +5545,7 @@ function AgentChatMessageListMain({
           envelope={envelope}
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
+          showForkHistoryDivider={showForkHistoryDivider}
           turnModel={turnModel}
           turnEndDurationMs={turnEndDurationMs}
           onApproval={handleApproval}
@@ -5497,6 +5586,7 @@ function AgentChatMessageListMain({
         envelope={envelope}
         showTurnDivider={Boolean(showTurnDivider)}
         turnDividerLabel={turnDividerLabel}
+        showForkHistoryDivider={showForkHistoryDivider}
         turnModel={turnModel}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
@@ -5528,7 +5618,7 @@ function AgentChatMessageListMain({
         assistantTurnCopy={assistantTurnCopy}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

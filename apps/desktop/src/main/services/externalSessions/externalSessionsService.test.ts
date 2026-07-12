@@ -1054,6 +1054,30 @@ describe("transplantClaudeSession", () => {
     expect(targetFiles.filter((name) => name.endsWith(".jsonl"))).toEqual([]);
   });
 
+  it("rolls back the fork transcript and sidecar directory when sidecar copy fails", async () => {
+    const configDir = path.join(root, "claude-sidecar-rollback");
+    const sourceCwd = path.join(root, "source-sidecar");
+    const targetCwd = path.join(root, "target-sidecar");
+    const sessionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    const sourceDir = path.join(configDir, "projects", claudeProjectSlugForCwd(sourceCwd));
+    const sourcePath = path.join(sourceDir, `${sessionId}.jsonl`);
+    writeJsonl(sourcePath, [{ type: "message", sessionId, text: "source stays intact" }]);
+    fs.mkdirSync(path.join(sourceDir, sessionId), { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, sessionId, "tool-result.txt"), "sidecar", "utf8");
+    const copyFile = vi.spyOn(fs.promises, "copyFile").mockRejectedValueOnce(new Error("mock sidecar copy failure"));
+
+    try {
+      await expect(transplantClaudeSession({ sessionId, sourceCwd, targetCwd, fork: true, configDir }))
+        .rejects.toThrow("mock sidecar copy failure");
+    } finally {
+      copyFile.mockRestore();
+    }
+
+    expect(fs.existsSync(sourcePath)).toBe(true);
+    const targetDir = path.join(configDir, "projects", claudeProjectSlugForCwd(targetCwd));
+    expect(fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : []).toEqual([]);
+  });
+
   it("adopt-moves a Claude JSONL without changing its id", async () => {
     const configDir = path.join(root, "claude");
     const sourceCwd = path.join(root, "source");

@@ -33,11 +33,13 @@ export function CtoSettingsPanel({
   sessionLogs,
   currentModelId,
   currentReasoningEffort,
+  currentFastMode,
   availableModelIds,
   loadingModels,
   switchingModel,
   onSaveIdentity,
   onModelChange,
+  onFastModeChange,
   onOpenProviderSettings,
   onResetOnboarding,
 }: {
@@ -45,11 +47,13 @@ export function CtoSettingsPanel({
   sessionLogs: CtoSessionLogEntry[];
   currentModelId: string;
   currentReasoningEffort: string | null;
+  currentFastMode: boolean;
   availableModelIds: string[];
   loadingModels: boolean;
   switchingModel: boolean;
   onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
   onModelChange: (modelId: string, reasoningEffort: string | null) => void;
+  onFastModeChange: (enabled: boolean) => void;
   onOpenProviderSettings: () => void;
   onResetOnboarding?: () => void;
 }) {
@@ -73,6 +77,8 @@ export function CtoSettingsPanel({
             availableModelIds={availableModelIds}
             surfaceKey="cto-settings"
             disabled={switchingModel}
+            fastModeActive={currentFastMode}
+            onFastModeToggle={onFastModeChange}
             onChange={(modelId) => {
               const selection = resolveModelSelection(modelId, currentReasoningEffort);
               onModelChange(modelId, selection?.reasoningEffort ?? null);

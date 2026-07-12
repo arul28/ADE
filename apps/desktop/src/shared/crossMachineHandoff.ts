@@ -105,6 +105,18 @@ export function decodeCrossMachineDestinationPreflightResult(
   value: unknown,
 ): AgentChatCrossMachineDestinationPreflightResult {
   const record = requireRecord(value, "Destination handoff preflight");
+  // Older ADE destinations omit forkHandoffSupport; callers must treat the
+  // absent field as fork-unsupported, so decode it only when present.
+  let forkHandoffSupport: AgentChatCrossMachineDestinationPreflightResult["forkHandoffSupport"];
+  if (record.forkHandoffSupport != null) {
+    const support = requireRecord(record.forkHandoffSupport, "Destination fork handoff support");
+    forkHandoffSupport = {
+      supported: requireBoolean(support.supported, "Destination fork handoff supported flag"),
+      ...(typeof support.reason === "string" && support.reason.trim().length
+        ? { reason: support.reason }
+        : {}),
+    };
+  }
   return {
     providerAuthorized: requireBoolean(record.providerAuthorized, "Destination provider authorization"),
     modelAvailable: requireBoolean(record.modelAvailable, "Destination model availability"),
@@ -112,6 +124,7 @@ export function decodeCrossMachineDestinationPreflightResult(
     existingLaneId: optionalString(record.existingLaneId, "Destination lane identifier"),
     blockingErrors: requireStringList(record.blockingErrors, "Destination handoff errors"),
     warnings: requireStringList(record.warnings, "Destination handoff warnings"),
+    ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
   };
 }
 
