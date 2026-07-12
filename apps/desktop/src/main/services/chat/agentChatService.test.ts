@@ -27835,14 +27835,18 @@ describe("createAgentChatService", () => {
     mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
       releaseGate = resolve;
     });
+    const firstPrompt = "Keep this Cursor turn open while I switch models.";
+    const matchingFirstPromptCalls = () => mockState.cursorSdkSendCalls.filter((call) =>
+      String(call.promptText ?? "").includes(firstPrompt)
+    );
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
-      text: "Keep this Cursor turn open while I switch models.",
+      text: firstPrompt,
     }, { awaitDispatch: true });
 
     try {
       await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+        expect(matchingFirstPromptCalls()).toHaveLength(1);
       });
 
       await expect(service.updateSession({
@@ -27859,6 +27863,7 @@ describe("createAgentChatService", () => {
       releaseGate();
       await pendingTurn;
     }
+    expect(matchingFirstPromptCalls()).toHaveLength(1);
 
     await vi.waitFor(() => {
       expect(releaseCursorSdkConnection).toHaveBeenCalledTimes(1);

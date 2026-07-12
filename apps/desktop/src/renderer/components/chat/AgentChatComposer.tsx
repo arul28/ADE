@@ -973,11 +973,13 @@ function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; siz
 function ActiveTurnSendButton({
   enabled,
   mode,
+  allowInterrupt,
   onModeChange,
   onSend,
 }: {
   enabled: boolean;
   mode: ActiveTurnSendMode;
+  allowInterrupt: boolean;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
@@ -1077,7 +1079,7 @@ function ActiveTurnSendButton({
                     width,
                   }}
                 >
-                  {(["inline", "queue", "interrupt"] as const).map((option, index) => {
+                  {(["inline", "queue", ...(allowInterrupt ? ["interrupt" as const] : [])] as const).map((option, index) => {
                     const copy = ACTIVE_TURN_SEND_COPY[option];
                     const selected = option === mode;
                     return (
@@ -1466,6 +1468,9 @@ export function AgentChatComposer({
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
   const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
+  const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
+    ? "inline"
+    : activeTurnSendMode;
 
   useEffect(() => {
     setActiveTurnSendMode("inline");
@@ -3185,16 +3190,16 @@ export function AgentChatComposer({
   }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
-    if (activeTurnSendMode === "queue") {
+    if (effectiveActiveTurnSendMode === "queue") {
       submitComposerDraft();
       return;
     }
-    if (activeTurnSendMode === "interrupt") {
+    if (effectiveActiveTurnSendMode === "interrupt") {
       onSendSteerInterrupt?.();
       return;
     }
     onSendSteerNow?.();
-  }, [activeTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
+  }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
@@ -4306,7 +4311,8 @@ export function AgentChatComposer({
                     // the primary button and Enter execute that selection.
                     <ActiveTurnSendButton
                       enabled={activeSteerEnabled}
-                      mode={activeTurnSendMode}
+                      mode={effectiveActiveTurnSendMode}
+                      allowInterrupt={Boolean(onSendSteerInterrupt)}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
                     />

@@ -282,11 +282,12 @@ describe("AgentChatComposer", () => {
 
   it("split-button menu selects what the primary send action will do", () => {
     const onSubmit = vi.fn();
+    const onSendSteerNow = vi.fn();
     const onSendSteerInterrupt = vi.fn();
-    renderComposer({
+    const view = renderComposer({
       ...CLAUDE_STEER_OVERRIDES,
       onSubmit,
-      onSendSteerNow: vi.fn(),
+      onSendSteerNow,
       onSendSteerInterrupt,
     });
 
@@ -302,6 +303,18 @@ describe("AgentChatComposer", () => {
     expect(onSendSteerInterrupt).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Interrupt & send" }));
     expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
+
+    view.rerender(<AgentChatComposer {...buildComposerProps({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSubmit,
+      onSendSteerNow,
+      onSendSteerInterrupt: undefined,
+    })} />);
+    expect(screen.getByRole("button", { name: "Send during turn" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    expect(screen.queryByRole("menuitemradio", { name: /Interrupt & send/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
+    expect(onSendSteerNow).toHaveBeenCalledTimes(1);
   });
 
   it("disables the active-turn send actions when the draft is whitespace-only", () => {
