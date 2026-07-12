@@ -2066,6 +2066,13 @@ type CrossMachineHandoffRecord = {
   sessionId: string | null;
   updatedAt: string;
   lastError: string | null;
+  /**
+   * Set once fork materialization (provider files + thread fork + transcript
+   * seeding) completed for this handoff. A retry after a later failure (e.g.
+   * the continuation sendMessage) must skip those side effects or it would
+   * fork the provider thread and append the transported transcript twice.
+   */
+  forkMaterializedAt?: string | null;
 };
 
 const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
@@ -24985,6 +24992,7 @@ export function createAgentChatService(args: {
       sessionId: typeof record.sessionId === "string" ? record.sessionId : null,
       updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date(0).toISOString(),
       lastError: typeof record.lastError === "string" ? record.lastError : null,
+      forkMaterializedAt: typeof record.forkMaterializedAt === "string" ? record.forkMaterializedAt : null,
     };
   };
 
@@ -25954,15 +25962,19 @@ export function createAgentChatService(args: {
       };
       if (isFork) {
         if (!alreadyDispatched) {
-          await materializeCrossMachineFork({
-            capsule,
-            handoffId,
-            destinationLanePath: destinationLane.worktreePath,
-            managed: destinationManaged,
-          });
-          const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
-          if (importedEnvelopes.length) appendImportedChatEvents(destinationManaged, importedEnvelopes);
-          persistChatState(destinationManaged);
+          if (!record.forkMaterializedAt) {
+            await materializeCrossMachineFork({
+              capsule,
+              handoffId,
+              destinationLanePath: destinationLane.worktreePath,
+              managed: destinationManaged,
+            });
+            const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
+            if (importedEnvelopes.length) appendImportedChatEvents(destinationManaged, importedEnvelopes);
+            persistChatState(destinationManaged);
+            record = { ...record, forkMaterializedAt: nowIso(), updatedAt: nowIso() };
+            persistCrossMachineHandoffRecord(record);
+          }
 
           const continuationPrompt = capsule.continuationPrompt.trim();
           if (

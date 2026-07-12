@@ -5953,6 +5953,20 @@ export function AgentChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatActionsHandoffActive]);
 
+  // The one-shot open effect above can run before the model catalog loads,
+  // seeding the remote model to "". Backfill it when models arrive so the
+  // cross-machine modal never prepares with an empty targetModelId.
+  useEffect(() => {
+    if (!chatActionsHandoffActive || handoffAvailableModelIds.length === 0) return;
+    setRemoteHandoffModelId((current) => {
+      if (current && handoffAvailableModelIds.includes(current)) return current;
+      if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
+        return selectedSessionModelId;
+      }
+      return handoffAvailableModelIds[0] ?? current;
+    });
+  }, [chatActionsHandoffActive, handoffAvailableModelIds, selectedSessionModelId]);
+
   // Keep the fork model picker on a same-provider model. When the local view is
   // in fork mode, snap handoffModelId into the constrained list (preferring the
   // source model) so the picker value never falls outside the fork catalog.

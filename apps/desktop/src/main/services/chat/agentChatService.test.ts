@@ -5220,6 +5220,87 @@ describe("createAgentChatService", () => {
         }
       });
 
+      it("skips re-materializing and re-importing history when retrying after a post-materialization failure", async () => {
+        const branchRef = "feature/handoff-fork-late-retry";
+        installCleanCrossMachineGitFixture(branchRef);
+        installRealTranscriptParser();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-late-retry");
+        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+        const values = new Map<string, unknown>();
+        const { service } = createService({
+          db: {
+            getJson: vi.fn((key: string) => values.get(key) ?? null),
+            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+          },
+        });
+        const sourceEnvelope: AgentChatEventEnvelope = {
+          sessionId: "source-session",
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "late-retry-envelope", text: "Late retry history" },
+        };
+        const capsule = makeForkCapsule({
+          handoffId: "handoff-claude-late-retry-1",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "source-session",
+            provider: "claude",
+            model: "claude-sonnet-5",
+            title: "Late retry fork",
+            laneName: "Late retry fork",
+            branchRef,
+            headSha: HANDOFF_TEST_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          transcriptEnvelopes: {
+            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
+            truncated: false,
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+        let materializeAttempts = 0;
+        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
+          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
+            materializeAttempts += 1;
+          }
+          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
+        }) as typeof fs.promises.writeFile);
+
+        try {
+          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+          expect(materializeAttempts).toBe(1);
+
+          // Simulate a failure that happened AFTER materialization (e.g. the
+          // continuation sendMessage): the durable record keeps the
+          // forkMaterializedAt marker but drops back to "failed".
+          const recordEntry = [...values.entries()].find(([key, value]) =>
+            key.includes("handoff-claude-late-retry-1")
+            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
+          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
+          values.set(recordEntry![0], {
+            ...(recordEntry![1] as Record<string, unknown>),
+            state: "failed",
+            lastError: "mock post-materialization failure",
+          });
+
+          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+          expect(second.session.id).toBe(first.session.id);
+          expect(materializeAttempts).toBe(1);
+          await vi.waitFor(() => {
+            const transcript = fs.readFileSync(
+              path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`),
+              "utf8",
+            );
+            expect(transcript.match(/Late retry history/g)?.length).toBe(1);
+          });
+        } finally {
+          writeFile.mockRestore();
+        }
+      });
+
       it("does not clobber a pre-existing Codex rollout and still forks the thread", async () => {
         const branchRef = "feature/handoff-codex-fork";
         installCleanCrossMachineGitFixture(branchRef);
