@@ -1,0 +1,22 @@
+---
+title: "v1.2.23"
+description: "Release notes for ADE v1.2.23 - July 12, 2026"
+---
+
+v1.2.23 keeps context usage accurate after compaction, strengthens Claude turn steering, and makes project-open failures fully visible and actionable.
+
+---
+
+## Desktop and CLI
+
+- **Accurate context after compaction.** Context usage now reconstructs from explicit turn snapshots after compaction instead of dropping, jumping, or accepting metadata-only updates. Desktop, ADE Code, and mobile stay aligned on the same usage state.
+- **Reliable Claude steering and turn lifecycle.** Messages sent while Claude is active now steer the current turn cleanly, while turn completion, scheduled work, and subagent activity settle without stale lifecycle state.
+- **Project-open errors stay readable.** Failed project opens now show a wrapping, dismissible alert below the top bar, so long recovery instructions are never truncated.
+- **No unnecessary Xcode dependency.** On macOS, ADE prefers an independently installed Git—including Git discovered through the login shell—before Apple's license-gated `/usr/bin/git`. If Apple Git is the only option, ADE explains that the Xcode license prompt comes from Git rather than iOS Simulator or code signing.
+
+---
+
+## iOS
+
+- **Context and Claude parity.** Mobile Work timelines preserve the corrected post-compaction context usage and Claude lifecycle events from the host.
+- **Complete project errors.** Remote project-add failures no longer cap danger messages at three lines, keeping full host recovery instructions visible.
