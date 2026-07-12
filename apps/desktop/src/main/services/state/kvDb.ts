@@ -4,12 +4,14 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
+import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
-type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
 
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set(["unified_memories", "unified_memories_fts"]);
@@ -41,10 +43,6 @@ const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
   "unknown",
 ]);
 
-function codedError(message: string, code: Exclude<KvDbOpenErrorCode, "unknown">): Error & { code: KvDbOpenErrorCode } {
-  return Object.assign(new Error(message), { code });
-}
-
 export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
   const explicitCode = error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -54,7 +52,7 @@ export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  if (/disk is full|SQLITE_FULL|ENOSPC/i.test(message)) return "disk_full";
+  if (isNoSpaceError(error) || /SQLITE_FULL/i.test(message)) return "disk_full";
   if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
   return "unknown";
 }
@@ -132,6 +130,17 @@ export type AdeDb = {
   close: () => void;
 };
 
+export function runQuickCheck(db: Pick<AdeDb, "all"> | DatabaseSyncType): { healthy: boolean; detail: string } {
+  const rows = "all" in db
+    ? db.all<Record<string, unknown>>("pragma quick_check")
+    : db.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
+  const messages = rows.map((row) => String(Object.values(row)[0] ?? "")).filter(Boolean);
+  return {
+    healthy: messages.length === 1 && messages[0]?.toLowerCase() === "ok",
+    detail: messages.join("\n") || "The project data check returned no result.",
+  };
+}
+
 function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -141,6 +150,12 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   const db = new DatabaseSync(dbPath, { allowExtension: true });
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
+  db.exec("PRAGMA busy_timeout = 5000");
+  return db;
+}
+
+export function openReadonlyDatabase(dbPath: string): DatabaseSyncType {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
   return db;
 }
@@ -619,8 +634,7 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
   if (fs.existsSync(backupPath)) return;
 
   const dbSize = fs.statSync(dbPath, { bigint: true }).size;
-  const stats = fs.statfsSync(path.dirname(dbPath), { bigint: true });
-  const freeBytes = stats.bavail * stats.bsize;
+  const freeBytes = BigInt(Math.trunc(readVolumeSpace(path.dirname(dbPath))?.freeBytes ?? 0));
   const requiredBytes = dbSize + 256n * 1024n * 1024n;
   if (freeBytes < requiredBytes) {
     throw codedError(

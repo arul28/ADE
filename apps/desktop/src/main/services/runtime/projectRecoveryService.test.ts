@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { expectNoJargon } from "../../../test/jargonGuard";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import type { Logger } from "../logging/logger";
 import {
@@ -170,7 +171,7 @@ describe("ProjectRecoveryService.diagnose", () => {
 
     expect(diagnosis.state).toBe(expected);
     expect(diagnosis.canAutoRepair).toBe(canAutoRepair);
-    expect(`${diagnosis.headline} ${diagnosis.body}`).not.toMatch(/socket|sqlite|launchd|CRR|JSONL|ENOSPC/i);
+    expectNoJargon(`${diagnosis.headline} ${diagnosis.body}`);
   });
 });
 

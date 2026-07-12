@@ -11,7 +11,7 @@ import {
   outlineButton,
   dangerButton,
 } from "../../lanes/laneDesignTokens";
-import { formatBytes } from "./storageView";
+import { baseName, formatBytes } from "./storageView";
 
 type Stage = "loading" | "review" | "removing" | "done" | "error";
 
@@ -274,7 +274,7 @@ export function StorageCleanupDialog({
                     {preview.blocked.length === 1 ? "1 item was kept" : `${preview.blocked.length} items were kept`}
                   </div>
                   {preview.blocked.map((entry) => (
-                    <Row key={entry.path} label={baseNameOf(entry.path)} path={entry.path} tone="blocked" reason={entry.reason} />
+                    <Row key={entry.path} label={baseName(entry.path)} path={entry.path} tone="blocked" reason={entry.reason} />
                   ))}
                 </div>
               ) : null}
@@ -297,7 +297,7 @@ export function StorageCleanupDialog({
                     Some items could not be removed:
                   </div>
                   {result.failed.map((entry) => (
-                    <Row key={entry.path} label={baseNameOf(entry.path)} path={entry.path} tone="blocked" reason={entry.reason} />
+                    <Row key={entry.path} label={baseName(entry.path)} path={entry.path} tone="blocked" reason={entry.reason} />
                   ))}
                 </div>
               ) : null}
@@ -355,9 +355,4 @@ export function StorageCleanupDialog({
       </section>
     </div>
   );
-}
-
-function baseNameOf(p: string): string {
-  const parts = p.replace(/[\\/]+$/, "").split(/[\\/]/);
-  return parts[parts.length - 1] ?? p;
 }

@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { LocalRuntimeStatus } from "../../../shared/types";
 import type {
   AdeLastFailureReport,
@@ -16,12 +15,14 @@ import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { readJsonWithRecovery } from "../state/durableFile";
-import { classifySqliteOpenError, openKvDb } from "../state/kvDb";
+import {
+  classifySqliteOpenError,
+  openKvDb,
+  openReadonlyDatabase,
+  runQuickCheck,
+} from "../state/kvDb";
+import { readVolumeSpace } from "../storage/volume";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
-
-const { DatabaseSync } = require("node:sqlite") as {
-  DatabaseSync: new (dbPath: string, options?: { readOnly?: boolean }) => DatabaseSyncType;
-};
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -38,7 +39,20 @@ const STEP_LABELS: Record<RepairStepId, string> = {
   reconcile_chats: "Checking chats",
 };
 
-const STEP_ORDER = Object.keys(STEP_LABELS) as RepairStepId[];
+const STEP_ORDER: readonly RepairStepId[] = [
+  "check_space",
+  "stop_service",
+  "validate_database",
+  "resolve_migrations",
+  "restart_service",
+  "verify_endpoint",
+  "verify_project_rpc",
+  "reconcile_chats",
+];
+
+const REPAIR_MIN_FREE_BYTES = (dbSize: number): number => Math.max(GIB, dbSize + 512 * MIB);
+// Advice = repair gate + margin, so following the advice always satisfies repair.
+const RECOMMENDED_FREE_BYTES = (dbSize: number): number => REPAIR_MIN_FREE_BYTES(dbSize) + GIB;
 
 type SpaceStats = { bavail: number | bigint; bsize: number | bigint };
 type QuickCheckResult = { healthy: boolean | null; detail: string };
@@ -261,14 +275,10 @@ async function defaultDatabaseSize(dbPath: string): Promise<number> {
 
 async function defaultQuickCheck(dbPath: string): Promise<QuickCheckResult> {
   if (!fs.existsSync(dbPath)) return { healthy: true, detail: "No project data file exists yet." };
-  let db: DatabaseSyncType | null = null;
+  let db: ReturnType<typeof openReadonlyDatabase> | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-    db.exec("PRAGMA busy_timeout = 5000");
-    const rows = db.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
-    const messages = rows.map((row) => String(Object.values(row)[0] ?? "")).filter(Boolean);
-    const healthy = messages.length === 1 && messages[0]?.toLowerCase() === "ok";
-    return { healthy, detail: messages.join("\n") || "The project data check returned no result." };
+    db = openReadonlyDatabase(dbPath);
+    return runQuickCheck(db);
   } catch (error) {
     return { healthy: false, detail: errorMessage(error) };
   } finally {
@@ -317,7 +327,11 @@ export class ProjectRecoveryService {
 
   constructor(private readonly deps: ProjectRecoveryServiceDeps) {
     this.socketPath = deps.socketPath ?? resolveMachineAdeLayout({ ...process.env, ADE_HOME: deps.adeHome }).socketPath;
-    this.statfs = deps.statfs ?? ((targetPath) => fs.promises.statfs(targetPath));
+    this.statfs = deps.statfs ?? (async (targetPath) => {
+      const volume = readVolumeSpace(targetPath);
+      if (!volume) throw new Error(`Could not measure available storage for ${targetPath}.`);
+      return { bavail: volume.freeBytes, bsize: 1 };
+    });
     this.databaseSize = deps.databaseSize ?? defaultDatabaseSize;
     this.probeSocket = deps.probeSocket ?? defaultProbeSocket;
     this.pingEndpoint = deps.pingEndpoint ?? defaultPingEndpoint;
@@ -409,7 +423,7 @@ export class ProjectRecoveryService {
       code = "unknown";
     }
 
-    const required = Math.max(2 * GIB, dbSize + 512 * MIB);
+    const required = RECOMMENDED_FREE_BYTES(dbSize);
     return {
       state,
       code,
@@ -466,7 +480,7 @@ export class ProjectRecoveryService {
     } catch (error) {
       return fail("check_space", "unknown", "Check that this project and your ADE data folder are available, then run repair again.", errorMessage(error));
     }
-    const requiredSpace = Math.max(GIB, storage.dbSize + 512 * MIB);
+    const requiredSpace = REPAIR_MIN_FREE_BYTES(storage.dbSize);
     if (storage.free < requiredSpace) {
       return fail(
         "check_space",

@@ -1,24 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { Logger } from "../logging/logger";
+import type {
+  DiskPressureSnapshot,
+  DiskPressureState,
+  DiskPressureThresholds,
+} from "../../../shared/types/storage";
+import { readVolumeSpace } from "./volume";
 
-export type DiskPressureState = "normal" | "warning" | "critical" | "exhausted";
-
-export type DiskPressureSnapshot = {
-  state: DiskPressureState;
-  freeBytes: number;
-  totalBytes: number;
-  freeFraction: number;
-  perRoot: Array<{ root: string; freeBytes: number; totalBytes: number }>;
-  sampledAt: string;
-};
-
-export type DiskPressureThresholds = {
-  exhaustedBytes: number;
-  criticalBytes: number;
-  criticalFraction: number;
-  warningBytes: number;
-  warningFraction: number;
-};
+export type { DiskPressureSnapshot, DiskPressureState, DiskPressureThresholds } from "../../../shared/types/storage";
 
 export type DiskPressureOperationKind =
   | "chat_turn"
@@ -60,8 +50,6 @@ const STATE_SEVERITY: Record<DiskPressureState, number> = {
   exhausted: 3,
 };
 
-const statfsErrorsLogged = new Set<string>();
-
 export function classifyDiskPressure(
   sample: Pick<DiskPressureSnapshot, "freeBytes" | "freeFraction">,
   thresholds: DiskPressureThresholds = DEFAULT_DISK_PRESSURE_THRESHOLDS,
@@ -86,6 +74,7 @@ export function createDiskPressureMonitor(options: {
   roots: string[];
   thresholds?: Partial<DiskPressureThresholds>;
   statfs?: typeof fs.statfsSync;
+  logger?: Pick<Logger, "warn">;
   now?: () => number;
   sampleIntervalMs?: number;
 }): DiskPressureMonitor {
@@ -99,10 +88,23 @@ export function createDiskPressureMonitor(options: {
     ...DEFAULT_DISK_PRESSURE_THRESHOLDS,
     ...options.thresholds,
   };
-  const statfs = options.statfs ?? fs.statfsSync;
+  const readSpace = options.statfs
+    ? (root: string) => {
+        const stats = options.statfs!(root, { bigint: true }) as {
+          bavail: bigint;
+          blocks: bigint;
+          bsize: bigint;
+        };
+        return {
+          freeBytes: Number(stats.bavail * stats.bsize),
+          totalBytes: Number(stats.blocks * stats.bsize),
+        };
+      }
+    : readVolumeSpace;
   const now = options.now ?? Date.now;
   const sampleIntervalMs = options.sampleIntervalMs ?? 30_000;
   const listeners = new Set<(snapshot: DiskPressureSnapshot) => void>();
+  const statfsErrorsLogged = new Set<string>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let snapshot: DiskPressureSnapshot | null = null;
   let sampledAtMs = Number.NEGATIVE_INFINITY;
@@ -112,20 +114,20 @@ export function createDiskPressureMonitor(options: {
     const perRoot: DiskPressureSnapshot["perRoot"] = [];
     for (const root of roots) {
       try {
-        const stats = statfs(root, { bigint: true }) as {
-          bavail: bigint;
-          blocks: bigint;
-          bsize: bigint;
-        };
+        const stats = readSpace(root);
+        if (!stats) throw new Error("Storage space is unavailable.");
         perRoot.push({
           root,
-          freeBytes: Number(stats.bavail * stats.bsize),
-          totalBytes: Number(stats.blocks * stats.bsize),
+          freeBytes: stats.freeBytes,
+          totalBytes: stats.totalBytes,
         });
       } catch (error) {
         if (!statfsErrorsLogged.has(root)) {
           statfsErrorsLogged.add(root);
-          console.warn(`ADE could not measure available storage for ${root}:`, error);
+          options.logger?.warn("storage.disk_pressure_measure_failed", {
+            root,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     }

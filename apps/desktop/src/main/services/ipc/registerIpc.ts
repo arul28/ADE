@@ -9,6 +9,7 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -1746,7 +1747,7 @@ export function registerIpc({
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
-        const wrapped = new Error(`${code}: ${error.message}`);
+        const wrapped = new Error(encodeCodedErrorMessage(code, error.message));
         throw wrapped;
       }
     }

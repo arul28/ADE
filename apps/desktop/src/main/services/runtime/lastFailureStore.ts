@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type {
-  AdeLastFailureReport,
-  AdeRecoveryErrorCode,
+import {
+  toAdeRecoveryErrorCode,
+  type AdeLastFailureReport,
+  type AdeRecoveryErrorCode,
 } from "../../../shared/types/recovery";
-import { writeFileAtomic } from "../state/durableFile";
+import { readValidJson, writeFileAtomic } from "../state/durableFile";
 
 const MESSAGE_MAX_BYTES = 2 * 1024;
 const DETAIL_MAX_BYTES = 8 * 1024;
@@ -58,30 +59,11 @@ function plainMessage(value: string): string {
   return boundUtf8(value.replace(/[\r\n\t]+/g, " ").replace(/[\u0001-\u001f\u007f]/g, " ").trim(), MESSAGE_MAX_BYTES);
 }
 
-function isRecoveryCode(value: unknown): value is AdeRecoveryErrorCode {
-  return typeof value === "string" && [
-    "disk_full",
-    "insufficient_headroom",
-    "db_integrity",
-    "migration_incomplete",
-    "migration_unknown_state",
-    "brain_not_installed",
-    "brain_crash_looping",
-    "socket_stale_no_owner",
-    "socket_owned_by_other",
-    "provider_thread_missing",
-    "provider_resume_failed",
-    "optional_mcp_failed",
-    "continuity_reconstruction_required",
-    "unknown",
-  ].includes(value);
-}
-
 function isLastFailureReport(value: unknown): value is AdeLastFailureReport {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const report = value as Partial<AdeLastFailureReport>;
   return report.version === 1
-    && isRecoveryCode(report.code)
+    && toAdeRecoveryErrorCode(report.code) !== null
     && typeof report.message === "string"
     && Buffer.byteLength(report.message, "utf8") <= MESSAGE_MAX_BYTES
     && typeof report.at === "string"
@@ -97,12 +79,7 @@ function isLastFailureReport(value: unknown): value is AdeLastFailureReport {
 }
 
 function readReportPath(filePath: string): AdeLastFailureReport | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-    return isLastFailureReport(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return readValidJson(filePath, isLastFailureReport);
 }
 
 function sameSignature(left: AdeLastFailureReport, right: LastFailureInput): boolean {

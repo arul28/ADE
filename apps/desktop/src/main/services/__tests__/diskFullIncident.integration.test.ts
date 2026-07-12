@@ -4,8 +4,10 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { expectNoJargon } from "../../../test/jargonGuard";
 import { boundLaunchdLogs } from "../../../../../ade-cli/src/services/runtime/runtimeLogMaintenance";
-import { createAgentChatService, readThreadPointerLedger } from "../chat/agentChatService";
+import { createAgentChatService } from "../chat/agentChatService";
+import { readThreadPointerLedger } from "../chat/threadPointerLedger";
 import { createProcessService } from "../processes/processService";
 import {
   computeStartupBackoffMs,
@@ -427,7 +429,7 @@ describe("disk-full incident integration matrix", () => {
     await chatService.sendMessage({ sessionId: chatSessionId, text: "Start new work." });
     const chatRefusal = chatEvents.find((entry) => entry.event.type === "error")?.event;
     expect(chatRefusal).toMatchObject({ message: expect.stringContaining("Free up space"), errorInfo: { code: "disk_full" } });
-    expect(chatRefusal?.message).not.toMatch(/socket|sqlite|launchd|CRR|JSONL|ENOSPC/i);
+    expectNoJargon(chatRefusal?.message ?? "");
 
     const processService = createProcessService({
       db: {} as AdeDb,

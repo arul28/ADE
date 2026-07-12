@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { HardDrive } from "@phosphor-icons/react";
-import type { DiskPressureSnapshot } from "../../../main/services/storage/diskPressure";
+import { isUrgentDiskPressure, type DiskPressureSnapshot } from "../../../shared/types/storage";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 
@@ -24,6 +24,8 @@ function useStoragePressure(enabled: boolean): DiskPressureSnapshot | null {
       const version = ++requestVersion;
       void window.ade.storage.getPressure().then((next) => {
         if (!cancelled && version === requestVersion) setSnapshot(next);
+      }).catch(() => {
+        if (!cancelled && version === requestVersion) setSnapshot(null);
       });
     };
 
@@ -44,7 +46,7 @@ export function StoragePressureIndicator({ enabled }: { enabled: boolean }) {
   const snapshot = useStoragePressure(enabled);
   if (!snapshot || snapshot.state === "normal") return null;
 
-  const urgent = snapshot.state === "critical" || snapshot.state === "exhausted";
+  const urgent = isUrgentDiskPressure(snapshot.state);
   const color = urgent ? "#F87171" : "#FBBF24";
   const description = urgent ? CRITICAL_DESCRIPTION : WARNING_DESCRIPTION;
 

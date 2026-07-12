@@ -5,6 +5,7 @@ import type { StateCreator } from "zustand";
 import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
+import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -1011,7 +1012,7 @@ function formatProjectTransitionError(
     }
     return { message: "Closing the current project took longer than 30 seconds." };
   }
-  const code = parsed.code;
+  const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code === "disk_full"
     ? "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again."
     : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"

@@ -87,11 +87,12 @@ describe("disk pressure monitor", () => {
   );
 
   it("fails open when every root measurement fails and logs each root once", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.fn();
     const statfs = vi.fn(() => { throw new Error("unsupported filesystem"); }) as any;
     const monitor = createDiskPressureMonitor({
       roots: ["/unknown-a", "/unknown-b", "/unknown-a"],
       statfs,
+      logger: { warn },
     });
 
     expect(monitor.getSnapshot({ maxAgeMs: 0 })).toMatchObject({ state: "normal", perRoot: [] });
@@ -100,14 +101,13 @@ describe("disk pressure monitor", () => {
   });
 
   it("fails open immediately when measurements become unavailable", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
     let call = 0;
     const statfs = vi.fn(() => {
       call += 1;
       if (call > 1) throw new Error("measurement unavailable");
       return { bavail: BigInt(GiB / 2), blocks: BigInt(100 * GiB), bsize: 1n };
     }) as any;
-    const monitor = createDiskPressureMonitor({ roots: ["/becomes-unknown"], statfs });
+    const monitor = createDiskPressureMonitor({ roots: ["/becomes-unknown"], statfs, logger: { warn: vi.fn() } });
 
     expect(monitor.getSnapshot({ maxAgeMs: 0 }).state).toBe("exhausted");
     expect(monitor.getSnapshot({ maxAgeMs: 0 }).state).toBe("normal");

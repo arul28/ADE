@@ -2064,6 +2064,7 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
+      logger,
     });
     const packagedFirstOpenStabilityMode =
       app.isPackaged
@@ -4259,6 +4260,7 @@ app.whenReady().then(async () => {
     usageTrackingService.start();
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
+      logger,
     });
 
     logger.info("project.runtime_bound", {

@@ -1,10 +1,7 @@
 import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
+import type { AgentChatResumeFailureKind } from "../../../shared/types/chat";
 
-export type ResumeFailureKind =
-  | "thread_missing"
-  | "provider_environment"
-  | "transient"
-  | "unknown";
+export type ResumeFailureKind = AgentChatResumeFailureKind;
 
 export type ResumeFailureClassification = {
   kind: ResumeFailureKind;

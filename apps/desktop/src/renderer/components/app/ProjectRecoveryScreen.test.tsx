@@ -7,12 +7,11 @@ import type {
   ProjectRepairReport,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
+import { expectNoJargon, JARGON_PATTERN } from "../../../test/jargonGuard";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 
 const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigateMock }));
-
-const JARGON = /socket|sqlite|launchd|CRR|JSONL|ENOSPC/i;
 
 const ROOT = "/tmp/recover-me";
 
@@ -173,8 +172,8 @@ describe("ProjectRecoveryScreen", () => {
     const foldText = details?.textContent ?? "";
     const mainText = (document.body.textContent ?? "").replace(foldText, "");
 
-    expect(foldText).toMatch(JARGON);
-    expect(mainText).not.toMatch(JARGON);
+    expect(foldText).toMatch(JARGON_PATTERN);
+    expectNoJargon(mainText);
   });
 
   it("navigates to the storage settings tab from Review storage", async () => {

@@ -46,4 +46,18 @@ describe("ProjectTransitionErrorAlert", () => {
     // Coded errors are owned by ProjectRecoveryScreen — the banner renders nothing.
     expect(container.firstChild).toBeNull();
   });
+
+  it("renders a coded failure without a project root as a dismissible banner", () => {
+    useAppStore.setState({
+      projectTransitionError: {
+        code: "disk_full",
+        message: "Your Mac ran out of storage.",
+      },
+    });
+
+    render(<ProjectTransitionErrorAlert />);
+
+    expect(screen.getByRole("alert").textContent).toContain("Your Mac ran out of storage.");
+    expect(screen.getByRole("button", { name: "Dismiss project error" })).toBeTruthy();
+  });
 });

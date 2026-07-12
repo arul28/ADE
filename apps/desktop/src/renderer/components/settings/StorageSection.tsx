@@ -10,14 +10,15 @@ import {
   HardDrives,
   ShieldCheck,
 } from "@phosphor-icons/react";
-import type { DiskPressureSnapshot } from "../../../main/services/storage/diskPressure";
-import type {
-  StorageCategoryId,
-  StorageCategorySnapshot,
-  StorageCleanupResult,
-  StorageCleanupTarget,
-  StorageItem,
-  StorageSnapshot,
+import {
+  isUrgentDiskPressure,
+  type DiskPressureSnapshot,
+  type StorageCategoryId,
+  type StorageCategorySnapshot,
+  type StorageCleanupResult,
+  type StorageCleanupTarget,
+  type StorageItem,
+  type StorageSnapshot,
 } from "../../../shared/types/storage";
 import { relativeWhen } from "../../lib/format";
 import { COLORS, SANS_FONT, LABEL_STYLE, outlineButton } from "../lanes/laneDesignTokens";
@@ -27,6 +28,7 @@ import {
   CATEGORY_ORDER,
   SAFETY_META,
   baseName,
+  buildCleanupTarget,
   cleanableEntries,
   formatBytes,
   groupLaneItems,
@@ -135,7 +137,7 @@ function BreakdownBar({ categories }: { categories: StorageCategorySnapshot[] })
 }
 
 function pressureTone(state: DiskPressureSnapshot["state"] | undefined): string {
-  if (state === "exhausted" || state === "critical") return COLORS.danger;
+  if (state && isUrgentDiskPressure(state)) return COLORS.danger;
   if (state === "warning") return COLORS.warning;
   return COLORS.textMuted;
 }
@@ -353,7 +355,7 @@ function LanesCard({
   const [expanded, setExpanded] = React.useState(hasActionable);
 
   const removeRow = (item: StorageItem): React.ReactNode => {
-    const target = laneCleanupTarget(item, laneIdByKey);
+    const target = buildCleanupTarget("lanes_worktrees", item, laneIdByKey);
     if (!target) return null;
     return (
       <ActionButton
@@ -447,15 +449,6 @@ function LanesCard({
       ) : null}
     </CardShell>
   );
-}
-
-function laneCleanupTarget(item: StorageItem, laneIdByKey: Map<string, string>): StorageCleanupTarget | null {
-  if (item.laneStatus === "orphaned") return { kind: "orphaned_worktree", path: item.path };
-  if (item.laneStatus === "archived") {
-    const laneId = laneIdByKey.get(baseName(item.path));
-    return laneId ? { kind: "archived_lane_worktree", laneId, path: item.path } : null;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------

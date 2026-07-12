@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentChatNoticeDetail } from "../../../shared/types";
+import { expectNoJargon } from "../../../test/jargonGuard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 
 const originalAde = globalThis.window.ade;
@@ -204,8 +205,7 @@ describe("ChatContinuityRecoveryCard", () => {
       <ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />,
     );
     const text = container.textContent ?? "";
-    expect(text).not.toMatch(/socket/i);
-    expect(text).not.toMatch(/sqlite/i);
+    expectNoJargon(text);
     expect(text).not.toMatch(/jsonl/i);
     expect(text).not.toMatch(/thread id/i);
     // The raw original thread identifier is not surfaced in the required state.

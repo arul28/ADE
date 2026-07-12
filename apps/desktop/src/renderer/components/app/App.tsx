@@ -836,7 +836,7 @@ function ProjectTabHost() {
   // surface with the recovery flow. Un-coded string errors still fall through
   // to the dismissible banner in AppShell. Unmounts once the error is cleared
   // or a new transition begins.
-  if (!projectTransition && projectTransitionError?.code) {
+  if (!projectTransition && projectTransitionError?.code && projectTransitionError.rootPath) {
     return (
       <div className="relative h-full min-h-0 w-full">
         <ProjectRecoveryScreen />

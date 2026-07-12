@@ -3,7 +3,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiskPressureSnapshot, DiskPressureState } from "../../../main/services/storage/diskPressure";
+import type { DiskPressureSnapshot, DiskPressureState } from "../../../shared/types/storage";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
 
 function snapshot(state: DiskPressureState): DiskPressureSnapshot {

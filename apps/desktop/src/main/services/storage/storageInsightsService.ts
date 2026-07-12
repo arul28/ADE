@@ -16,13 +16,17 @@ import type {
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { runQuickCheck } from "../state/kvDb";
 import { readLastFailure } from "../runtime/lastFailureStore";
+import { isEnoentError } from "../shared/utils";
 import type { DiskPressureMonitor } from "./diskPressure";
 import {
+  COMPRESSION_MIN_AGE_MS,
   createHistoryCompressor,
   type CompressionRoots,
   type CompressionSweepSummary,
 } from "./historyCompression";
+import { readVolumeSpace } from "./volume";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
@@ -30,7 +34,7 @@ const DEFAULT_SCAN_BUDGET_MS = 20_000;
 const WALK_CONCURRENCY = 8;
 const MAX_CATEGORY_ITEMS = 50;
 const STALE_AGE_MS = 7 * 24 * 60 * 60_000;
-const COMPRESSIBLE_AGE_MS = 30 * 24 * 60 * 60_000;
+const COMPRESSIBLE_AGE_MS = COMPRESSION_MIN_AGE_MS;
 const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/;
 const HISTORY_SWEEP_START_DELAY_MS = 10 * 60_000;
 const HISTORY_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
@@ -102,16 +106,10 @@ export function isObsoleteRecoveryBackup(
     return false;
   }
   try {
-    const rows = options.db.all<Record<string, unknown>>("pragma quick_check");
-    const messages = rows.map((row) => String(Object.values(row)[0] ?? "").toLowerCase());
-    return messages.length === 1 && messages[0] === "ok";
+    return runQuickCheck(options.db).healthy === true;
   } catch {
     return false;
   }
-}
-
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
 }
 
 function isWithin(parent: string, candidate: string): boolean {
@@ -154,7 +152,7 @@ async function lstatOrNull(targetPath: string): Promise<fs.Stats | null> {
   try {
     return await fs.promises.lstat(targetPath);
   } catch (error) {
-    if (isMissing(error)) return null;
+    if (isEnoentError(error)) return null;
     throw error;
   }
 }
@@ -209,7 +207,7 @@ async function walkPath(
       try {
         names = await fs.promises.readdir(currentPath);
       } catch (error) {
-        if (isMissing(error)) return null;
+        if (isEnoentError(error)) return null;
         throw error;
       }
       return { currentPath, stat, children: names.map((name) => path.join(currentPath, name)) };
@@ -231,15 +229,12 @@ async function walkPath(
   return result;
 }
 
-function volumeFor(projectRoot: string): { freeBytes: number; totalBytes: number } {
+async function readdirOrEmpty(dirPath: string): Promise<string[]> {
   try {
-    const stat = fs.statfsSync(projectRoot, { bigint: true });
-    return {
-      freeBytes: Number(stat.bavail * stat.bsize),
-      totalBytes: Number(stat.blocks * stat.bsize),
-    };
-  } catch {
-    return { freeBytes: 0, totalBytes: 0 };
+    return await fs.promises.readdir(dirPath);
+  } catch (error) {
+    if (isEnoentError(error)) return [];
+    throw error;
   }
 }
 
@@ -303,10 +298,10 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     "select id, name, worktree_path, archived_at from lanes",
   );
 
-  const laneForPath = (targetPath: string, laneId?: string): LaneRow | null => {
+  const laneForPath = (targetPath: string, laneId?: string, rows: LaneRow[] = listLaneRows()): LaneRow | null => {
     const normalized = path.resolve(targetPath);
     const basename = path.basename(normalized);
-    return listLaneRows().find((row) => {
+    return rows.find((row) => {
       if (laneId && row.id !== laneId) return false;
       return path.resolve(row.worktree_path) === normalized || path.basename(row.worktree_path) === basename;
     }) ?? null;
@@ -399,18 +394,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const lanes = listLaneRows();
-    let worktreeNames: string[] = [];
-    try {
-      worktreeNames = await fs.promises.readdir(layout.worktreesDir);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
+    const worktreeNames = await readdirOrEmpty(layout.worktreesDir);
     for (const name of worktreeNames) {
       const worktreePath = path.join(layout.worktreesDir, name);
       const stat = await lstatOrNull(worktreePath);
       if (!stat) continue;
-      const row = lanes.find((candidate) => path.resolve(candidate.worktree_path) === path.resolve(worktreePath)
-        || path.basename(candidate.worktree_path) === name);
+      const row = laneForPath(worktreePath, undefined, lanes);
       const laneStatus: StorageItem["laneStatus"] = !row ? "orphaned" : row.archived_at ? "archived" : "active";
       const entry = await makeItem({
         category: "lanes_worktrees",
@@ -429,12 +418,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       add("lanes_worktrees", entry?.item);
     }
 
-    let tempNames: string[] = [];
-    try {
-      tempNames = await fs.promises.readdir(os.tmpdir());
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
+    const tempNames = await readdirOrEmpty(os.tmpdir());
     for (const name of tempNames.filter((value) => /^ade-/.test(value))) {
       const tempPath = path.join(os.tmpdir(), name);
       if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) continue;
@@ -463,12 +447,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       detail: "Recreated the next time you build",
     }))?.item);
 
-    let cacheNames: string[] = [];
-    try {
-      cacheNames = await fs.promises.readdir(layout.cacheDir);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
+    const cacheNames = await readdirOrEmpty(layout.cacheDir);
     for (const name of cacheNames) {
       if (name === "terminal-snapshots") continue;
       const cachePath = path.join(layout.cacheDir, name);
@@ -487,12 +466,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const updatesDir = path.join(adeHome, "runtime", "updates");
-    let updateNames: string[] = [];
-    try {
-      updateNames = await fs.promises.readdir(updatesDir);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
+    const updateNames = await readdirOrEmpty(updatesDir);
     for (const name of updateNames) {
       const updatePath = path.join(updatesDir, name);
       const stat = await lstatOrNull(updatePath);
@@ -523,12 +497,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }))?.item);
     }
 
-    let adeNames: string[] = [];
-    try {
-      adeNames = await fs.promises.readdir(layout.adeDir);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
+    const adeNames = await readdirOrEmpty(layout.adeDir);
     for (const name of adeNames.filter((value) => RECOVERY_BACKUP_PATTERN.test(value))) {
       const backupPath = path.join(layout.adeDir, name);
       add("recovery_backups", (await makeItem({
@@ -566,7 +535,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     const snapshot: StorageSnapshot = {
       generatedAt: new Date().toISOString(),
       projectRoot,
-      volume: volumeFor(projectRoot),
+      volume: readVolumeSpace(projectRoot) ?? { freeBytes: 0, totalBytes: 0 },
       totalAdeBytes: categories.reduce((sum, category) => sum + category.bytes, 0),
       categories,
       scanDurationMs: Date.now() - startedAt,

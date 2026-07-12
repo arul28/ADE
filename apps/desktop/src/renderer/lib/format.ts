@@ -1,5 +1,19 @@
 /** Shared formatting utilities for the renderer. */
 
+/** Format a byte count into a short human-readable size (e.g. "1.4 GB"). */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
 /** Returns a compact relative time label (e.g. "now", "2m", "1h", "3d") for sidebar cards. */
 export function relativeTimeCompact(iso: string | null | undefined): string {
   if (!iso) return "";

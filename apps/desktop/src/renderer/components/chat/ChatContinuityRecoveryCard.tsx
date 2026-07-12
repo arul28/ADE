@@ -133,11 +133,8 @@ function ReconstructedPill({ detail }: { detail: AgentChatNoticeDetail }) {
   const original = detail.originalThreadId?.trim() || null;
   const rebuilt = detail.reconstructedThreadId?.trim() || null;
   return (
-    <div className="mt-3">
-      <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-emerald-400/18 bg-emerald-400/[0.06] px-3 py-1 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-emerald-100/85">
-        <ClockCounterClockwise size={13} weight="fill" aria-hidden />
-        <span>Rebuilt from ADE history</span>
-      </div>
+    <div>
+      <ResolvedPill icon={ClockCounterClockwise} label="Rebuilt from ADE history" />
       <details className="mt-1.5">
         <summary className={DISCLOSURE_SUMMARY_CLASS}>Details</summary>
         <div className={IDENTIFIER_BLOCK_CLASS}>
@@ -221,11 +218,8 @@ export function ChatContinuityRecoveryCard({
     }
     if (result.mode === "recover_from_history") {
       return (
-        <div className="mt-3">
-          <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-emerald-400/18 bg-emerald-400/[0.06] px-3 py-1 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-emerald-100/85">
-            <ClockCounterClockwise size={13} weight="fill" aria-hidden />
-            <span>Rebuilt from ADE history</span>
-          </div>
+        <div>
+          <ResolvedPill icon={ClockCounterClockwise} label="Rebuilt from ADE history" />
           {result.capsulePreview ? (
             <CapsulePreviewDisclosure capsulePreview={result.capsulePreview} />
           ) : null}

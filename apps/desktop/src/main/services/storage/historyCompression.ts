@@ -5,12 +5,16 @@ import { Transform, Writable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip, gunzipSync, type ZlibOptions } from "node:zlib";
 import type { Logger } from "../logging/logger";
+import { isEnoentError } from "../shared/utils";
 import type { DiskPressureMonitor } from "./diskPressure";
+import { readVolumeSpace } from "./volume";
 
 const DAY_MS = 24 * 60 * 60_000;
 const DEFAULT_MIN_AGE_DAYS = 30;
+export const COMPRESSION_MIN_AGE_MS = DEFAULT_MIN_AGE_DAYS * DAY_MS;
 const DEFAULT_MAX_FILES = 25;
 const BETWEEN_FILES_DELAY_MS = 250;
+const COMPRESSION_HEADROOM_FACTOR = 1.2;
 export const MAX_TRANSPARENT_HISTORY_BYTES = 256 * 1024 * 1024;
 
 export type CompressionCandidate = {
@@ -58,10 +62,6 @@ function hashingTransform(): HashingTransform {
   return stream;
 }
 
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
-}
-
 function isEligibleName(filePath: string, kind: CompressionCandidate["kind"]): boolean {
   if (filePath.endsWith(".gz") || filePath.endsWith(".partial")) return false;
   if (kind === "chat_transcript") return filePath.endsWith(".jsonl");
@@ -69,13 +69,12 @@ function isEligibleName(filePath: string, kind: CompressionCandidate["kind"]): b
 }
 
 function freeBytesFor(filePath: string): number {
-  const stat = fs.statfsSync(path.dirname(filePath), { bigint: true });
-  return Number(stat.bavail * stat.bsize);
+  return readVolumeSpace(path.dirname(filePath))?.freeBytes ?? 0;
 }
 
 async function removeFileBestEffort(filePath: string): Promise<void> {
   await fs.promises.unlink(filePath).catch((error) => {
-    if (!isMissing(error)) throw error;
+    if (!isEnoentError(error)) throw error;
   });
 }
 
@@ -153,7 +152,7 @@ export function createHistoryCompressor(deps: {
         try {
           stat = await fs.promises.lstat(current);
         } catch (error) {
-          if (isMissing(error)) continue;
+          if (isEnoentError(error)) continue;
           throw error;
         }
         if (stat.isSymbolicLink()) continue;
@@ -163,7 +162,7 @@ export function createHistoryCompressor(deps: {
           try {
             names = await fs.promises.readdir(current);
           } catch (error) {
-            if (isMissing(error)) continue;
+            if (isEnoentError(error)) continue;
             throw error;
           }
           for (const name of names) pending.push(path.join(current, name));
@@ -201,7 +200,7 @@ export function createHistoryCompressor(deps: {
       if (deps.isPathActive(sourcePath)) return { ok: false, reason: "path_active" };
       const pressure = deps.diskPressure?.canPerform("compression");
       if (pressure && !pressure.allowed) return { ok: false, reason: "disk_pressure" };
-      if (freeBytesFor(sourcePath) < candidate.bytes * 1.2) return { ok: false, reason: "insufficient_headroom" };
+      if (freeBytesFor(sourcePath) < candidate.bytes * COMPRESSION_HEADROOM_FACTOR) return { ok: false, reason: "insufficient_headroom" };
       if (fs.existsSync(gzipPath)) return { ok: false, reason: "compressed_copy_exists" };
 
       const before = await fs.promises.stat(sourcePath);

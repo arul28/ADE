@@ -2,10 +2,8 @@ import { WarningCircle, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 
 /**
- * Fallback banner for project open/switch failures that arrive as an un-coded
- * string (no typed recovery path). Coded failures are owned by the
- * full-viewport ProjectRecoveryScreen (see ProjectTabHost), which offers
- * diagnosis + one-click repair; this banner never renders for those.
+ * Fallback banner for project open/switch failures that do not have enough
+ * context for the full-viewport recovery flow.
  */
 export function ProjectTransitionErrorAlert() {
   const projectTransition = useAppStore((state) => state.projectTransition);
@@ -17,8 +15,7 @@ export function ProjectTransitionErrorAlert() {
   );
 
   if (projectTransition || !projectTransitionError) return null;
-  // Coded failures are handled by the full-viewport ProjectRecoveryScreen.
-  if (projectTransitionError.code) return null;
+  if (projectTransitionError.code && projectTransitionError.rootPath) return null;
 
   return (
     <div

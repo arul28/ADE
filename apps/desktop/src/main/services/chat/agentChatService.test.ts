@@ -812,8 +812,8 @@ import {
   buildLinearSessionDirective,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
-  readThreadPointerLedger,
 } from "./agentChatService";
+import { readThreadPointerLedger } from "./threadPointerLedger";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -29074,6 +29074,35 @@ describe("explicit provider-thread continuity recovery", () => {
       .resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original", threadId: "thread-1" }));
     expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
     expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message === "Reconnected to the original thread.")).toBe(true);
+  });
+
+  it("rejects a concurrent continuity recovery for the same session", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", { thread: { id: "thread-1" } });
+    mockState.delayedCodexMethods.add("thread/resume");
+    const { service } = createService();
+
+    const first = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/resume")).toHaveLength(1);
+    });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
+      .resolves.toEqual({ ok: false, mode: "retry_original", reason: "recovery_failed" });
+    expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/resume")).toHaveLength(1);
+
+    mockState.pendingCodexResponses.splice(0).forEach((respond) => respond());
+    await expect(first).resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original" }));
   });
 
   it("reconstructs a bounded hidden history capsule in the same chat", async () => {

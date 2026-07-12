@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { expectNoJargon } from "../../../test/jargonGuard";
 import { StorageSection } from "./StorageSection";
 import type {
   StorageCleanupPreview,
@@ -233,6 +234,6 @@ describe("StorageSection", () => {
     installAdeMock();
     const { container } = render(<StorageSection />);
     await screen.findByText(/ADE is using/);
-    expect(container.textContent ?? "").not.toMatch(/CRR|JSONL|WAL|ENOSPC|SQLite|socket/i);
+    expectNoJargon(container.textContent ?? "");
   });
 });

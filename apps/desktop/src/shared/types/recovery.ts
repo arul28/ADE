@@ -1,18 +1,28 @@
-export type AdeRecoveryErrorCode =
-  | "disk_full"
-  | "insufficient_headroom"
-  | "db_integrity"
-  | "migration_incomplete"
-  | "migration_unknown_state"
-  | "brain_not_installed"
-  | "brain_crash_looping"
-  | "socket_stale_no_owner"
-  | "socket_owned_by_other"
-  | "provider_thread_missing"
-  | "provider_resume_failed"
-  | "optional_mcp_failed"
-  | "continuity_reconstruction_required"
-  | "unknown";
+export const ADE_RECOVERY_ERROR_CODES = [
+  "disk_full",
+  "insufficient_headroom",
+  "db_integrity",
+  "migration_incomplete",
+  "migration_unknown_state",
+  "brain_not_installed",
+  "brain_crash_looping",
+  "socket_stale_no_owner",
+  "socket_owned_by_other",
+  "provider_thread_missing",
+  "provider_resume_failed",
+  "optional_mcp_failed",
+  "continuity_reconstruction_required",
+  "unknown",
+] as const;
+
+export type AdeRecoveryErrorCode = typeof ADE_RECOVERY_ERROR_CODES[number];
+
+export function toAdeRecoveryErrorCode(value: unknown): AdeRecoveryErrorCode | null {
+  return typeof value === "string"
+    && (ADE_RECOVERY_ERROR_CODES as readonly string[]).includes(value)
+    ? value as AdeRecoveryErrorCode
+    : null;
+}
 
 export type AdeLastFailureReport = {
   version: 1;

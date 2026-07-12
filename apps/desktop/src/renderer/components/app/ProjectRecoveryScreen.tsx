@@ -8,20 +8,21 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type {
-  AdeRecoveryErrorCode,
-  ProjectRecoveryDiagnosis,
-  ProjectRepairReport,
-  RepairStepResult,
+import {
+  toAdeRecoveryErrorCode,
+  type AdeRecoveryErrorCode,
+  type ProjectRecoveryDiagnosis,
+  type ProjectRepairReport,
+  type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
 
 /**
  * Codes we can attempt an automatic repair for when a live diagnosis isn't
  * available (the diagnosis itself, when present, is the source of truth via
- * `canAutoRepair`). Mirrors the shipped fallback in ProjectTransitionErrorAlert.
+ * `canAutoRepair`).
  */
-const AUTO_REPAIR_CODES = new Set<AdeRecoveryErrorCode>([
+const AUTO_REPAIR_CODES: readonly AdeRecoveryErrorCode[] = [
   "disk_full",
   "insufficient_headroom",
   "db_integrity",
@@ -31,7 +32,7 @@ const AUTO_REPAIR_CODES = new Set<AdeRecoveryErrorCode>([
   "brain_not_installed",
   "socket_stale_no_owner",
   "unknown",
-]);
+];
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -138,7 +139,7 @@ export function ProjectRecoveryScreen() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
 
   const rootPath = projectTransitionError?.rootPath ?? null;
-  const code = (projectTransitionError?.code as AdeRecoveryErrorCode | undefined) ?? "unknown";
+  const code = toAdeRecoveryErrorCode(projectTransitionError?.code) ?? "unknown";
 
   const [diagnosis, setDiagnosis] = useState<ProjectRecoveryDiagnosis | null>(null);
   const [phase, setPhase] = useState<Phase>("diagnosing");
@@ -227,7 +228,7 @@ export function ProjectRecoveryScreen() {
   const headline = diagnosis?.headline ?? fallback.headline;
   const body = diagnosis?.body ?? fallback.body;
   const canAutoRepair = Boolean(
-    rootPath && (diagnosis ? diagnosis.canAutoRepair : AUTO_REPAIR_CODES.has(code)),
+    rootPath && (diagnosis ? diagnosis.canAutoRepair : AUTO_REPAIR_CODES.includes(code)),
   );
 
   const technicalText = [

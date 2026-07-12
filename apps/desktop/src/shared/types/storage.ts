@@ -1,3 +1,26 @@
+export type DiskPressureState = "normal" | "warning" | "critical" | "exhausted";
+
+export type DiskPressureSnapshot = {
+  state: DiskPressureState;
+  freeBytes: number;
+  totalBytes: number;
+  freeFraction: number;
+  perRoot: Array<{ root: string; freeBytes: number; totalBytes: number }>;
+  sampledAt: string;
+};
+
+export type DiskPressureThresholds = {
+  exhaustedBytes: number;
+  criticalBytes: number;
+  criticalFraction: number;
+  warningBytes: number;
+  warningFraction: number;
+};
+
+export function isUrgentDiskPressure(state: DiskPressureState): boolean {
+  return state === "critical" || state === "exhausted";
+}
+
 export type StorageCategoryId =
   | "chats_history"
   | "lanes_worktrees"

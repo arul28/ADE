@@ -39,15 +39,17 @@ export function writeFileAtomic(
     fd = null;
     fs.renameSync(tempPath, filePath);
 
-    let dirFd: number | null = null;
-    try {
-      dirFd = fs.openSync(dir, "r");
-      bestEffortFsync(dirFd);
-    } catch {
-      // Parent-directory durability is unavailable on some platforms.
-    } finally {
-      if (dirFd !== null) {
-        try { fs.closeSync(dirFd); } catch { /* best effort */ }
+    if (opts.fsync) {
+      let dirFd: number | null = null;
+      try {
+        dirFd = fs.openSync(dir, "r");
+        bestEffortFsync(dirFd);
+      } catch {
+        // Parent-directory durability is unavailable on some platforms.
+      } finally {
+        if (dirFd !== null) {
+          try { fs.closeSync(dirFd); } catch { /* best effort */ }
+        }
       }
     }
   } catch (error) {
@@ -90,7 +92,7 @@ export type ReadJsonRecoveryResult<T> =
   | { value: T; source: "primary" | "previous" }
   | { value: null; source: "missing" | "unrecoverable" };
 
-function readValidJson<T>(filePath: string, validate: (value: unknown) => value is T): T | null {
+export function readValidJson<T>(filePath: string, validate: (value: unknown) => value is T): T | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
     return validate(parsed) ? parsed : null;

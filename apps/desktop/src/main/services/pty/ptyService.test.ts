@@ -5,6 +5,7 @@ import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { expectNoJargon } from "../../../test/jargonGuard";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -925,7 +926,7 @@ describe("ptyService", () => {
       const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
       expect(ptyLib.spawn).toHaveBeenCalled();
       const refusal = canPerform.mock.results.find((result) => result.value.allowed === false)?.value.message;
-      expect(refusal).not.toMatch(/socket|SQL|launchd|CRR|JSONL|ENOSPC/i);
+      expectNoJargon(refusal);
     });
 
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
