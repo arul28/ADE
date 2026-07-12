@@ -60,7 +60,7 @@ type ChatCounts = { total: number; needingAttention: number };
 
 export type ProjectRecoveryConnectionPool = Pick<
   LocalRuntimeConnectionPool,
-  "getStatus" | "installServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot"
+  "getStatus" | "installServiceBestEffort" | "uninstallServiceBestEffort" | "callSync" | "ensureProject" | "callActionForRoot"
 >;
 
 export type ProjectRecoveryServiceDeps = {
@@ -73,6 +73,7 @@ export type ProjectRecoveryServiceDeps = {
   probeSocket?: (socketPath: string, timeoutMs: number) => Promise<boolean>;
   pingEndpoint?: (socketPath: string, timeoutMs: number) => Promise<boolean>;
   waitForSocketState?: (socketPath: string, reachable: boolean, timeoutMs: number) => Promise<boolean>;
+  stopService?: () => Promise<void> | void;
   quickCheck?: (dbPath: string) => Promise<QuickCheckResult>;
   openDatabase?: typeof openKvDb;
   classifyOpenError?: typeof classifySqliteOpenError;
@@ -316,6 +317,7 @@ export class ProjectRecoveryService {
   private readonly probeSocket: (socketPath: string, timeoutMs: number) => Promise<boolean>;
   private readonly pingEndpoint: (socketPath: string, timeoutMs: number) => Promise<boolean>;
   private readonly waitForSocketState: (socketPath: string, reachable: boolean, timeoutMs: number) => Promise<boolean>;
+  private readonly stopService: () => Promise<void> | void;
   private readonly quickCheck: (dbPath: string) => Promise<QuickCheckResult>;
   private readonly openDatabase: typeof openKvDb;
   private readonly classifyOpenError: typeof classifySqliteOpenError;
@@ -336,6 +338,9 @@ export class ProjectRecoveryService {
     this.probeSocket = deps.probeSocket ?? defaultProbeSocket;
     this.pingEndpoint = deps.pingEndpoint ?? defaultPingEndpoint;
     this.waitForSocketState = deps.waitForSocketState ?? defaultWaitForSocketState;
+    // Stop = spawn `serve --uninstall-service` via the pool's child-process
+    // boundary; desktop must never import ade-cli service-manager code.
+    this.stopService = deps.stopService ?? (() => deps.connectionPool.uninstallServiceBestEffort());
     this.quickCheck = deps.quickCheck ?? defaultQuickCheck;
     this.openDatabase = deps.openDatabase ?? openKvDb;
     this.classifyOpenError = deps.classifyOpenError ?? classifySqliteOpenError;
@@ -509,7 +514,7 @@ export class ProjectRecoveryService {
       }
       let stopped = false;
       try {
-        await this.deps.connectionPool.installServiceBestEffort();
+        await this.stopService();
         stopped = await this.waitForSocketState(this.socketPath, false, 10_000);
       } catch (error) {
         return fail("stop_service", "brain_crash_looping", "Restart ADE, then run repair again.", errorMessage(error));

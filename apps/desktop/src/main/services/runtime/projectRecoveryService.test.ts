@@ -60,6 +60,7 @@ function pool(statusValue = status()): ProjectRecoveryConnectionPool {
   return {
     getStatus: vi.fn(() => statusValue),
     installServiceBestEffort: vi.fn(async () => {}),
+    uninstallServiceBestEffort: vi.fn(async () => {}),
     callSync: vi.fn(async () => ({ pong: true })) as unknown as ProjectRecoveryConnectionPool["callSync"],
     ensureProject: vi.fn(async () => ({ projectId: "project-1" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
@@ -90,6 +91,7 @@ function deps(overrides: Partial<ProjectRecoveryServiceDeps> = {}): ProjectRecov
     probeSocket: vi.fn(async () => false),
     pingEndpoint: vi.fn(async () => false),
     waitForSocketState: vi.fn(async (_socketPath, reachable) => reachable),
+    stopService: vi.fn(async () => {}),
     quickCheck: vi.fn(async () => ({ healthy: true, detail: "ok" })),
     openDatabase: vi.fn(async () => ({ close: vi.fn() } as any)),
     readFailureReports: vi.fn(async () => ({ project: null, machine: null })),
@@ -244,6 +246,47 @@ describe("ProjectRecoveryService.repair", () => {
     expect(report.steps[1]).toMatchObject({ id: "stop_service", status: "failed" });
     expect(report.failureCode).toBe("socket_owned_by_other");
     expect(openDatabase).not.toHaveBeenCalled();
+  });
+
+  it("stops the service before database work and reinstalls only after it finishes", async () => {
+    const order: string[] = [];
+    const connectionPool = pool();
+    vi.mocked(connectionPool.installServiceBestEffort).mockImplementation(async () => {
+      order.push("install");
+    });
+    const service = createProjectRecoveryService(deps({
+      connectionPool,
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => true),
+      stopService: vi.fn(async () => {
+        order.push("stop");
+      }),
+      waitForSocketState: vi.fn(async (_socketPath, reachable) => {
+        order.push(`wait:${reachable}`);
+        return true;
+      }),
+      quickCheck: vi.fn(async () => {
+        order.push("quick-check");
+        return { healthy: true, detail: "ok" };
+      }),
+      openDatabase: vi.fn(async () => {
+        order.push("open-database");
+        return { close: vi.fn() } as any;
+      }),
+    }));
+
+    const report = await service.repair(tempRoot());
+
+    expect(report.ok).toBe(true);
+    expect(order).toEqual([
+      "stop",
+      "wait:false",
+      "quick-check",
+      "open-database",
+      "install",
+      "wait:true",
+    ]);
+    expect(connectionPool.installServiceBestEffort).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces classified migration failures and skips later steps", async () => {

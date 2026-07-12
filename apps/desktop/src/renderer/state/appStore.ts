@@ -1025,7 +1025,9 @@ function formatProjectTransitionError(
           "socket_owned_by_other",
         ].includes(code)
         ? "ADE's background service could not open this project."
-        : null;
+        : code
+          ? "ADE ran into a problem with this project."
+          : null;
   const fallback = raw.length > 0 ? raw : "Project action failed.";
   return {
     message: recoveryMessage ?? fallback,
@@ -2046,10 +2048,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         dismissedGithubBannerRoots: {},
       });
     } catch (error) {
+      const projectTransitionError = formatProjectTransitionError("closing", error);
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("closing", error),
+        projectTransitionError: projectTransitionError.code && closingProjectRoot
+          ? { ...projectTransitionError, rootPath: closingProjectRoot }
+          : projectTransitionError,
       });
       throw error;
     }

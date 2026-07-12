@@ -4256,6 +4256,10 @@ app.whenReady().then(async () => {
       adeHome: machineAdeLayout.adeDir,
       db,
       logger,
+      // Daemon-backed mode: the brain owns activity tracking and runs the real compression sweep
+      // (see apps/ade-cli/src/bootstrap.ts); this fallback instance deliberately refuses to compress
+      // because activity cannot be known here.
+      isPathActive: () => true,
     });
     usageTrackingService.start();
     const diskPressureMonitor = createDiskPressureMonitor({

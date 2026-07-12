@@ -781,6 +781,57 @@ export class LocalRuntimeConnectionPool {
     return install;
   }
 
+  /**
+   * Stop and remove the per-user service login item by spawning
+   * `serve --uninstall-service` — the same child-process boundary the
+   * installer uses; desktop never imports ade-cli service-manager code
+   * directly. Throws when the uninstall reports failure so the repair flow
+   * does not proceed to exclusive database work with a brain still running.
+   */
+  async uninstallServiceBestEffort(): Promise<void> {
+    const cliPath = resolveCliScriptPath();
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, "serve", "--uninstall-service"], {
+        env: buildLocalRuntimeNodeEnv(this.appVersion),
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.once("error", (error) => {
+        this.logger.warn("local_runtime.service_uninstall_failed", { error: error.message });
+        reject(error);
+      });
+      child.once("close", (code) => {
+        const output = stdout.trim();
+        const parsed = parseRuntimeServiceManagerOutput(output);
+        const failed = code !== 0 || parsed?.ok === false;
+        if (failed) {
+          const message = parsed?.message || stderr.trim() || output || "ADE service login item removal failed.";
+          this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, exitCode: code, message });
+          reject(new Error(message));
+          return;
+        }
+        this.serviceInstallStatus = {
+          state: "not_attempted",
+          attempted: false,
+          path: parsed?.path ?? cliPath,
+          message: parsed?.message || output || "ADE service login item was removed.",
+          exitCode: code,
+          updatedAt: new Date().toISOString(),
+        };
+        this.logger.info("local_runtime.service_uninstall_succeeded", { cliPath, exitCode: code });
+        resolve();
+      });
+    });
+  }
+
   private async runServiceInstallBestEffort(): Promise<void> {
     const cliPath = resolveCliScriptPath();
     const releaseBuildBlock = localReleaseBuildOutputRuntimeBlock(cliPath);

@@ -31,6 +31,9 @@ const AUTO_REPAIR_CODES: readonly AdeRecoveryErrorCode[] = [
   "brain_crash_looping",
   "brain_not_installed",
   "socket_stale_no_owner",
+  "provider_thread_missing",
+  "provider_resume_failed",
+  "continuity_reconstruction_required",
   "unknown",
 ];
 

@@ -24,8 +24,8 @@ export function copytruncateLogIfOversized(
     try {
       const keep = Math.min(retainedBytes, stat.size);
       const tail = Buffer.allocUnsafe(keep);
-      fs.readSync(fd, tail, 0, keep, stat.size - keep);
-      fs.writeFileSync(`${filePath}.1`, tail);
+      const bytesRead = fs.readSync(fd, tail, 0, keep, stat.size - keep);
+      fs.writeFileSync(`${filePath}.1`, tail.subarray(0, bytesRead));
     } finally {
       fs.closeSync(fd);
     }

@@ -106,6 +106,23 @@ describe("ProjectRecoveryScreen", () => {
     expect(screen.getByRole("button", { name: "Review storage" })).toBeTruthy();
   });
 
+  it.each([
+    "provider_thread_missing",
+    "provider_resume_failed",
+    "continuity_reconstruction_required",
+  ] as const)("offers fallback repair for %s when diagnosis is unavailable", async (code) => {
+    const diagnose = vi.fn(async () => { throw new Error("diagnosis unavailable"); });
+    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    setError({ code });
+
+    render(<ProjectRecoveryScreen />);
+
+    expect(await screen.findByRole("button", { name: "Repair ADE" })).toBeTruthy();
+    const details = document.querySelector("details")?.textContent ?? "";
+    const visibleText = (document.body.textContent ?? "").replace(details, "");
+    expectNoJargon(visibleText);
+  });
+
   it("runs a repair, reveals steps + success report, then re-attempts the open", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
     const repair = vi.fn(async () => makeReport());

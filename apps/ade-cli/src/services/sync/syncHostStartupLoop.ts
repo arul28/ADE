@@ -98,7 +98,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
     } catch (error) {
       attempt += 1;
       const message = error instanceof Error ? error.message : String(error);
-      const signature = `${error instanceof Error ? error.name : typeof error}:${message}`;
+      const signature = error instanceof Error ? error.name : typeof error;
       failureLogs.note(signature, `ADE brain sync host failed: ${message}`);
       lastFailureSignature = signature;
       if (error instanceof SyncHostSingletonConflictError) {

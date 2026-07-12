@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copytruncateLogIfOversized,
   MAX_LAUNCHD_LOG_BYTES,
@@ -11,6 +11,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -33,5 +34,16 @@ describe("copytruncateLogIfOversized", () => {
     expect(copytruncateLogIfOversized(logPath)).toBe(false);
     expect(fs.readFileSync(logPath, "utf8")).toBe("small");
     expect(fs.readFileSync(`${logPath}.1`)).toEqual(tail);
+  });
+
+  it("writes only the bytes returned by a short read", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-log-bound-short-read-"));
+    roots.push(root);
+    const logPath = path.join(root, "launchd.err.log");
+    fs.writeFileSync(logPath, Buffer.alloc(MAX_LAUNCHD_LOG_BYTES + ROTATED_LAUNCHD_LOG_BYTES, 1));
+    vi.spyOn(fs, "readSync").mockReturnValueOnce(128);
+
+    expect(copytruncateLogIfOversized(logPath)).toBe(true);
+    expect(fs.statSync(`${logPath}.1`).size).toBe(128);
   });
 });

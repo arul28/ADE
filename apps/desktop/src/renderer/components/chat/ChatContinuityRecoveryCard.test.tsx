@@ -152,6 +152,20 @@ describe("ChatContinuityRecoveryCard", () => {
     expect(screen.getByRole("button", { name: /retry original thread/i })).toHaveProperty("disabled", false);
   });
 
+  it("sanitizes unexpected recovery failures", async () => {
+    recoverContinuity.mockRejectedValueOnce(
+      new Error("Error invoking remote method 'recoverContinuity': socket closed"),
+    );
+    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/couldn't finish recovering this chat/i);
+    expect(alert.textContent).not.toMatch(/remote method|socket/i);
+    expectNoJargon(alert.textContent ?? "");
+  });
+
   it("navigates via ade:work:select-session after starting a new chat", async () => {
     recoverContinuity.mockResolvedValueOnce({ ok: true, mode: "start_new_chat", newSessionId: "session-new" });
     const onSelect = vi.fn();

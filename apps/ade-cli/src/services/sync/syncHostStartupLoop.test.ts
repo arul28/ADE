@@ -68,6 +68,27 @@ describe("runSyncHostStartupLoop", () => {
     ]);
   });
 
+  it("deduplicates changing messages from the same failure type", async () => {
+    const logs: string[] = [];
+    let attempts = 0;
+    await runSyncHostStartupLoop({
+      startSyncHost: () => {
+        attempts += 1;
+        return attempts < 3
+          ? Promise.reject(new Error(`port busy on attempt ${attempts}`))
+          : Promise.resolve();
+      },
+      isDone: () => false,
+      log: (message) => logs.push(message),
+      sleep: instantSleep,
+    });
+
+    expect(logs).toEqual([
+      "ADE brain sync host failed: port busy on attempt 1",
+      "ADE brain mobile sync host recovered.",
+    ]);
+  });
+
   it("takes over from a stale same-channel owner when it is the service child", async () => {
     const logs: string[] = [];
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];

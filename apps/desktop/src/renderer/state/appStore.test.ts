@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { expectNoJargon } from "../../test/jargonGuard";
 
 // ---------------------------------------------------------------------------
 // Mock window.localStorage and window.ade before importing the store
@@ -1198,6 +1199,48 @@ describe("appStore", () => {
         message: "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again.",
         detail: "internal database detail",
         rootPath: "/tmp/project",
+      });
+    });
+
+    it.each([
+      "provider_thread_missing",
+      "provider_resume_failed",
+      "continuity_reconstruction_required",
+      "optional_mcp_failed",
+    ] as const)("uses calm copy for the recognized %s recovery code", async (code) => {
+      (window.ade.project.switchToPath as any).mockRejectedValueOnce(
+        new Error(`Error invoking remote method 'ade.project.switchToPath': Error: ${code}: raw socket detail`),
+      );
+
+      await expect(
+        useAppStore.getState().switchProjectToPath("/tmp/project"),
+      ).rejects.toThrow(code);
+
+      const transitionError = useAppStore.getState().projectTransitionError;
+      expect(transitionError).toEqual({
+        code,
+        message: "ADE ran into a problem with this project.",
+        detail: "raw socket detail",
+        rootPath: "/tmp/project",
+      });
+      expectNoJargon(transitionError?.message ?? "");
+    });
+
+    it("attaches the active project root to coded close failures", async () => {
+      useAppStore.setState({
+        project: { rootPath: "/tmp/closing", displayName: "Closing", baseRef: "main" } as any,
+      });
+      (window.ade.project.closeCurrent as any).mockRejectedValueOnce(
+        new Error("Error invoking remote method 'ade.project.closeCurrent': Error: db_integrity: damaged index"),
+      );
+
+      await expect(useAppStore.getState().closeProject()).rejects.toThrow("db_integrity");
+
+      expect(useAppStore.getState().projectTransitionError).toEqual({
+        code: "db_integrity",
+        message: "ADE's background service could not open this project.",
+        detail: "damaged index",
+        rootPath: "/tmp/closing",
       });
     });
 

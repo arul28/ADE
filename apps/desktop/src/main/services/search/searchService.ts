@@ -604,9 +604,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       return;
     }
 
-    const readEnd = compressed
-      ? fileSize
-      : Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    const readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
     let buf: Buffer;
     if (compressed) {
       buf = compressed.subarray(source.cursor, readEnd);
@@ -719,9 +717,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
     if (fileSize === source.cursor) return;
 
-    const readEnd = compressed
-      ? fileSize
-      : Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    const readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
     let buf: Buffer;
     if (compressed) {
       buf = compressed.subarray(source.cursor, readEnd);

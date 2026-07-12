@@ -194,8 +194,8 @@ export function ChatContinuityRecoveryCard({
         if (mode === "start_new_chat" && res.newSessionId) {
           navigateToSession(res.newSessionId, detail.spawnedSession?.laneId ?? null);
         }
-      } catch (error) {
-        setFailure(error instanceof Error ? error.message : String(error));
+      } catch {
+        setFailure(failureCopy("recovery_failed"));
       } finally {
         setPendingMode(null);
       }

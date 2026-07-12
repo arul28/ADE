@@ -103,6 +103,12 @@ function moveCurrentToPrevious(currentPath: string): void {
   fs.renameSync(currentPath, prevPath);
 }
 
+function copyCurrentToPrevious(currentPath: string): void {
+  const prevPath = previousPath(currentPath);
+  fs.rmSync(prevPath, { force: true });
+  fs.copyFileSync(currentPath, prevPath);
+}
+
 export function recordLastFailure(
   target: LastFailureTarget,
   input: LastFailureInput,
@@ -113,7 +119,7 @@ export function recordLastFailure(
     const existing = readReportPath(currentPath);
     const at = input.at ?? new Date().toISOString();
     const repeated = existing != null && sameSignature(existing, input);
-    if (existing && !repeated) moveCurrentToPrevious(currentPath);
+    if (existing && !repeated) copyCurrentToPrevious(currentPath);
     const report: AdeLastFailureReport = {
       version: 1,
       code: input.code,

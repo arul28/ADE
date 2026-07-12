@@ -163,6 +163,28 @@ describe("searchService", () => {
     expect((await service.query({ query: "nebula" })).results.some((result) => result.kind === "terminal")).toBe(true);
   });
 
+  it("processes a large compressed terminal transcript in bounded passes", async () => {
+    const terminalPath = path.join(root, "transcripts", "terminal-large.log");
+    const terminal = makeSession({
+      id: "terminal-large",
+      title: "Large compressed terminal",
+      toolType: "shell",
+      status: "completed",
+      transcriptPath: terminalPath,
+    });
+    sessions.push(terminal);
+    writeTerminalOutput(terminal.id, `${"bounded output ".repeat(80)}\n`.repeat(5_000));
+    fs.writeFileSync(`${terminalPath}.gz`, gzipSync(fs.readFileSync(terminalPath)));
+    fs.unlinkSync(terminalPath);
+    const readFile = vi.spyOn(fs, "readFileSync");
+
+    service.notifyTerminalData(terminal.id);
+    await service.processPendingNow();
+
+    expect(readFile.mock.calls.filter(([filePath]) => filePath === `${terminalPath}.gz`).length)
+      .toBeGreaterThan(1);
+  });
+
   it("uses persisted chat envelope sequence for deep link anchors", async () => {
     const session = makeSession({ id: "chat-sequence", title: "Sequence links" });
     sessions.push(session);

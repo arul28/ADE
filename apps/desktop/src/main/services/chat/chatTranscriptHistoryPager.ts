@@ -1,7 +1,11 @@
 import fs from "node:fs";
+import path from "node:path";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
-import { readHistoryFileSync } from "../storage/historyCompression";
+import {
+  MAX_TRANSPARENT_HISTORY_BYTES,
+  readHistoryFileSync,
+} from "../storage/historyCompression";
 
 /**
  * Byte-window pager for chat transcript JSONL files.
@@ -42,6 +46,45 @@ export type TranscriptHistoryPageRead = {
 };
 
 const EMPTY_PAGE: TranscriptHistoryPageRead = { envelopes: [], startOffset: 0, hasMore: false };
+const GZIP_SNAPSHOT_CACHE_MAX_ENTRIES = 4;
+const gzipSnapshotCache = new Map<string, {
+  mtimeMs: number;
+  size: number;
+  snapshot: Buffer;
+}>();
+let gzipSnapshotCacheBytes = 0;
+
+function readGzipSnapshot(transcriptPath: string): Buffer {
+  const cacheKey = path.resolve(transcriptPath);
+  const stat = fs.statSync(cacheKey);
+  const cached = gzipSnapshotCache.get(cacheKey);
+  if (cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    gzipSnapshotCache.delete(cacheKey);
+    gzipSnapshotCache.set(cacheKey, cached);
+    return cached.snapshot;
+  }
+  if (cached) {
+    gzipSnapshotCache.delete(cacheKey);
+    gzipSnapshotCacheBytes -= cached.snapshot.length;
+  }
+
+  const snapshot = readHistoryFileSync(cacheKey);
+  if (snapshot.length <= MAX_TRANSPARENT_HISTORY_BYTES) {
+    gzipSnapshotCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, snapshot });
+    gzipSnapshotCacheBytes += snapshot.length;
+    while (
+      gzipSnapshotCache.size > GZIP_SNAPSHOT_CACHE_MAX_ENTRIES
+      || gzipSnapshotCacheBytes > MAX_TRANSPARENT_HISTORY_BYTES
+    ) {
+      const oldestKey = gzipSnapshotCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      const oldest = gzipSnapshotCache.get(oldestKey);
+      gzipSnapshotCache.delete(oldestKey);
+      gzipSnapshotCacheBytes -= oldest?.snapshot.length ?? 0;
+    }
+  }
+  return snapshot;
+}
 
 /**
  * Read one page of transcript history ending (exclusively) at `beforeOffset`.
@@ -69,7 +112,7 @@ export function readTranscriptHistoryPage(args: {
 
   const pageBytes = clampHistoryPageBytes(args.maxBytes);
   if (transcriptPath.endsWith(".gz")) {
-    const full = readHistoryFileSync(transcriptPath);
+    const full = readGzipSnapshot(transcriptPath);
     const end = Math.min(beforeOffset, full.length);
     if (end <= 0) return { ...EMPTY_PAGE };
     const start = Math.max(0, end - pageBytes);

@@ -115,6 +115,7 @@ function recoveryPool(): ProjectRecoveryConnectionPool {
       serviceHealth: { state: "unknown", installed: null, running: null, path: null, message: null, checkedAt: null },
     })),
     installServiceBestEffort: vi.fn(async () => {}),
+    uninstallServiceBestEffort: vi.fn(async () => {}),
     callSync: vi.fn(async () => ({ pong: true })) as any,
     ensureProject: vi.fn(async () => ({ projectId: "project-incident" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
