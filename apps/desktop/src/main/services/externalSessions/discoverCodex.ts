@@ -229,6 +229,26 @@ function idFromCodexFilename(filePath: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * Resolve a Codex rollout file path by session/thread id with NO originator
+ * filtering. `discoverCodexSessions` is the external-import surface and
+ * deliberately excludes ADE-originated rollouts (`isImportableCodexSession`),
+ * which makes it wrong for flows that need ADE's own sessions — e.g. packaging
+ * a cross-machine fork of an ADE-created Codex chat. Mirrors codex's own
+ * filename-suffix lookup; returns the newest match or null.
+ */
+export function findCodexRolloutPathBySessionId(
+  sessionId: string,
+  args: ExternalSessionDiscoveryArgs = {},
+): string | null {
+  const lookupId = sessionId.trim();
+  if (!lookupId) return null;
+  const sessionsDir = path.join(codexHomeDir(args), "sessions");
+  if (!fs.existsSync(sessionsDir)) return null;
+  const candidates = collectRecentCodexSessionCandidates(sessionsDir, 1, lookupId);
+  return candidates[0]?.filePath ?? null;
+}
+
 export async function discoverCodexSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {

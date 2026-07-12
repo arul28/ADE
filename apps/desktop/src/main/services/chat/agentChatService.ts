@@ -7,7 +7,7 @@ import {
   placeClaudeForkFromTransport,
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
-import { discoverCodexSessions } from "../externalSessions/discoverCodex";
+import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -25141,13 +25141,10 @@ export function createAgentChatService(args: {
       if (!threadId) {
         throw new Error("Full-history fork requires a Codex thread id. Send a Codex message first, then try again.");
       }
-      const records = await discoverCodexSessions({
-        sessionId: threadId,
-        scopeRoots: [laneWorktreePath, projectRoot],
-        logger,
-      });
-      const record = records.find((candidate) => candidate.id === threadId) ?? records[0];
-      const sourcePath = record?.sourcePath;
+      // NOT discoverCodexSessions: that is the external-import surface and
+      // filters out ADE-originated rollouts, which are exactly the ones this
+      // path packages. Resolve by filename suffix like codex itself does.
+      const sourcePath = findCodexRolloutPathBySessionId(threadId, { logger });
       if (!sourcePath) throw new Error("ADE could not find the Codex rollout to fork.");
       if (sourcePath.endsWith(".zst")) {
         throw new Error("This Codex chat is stored compressed and can't be forked across machines yet. Use a brief instead.");

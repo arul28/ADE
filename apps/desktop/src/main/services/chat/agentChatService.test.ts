@@ -5049,6 +5049,52 @@ describe("createAgentChatService", () => {
         expect(prepared.capsule.brief).toBe("Fork handoff — full conversation history transported.");
       });
 
+      it("packages an ADE-originated Codex rollout for fork (no external-import originator filter)", async () => {
+        installCleanCrossMachineGitFixture();
+        process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-prepare");
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+        ] as any);
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
+        });
+        const threadId = "0199aaaa-bbbb-cccc-dddd-eeeeffff0001";
+        source.threadId = threadId;
+        // Real rollout layout with an ADE originator — the external-import
+        // discovery path deliberately filters these out, which used to make
+        // fork prepare fail for ADE's own Codex chats.
+        const rolloutDir = path.join(process.env.CODEX_HOME, "sessions", "2026", "07", "12");
+        fs.mkdirSync(rolloutDir, { recursive: true });
+        const rolloutName = `rollout-2026-07-12T00-00-00-${threadId}.jsonl`;
+        const rolloutContent = `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: threadId, originator: "ade_desktop", cwd: tmpRoot },
+        })}\n`;
+        fs.writeFileSync(path.join(rolloutDir, rolloutName), rolloutContent, "utf8");
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-codex-prepare-1",
+          targetModelId: "openai/gpt-5.5",
+          mode: "fork",
+        });
+
+        expect(prepared.capsule.forkTransport).toMatchObject({
+          provider: "codex",
+          kind: "codex-rollout",
+          nativeSessionId: threadId,
+        });
+        expect(prepared.capsule.forkTransport!.mainFile.name).toBe(rolloutName);
+        expect(zlib.gunzipSync(Buffer.from(
+          prepared.capsule.forkTransport!.mainFile.contentBase64Gzip,
+          "base64",
+        )).toString("utf8")).toBe(rolloutContent);
+      });
+
       it("offers brief fallback when a Claude transcript exceeds the fork cap", async () => {
         installCleanCrossMachineGitFixture();
         process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-oversize");
