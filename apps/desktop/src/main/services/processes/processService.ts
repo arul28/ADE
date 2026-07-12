@@ -593,17 +593,25 @@ export function createProcessService({
     });
   };
 
-  const startByDefinition = async (
-    laneId: string,
-    definition: ProcessDefinition,
-    opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {},
-  ): Promise<ProcessRuntime> => {
+  // Every NEW process launch path (start, restart, stack, group, start-all)
+  // funnels through startByDefinition / startById / runStartSet; the pressure
+  // gate must be their first act so a refusal happens before any config or
+  // trust work.
+  const assertProcessStartAllowed = (): void => {
     const decision = diskPressureMonitor?.canPerform("process_start");
     if (decision && !decision.allowed) {
       throw Object.assign(new Error(decision.message), {
         code: decision.code satisfies AdeRecoveryErrorCode,
       });
     }
+  };
+
+  const startByDefinition = async (
+    laneId: string,
+    definition: ProcessDefinition,
+    opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {},
+  ): Promise<ProcessRuntime> => {
+    assertProcessStartAllowed();
     if (!opts.skipTrust) projectConfigService.getExecutableConfig();
 
     if (!definition.command.length || !definition.command[0]?.trim()) {
@@ -700,6 +708,7 @@ export function createProcessService({
   };
 
   const startById = async (laneId: string, processId: string, opts: { skipTrust?: boolean } = {}) => {
+    assertProcessStartAllowed();
     const config = opts.skipTrust ? projectConfigService.getEffective() : projectConfigService.getExecutableConfig();
     const overlay = await getLaneOverlay(laneId, config);
     const allowedIds = applyProcessFilter(config.processes.map((proc) => proc.id), overlay);
@@ -738,6 +747,7 @@ export function createProcessService({
   };
 
   const runStartSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
+    assertProcessStartAllowed();
     const config = projectConfigService.getExecutableConfig();
     const overlay = await getLaneOverlay(laneId, config);
     const byId = new Map(config.processes.map((proc) => [proc.id, proc] as const));

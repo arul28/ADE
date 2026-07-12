@@ -30491,6 +30491,22 @@ describe("explicit provider-thread continuity recovery", () => {
   const ledgerPath = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions", "thread-pointers.jsonl");
   const transcriptPath = (sessionId: string) => path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
 
+  // Rollout-probe classification must not depend on the machine's real
+  // ~/.codex tree: an empty CODEX_HOME gives a deterministic completed
+  // probe (definitive absence); tests that want "local history exists"
+  // write a rollout fixture with writeCodexRolloutFixture.
+  beforeEach(() => {
+    process.env.CODEX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-home-"));
+  });
+
+  function writeCodexRolloutFixture(threadId: string): string {
+    const rolloutDir = path.join(process.env.CODEX_HOME!, "sessions", "2026", "07", "12");
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    const rolloutPath = path.join(rolloutDir, `rollout-2026-07-12T01-00-00-${threadId}.jsonl`);
+    fs.writeFileSync(rolloutPath, `${JSON.stringify({ type: "session_meta" })}\n`, "utf8");
+    return rolloutPath;
+  }
+
   async function createPersistedCodexThread() {
     const first = createService();
     const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
@@ -30506,6 +30522,9 @@ describe("explicit provider-thread continuity recovery", () => {
 
   it("preserves the pointer and emits a failed turn plus recovery notice when resume reports not found", async () => {
     const session = await createPersistedCodexThread();
+    // The provider claims the thread is gone but local history still exists,
+    // so classification must not trust the deletion (reason "unknown").
+    writeCodexRolloutFixture("thread-1");
     const resumeCommand = mockState.sessions.get(session.id)?.resumeCommand;
     mockState.codexResponseOverrides.set("thread/resume", { error: { code: -32000, message: "thread not found" } });
     const events: AgentChatEventEnvelope[] = [];
