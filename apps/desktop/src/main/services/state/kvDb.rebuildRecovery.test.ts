@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { constrainSqliteMaxPages } from "../../../test/faultInjection";
 import {
   classifySqliteOpenError,
   openKvDb,
@@ -151,12 +152,12 @@ describe("kvDb transactional table rebuilds", () => {
     raw.exec("commit");
 
     const currentPages = Number((raw.prepare("pragma page_count").get() as { page_count: number }).page_count);
-    raw.exec(`pragma max_page_count = ${currentPages + 2}`);
+    constrainSqliteMaxPages(raw, currentPages + 2);
     expect(() => rebuildTableInTransaction(raw, basicRebuildPlan())).toThrow(/database or disk is full/i);
     expect(rawCount(raw, "rebuild_source")).toBe(3_000);
     expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);
 
-    raw.exec(`pragma max_page_count = ${currentPages * 4}`);
+    constrainSqliteMaxPages(raw, currentPages * 4);
     rebuildTableInTransaction(raw, basicRebuildPlan());
     expect(rawCount(raw, "rebuild_source")).toBe(3_000);
     expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);

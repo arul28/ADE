@@ -40,6 +40,16 @@ export default defineWorkspace([
     resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
+      name: "integration-main",
+      include: ["src/main/**/*.integration.test.{ts,tsx}"],
+      testTimeout: 60_000,
+      hookTimeout: 60_000,
+    },
+  },
+  {
+    resolve: { alias: sharedResolveAlias },
+    test: {
+      ...shared,
       name: "unit-main",
       include: ["src/main/**/*.test.{ts,tsx}"],
       exclude: unitExcludes,

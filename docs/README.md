@@ -40,6 +40,7 @@ docs/
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
+    ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket

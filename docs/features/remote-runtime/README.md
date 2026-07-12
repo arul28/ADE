@@ -47,6 +47,16 @@ end-to-end encrypted tunnel; see the trust boundary in
   install/health state, and applies short per-call timeouts for project
   registration, file actions, and event polling so renderer IPC calls do not
   wait for the desktop handler timeout.
+- `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
+  project/machine failure reports used when the background service exits before
+  desktop IPC can obtain a normal runtime error.
+- `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` —
+  brain-independent project diagnosis and ordered repair for storage,
+  database, migration, endpoint, and chat continuity failures.
+- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
+  (`codedRecoveryError`) — refuses to start an app-owned brain on a primary
+  service socket and carries the recorded `AdeRecoveryErrorCode` to IPC and the
+  renderer recovery surface.
 - `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
@@ -113,6 +123,16 @@ destination project, creates or reuses the destination lane, and starts a new
 chat from a bounded portable capsule.
 
 When opening a remote project, ADE checks local projects with the same git origin. If a matching local copy has uncommitted changes, ADE shows a confirmation dialog (`RemoteProjectOpenDialog`) before switching so the user can push, stash, or keep the divergent local work intentionally.
+
+Local project opens use typed recovery rather than raw error text. If the
+machine brain could not open project data, it records a bounded failure report;
+the local connection pool returns a coded refusal instead of spawning a second
+brain on the primary socket. The renderer carries that code into the full
+project recovery surface, where `projectRecoveryService` can diagnose and
+repair storage or database state without depending on the failed brain. Remote
+RPC errors retain their method/code/message/data diagnostics, but they do not
+run a local repair against data owned by the remote machine. See
+[Storage and recovery](../storage-and-recovery/README.md#typed-project-open-recovery).
 
 ## Connect flow
 

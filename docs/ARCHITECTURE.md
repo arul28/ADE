@@ -263,6 +263,12 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
 - **Sync API** (`AdeDb.sync`): `getSiteId()`, `getDbVersion()`, `exportChangesSince(version)`, `applyChanges(changes)`. Used by the sync transport.
 - **Merge semantics**: last-writer-wins per column with Lamport timestamps; each device has a site ID at `.ade/secrets/sync-site-id`.
 - **Engineering rule under CRR retrofit**: app-level `ON CONFLICT(...)` upserts must target PK only; secondary UNIQUE constraints do not survive CRR marking.
+- **Restart-safe recovery**: table rebuilds are transactional, and
+  `recoverInterruptedTableRebuilds()` classifies legacy staging tables before
+  schema migration. Durable JSON uses atomic replace plus one `.lkg`; typed
+  open failures flow through `lastFailureStore` and the brain-independent
+  `projectRecoveryService`. See
+  [Storage and recovery](./features/storage-and-recovery/README.md).
 
 ### 3.2 Schema highlights
 
@@ -334,6 +340,14 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
 2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
 3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, generated context markdown, and the channel-local personal-chat state/scratch roots. Never leaves the device. Personal chats can still be controlled from another client connected to that machine brain; they are not CRR rows in an active project's database.
+
+The storage domain lives under
+`apps/desktop/src/main/services/storage/`: `diskPressure` gates new
+write-producing work, `storageInsightsService` provides categorized and
+preview-confirmed cleanup without following links, and `historyCompression`
+compresses inactive history only after byte-for-byte verification. Renderer
+surfaces are `StoragePressureIndicator`, `StorageSection`, and
+`ProjectRecoveryScreen`.
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 

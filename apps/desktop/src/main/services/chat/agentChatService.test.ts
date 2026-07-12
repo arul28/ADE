@@ -17,6 +17,7 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { injectFsFault } from "../../../test/faultInjection";
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -28837,14 +28838,9 @@ describe("durable chat metadata and transcript continuity", () => {
     const { service, logger } = createService();
     await service.resumeSession({ sessionId: session.id });
     const before = fs.readFileSync(metadataPath(session.id));
-    const realRename = fs.renameSync.bind(fs);
-    let injected = false;
-    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      if (!injected && path.resolve(String(to)) === path.resolve(metadataPath(session.id))) {
-        injected = true;
-        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
-      }
-      return realRename(from, to);
+    const renameFault = injectFsFault({
+      op: "renameSync",
+      matchPath: (candidate) => path.resolve(candidate) === path.resolve(metadataPath(session.id)),
     });
 
     mockState.emitCodexPayload({
@@ -28862,7 +28858,7 @@ describe("durable chat metadata and transcript continuity", () => {
     expect(readPersistedChatState(session.id).threadId).toBe("thread-resumed");
     expect(fs.readdirSync(chatSessionsDir()).filter((name) => name.includes(".tmp-"))).toEqual([]);
 
-    renameSpy.mockRestore();
+    renameFault.restore();
     await service.updateSession({ sessionId: session.id, title: "Persist after ENOSPC" });
     expect(readPersistedChatState(session.id).threadId).toBeUndefined();
     expect(JSON.parse(fs.readFileSync(`${metadataPath(session.id)}.lkg`, "utf8")).threadId).toBe("thread-resumed");

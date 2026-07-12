@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { injectFsFault } from "../../../test/faultInjection";
 import {
   cleanupAbandonedTempFiles,
   readJsonWithRecovery,
@@ -45,13 +46,7 @@ describe("durableFile", () => {
 
     it("leaves the destination untouched when the temp write fails", () => {
       fs.writeFileSync(filePath, "before");
-      const original = fs.writeFileSync.bind(fs);
-      vi.spyOn(fs, "writeFileSync").mockImplementation(((target: fs.PathOrFileDescriptor, ...args: unknown[]) => {
-        if (typeof target === "number") {
-          throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
-        }
-        return (original as (...values: unknown[]) => unknown)(target, ...args);
-      }) as typeof fs.writeFileSync);
+      injectFsFault({ op: "writeFileSync" });
 
       expect(() => writeFileAtomic(filePath, "after")).toThrow(/no space/i);
       expect(fs.readFileSync(filePath, "utf8")).toBe("before");
@@ -60,9 +55,7 @@ describe("durableFile", () => {
 
     it("leaves the destination untouched when rename fails", () => {
       fs.writeFileSync(filePath, "before");
-      vi.spyOn(fs, "renameSync").mockImplementation(() => {
-        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
-      });
+      injectFsFault({ op: "renameSync" });
 
       expect(() => writeFileAtomic(filePath, "after")).toThrow(/no space/i);
       expect(fs.readFileSync(filePath, "utf8")).toBe("before");
@@ -83,9 +76,7 @@ describe("durableFile", () => {
 
     it("continues the primary write when the lkg copy fails", () => {
       writeJsonWithPrevious(filePath, { version: 1, sessionId: "s", value: 1 } satisfies Fixture);
-      vi.spyOn(fs, "copyFileSync").mockImplementation(() => {
-        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
-      });
+      injectFsFault({ op: "copyFileSync" });
 
       expect(writeJsonWithPrevious(filePath, { version: 1, sessionId: "s", value: 2 } satisfies Fixture)).toBe(false);
       expect(JSON.parse(fs.readFileSync(filePath, "utf8")).value).toBe(2);
