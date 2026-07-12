@@ -58,8 +58,9 @@ export function enforceCrossMachineForkEncodedBudget(
 
 export function crossMachineForkOversizeError(uncompressedBytes: number): Error {
   const mib = (uncompressedBytes / (1024 * 1024)).toFixed(1);
+  const limitMib = (CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED / (1024 * 1024)).toFixed(0);
   const error = new Error(
-    `This chat's history is too large to send as a fork (${mib} MiB, limit 18 MiB). Send it as a brief instead.`,
+    `This chat's history is too large to send as a fork (${mib} MiB, limit ${limitMib} MiB). Send it as a brief instead.`,
   ) as Error & { code: string };
   error.code = "CROSS_MACHINE_FORK_OVERSIZE";
   return error;
@@ -78,18 +79,40 @@ export const runCliCapture = (
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
+    // Reject before buffering runaway output — this file's whole job is
+    // enforcing transport budgets, so the capture itself must be bounded too.
+    const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
+    let capturedBytes = 0;
+    const killWithEscalation = () => {
+      child.kill();
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 2000);
+      killTimer.unref?.();
+      child.once("close", () => clearTimeout(killTimer));
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill();
+      killWithEscalation();
       reject(new Error(`${path.basename(bin)} timed out after ${opts.timeoutMs}ms.`));
     }, opts.timeoutMs);
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
+    const capture = (chunks: Buffer[]) => (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      capturedBytes += buf.length;
+      if (capturedBytes > MAX_CAPTURE_BYTES) {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          killWithEscalation();
+          reject(new Error(`${path.basename(bin)} produced more than ${MAX_CAPTURE_BYTES} bytes of output.`));
+        }
+        return;
+      }
+      chunks.push(buf);
+    };
+    child.stdout?.on("data", capture(stdoutChunks));
+    child.stderr?.on("data", capture(stderrChunks));
     child.once("error", (error) => {
       if (settled) return;
       settled = true;

@@ -2031,6 +2031,16 @@ type ManagedChatSession = {
   claudeBackgroundResumeSessionId: string | null;
   claudeBackgroundLogText: string;
   compactionEmitterState: CompactionEmitterState;
+  /**
+   * Fork-seeded provider pointers (OpenCode session id / Droid session id).
+   * seedForkedProviderPointer writes them to disk, but a persist that runs
+   * while the new runtime is starting (runtime object present, id not yet
+   * adopted) skips the prevPersisted fallback — these in-memory mirrors keep
+   * the pointer alive through that window. Cleared implicitly by
+   * runtimeInvalidated gating, like the persisted fallback.
+   */
+  seededProviderSessionId?: string;
+  seededDroidSdkSessionId?: string;
 };
 
 type AgentChatTranscriptEntry = {
@@ -9664,7 +9674,9 @@ export function createAgentChatService(args: {
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
         ? { droidSdkSessionId: managed.runtime.sdkSessionId }
-        : prevPersisted?.droidSdkSessionId ? { droidSdkSessionId: prevPersisted.droidSdkSessionId } : {}),
+        : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
+          ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
+          : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
@@ -9695,7 +9707,11 @@ export function createAgentChatService(args: {
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
-        : managed.session.provider === "opencode" && prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
+        : managed.session.provider === "opencode"
+          && !managed.runtimeInvalidated
+          && (managed.seededProviderSessionId || prevPersisted?.providerSessionId)
+          ? { providerSessionId: managed.seededProviderSessionId ?? prevPersisted?.providerSessionId }
+          : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundJobShort
         ? { claudeBackgroundJobShort: managed.claudeBackgroundJobShort }
         : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundJobShort ? { claudeBackgroundJobShort: prevPersisted.claudeBackgroundJobShort } : {}),
@@ -10015,9 +10031,15 @@ export function createAgentChatService(args: {
   };
 
   const seedForkedProviderPointer = (
-    sessionId: string,
+    managed: ManagedChatSession,
     patch: { providerSessionId?: string; droidSdkSessionId?: string },
   ): void => {
+    // Mirror in memory first: a persist that runs while the new runtime is
+    // starting cannot read prevPersisted (runtime is non-null), so the disk
+    // write alone would be clobbered in that window.
+    if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
+    if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
+    const sessionId = managed.session.id;
     const current = readPersistedState(sessionId);
     if (!current) return;
     const next: PersistedChatState = { ...current, ...patch, updatedAt: nowIso() };
@@ -24634,11 +24656,11 @@ export function createAgentChatService(args: {
         sessionService.setResumeCommand(createdManaged.session.id, `chat:codex:${sourceCodexForkThreadId}`);
       }
       if (createdManaged.session.provider === "opencode" && sourceOpenCodeForkSessionId) {
-        seedForkedProviderPointer(created.id, { providerSessionId: sourceOpenCodeForkSessionId });
+        seedForkedProviderPointer(createdManaged, { providerSessionId: sourceOpenCodeForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:opencode:${created.id}`);
       }
       if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
-        seedForkedProviderPointer(created.id, { droidSdkSessionId: sourceDroidForkSessionId });
+        seedForkedProviderPointer(createdManaged, { droidSdkSessionId: sourceDroidForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
       }
     }
@@ -25735,7 +25757,7 @@ export function createAgentChatService(args: {
         }
       }
       if (!importedId) throw new Error("OpenCode import did not return a session id.");
-      seedForkedProviderPointer(args.managed.session.id, { providerSessionId: importedId });
+      seedForkedProviderPointer(args.managed, { providerSessionId: importedId });
       if (args.managed.runtime?.kind !== "opencode") {
         await startOpenCodeSessionRuntime(args.managed);
       }
@@ -25751,7 +25773,7 @@ export function createAgentChatService(args: {
       const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
       if (!forkedId) throw new Error("OpenCode session fork did not return a new session id.");
       handle.sessionId = forkedId;
-      seedForkedProviderPointer(args.managed.session.id, { providerSessionId: forkedId });
+      seedForkedProviderPointer(args.managed, { providerSessionId: forkedId });
       sessionService.setResumeCommand(args.managed.session.id, `chat:opencode:${args.managed.session.id}`);
       persistChatState(args.managed);
       return;

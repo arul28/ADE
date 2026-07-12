@@ -245,13 +245,24 @@ export async function transplantClaudeSession(args: {
     return { newSessionId, targetPath };
   }
   await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
-  await copyClaudeSidecarDirectory({
-    sourceDir: sourceSidecarDir,
-    targetDir: targetSidecarDir,
-    newSessionId,
-    targetCwd,
-  });
+  try {
+    await copyClaudeSidecarDirectory({
+      sourceDir: sourceSidecarDir,
+      targetDir: targetSidecarDir,
+      newSessionId,
+      targetCwd,
+    });
+  } catch (error) {
+    // Mirror the fork branch: without this rollback the wx-flagged target
+    // files block every retry of a move (same sessionId) until cleaned by hand.
+    await fs.promises.rm(targetSidecarDir, { recursive: true, force: true }).catch(() => undefined);
+    await fs.promises.unlink(targetPath).catch(() => undefined);
+    throw error;
+  }
   await fs.promises.unlink(sourcePath);
+  // A move relocates the session; leaving the source sidecar dir behind would
+  // duplicate tool outputs at both project dirs.
+  await fs.promises.rm(sourceSidecarDir, { recursive: true, force: true }).catch(() => undefined);
   return { newSessionId, targetPath };
 }
 
