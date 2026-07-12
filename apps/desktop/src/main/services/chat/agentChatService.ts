@@ -110,6 +110,12 @@ import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneL
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
+import {
+  cleanupAbandonedTempFiles,
+  readJsonWithRecovery,
+  writeFileAtomic,
+  writeJsonWithPrevious,
+} from "../state/durableFile";
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
@@ -600,6 +606,104 @@ type PersistedChatState = {
   orchestrationBundlePath?: string;
   updatedAt: string;
 };
+
+function isPersistedChatStateShape(value: unknown): value is PersistedChatState {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<PersistedChatState>;
+  return (record.version === 1 || record.version === 2)
+    && typeof record.sessionId === "string"
+    && record.sessionId.trim().length > 0;
+}
+
+export type ThreadPointerLedgerEntry = {
+  sessionId: string;
+  provider: Exclude<AgentChatProvider, "unified">;
+  pointer: string | null;
+  prevPointer: string | null;
+  reason: string;
+  at: string;
+};
+
+const THREAD_POINTER_LEDGER_FILENAME = "thread-pointers.jsonl";
+const THREAD_POINTER_LEDGER_MAX_BYTES = 64 * 1024;
+
+function isThreadPointerLedgerEntry(value: unknown): value is ThreadPointerLedgerEntry {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<ThreadPointerLedgerEntry>;
+  return typeof record.sessionId === "string"
+    && record.sessionId.trim().length > 0
+    && (record.provider === "codex"
+      || record.provider === "claude"
+      || record.provider === "opencode"
+      || record.provider === "cursor"
+      || record.provider === "droid")
+    && (record.pointer === null || typeof record.pointer === "string")
+    && (record.prevPointer === null || typeof record.prevPointer === "string")
+    && typeof record.reason === "string"
+    && record.reason.trim().length > 0
+    && typeof record.at === "string"
+    && record.at.trim().length > 0;
+}
+
+function parseThreadPointerLedger(raw: string): ThreadPointerLedgerEntry[] {
+  const entries: ThreadPointerLedgerEntry[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim().length) continue;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (isThreadPointerLedgerEntry(parsed)) entries.push(parsed);
+    } catch {
+      // A torn tail only loses that malformed entry.
+    }
+  }
+  return entries;
+}
+
+export function readThreadPointerLedger(chatSessionsDir: string): Map<string, ThreadPointerLedgerEntry> {
+  const newestBySession = new Map<string, ThreadPointerLedgerEntry>();
+  try {
+    const raw = fs.readFileSync(path.join(chatSessionsDir, THREAD_POINTER_LEDGER_FILENAME), "utf8");
+    for (const entry of parseThreadPointerLedger(raw)) {
+      newestBySession.set(entry.sessionId, entry);
+    }
+  } catch {
+    // Missing and unreadable ledgers are equivalent to an empty ledger.
+  }
+  return newestBySession;
+}
+
+function normalizedPersistedPointer(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length ? value.trim() : null;
+}
+
+function persistedPointerState(state: Pick<PersistedChatState,
+  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "cursorSdkAgentId" | "cursorCloudAgentId"
+>): { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null } {
+  switch (state.provider) {
+    case "codex":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.threadId) };
+    case "claude":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.sdkSessionId) };
+    case "opencode":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.providerSessionId) };
+    case "unified":
+      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
+    case "droid":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
+    case "cursor":
+      return {
+        provider: state.provider,
+        pointer: normalizedPersistedPointer(state.cursorSdkAgentId)
+          ?? normalizedPersistedPointer(state.cursorCloudAgentId),
+      };
+    default:
+      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
+  }
+}
+
+function pointerFingerprint(state: { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null }): string {
+  return JSON.stringify([state.provider, state.pointer]);
+}
 
 type PersistedPendingSteer = {
   steerId: string;
@@ -2207,9 +2311,11 @@ const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 type PendingTranscriptWrite = {
   chunks: Buffer[];
   timer: NodeJS.Timeout | null;
+  onTailHealed?: (details: { path: string; priorSize: number }) => void;
 };
 
 const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
+const checkedTranscriptTails = new Set<string>();
 
 function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
@@ -2227,7 +2333,33 @@ function flushQueuedTranscriptWrite(filePath: string): void {
   if (!pending.chunks.length) return;
   try {
     fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
-    fs.appendFileSync(normalizedPath, Buffer.concat(pending.chunks));
+    let chunk = Buffer.concat(pending.chunks);
+    if (!checkedTranscriptTails.has(normalizedPath)) {
+      checkedTranscriptTails.add(normalizedPath);
+      try {
+        const stat = fs.statSync(normalizedPath);
+        if (stat.size > 0) {
+          const fd = fs.openSync(normalizedPath, "r");
+          try {
+            const lastByte = Buffer.allocUnsafe(1);
+            fs.readSync(fd, lastByte, 0, 1, stat.size - 1);
+            if (lastByte[0] !== 0x0a) {
+              chunk = Buffer.concat([Buffer.from("\n", "utf8"), chunk]);
+              try {
+                pending.onTailHealed?.({ path: normalizedPath, priorSize: stat.size });
+              } catch {
+                // Logging must not block transcript persistence.
+              }
+            }
+          } finally {
+            fs.closeSync(fd);
+          }
+        }
+      } catch {
+        // A missing or unreadable prior file needs no healing.
+      }
+    }
+    fs.appendFileSync(normalizedPath, chunk);
   } catch {
     // Transcript persistence is best effort; callers still receive live events.
   }
@@ -2239,13 +2371,19 @@ function flushAllQueuedTranscriptWrites(): void {
   }
 }
 
-function queueTranscriptWrite(filePath: string, chunk: Buffer | string): void {
+function queueTranscriptWrite(
+  filePath: string,
+  chunk: Buffer | string,
+  onTailHealed?: (details: { path: string; priorSize: number }) => void,
+): void {
   if (!filePath.trim().length) return;
   const normalizedPath = normalizeTranscriptWritePath(filePath);
   let pending = pendingTranscriptWrites.get(normalizedPath);
   if (!pending) {
-    pending = { chunks: [], timer: null };
+    pending = { chunks: [], timer: null, onTailHealed };
     pendingTranscriptWrites.set(normalizedPath, pending);
+  } else if (!pending.onTailHealed && onTailHealed) {
+    pending.onTailHealed = onTailHealed;
   }
   pending.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
   if (pending.timer) return;
@@ -4285,9 +4423,7 @@ export function writeSessionLinearIssueContextFile(args: {
     })),
   };
   fs.mkdirSync(sessionContextDir, { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`);
-  fs.renameSync(tempPath, filePath);
+  writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return {
     filePath,
     issueIds: args.links.map((link) => link.issue.id).join(","),
@@ -6402,6 +6538,13 @@ export function createAgentChatService(args: {
   const chatSessionsDir = layout.chatSessionsDir;
   const chatTranscriptsDir = layout.chatTranscriptsDir;
   fs.mkdirSync(chatSessionsDir, { recursive: true });
+  const abandonedTempCount = cleanupAbandonedTempFiles(chatSessionsDir);
+  if (abandonedTempCount > 0) {
+    logger.info("agent_chat.abandoned_temp_files_cleaned", {
+      dir: chatSessionsDir,
+      count: abandonedTempCount,
+    });
+  }
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -6468,7 +6611,50 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
+
+  const recordThreadPointerChange = (entry: ThreadPointerLedgerEntry): void => {
+    const ledgerPath = path.join(chatSessionsDir, THREAD_POINTER_LEDGER_FILENAME);
+    let separator = "";
+    try {
+      const stat = fs.statSync(ledgerPath);
+      if (stat.size > 0) {
+        const fd = fs.openSync(ledgerPath, "r");
+        try {
+          const lastByte = Buffer.allocUnsafe(1);
+          fs.readSync(fd, lastByte, 0, 1, stat.size - 1);
+          if (lastByte[0] !== 0x0a) separator = "\n";
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch {
+      // A missing ledger starts with the entry itself.
+    }
+    fs.appendFileSync(ledgerPath, `${separator}${JSON.stringify(entry)}\n`, "utf8");
+    if (fs.statSync(ledgerPath).size <= THREAD_POINTER_LEDGER_MAX_BYTES) return;
+
+    const newestBySession = new Map<string, ThreadPointerLedgerEntry>();
+    for (const parsed of parseThreadPointerLedger(fs.readFileSync(ledgerPath, "utf8"))) {
+      newestBySession.delete(parsed.sessionId);
+      newestBySession.set(parsed.sessionId, parsed);
+    }
+    const newestFirst = [...newestBySession.values()].reverse();
+    const retainedNewestFirst: ThreadPointerLedgerEntry[] = [];
+    let retainedBytes = 0;
+    for (const parsed of newestFirst) {
+      const lineBytes = Buffer.byteLength(`${JSON.stringify(parsed)}\n`, "utf8");
+      if (retainedNewestFirst.length > 0 && retainedBytes + lineBytes > THREAD_POINTER_LEDGER_MAX_BYTES) continue;
+      retainedNewestFirst.push(parsed);
+      retainedBytes += lineBytes;
+    }
+    const compacted = retainedNewestFirst
+      .reverse()
+      .map((parsed) => JSON.stringify(parsed))
+      .join("\n");
+    writeFileAtomic(ledgerPath, compacted.length ? `${compacted}\n` : "");
+  };
 
   const recordLinearIssueContextForLane = (
     managed: ManagedChatSession,
@@ -9728,14 +9914,65 @@ export function createAgentChatService(args: {
       updatedAt: nowIso()
     };
 
+    const currentPointerState = persistedPointerState(payload);
+    const currentPointerFingerprint = pointerFingerprint(currentPointerState);
+    let previousPointerFingerprint = lastPersistedPointerFingerprints.get(managed.session.id);
+    let previousPointerState: { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null };
+    if (previousPointerFingerprint === undefined) {
+      previousPointerState = prevPersisted
+        ? persistedPointerState(prevPersisted)
+        : { provider: currentPointerState.provider, pointer: null };
+      previousPointerFingerprint = pointerFingerprint(previousPointerState);
+      lastPersistedPointerFingerprints.set(managed.session.id, previousPointerFingerprint);
+    } else {
+      try {
+        const [provider, pointer] = JSON.parse(previousPointerFingerprint) as [ThreadPointerLedgerEntry["provider"], string | null];
+        previousPointerState = { provider, pointer };
+      } catch {
+        previousPointerState = { provider: currentPointerState.provider, pointer: null };
+      }
+    }
+    const pointerChanged = currentPointerFingerprint !== previousPointerFingerprint;
+    let lkgUpdated = false;
     try {
       fs.mkdirSync(path.dirname(managed.metadataPath), { recursive: true });
-      fs.writeFileSync(managed.metadataPath, JSON.stringify(payload, null, 2), "utf8");
+      lkgUpdated = writeJsonWithPrevious(managed.metadataPath, payload, {
+        validate: isPersistedChatStateShape,
+        fsync: pointerChanged,
+      });
+      if (pointerChanged) {
+        lastPersistedPointerFingerprints.set(managed.session.id, currentPointerFingerprint);
+        try {
+          recordThreadPointerChange({
+            sessionId: managed.session.id,
+            provider: currentPointerState.provider,
+            pointer: currentPointerState.pointer,
+            prevPointer: previousPointerState.pointer,
+            reason: "persist_change",
+            at: payload.updatedAt,
+          });
+        } catch (error) {
+          logger.warn("agent_chat.thread_pointer_ledger_write_failed", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     } catch (error) {
+      try {
+        lkgUpdated = fs.readFileSync(managed.metadataPath).equals(fs.readFileSync(`${managed.metadataPath}.lkg`));
+      } catch {
+        // Leave the last known copy outcome unchanged when either file is unavailable.
+      }
       logger.warn("agent_chat.persist_failed", {
         sessionId: managed.session.id,
+        lkgUpdated,
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+    if (pointerChanged) {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     }
 
     mirrorClaudeSessionPointer(managed, payload.sdkSessionId);
@@ -9743,12 +9980,13 @@ export function createAgentChatService(args: {
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    if (!fs.existsSync(filePath)) return null;
+    const recovered = readJsonWithRecovery(filePath, isPersistedChatStateShape);
+    if (recovered.value === null) return null;
+    if (recovered.source === "previous") {
+      logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
+    }
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-      if (!parsed || typeof parsed !== "object") return null;
-      const record = parsed as Partial<PersistedChatState>;
-      if (record.version !== 1 && record.version !== 2) return null;
+      const record = recovered.value as Partial<PersistedChatState>;
       let provider = record.provider;
       if (provider === "unified") provider = "opencode";
       if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid") {
@@ -9992,12 +10230,16 @@ export function createAgentChatService(args: {
     if (managed.transcriptLimitReached) return;
     try {
       fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
+      const warnTailHealed = (details: { path: string; priorSize: number }) => {
+        logger.warn("agent_chat.transcript_tail_healed", details);
+      };
       const rawLine = `${JSON.stringify(envelope)}\n`;
       const chunk = Buffer.from(rawLine, "utf8");
       const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
       if (remaining <= 0) {
         managed.transcriptLimitReached = true;
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
+        if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
         return;
       }
       let toWrite = chunk;
@@ -10006,10 +10248,11 @@ export function createAgentChatService(args: {
         managed.transcriptLimitReached = true;
       }
       managed.transcriptBytesWritten += toWrite.length;
-      queueTranscriptWrite(managed.transcriptPath, toWrite);
+      queueTranscriptWrite(managed.transcriptPath, toWrite, warnTailHealed);
       if (managed.transcriptLimitReached) {
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
       }
+      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
     } catch {
       // ignore transcript write failures
     }
@@ -10019,7 +10262,10 @@ export function createAgentChatService(args: {
     try {
       const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const line = `${JSON.stringify(envelope)}\n`;
-      queueTranscriptWrite(transcriptFile, line);
+      queueTranscriptWrite(transcriptFile, line, (details) => {
+        logger.warn("agent_chat.transcript_tail_healed", details);
+      });
+      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(transcriptFile);
     } catch {
       // ignore chat transcript write failures
     }
@@ -12722,6 +12968,10 @@ export function createAgentChatService(args: {
 
     const persisted = readPersistedState(sessionId);
     const provider = persisted?.provider ?? providerFromToolType(row.toolType);
+    lastPersistedPointerFingerprints.set(
+      sessionId,
+      pointerFingerprint(persisted ? persistedPointerState(persisted) : persistedPointerState({ provider })),
+    );
     const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
@@ -24351,11 +24601,15 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         createdAt: startedAt,
       });
-      fs.writeFileSync(chatTranscriptFile, `${header}\n`, "utf8");
+      writeFileAtomic(chatTranscriptFile, `${header}\n`);
     } catch {
       // Non-fatal — chat transcript init failure should not block session creation
     }
 
+    lastPersistedPointerFingerprints.set(
+      sessionId,
+      pointerFingerprint(persistedPointerState({ provider: effectiveProvider })),
+    );
     managedSessions.set(sessionId, managed);
 
     const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
@@ -32401,11 +32655,13 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     pendingNativeScheduledWakeBySession.delete(trimmedSessionId);
+    lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
     const transcriptPaths = new Set<string>([
       persistedMetadataPath,
+      `${persistedMetadataPath}.lkg`,
       dedicatedTranscriptPath,
       current.transcriptPath,
     ]);

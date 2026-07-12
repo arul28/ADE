@@ -810,6 +810,7 @@ import {
   buildLinearSessionDirective,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
+  readThreadPointerLedger,
 } from "./agentChatService";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
@@ -3771,7 +3772,7 @@ describe("createAgentChatService", () => {
 
     it("terminates and persists a failed Codex kickoff when turn/start rejects", async () => {
       const events: AgentChatEventEnvelope[] = [];
-      const writeFileSync = vi.spyOn(fs, "writeFileSync");
+      const renameSync = vi.spyOn(fs, "renameSync");
       mockState.codexResponseOverrides.set("turn/start", {
         error: { code: -32_000, message: "turn start exploded" },
       });
@@ -3790,7 +3791,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
-      writeFileSync.mockClear();
+      renameSync.mockClear();
       mockState.flushCodexResponses();
 
       await waitForEvent(
@@ -3820,10 +3821,9 @@ describe("createAgentChatService", () => {
       expect(failedIndex).toBeGreaterThan(errorIndex);
       expect(doneIndex).toBeGreaterThan(failedIndex);
       expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
-      expect(writeFileSync).toHaveBeenCalledWith(
+      expect(renameSync).toHaveBeenCalledWith(
+        expect.stringContaining(`.${session.id}.json.tmp-`),
         expect.stringContaining(`${session.id}.json`),
-        expect.any(String),
-        "utf8",
       );
     });
 
@@ -28691,5 +28691,191 @@ describe("suggestLaneNameFromPrompt", () => {
       laneId: null as any,
     });
     expect(result).toBe("parallel-task");
+  });
+});
+
+describe("durable chat metadata and transcript continuity", () => {
+  const chatSessionsDir = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions");
+  const metadataPath = (sessionId: string) => path.join(chatSessionsDir(), `${sessionId}.json`);
+  const ledgerPath = () => path.join(chatSessionsDir(), "thread-pointers.jsonl");
+
+  async function completeCodexTurn(turnPromise: Promise<unknown>, text = "done"): Promise<void> {
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    const turnNumber = mockState.codexTurnCounter;
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: { turn: { id: `turn-${turnNumber}`, status: "inProgress" } },
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: { turnId: `turn-${turnNumber}`, delta: text },
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: `turn-${turnNumber}`, status: "completed" } },
+    });
+    await turnPromise;
+  }
+
+  it("preserves prior metadata on ENOSPC and succeeds on the next persist", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    first.service.forceDisposeAll();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      threadId: "thread-resumed",
+    });
+
+    const { service, logger } = createService();
+    await service.resumeSession({ sessionId: session.id });
+    const before = fs.readFileSync(metadataPath(session.id));
+    const realRename = fs.renameSync.bind(fs);
+    let injected = false;
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (!injected && path.resolve(String(to)) === path.resolve(metadataPath(session.id))) {
+        injected = true;
+        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      }
+      return realRename(from, to);
+    });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "thread/deleted",
+      params: { threadId: "thread-resumed" },
+    });
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.persist_failed",
+        expect.objectContaining({ sessionId: session.id, lkgUpdated: true }),
+      );
+    });
+    expect(fs.readFileSync(metadataPath(session.id))).toEqual(before);
+    expect(readPersistedChatState(session.id).threadId).toBe("thread-resumed");
+    expect(fs.readdirSync(chatSessionsDir()).filter((name) => name.includes(".tmp-"))).toEqual([]);
+
+    renameSpy.mockRestore();
+    await service.updateSession({ sessionId: session.id, title: "Persist after ENOSPC" });
+    expect(readPersistedChatState(session.id).threadId).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(`${metadataPath(session.id)}.lkg`, "utf8")).threadId).toBe("thread-resumed");
+  });
+
+  it("recovers a corrupt primary from the lkg and logs the recovery", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    first.service.forceDisposeAll();
+    const recoveredState = {
+      ...readPersistedChatState(session.id),
+      threadId: "thread-from-lkg",
+    };
+    fs.writeFileSync(`${metadataPath(session.id)}.lkg`, JSON.stringify(recoveredState, null, 2));
+    fs.writeFileSync(metadataPath(session.id), "{");
+
+    const { service, logger } = createService();
+    const resumed = await service.resumeSession({ sessionId: session.id });
+    expect(resumed.threadId).toBe("thread-from-lkg");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.persisted_state_recovered_lkg",
+      { sessionId: session.id },
+    );
+  });
+
+  it("records pointer changes, avoids restart duplicates, and compacts above 64 KiB", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    const firstTurn = first.service.runSessionTurn({ sessionId: session.id, text: "start a thread" });
+    await vi.waitFor(() => {
+      expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBe("thread-1");
+    });
+    await completeCodexTurn(firstTurn);
+    first.service.forceDisposeAll();
+    const lineCountBeforeRestart = fs.readFileSync(ledgerPath(), "utf8").trim().split("\n").length;
+
+    const second = createService();
+    await second.service.resumeSession({ sessionId: session.id });
+    expect(fs.readFileSync(ledgerPath(), "utf8").trim().split("\n")).toHaveLength(lineCountBeforeRestart);
+
+    const oldEntry = {
+      sessionId: "older-session",
+      provider: "codex",
+      pointer: "old",
+      prevPointer: null,
+      reason: "persist_change",
+      at: "2026-01-01T00:00:00.000Z",
+    };
+    const newEntry = { ...oldEntry, pointer: "new", prevPointer: "old", at: "2026-01-02T00:00:00.000Z" };
+    fs.appendFileSync(
+      ledgerPath(),
+      `${JSON.stringify(oldEntry)}\n${JSON.stringify(newEntry)}\n${"x".repeat(70 * 1024)}\n`,
+    );
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "thread/deleted",
+      params: { threadId: "thread-1" },
+    });
+    await vi.waitFor(() => {
+      expect(fs.statSync(ledgerPath()).size).toBeLessThanOrEqual(64 * 1024);
+      expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBeNull();
+    });
+    expect(readThreadPointerLedger(chatSessionsDir()).get("older-session")?.pointer).toBe("new");
+  });
+
+  it("isolates a truncated transcript tail before the next user event", async () => {
+    const { service, logger } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+    const prefix: AgentChatEventEnvelope = {
+      sessionId: session.id,
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "text", text: "valid prefix" },
+    };
+    const fragment = "{\"id\":\"truncated";
+    fs.writeFileSync(transcriptFile, `${JSON.stringify(prefix)}\n${fragment}`, "utf8");
+
+    const turn = service.runSessionTurn({ sessionId: session.id, text: "fresh user event" });
+    await vi.waitFor(() => {
+      const raw = fs.readFileSync(transcriptFile, "utf8");
+      expect(raw).toContain(`${fragment}\n{`);
+      expect(raw).toContain("fresh user event");
+    });
+    await completeCodexTurn(turn, "fresh response");
+
+    const raw = fs.readFileSync(transcriptFile, "utf8");
+    const lines = raw.trimEnd().split("\n");
+    expect(JSON.parse(lines[0]!)).toEqual(prefix);
+    expect(lines[1]).toBe(fragment);
+    expect(JSON.parse(lines[2]!).event).toMatchObject({ type: "user_message", text: "fresh user event" });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    const parsed = actualTranscript.parseAgentChatTranscript(raw);
+    expect(parsed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ timestamp: prefix.timestamp, event: expect.objectContaining({ text: "valid prefix" }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: "user_message", text: "fresh user event" }) }),
+    ]));
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.transcript_tail_healed",
+      { path: path.resolve(transcriptFile), priorSize: Buffer.byteLength(`${JSON.stringify(prefix)}\n${fragment}`) },
+    );
   });
 });
