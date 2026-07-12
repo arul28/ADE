@@ -483,11 +483,11 @@ export function formatStructuredValue(value: unknown): string {
   }
 }
 
-function buildRenderKey(envelope: AgentChatEventEnvelope, sequence: number): string {
+export function buildRenderKey(envelope: AgentChatEventEnvelope, sequence: number): string {
   return `${envelope.sessionId}:${sequence}:${envelope.timestamp}`;
 }
 
-function buildTextRenderKey(event: Extract<AgentChatEvent, { type: "text" }>, envelope: AgentChatEventEnvelope, sequence: number): string {
+export function buildTextRenderKey(event: Extract<AgentChatEvent, { type: "text" }>, envelope: AgentChatEventEnvelope, sequence: number): string {
   const messageId = event.messageId?.trim();
   if (messageId) {
     return `${envelope.sessionId}:text:${messageId}:${sequence}`;

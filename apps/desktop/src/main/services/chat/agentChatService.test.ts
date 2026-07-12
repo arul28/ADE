@@ -3,10 +3,15 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
-import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
+import {
+  buildOpenCodePromptParts,
+  resolveOpenCodeExecutablePath,
+  startOpenCodeSession,
+} from "../opencode/openCodeRuntime";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -22,6 +27,8 @@ const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
 const claudeSdkResumeSessionCompat = vi.hoisted(() => vi.fn());
 const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
+const ORIGINAL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+const ORIGINAL_CODEX_HOME = process.env.CODEX_HOME;
 
 vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeServer: vi.fn(async () => ({
@@ -295,9 +302,10 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     providerID: String(descriptor.family ?? "openai"),
     modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
   })),
-  startOpenCodeSession: vi.fn(async (args: { directory: string }) => {
+  resolveOpenCodeExecutablePath: vi.fn(() => "/usr/local/bin/opencode"),
+  startOpenCodeSession: vi.fn(async (args: { directory: string; sessionId?: string }) => {
     mockState.openCodeSessionCounter += 1;
-    const sessionId = `opencode-session-${mockState.openCodeSessionCounter}`;
+    const sessionId = args.sessionId ?? `opencode-session-${mockState.openCodeSessionCounter}`;
     const state = {
       events: [] as any[],
       waiters: [] as Array<() => void>,
@@ -1548,6 +1556,95 @@ function installCleanCrossMachineGitFixture(
   });
 }
 
+function gzipForkContent(content: Buffer | string) {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+  return {
+    contentBase64Gzip: zlib.gzipSync(buffer).toString("base64"),
+    uncompressedBytes: buffer.length,
+  };
+}
+
+function makeForkCapsule(overrides: Partial<AgentChatCrossMachineHandoffCapsule> = {}): AgentChatCrossMachineHandoffCapsule {
+  const mainContent = Buffer.from('{"type":"session_meta"}\n', "utf8");
+  return {
+    version: 1,
+    handoffId: "handoff-fork-test-1",
+    createdAt: "2026-07-10T12:00:00.000Z",
+    source: {
+      machineName: "Source Mac",
+      sessionId: "source-session",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      title: "Fork handoff",
+      laneName: "Feature lane",
+      branchRef: "feature/handoff-fork",
+      headSha: HANDOFF_TEST_SHA,
+      originUrl: "https://github.com/example/ade.git",
+    },
+    target: { targetModelId: "anthropic/claude-sonnet-5" },
+    brief: "Fork handoff — full conversation history transported.",
+    artifacts: { fileChanges: [], commands: [], errors: [] },
+    linearIssues: [],
+    continuationPrompt: "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.",
+    mode: "fork",
+    forkTransport: {
+      provider: "claude",
+      nativeSessionId: "claude-source-session",
+      kind: "claude-jsonl",
+      mainFile: {
+        name: "claude-source-session.jsonl",
+        ...gzipForkContent(mainContent),
+      },
+    },
+    ...overrides,
+  };
+}
+
+function installRealTranscriptParser(): void {
+  vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+    raw.split(/\r?\n/).filter((line) => line.trim().length > 0).flatMap((line) => {
+      try {
+        const parsed = JSON.parse(line) as AgentChatEventEnvelope;
+        return parsed?.event ? [parsed] : [];
+      } catch {
+        return [];
+      }
+    }),
+  );
+}
+
+function writeTestTranscriptEnvelopes(sessionId: string, envelopes: AgentChatEventEnvelope[]): void {
+  const raw = `${envelopes.map((envelope) => JSON.stringify(envelope)).join("\n")}\n`;
+  const legacyPath = mockState.sessions.get(sessionId)?.transcriptPath;
+  if (legacyPath) {
+    fs.mkdirSync(path.dirname(String(legacyPath)), { recursive: true });
+    fs.writeFileSync(String(legacyPath), raw, "utf8");
+  }
+  const durablePath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+  fs.writeFileSync(durablePath, raw, "utf8");
+}
+
+function installCliCaptureMock(
+  responseForArgs: (args: string[]) => { stdout: string | Buffer; stderr?: string; exitCode?: number },
+): void {
+  vi.mocked(spawn).mockImplementation(((_bin: string, args: string[]) => {
+    const proc = new EventEmitter() as any;
+    proc.stdin = { end: vi.fn(), write: vi.fn(), writable: true };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = vi.fn();
+    proc.pid = 99_999;
+    queueMicrotask(() => {
+      const response = responseForArgs(args);
+      if (response.stdout) proc.stdout.emit("data", response.stdout);
+      if (response.stderr) proc.stderr.emit("data", response.stderr);
+      proc.emit("close", response.exitCode ?? 0);
+    });
+    return proc;
+  }) as any);
+}
+
 async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {
   const orchestrationService = createOrchestrationService({
     resolveLaneWorktree: () => tmpRoot,
@@ -1731,6 +1828,8 @@ beforeEach(() => {
   mockState.droidPromptError = null;
   cursorModelsListMock.mockReset();
   vi.mocked(startOpenCodeSession).mockClear();
+  vi.mocked(resolveOpenCodeExecutablePath).mockReset();
+  vi.mocked(resolveOpenCodeExecutablePath).mockReturnValue("/usr/local/bin/opencode");
   vi.mocked(buildOpenCodePromptParts).mockClear();
   vi.mocked(acquireCursorSdkConnection).mockClear();
   vi.mocked(releaseCursorSdkConnection).mockClear();
@@ -1772,6 +1871,10 @@ afterEach(() => {
   } else {
     process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
   }
+  if (ORIGINAL_CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = ORIGINAL_CLAUDE_CONFIG_DIR;
+  if (ORIGINAL_CODEX_HOME === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = ORIGINAL_CODEX_HOME;
   try {
     fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
@@ -4242,6 +4345,54 @@ describe("createAgentChatService", () => {
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("seeds local fork history with handoff provenance", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-history";
+      const sourceEnvelope: AgentChatEventEnvelope = {
+        sessionId: source.id,
+        timestamp: "2026-07-10T11:00:00.000Z",
+        event: {
+          type: "user_message",
+          messageId: "source-message-1",
+          text: "Preserve this local fork history.",
+        },
+        provenance: { messageId: "provider-message-1" },
+      };
+      writeTestTranscriptEnvelopes(source.id, [sourceEnvelope]);
+      mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-thread-history" } });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${result.session.id}.jsonl`);
+      await vi.waitFor(() => {
+        const parsed = fs.readFileSync(targetTranscript, "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+        expect(parsed).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: result.session.id,
+            provenance: expect.objectContaining({
+              messageId: "provider-message-1",
+              providerOrigin: "handoff_fork",
+              sourceSessionId: source.id,
+            }),
+          }),
+        ]));
+      });
+    });
+
     it("forks an OpenCode chat from the source session without injecting a summary prompt", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {
@@ -4729,6 +4880,367 @@ describe("createAgentChatService", () => {
 
   describe("cross-machine handoff", () => {
     const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");
+
+    describe("fork mode", () => {
+      it("validates fork transport invariants and fingerprints the whole capsule", async () => {
+        installCleanCrossMachineGitFixture();
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
+        });
+        const transcriptEnvelope: AgentChatEventEnvelope = {
+          sessionId: source.id,
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "validator-message", text: "Validate me." },
+        };
+        const capsule = makeForkCapsule({
+          handoffId: "handoff-validator-fork-1",
+          source: {
+            machineName: "Source Mac",
+            sessionId: source.id,
+            provider: "codex",
+            model: source.model,
+            title: null,
+            laneName: "Primary",
+            branchRef: "feature/primary",
+            headSha: HANDOFF_TEST_SHA,
+            originUrl: "git@github.com:example/ade.git",
+          },
+          target: { targetModelId: "openai/gpt-5.5" },
+          forkTransport: {
+            provider: "codex",
+            nativeSessionId: "codex-thread-validator",
+            kind: "codex-rollout",
+            mainFile: {
+              name: "rollout-codex-thread-validator.jsonl",
+              ...gzipForkContent('{"type":"session_meta"}\n'),
+            },
+          },
+          transcriptEnvelopes: {
+            ...gzipForkContent(`${JSON.stringify(transcriptEnvelope)}\n`),
+            truncated: false,
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule,
+          capsuleFingerprint: fingerprint,
+        })).resolves.toBeUndefined();
+        expect(createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex")).toBe(fingerprint);
+
+        const oversized = structuredClone(capsule);
+        oversized.forkTransport!.mainFile.uncompressedBytes = 18 * 1024 * 1024 + 1;
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule: oversized,
+          capsuleFingerprint: createHash("sha256").update(stableStringify(oversized)).digest("hex"),
+        })).rejects.toThrow("fork main file exceeds");
+
+        const missingTransport = structuredClone(capsule);
+        delete missingTransport.forkTransport;
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule: missingTransport,
+          capsuleFingerprint: createHash("sha256").update(stableStringify(missingTransport)).digest("hex"),
+        })).rejects.toThrow("missing its fork transport");
+
+        const briefWithTranscript = structuredClone(capsule);
+        briefWithTranscript.mode = "brief";
+        delete briefWithTranscript.forkTransport;
+        await expect(service.validateCrossMachineSource({
+          sourceSessionId: source.id,
+          capsule: briefWithTranscript,
+          capsuleFingerprint: createHash("sha256").update(stableStringify(briefWithTranscript)).digest("hex"),
+        })).rejects.toThrow("transcript history without fork mode");
+      });
+
+      it("packages Claude native history and bounded ADE transcript envelopes", async () => {
+        installCleanCrossMachineGitFixture();
+        installRealTranscriptParser();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-prepare");
+        installClaudeResponseFixture({ sdkSessionId: "claude-fork-source", responseText: "ready" });
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
+        const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
+        const providerTranscript = `${JSON.stringify({
+          type: "user",
+          sessionId: sourceSdkSessionId,
+          cwd: tmpRoot,
+          message: { role: "user", content: "Carry provider history" },
+        })}\n`;
+        const providerDir = path.join(
+          process.env.CLAUDE_CONFIG_DIR,
+          "projects",
+          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+        );
+        fs.mkdirSync(providerDir, { recursive: true });
+        fs.writeFileSync(path.join(providerDir, `${sourceSdkSessionId}.jsonl`), providerTranscript, "utf8");
+        const sourceEnvelope: AgentChatEventEnvelope = {
+          sessionId: source.id,
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "claude-envelope", text: "Carry ADE history" },
+        };
+        writeTestTranscriptEnvelopes(source.id, [sourceEnvelope]);
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-claude-prepare-1",
+          targetModelId: "anthropic/claude-sonnet-5",
+          mode: "fork",
+        });
+
+        expect(prepared.usedFallbackSummary).toBe(false);
+        expect(prepared.capsule.mode).toBe("fork");
+        expect(prepared.capsule.forkTransport).toMatchObject({
+          provider: "claude",
+          kind: "claude-jsonl",
+          nativeSessionId: sourceSdkSessionId,
+        });
+        expect(zlib.gunzipSync(Buffer.from(
+          prepared.capsule.forkTransport!.mainFile.contentBase64Gzip,
+          "base64",
+        )).toString("utf8")).toBe(providerTranscript);
+        expect(prepared.capsule.transcriptEnvelopes).toBeDefined();
+        expect(prepared.capsule.brief).toBe("Fork handoff — full conversation history transported.");
+      });
+
+      it("offers brief fallback when a Claude transcript exceeds the fork cap", async () => {
+        installCleanCrossMachineGitFixture();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-oversize");
+        installClaudeResponseFixture({ sdkSessionId: "claude-fork-oversize", responseText: "ready" });
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
+        const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
+        const providerDir = path.join(
+          process.env.CLAUDE_CONFIG_DIR,
+          "projects",
+          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+        );
+        fs.mkdirSync(providerDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(providerDir, `${sourceSdkSessionId}.jsonl`),
+          Buffer.alloc(18 * 1024 * 1024 + 1, 0x61),
+        );
+
+        await expect(service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-claude-oversize-1",
+          targetModelId: "anthropic/claude-sonnet-5",
+          mode: "fork",
+        })).rejects.toThrow(/too large/);
+      });
+
+      it("materializes a Claude fork, seeds provenance, and reuses it idempotently", async () => {
+        const branchRef = "feature/handoff-fork";
+        installCleanCrossMachineGitFixture(branchRef);
+        installRealTranscriptParser();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-accept");
+        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+        const values = new Map<string, unknown>();
+        const { service, sessionService, laneService } = createService({
+          db: {
+            getJson: vi.fn((key: string) => values.get(key) ?? null),
+            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+          },
+        });
+        const sourceEnvelope: AgentChatEventEnvelope = {
+          sessionId: "source-session",
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "accepted-envelope", text: "Seed this history" },
+          provenance: { messageId: "native-message" },
+        };
+        const capsule = makeForkCapsule({
+          transcriptEnvelopes: {
+            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
+            truncated: false,
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+        const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+        const destinationLane = await laneService.getSummary(first.laneId);
+        const targetProviderDir = path.join(
+          process.env.CLAUDE_CONFIG_DIR,
+          "projects",
+          String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
+        );
+        const providerFilesAfterFirst = fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"));
+        const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`);
+        await vi.waitFor(() => {
+          const envelopes = fs.readFileSync(targetTranscript, "utf8").split(/\r?\n/).filter(Boolean)
+            .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+          expect(envelopes).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+              sessionId: first.session.id,
+              provenance: expect.objectContaining({
+                messageId: "native-message",
+                providerOrigin: "handoff_fork",
+                sourceSessionId: "source-session",
+              }),
+            }),
+          ]));
+        });
+
+        const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+        expect(second.reusedSession).toBe(true);
+        expect(second.session.id).toBe(first.session.id);
+        expect(sessionService.create).toHaveBeenCalledTimes(1);
+        expect(fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"))).toEqual(providerFilesAfterFirst);
+      });
+
+      it("materializes and forks a Codex rollout on the destination", async () => {
+        const branchRef = "feature/handoff-codex-fork";
+        installCleanCrossMachineGitFixture(branchRef);
+        process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-accept");
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+        ] as any);
+        mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-thread" } });
+        const { service, sessionService } = createService();
+        const rollout = '{"type":"session_meta","payload":{"id":"source-codex-thread"}}\n';
+        const capsule = makeForkCapsule({
+          handoffId: "handoff-codex-accept-1",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "source-session",
+            provider: "codex",
+            model: "gpt-5.5",
+            title: null,
+            laneName: "Codex fork",
+            branchRef,
+            headSha: HANDOFF_TEST_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          target: { targetModelId: "openai/gpt-5.5" },
+          forkTransport: {
+            provider: "codex",
+            nativeSessionId: "source-codex-thread",
+            kind: "codex-rollout",
+            mainFile: { name: "rollout-source-codex-thread.jsonl", ...gzipForkContent(rollout) },
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+        const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+        const now = new Date();
+        const rolloutPath = path.join(
+          process.env.CODEX_HOME,
+          "sessions",
+          String(now.getFullYear()).padStart(4, "0"),
+          String(now.getMonth() + 1).padStart(2, "0"),
+          String(now.getDate()).padStart(2, "0"),
+          "rollout-source-codex-thread.jsonl",
+        );
+        expect(fs.readFileSync(rolloutPath, "utf8")).toBe(rollout);
+        expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            method: "thread/fork",
+            params: { threadId: "source-codex-thread", excludeTurns: true },
+          }),
+        ]));
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(accepted.session.id, "chat:codex:forked-thread");
+      });
+
+      it("exports, imports, and forks an OpenCode session across machines", async () => {
+        installCleanCrossMachineGitFixture();
+        installCliCaptureMock((args) => {
+          if (args[0] === "export") return { stdout: JSON.stringify({ id: args[1], messages: [] }) };
+          if (args[0] === "import") return { stdout: JSON.stringify({ sessionID: "imported-1" }) };
+          return { stdout: "", stderr: "unexpected CLI call", exitCode: 1 };
+        });
+        vi.mocked(streamText).mockReturnValue({
+          fullStream: (async function* () {
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          })(),
+        } as any);
+        const { service, sessionService } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: source.id, text: "Create provider history" }, { awaitDispatch: true });
+        await vi.waitFor(() => expect(source.status).toBe("idle"));
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-opencode-fork-1",
+          targetModelId: "opencode/openai/gpt-5.4",
+          mode: "fork",
+        });
+        expect(prepared.capsule.forkTransport?.kind).toBe("opencode-export");
+
+        const accepted = await service.acceptCrossMachineHandoff({
+          capsule: prepared.capsule,
+          capsuleFingerprint: prepared.capsuleFingerprint,
+        });
+        expect(mockState.openCodeForkCalls).toEqual(expect.arrayContaining([{ id: "imported-1" }]));
+        expect(readPersistedChatState(accepted.session.id).providerSessionId).toBe("imported-1-fork");
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          accepted.session.id,
+          `chat:opencode:${accepted.session.id}`,
+        );
+      });
+
+      it("reports destination fork capability without changing legacy brief preflight", async () => {
+        installCleanCrossMachineGitFixture();
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+        const { service } = createService();
+        const baseArgs = {
+          targetModelId: "anthropic/claude-sonnet-5" as const,
+          sourceBranchRef: "feature/primary",
+          sourceHeadSha: HANDOFF_TEST_SHA,
+        };
+
+        await expect(service.preflightCrossMachineDestination({
+          ...baseArgs,
+          mode: "fork",
+          sourceProvider: "claude",
+        })).resolves.toMatchObject({ forkHandoffSupport: { supported: true } });
+        await expect(service.preflightCrossMachineDestination({
+          ...baseArgs,
+          mode: "fork",
+          sourceProvider: "droid",
+        })).resolves.toMatchObject({
+          forkHandoffSupport: {
+            supported: false,
+            reason: "Droid sessions aren't portable between machines yet",
+          },
+        });
+        await expect(service.preflightCrossMachineDestination({
+          ...baseArgs,
+          mode: "fork",
+          sourceProvider: "cursor",
+        })).resolves.toMatchObject({
+          forkHandoffSupport: { supported: false, reason: "Cursor chats can't fork history." },
+        });
+        const brief = await service.preflightCrossMachineDestination(baseArgs);
+        expect(brief).not.toHaveProperty("forkHandoffSupport");
+      });
+    });
 
     it("builds a bounded portable capsule only after the source is clean and published", async () => {
       installCleanCrossMachineGitFixture();

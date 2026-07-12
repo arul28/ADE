@@ -11638,10 +11638,12 @@ export function AgentChatPane({
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
+          sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
           onModelChange={setRemoteHandoffModelId}
           availableModelIds={handoffAvailableModelIds}
+          forkAvailableModelIds={handoffForkAvailableModelIds}
           onOpenSignIn={openProviderSignIn}
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}

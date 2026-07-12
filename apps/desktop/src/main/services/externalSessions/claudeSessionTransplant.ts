@@ -28,6 +28,36 @@ function targetExistsError(targetPath: string): Error {
   return new Error(`Claude target session already exists at ${targetPath}.`);
 }
 
+function rewriteClaudeJsonlLine(line: string, newSessionId: string, targetCwd: string): string {
+  if (!line.trim()) return "";
+  try {
+    const parsed = JSON.parse(line);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      return JSON.stringify({
+        ...record,
+        sessionId: newSessionId,
+        ...(typeof record.cwd === "string" ? { cwd: targetCwd } : {}),
+      });
+    }
+  } catch {
+    // Preserve malformed rows verbatim; Claude's transcript reader applies its
+    // own tolerance and a transplant must not discard source bytes.
+  }
+  return line;
+}
+
+function rewriteClaudeJsonlContent(content: Buffer, newSessionId: string, targetCwd: string): Buffer {
+  const raw = content.toString("utf8");
+  const lines = raw.split(/\r?\n/);
+  const hadTrailingNewline = /\r?\n$/.test(raw);
+  if (hadTrailingNewline) lines.pop();
+  const rewritten = lines
+    .map((line) => rewriteClaudeJsonlLine(line, newSessionId, targetCwd))
+    .join("\n");
+  return Buffer.from(`${rewritten}${hadTrailingNewline ? "\n" : ""}`, "utf8");
+}
+
 async function linkWithoutClobber(sourcePath: string, targetPath: string): Promise<void> {
   try {
     await fs.promises.link(sourcePath, targetPath);
@@ -80,20 +110,7 @@ async function rewriteClaudeSessionFile(args: {
               await writeChunk("\n");
               continue;
             }
-            let nextLine = line;
-            try {
-              const parsed = JSON.parse(line);
-              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                const record = parsed as Record<string, unknown>;
-                nextLine = JSON.stringify({
-                  ...record,
-                  sessionId: args.newSessionId,
-                  ...(typeof record.cwd === "string" ? { cwd: args.targetCwd } : {}),
-                });
-              }
-            } catch {
-              nextLine = line;
-            }
+            const nextLine = rewriteClaudeJsonlLine(line, args.newSessionId, args.targetCwd);
             await writeChunk(`${nextLine}\n`);
           }
         } finally {
@@ -116,6 +133,67 @@ async function rewriteClaudeSessionFile(args: {
     } catch {
       // Best-effort cleanup: the temp file may not exist or may have been renamed.
     }
+  }
+}
+
+async function copyClaudeSidecarDirectory(args: {
+  sourceDir: string;
+  targetDir: string;
+  newSessionId: string;
+  targetCwd: string;
+}): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(args.sourceDir, { withFileTypes: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return;
+    throw error;
+  }
+
+  await fs.promises.mkdir(args.targetDir, { recursive: true });
+  for (const entry of entries) {
+    const sourcePath = path.join(args.sourceDir, entry.name);
+    const targetPath = ensureInside(args.targetDir, path.join(args.targetDir, entry.name), "Claude sidecar target path");
+    if (entry.isDirectory()) {
+      await copyClaudeSidecarDirectory({
+        ...args,
+        sourceDir: sourcePath,
+        targetDir: targetPath,
+      });
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+    if (entry.name.endsWith(".jsonl")) {
+      const content = await fs.promises.readFile(sourcePath);
+      await fs.promises.writeFile(
+        targetPath,
+        rewriteClaudeJsonlContent(content, args.newSessionId, args.targetCwd),
+        { flag: "wx" },
+      );
+    } else {
+      await fs.promises.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+    }
+  }
+}
+
+async function writeClaudeTransportSideFiles(args: {
+  targetDir: string;
+  sideFiles: Array<{ relPath: string; content: Buffer }>;
+  newSessionId: string;
+  targetCwd: string;
+}): Promise<void> {
+  for (const sideFile of args.sideFiles) {
+    const targetPath = ensureInside(
+      args.targetDir,
+      path.join(args.targetDir, sideFile.relPath),
+      "Claude sidecar target path",
+    );
+    await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+    const content = sideFile.relPath.endsWith(".jsonl")
+      ? rewriteClaudeJsonlContent(sideFile.content, args.newSessionId, args.targetCwd)
+      : sideFile.content;
+    await fs.promises.writeFile(targetPath, content, { flag: "wx" });
   }
 }
 
@@ -142,10 +220,18 @@ export async function transplantClaudeSession(args: {
 
   const newSessionId = args.fork ? randomUUID() : sessionId;
   const targetPath = ensureInside(targetDir, path.join(targetDir, `${newSessionId}.jsonl`), "Claude target path");
+  const sourceSidecarDir = ensureInside(sourceDir, path.join(sourceDir, sessionId), "Claude source sidecar path");
+  const targetSidecarDir = ensureInside(targetDir, path.join(targetDir, newSessionId), "Claude target sidecar path");
   await fs.promises.mkdir(targetDir, { recursive: true });
 
   if (args.fork) {
     await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
+    await copyClaudeSidecarDirectory({
+      sourceDir: sourceSidecarDir,
+      targetDir: targetSidecarDir,
+      newSessionId,
+      targetCwd,
+    });
     return { newSessionId, targetPath };
   }
 
@@ -153,6 +239,51 @@ export async function transplantClaudeSession(args: {
     return { newSessionId, targetPath };
   }
   await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
+  await copyClaudeSidecarDirectory({
+    sourceDir: sourceSidecarDir,
+    targetDir: targetSidecarDir,
+    newSessionId,
+    targetCwd,
+  });
   await fs.promises.unlink(sourcePath);
+  return { newSessionId, targetPath };
+}
+
+export async function placeClaudeForkFromTransport(args: {
+  mainContent: Buffer;
+  mainSessionIdHint?: string;
+  sideFiles: Array<{ relPath: string; content: Buffer }>;
+  targetCwd: string;
+  configDir?: string;
+}): Promise<{ newSessionId: string; targetPath: string }> {
+  const targetCwd = args.targetCwd.trim();
+  if (!targetCwd || !Buffer.isBuffer(args.mainContent) || args.mainContent.length === 0) {
+    throw new Error("Claude fork transport requires transcript content and a target cwd.");
+  }
+
+  const configDir = path.resolve(args.configDir?.trim() || defaultClaudeConfigDir());
+  const projectsDir = path.join(configDir, "projects");
+  const targetDir = path.join(projectsDir, claudeProjectSlugForCwd(targetCwd));
+  const newSessionId = randomUUID();
+  const targetPath = ensureInside(targetDir, path.join(targetDir, `${newSessionId}.jsonl`), "Claude target path");
+  const targetSidecarDir = ensureInside(targetDir, path.join(targetDir, newSessionId), "Claude target sidecar path");
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  await fs.promises.writeFile(
+    targetPath,
+    rewriteClaudeJsonlContent(args.mainContent, newSessionId, targetCwd),
+    { flag: "wx" },
+  );
+  try {
+    await writeClaudeTransportSideFiles({
+      targetDir: targetSidecarDir,
+      sideFiles: args.sideFiles,
+      newSessionId,
+      targetCwd,
+    });
+  } catch (error) {
+    await fs.promises.rm(targetSidecarDir, { recursive: true, force: true }).catch(() => undefined);
+    await fs.promises.unlink(targetPath).catch(() => undefined);
+    throw error;
+  }
   return { newSessionId, targetPath };
 }

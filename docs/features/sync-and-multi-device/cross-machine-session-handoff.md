@@ -15,8 +15,8 @@ The action lives in the chat actions drawer under **Handoff** as **Send to machi
 5. ADE checks destination provider/model access, the published branch commit, and any existing destination lane.
 6. The user reviews the bounded-context and transport disclosures, then confirms.
 7. ADE rechecks the source chat, clean worktree, upstream, remote branch, and exact commit, then pins the transfer to the route shown in the review.
-8. The destination recreates or reuses the lane, starts the chat, and dispatches the first continuation turn.
-9. Only after the destination runtime acknowledges that turn does ADE mark the source chat as handed off.
+8. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
+9. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does ADE mark the source chat as handed off.
 
 The setup modal can be opened while a turn is active. It explains the block and offers to stop the current response. Pending approvals or questions must be resolved in the source chat.
 
@@ -36,7 +36,7 @@ Dirty patches, stashes, Git bundles, untracked files, and worktree metadata are 
 
 ## Portable capsule
 
-ADE does not treat provider-native thread or session identifiers as portable. Those identifiers can depend on machine-local provider storage, CLI state, credentials, or an auth account. Cross-machine handoff therefore creates a bounded ADE capsule containing:
+Brief mode does not treat provider-native thread or session identifiers as portable. Those identifiers can depend on machine-local provider storage, CLI state, credentials, or an auth account. A brief handoff therefore creates a bounded ADE capsule containing:
 
 - source machine label, chat identifier, provider/model label, and chat title;
 - repository origin, branch, and exact commit;
@@ -46,7 +46,7 @@ ADE does not treat provider-native thread or session identifiers as portable. Th
 - up to 12 referenced Linear issues; and
 - an optional user continuation note (maximum 4,000 characters), or ADE's default continuation instruction.
 
-The capsule excludes:
+The brief capsule excludes:
 
 - provider-native thread/session IDs and full provider history;
 - full ADE transcripts;
@@ -58,9 +58,25 @@ The capsule excludes:
 
 ADE redacts common secret-shaped values and replaces source-only absolute repository/home paths before hashing the capsule. It also removes Git/issue URL credentials, query strings, and fragments, and applies the same sanitizer to user-controlled titles and lane names. The destination verifies the capsule fingerprint and all size/type bounds before using it.
 
+## Fork mode
+
+Fork mode transports the provider-native session data needed to continue full history, plus ADE transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and ADE envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for ADE transcript envelopes. Encoded payloads also have independent bounds so validation can reject oversized input before decoding.
+
+Provider handling is explicit:
+
+- **Claude:** ADE sends the session JSONL and, when they fit, its sibling `subagents/` and `tool-results/` sidecars. The destination assigns a new UUID and rewrites JSONL `sessionId` and `cwd` fields in both the main transcript and JSONL sidecars before wiring the Claude resume pointer.
+- **Codex:** ADE sends the discovered rollout JSONL. The destination installs it under its own `CODEX_HOME/sessions/YYYY/MM/DD/` store, then calls app-server `thread/fork` with `excludeTurns: true` and persists the returned thread as the chat resume target. `.jsonl.zst` rollouts are not relocated in this phase and fall back to brief mode.
+- **OpenCode:** the source runs `opencode export <session> --sanitize`. The destination runs `opencode import`, then calls native `session.fork` on the imported session and persists the forked session ID.
+
+ADE transcript envelopes keep their existing provenance and gain `providerOrigin: "handoff_fork"` plus the source ADE session ID. If the transcript exceeds 3 MiB, ADE drops the oldest envelopes and keeps the newest JSONL tail in order. Provider-native blobs are not secret-redacted because full provider history is the feature being requested; the review UI discloses that scope before transport.
+
+If the 18 MiB main-history limit is exceeded, ADE returns a typed “too large” failure so the source can offer a brief handoff instead. Claude sidecars that exceed their separate 4 MiB allowance are omitted as a group while the main conversation still travels.
+
+Cross-machine fork requires the same provider and a usable destination runtime or CLI. Claude, Codex, and OpenCode support it. Cursor is brief-only because it has no native fork surface. Droid is also brief-only across machines: local Droid fork remains supported, but its machine-local session index and relocated-file resume behavior are not yet proven portable.
+
 ## Destination contract
 
-Eligible machines must be connected, support multi-project RPC, and advertise the handoff storage-preflight capability. Older runtimes remain connected for compatible features but are excluded from the picker with an update message.
+Eligible machines must be connected, support multi-project RPC, and advertise the handoff storage-preflight capability. Fork destinations additionally advertise provider-specific fork support; an older destination that omits that field is never allowed to silently downgrade a fork into a brief. Older runtimes remain connected for compatible features but are excluded from the picker with an update message.
 
 Repository matching uses a normalized Git origin identity, so SSH and HTTPS forms of the same remote compare consistently. If no registered project matches:
 

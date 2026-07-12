@@ -270,6 +270,326 @@ describe("CrossMachineHandoffModal", () => {
     );
   });
 
+  const ACCEPT_RESULT = {
+    handoffId: "handoff-ui-1",
+    laneId: "remote-lane-1",
+    session: {
+      id: "remote-session-1",
+      laneId: "remote-lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "active",
+      createdAt: "2026-07-10T12:00:00.000Z",
+      lastActivityAt: "2026-07-10T12:00:00.000Z",
+    },
+    reusedLane: false,
+    reusedSession: false,
+  };
+
+  function preflightResult(overrides: Record<string, unknown> = {}) {
+    return {
+      providerAuthorized: true,
+      modelAvailable: true,
+      remoteBranchHeadSha: SOURCE_SHA,
+      existingLaneId: null,
+      blockingErrors: [],
+      warnings: [],
+      ...overrides,
+    };
+  }
+
+  // Fork capsules echo the requested mode so the modal's "what gets sent" copy
+  // and fork gating reflect the real payload.
+  function stubPrepareByMode() {
+    prepareCrossMachineHandoff.mockReset();
+    prepareCrossMachineHandoff.mockImplementation(async (args: { mode?: "brief" | "fork" }) => ({
+      capsule: {
+        version: 1,
+        handoffId: "handoff-ui-1",
+        createdAt: "2026-07-10T12:00:00.000Z",
+        source: {
+          machineName: "Source Mac",
+          sessionId: "session-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          title: "Handoff UI",
+          laneName: "Feature lane",
+          branchRef: "feature/handoff",
+          headSha: SOURCE_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "openai/gpt-5.5" },
+        brief: "## Current goal\n- Finish the handoff UI.",
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+        linearIssues: [],
+        continuationPrompt: "Continue from the handoff brief.",
+        mode: args.mode ?? "brief",
+      },
+      capsuleFingerprint: "a".repeat(64),
+      usedFallbackSummary: false,
+      sanitizedSensitiveContext: false,
+    }));
+  }
+
+  it("defaults to fork and passes mode + sourceProvider into the destination preflight", async () => {
+    stubPrepareByMode();
+    callAction.mockReset();
+    callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string; args: { mode?: string } }) => {
+      if (payload.action === "preflightCrossMachineDestination") {
+        return { result: preflightResult({ forkHandoffSupport: { supported: true } }) };
+      }
+      return { result: ACCEPT_RESULT };
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="codex"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
+    expect(screen.getByText(/Sent: the full conversation history/i)).toBeTruthy();
+
+    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "fork" }));
+    expect(callAction).toHaveBeenNthCalledWith(
+      1,
+      "machine-1",
+      "remote-project-1",
+      expect.objectContaining({
+        action: "preflightCrossMachineDestination",
+        args: expect.objectContaining({ mode: "fork", sourceProvider: "codex" }),
+      }),
+    );
+
+    // Send payload path is unchanged: only capsule + fingerprint travel.
+    fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
+    expect(await screen.findByText("Handoff complete")).toBeTruthy();
+    expect(callAction).toHaveBeenNthCalledWith(
+      2,
+      "machine-1",
+      "remote-project-1",
+      expect.objectContaining({
+        action: "acceptCrossMachineHandoff",
+        args: { capsule: expect.objectContaining({ mode: "fork" }), capsuleFingerprint: "a".repeat(64) },
+      }),
+    );
+  });
+
+  it("disables fork for a provider that can't fork history", async () => {
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="cursor"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    const forkButton = await screen.findByRole("button", { name: /^fork$/i });
+    expect(forkButton).toHaveProperty("disabled", true);
+    expect(screen.getByText(/Cursor can't fork chat history/i)).toBeTruthy();
+  });
+
+  it("offers a one-click brief when the destination is too old to fork", async () => {
+    stubPrepareByMode();
+    callAction.mockReset();
+    callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string; args: { mode?: string } }) => {
+      if (payload.action === "preflightCrossMachineDestination") {
+        // Older destination: forkHandoffSupport field is absent entirely.
+        return { result: preflightResult() };
+      }
+      return { result: ACCEPT_RESULT };
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="codex"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/needs an ADE update for fork handoff/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
+    await waitFor(() =>
+      expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" })),
+    );
+    expect(await screen.findByText(/Sent: a short summary of this chat/i)).toBeTruthy();
+    // The second preflight ran in brief mode.
+    expect(callAction).toHaveBeenLastCalledWith(
+      "machine-1",
+      "remote-project-1",
+      expect.objectContaining({
+        action: "preflightCrossMachineDestination",
+        args: expect.objectContaining({ mode: "brief" }),
+      }),
+    );
+  });
+
+  it("falls back to a brief when the source history is too large to fork", async () => {
+    prepareCrossMachineHandoff.mockReset();
+    prepareCrossMachineHandoff
+      .mockRejectedValueOnce(new Error("This chat's history is too large to send as a fork."))
+      .mockResolvedValueOnce({
+        capsule: {
+          version: 1,
+          handoffId: "handoff-ui-1",
+          createdAt: "2026-07-10T12:00:00.000Z",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "session-1",
+            provider: "codex",
+            model: "gpt-5.5",
+            title: "Handoff UI",
+            laneName: "Feature lane",
+            branchRef: "feature/handoff",
+            headSha: SOURCE_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          target: { targetModelId: "openai/gpt-5.5" },
+          brief: "## Current goal\n- Finish.",
+          artifacts: { fileChanges: [], commands: [], errors: [] },
+          linearIssues: [],
+          continuationPrompt: "Continue.",
+          mode: "brief",
+        },
+        capsuleFingerprint: "a".repeat(64),
+        usedFallbackSummary: false,
+        sanitizedSensitiveContext: false,
+      });
+    callAction.mockReset();
+    callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string }) => {
+      if (payload.action === "preflightCrossMachineDestination") return { result: preflightResult() };
+      return { result: ACCEPT_RESULT };
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="codex"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/history is too big to send/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
+    expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
+    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }));
+  });
+
+  it("falls back to a brief when the provider session file can't be forked", async () => {
+    prepareCrossMachineHandoff.mockReset();
+    prepareCrossMachineHandoff
+      .mockRejectedValueOnce(new Error("This Codex rollout is compressed and can't be forked."))
+      .mockResolvedValueOnce({
+        capsule: {
+          version: 1,
+          handoffId: "handoff-ui-1",
+          createdAt: "2026-07-10T12:00:00.000Z",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "session-1",
+            provider: "codex",
+            model: "gpt-5.5",
+            title: "Handoff UI",
+            laneName: "Feature lane",
+            branchRef: "feature/handoff",
+            headSha: SOURCE_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          target: { targetModelId: "openai/gpt-5.5" },
+          brief: "## Current goal\n- Finish.",
+          artifacts: { fileChanges: [], commands: [], errors: [] },
+          linearIssues: [],
+          continuationPrompt: "Continue.",
+          mode: "brief",
+        },
+        capsuleFingerprint: "a".repeat(64),
+        usedFallbackSummary: false,
+        sanitizedSensitiveContext: false,
+      });
+    callAction.mockReset();
+    callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string }) => {
+      if (payload.action === "preflightCrossMachineDestination") return { result: preflightResult() };
+      return { result: ACCEPT_RESULT };
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="codex"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/history can't be forked/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
+    expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
+    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }));
+  });
+
   it("finishes the accepted handoff when marking the source chat fails", async () => {
     const onFinished = vi.fn();
     markCrossMachineHandoff.mockRejectedValueOnce(new Error("source marker unavailable"));
