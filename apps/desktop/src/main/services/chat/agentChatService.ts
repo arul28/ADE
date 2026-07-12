@@ -123,6 +123,7 @@ import {
 } from "../state/durableFile";
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
+import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -5980,6 +5981,7 @@ export function createAgentChatService(args: {
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
@@ -6025,6 +6027,7 @@ export function createAgentChatService(args: {
     linearCredentials: linearCredentialsRef,
     prService,
     processService,
+    diskPressureMonitor,
     getTestService,
     ptyService,
     getAutomationService,
@@ -26677,6 +26680,48 @@ export function createAgentChatService(args: {
     });
   };
 
+  const emitDiskPressureSendFailure = (
+    managed: ManagedChatSession,
+    state: DiskPressureState,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "error",
+      severity: "error",
+      status: "failed",
+      message,
+      detail: { kind: "disk_pressure", state },
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      errorInfo: {
+        category: "unknown",
+        code: "disk_full",
+        provider: managed.session.provider,
+        model: managed.session.model,
+      },
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "failed",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "failed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+  };
+
   const codexResumeFailureError = (
     managed: ManagedChatSession,
     threadId: string,
@@ -29886,7 +29931,6 @@ export function createAgentChatService(args: {
     },
   ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
-    if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
@@ -29906,6 +29950,14 @@ export function createAgentChatService(args: {
         interactionMode: args.interactionMode,
       });
     }
+    if (routableText) {
+      const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+      if (diskDecision && !diskDecision.allowed) {
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        return;
+      }
+    }
+    if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();

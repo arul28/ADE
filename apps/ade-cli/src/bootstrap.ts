@@ -50,6 +50,7 @@ import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
@@ -459,6 +460,9 @@ export async function createAdeRuntime(args: {
   const paths = ensureAdePaths(projectRoot);
   initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
+  const diskPressureMonitor = createDiskPressureMonitor({
+    roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+  });
   let db: AdeDb;
   try {
     db = await openKvDb(paths.dbPath, logger);
@@ -815,6 +819,7 @@ export async function createAdeRuntime(args: {
         runtimeState: signal.runtimeState,
       });
     },
+    diskPressureMonitor,
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
         logger.warn("runtime.session_delta_compute_failed", {
@@ -865,6 +870,7 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     sessionService,
     ptyService,
+    diskPressureMonitor,
     getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
   });
@@ -1031,6 +1037,7 @@ export async function createAdeRuntime(args: {
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
       processService,
+      diskPressureMonitor,
       getTestService: () => testService,
       ptyService,
       getAutomationService: () => automationServiceRef,

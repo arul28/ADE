@@ -23,6 +23,8 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { DiskPressureMonitor } from "../storage/diskPressure";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { nowIso, resolvePathWithinRoot } from "../shared/utils";
 
@@ -148,6 +150,7 @@ export function createProcessService({
   ptyService,
   getLaneRuntimeEnv,
   broadcastEvent,
+  diskPressureMonitor,
 }: {
   db: AdeDb;
   projectId: string;
@@ -158,6 +161,7 @@ export function createProcessService({
   ptyService: Pick<ReturnType<typeof createPtyService>, "create" | "dispose" | "onData" | "onExit">;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   broadcastEvent: (ev: ProcessEvent) => void;
+  diskPressureMonitor?: DiskPressureMonitor | null;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
   const sessionToRunId = new Map<string, string>();
@@ -869,6 +873,12 @@ export function createProcessService({
     },
 
     async start(arg: ProcessActionArgs): Promise<ProcessRuntime> {
+      const decision = diskPressureMonitor?.canPerform("process_start");
+      if (decision && !decision.allowed) {
+        throw Object.assign(new Error(decision.message), {
+          code: decision.code satisfies AdeRecoveryErrorCode,
+        });
+      }
       return await startById(arg.laneId, arg.processId);
     },
 

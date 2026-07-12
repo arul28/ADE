@@ -3264,6 +3264,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openPathInEditor: resolvedArg(undefined),
       logDebugEvent: () => {},
     },
+    storage: {
+      getPressure: resolved({
+        state: "normal" as const,
+        freeBytes: 100 * 1024 ** 3,
+        totalBytes: 500 * 1024 ** 3,
+        freeFraction: 0.2,
+        perRoot: [],
+        sampledAt: now,
+      }),
+    },
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),

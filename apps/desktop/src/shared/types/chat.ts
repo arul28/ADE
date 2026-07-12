@@ -7,6 +7,7 @@ import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
+import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SubagentCapability } from "../subagentCapabilities";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
@@ -195,8 +196,8 @@ export type AgentChatNoticeDetailSection = {
 };
 
 export type AgentChatNoticeDetail = {
-  kind?: "continuity_recovery";
-  state?: "required" | "reconstructed";
+  kind?: "continuity_recovery" | "disk_pressure";
+  state?: "required" | "reconstructed" | "normal" | "warning" | "critical" | "exhausted";
   reason?: AgentChatResumeFailureKind;
   originalThreadId?: string | null;
   reconstructedThreadId?: string;
@@ -582,6 +583,7 @@ export type AgentChatEvent =
       itemId?: string;
       errorInfo?: string | {
         category: "auth" | "rate_limit" | "budget" | "network" | "busy" | "unknown" | "agent_cli_missing" | "agent_cli_auth";
+        code?: AdeRecoveryErrorCode;
         provider?: string;
         model?: string;
         resumeFailure?: {

@@ -15,6 +15,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { DiskPressureMonitor } from "../storage/diskPressure";
 import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
@@ -1104,6 +1105,7 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
+  diskPressureMonitor,
   loadPty,
   disposePtyBackend
 }: {
@@ -1134,6 +1136,7 @@ export function createPtyService({
     lastOutputPreview: string | null;
     at: string;
   }) => void;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
@@ -3592,6 +3595,12 @@ export function createPtyService({
       const startedAt = new Date().toISOString();
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
+      if (!existingSession && tracked && isTrackedCliToolType(toolTypeHint)) {
+        const decision = diskPressureMonitor?.canPerform("cli_launch");
+        if (decision && !decision.allowed) {
+          throw Object.assign(new Error(decision.message), { code: decision.code });
+        }
+      }
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
       const requestedInitialInput = typeof args.initialInput === "string" ? args.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;

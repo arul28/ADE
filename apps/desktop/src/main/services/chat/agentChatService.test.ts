@@ -1970,6 +1970,55 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 
 describe("createAgentChatService", () => {
+  describe("disk pressure enforcement", () => {
+    it("fails an exhausted send without starting a provider turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: {
+          canPerform: vi.fn(() => ({
+            allowed: false,
+            state: "exhausted",
+            code: "disk_full",
+            message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+          })),
+        },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Start new work." });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start" || payload.method === "turn/start")).toBe(false);
+      expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+        message: expect.stringContaining("almost out of storage"),
+        errorInfo: { code: "disk_full" },
+      });
+      expect(events.some((entry) => entry.event.type === "status" && entry.event.turnStatus === "failed")).toBe(true);
+      expect(events.some((entry) => entry.event.type === "done" && entry.event.status === "failed")).toBe(true);
+      expect(events.filter((entry) => entry.event.type === "system_notice")).toHaveLength(1);
+      expect(events.find((entry) => entry.event.type === "system_notice")?.event).toMatchObject({
+        detail: { kind: "disk_pressure", state: "exhausted" },
+      });
+      service.forceDisposeAll();
+    });
+
+    it.each([
+      ["warning monitor", { canPerform: vi.fn(() => ({ allowed: true, state: "warning" })) }],
+      ["absent monitor", undefined],
+    ])("lets a send proceed with an %s", async (_label, diskPressureMonitor) => {
+      const { service } = createService({ diskPressureMonitor });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Proceed normally." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      service.forceDisposeAll();
+    });
+  });
+
   it("returns an object with all expected methods", () => {
     const { service } = createService();
     expect(service.createSession).toBeTypeOf("function");

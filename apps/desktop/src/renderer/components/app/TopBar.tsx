@@ -69,6 +69,7 @@ import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
+import { StoragePressureIndicator } from "./StoragePressureIndicator";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -2411,6 +2412,7 @@ export function TopBar({
         <GlobalVoiceCaptureIndicator />
 
         <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderHeaderStatusControls()}
