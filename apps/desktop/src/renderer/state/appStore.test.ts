@@ -795,7 +795,7 @@ describe("appStore", () => {
     });
 
     it("clearProjectTransitionError clears project action errors", () => {
-      useAppStore.setState({ projectTransitionError: "Switch failed" });
+      useAppStore.setState({ projectTransitionError: { message: "Switch failed" } });
       useAppStore.getState().clearProjectTransitionError();
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
@@ -1161,9 +1161,9 @@ describe("appStore", () => {
       ).rejects.toThrow("timed out after 30000ms");
 
       expect(useAppStore.getState().projectTransition).toBeNull();
-      expect(useAppStore.getState().projectTransitionError).toBe(
-        "Switching projects took longer than 30 seconds, so ADE kept the current project active.",
-      );
+      expect(useAppStore.getState().projectTransitionError).toEqual({
+        message: "Switching projects took longer than 30 seconds, so ADE kept the current project active.",
+      });
     });
 
     it("removes Electron's remote-method wrapper from project errors", async () => {
@@ -1177,9 +1177,27 @@ describe("appStore", () => {
         useAppStore.getState().switchProjectToPath("/tmp/project"),
       ).rejects.toThrow("Error invoking remote method");
 
-      expect(useAppStore.getState().projectTransitionError).toBe(
-        "ADE needs Git to open this project.",
+      expect(useAppStore.getState().projectTransitionError).toEqual({
+        message: "ADE needs Git to open this project.",
+      });
+    });
+
+    it("round-trips a coded recovery error into typed project transition state", async () => {
+      (window.ade.project.switchToPath as any).mockRejectedValueOnce(
+        new Error(
+          "Error invoking remote method 'ade.project.switchToPath': Error: disk_full: internal database detail",
+        ),
       );
+
+      await expect(
+        useAppStore.getState().switchProjectToPath("/tmp/project"),
+      ).rejects.toThrow("disk_full");
+
+      expect(useAppStore.getState().projectTransitionError).toEqual({
+        code: "disk_full",
+        message: "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again.",
+        detail: "internal database detail",
+      });
     });
 
     it("prunes banner-dismiss maps to the new project after switch settles", async () => {

@@ -31,6 +31,8 @@ import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
+import { readLastFailure } from "../runtime/lastFailureStore";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 
 type LocalRuntimeConnection = {
   client: RuntimeRpcClient;
@@ -113,6 +115,28 @@ function primaryRuntimeSpawnBlockedMessage(socketPath: string): string {
     `ADE runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
     "on a primary channel socket. Start or repair the ADE background service instead."
   );
+}
+
+function codedRecoveryError(message: string, code: AdeRecoveryErrorCode): Error & { code: AdeRecoveryErrorCode } {
+  return Object.assign(new Error(message), { code });
+}
+
+function probeSocketHasOwner(socketPath: string, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    const finish = (owned: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(owned);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
 }
 
 function stableActionValue(value: unknown): unknown {
@@ -1441,7 +1465,38 @@ export class LocalRuntimeConnectionPool {
         serviceMessage: this.serviceInstallStatus.message,
         preferServiceRepair: this.options.preferServiceRepair === true,
       });
-      throw new Error(message);
+      const lastFailure = readLastFailure({ kind: "machine" });
+      this.refreshServiceHealthIfStale(0);
+      const recordedDbCodes = new Set<AdeRecoveryErrorCode>([
+        "disk_full",
+        "insufficient_headroom",
+        "db_integrity",
+        "migration_incomplete",
+        "migration_unknown_state",
+      ]);
+      let recoveryCode: AdeRecoveryErrorCode;
+      if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
+        recoveryCode = lastFailure.code;
+      } else if (
+        this.serviceInstallStatus.state === "failed"
+        || this.serviceHealthStatus.state === "not_installed"
+      ) {
+        recoveryCode = "brain_not_installed";
+      } else {
+        recoveryCode = await probeSocketHasOwner(socketPath)
+          ? "socket_owned_by_other"
+          : "socket_stale_no_owner";
+      }
+      const crashLoopDetail = lastFailure && lastFailure.count >= 3
+        ? ` Secondary recovery code: brain_crash_looping (${lastFailure.count} consecutive failures since ${lastFailure.firstAt}).`
+        : "";
+      const reportDetail = lastFailure?.detail
+        ? ` Last recorded failure: ${lastFailure.detail}`
+        : "";
+      throw codedRecoveryError(
+        `ADE's background service could not open this project. Technical details: ${message}${crashLoopDetail}${reportDetail}`,
+        recoveryCode,
+      );
     }
 
     const child = this.spawnRuntime(socketPath);

@@ -169,7 +169,7 @@ describe("AppShell AI provider status", () => {
 
   it("shows the full project error below the top bar and lets the user dismiss it", () => {
     const message = "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted.";
-    useAppStore.setState({ projectTransitionError: message } as any);
+    useAppStore.setState({ projectTransitionError: { message } } as any);
 
     render(
       <MemoryRouter initialEntries={["/work"]}>

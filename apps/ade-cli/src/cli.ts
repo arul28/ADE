@@ -92,6 +92,15 @@ import {
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
 import { copyToClipboard } from "./lib/clipboard";
+import {
+  clearLastFailure,
+  computeStartupBackoffMs,
+  lastFailurePathForMachine,
+  readLastFailure,
+  recordLastFailure,
+} from "../../desktop/src/main/services/runtime/lastFailureStore";
+import type { AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
+import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
 
 type JsonObject = Record<string, unknown>;
 
@@ -14090,6 +14099,17 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  const previousFailure = readLastFailure({ kind: "machine" });
+  const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
+  if (startupBackoffMs > 0 && previousFailure) {
+    process.stderr.write(
+      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${previousFailure.code}\n`,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
+  }
+  let serveStarted = false;
+  try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { resolveMachineAdeLayout },
@@ -14628,13 +14648,13 @@ async function runServe(
     if (fs.existsSync(socketPath)) {
       const liveness = await probeLocalSocketForLiveness(socketPath);
       if (liveness === "live" || liveness === "unknown") {
-        throw new CliExecutionError("ADE brain socket is already in use.", {
+        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
           socketPath,
           cause: liveness === "live"
             ? "Another ADE brain is accepting connections on this socket."
             : "ADE could not prove the existing socket is stale.",
           nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        });
+        }), { code: "socket_owned_by_other" as const });
       }
       try {
         fs.unlinkSync(socketPath);
@@ -14662,6 +14682,8 @@ async function runServe(
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
+  clearLastFailure({ kind: "machine" });
+  serveStarted = true;
 
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
@@ -14704,6 +14726,41 @@ async function runServe(
     removeRuntimeProcessErrorBoundary();
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
+  } catch (error) {
+    const errorRecord = error && typeof error === "object"
+      ? error as { code?: unknown; details?: unknown }
+      : null;
+    const rawCode = typeof errorRecord?.code === "string" ? errorRecord.code : "";
+    const message = error instanceof Error ? error.message : String(error);
+    const details = errorRecord?.details == null
+      ? message
+      : `${message}\n${JSON.stringify(errorRecord.details)}`;
+    const knownCodes = new Set<AdeRecoveryErrorCode>([
+      "disk_full", "insufficient_headroom", "db_integrity", "migration_incomplete",
+      "migration_unknown_state", "brain_not_installed", "brain_crash_looping",
+      "socket_stale_no_owner", "socket_owned_by_other", "provider_thread_missing",
+      "provider_resume_failed", "optional_mcp_failed", "continuity_reconstruction_required",
+      "unknown",
+    ]);
+    const code: AdeRecoveryErrorCode = knownCodes.has(rawCode as AdeRecoveryErrorCode)
+      ? rawCode as AdeRecoveryErrorCode
+      : /ENOSPC|disk is full|SQLITE_FULL/i.test(details)
+        ? "disk_full"
+        : /malformed|not a database|integrity/i.test(details)
+          ? "db_integrity"
+          : /socket is already in use|mobile sync/i.test(details)
+            ? "socket_owned_by_other"
+            : "unknown";
+    if (!serveStarted) {
+      recordLastFailure({ kind: "machine" }, {
+        code,
+        message: "ADE's background service could not start.",
+        detail: details,
+        component: /sync host|mobile sync/i.test(details) ? "sync_host" : "brain_startup",
+      });
+    }
+    throw error;
   }
 }
 

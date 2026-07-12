@@ -5,7 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
-import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import {
+  clearLastFailure,
+  recordLastFailure,
+} from "../../desktop/src/main/services/runtime/lastFailureStore";
+import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
 import { reseedAdeSkills } from "../../desktop/src/main/services/skills/skillReseedService";
 import {
@@ -454,7 +459,24 @@ export async function createAdeRuntime(args: {
   const paths = ensureAdePaths(projectRoot);
   initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
-  const db = await openKvDb(paths.dbPath, logger);
+  let db: AdeDb;
+  try {
+    db = await openKvDb(paths.dbPath, logger);
+  } catch (error) {
+    const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
+    const detail = error instanceof Error ? error.message : String(error);
+    const failure = {
+      code,
+      message: "ADE could not open the project data store.",
+      detail,
+      projectRoot,
+      component: "project_db_open" as const,
+    };
+    recordLastFailure({ kind: "project", projectRoot }, failure);
+    recordLastFailure({ kind: "machine" }, failure);
+    throw error;
+  }
+  clearLastFailure({ kind: "project", projectRoot });
 
   const project = toProjectInfo(projectRoot, baseRef);
   const { projectId } = upsertProjectRow({

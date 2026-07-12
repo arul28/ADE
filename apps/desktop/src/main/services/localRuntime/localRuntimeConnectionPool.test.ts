@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { recordLastFailure } from "../runtime/lastFailureStore";
 
 vi.mock("electron", () => ({
   app: {
@@ -2207,6 +2208,77 @@ describe("local runtime connection pool", () => {
       "local_runtime.service_repair_fallback_blocked",
       expect.objectContaining({ socketPath: expect.any(String) }),
     );
+  });
+
+  it("surfaces a recorded disk failure with crash-loop context when repair remains blocked", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-recovery-report-"));
+    const originalAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    try {
+      for (let count = 0; count < 4; count += 1) {
+        recordLastFailure({ kind: "machine" }, {
+          code: "disk_full",
+          component: "project_db_open",
+          projectRoot: "/repo",
+          message: "Project data could not open.",
+          detail: "internal disk detail",
+        });
+      }
+      const pool = new LocalRuntimeConnectionPool("1.2.3", {
+        debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      } as never, { preferServiceRepair: true });
+      const internals = pool as unknown as {
+        createConnection: () => Promise<unknown>;
+        tryConnect: () => Promise<unknown>;
+        tryRepairServiceConnection: () => Promise<unknown>;
+      };
+      vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+      vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+
+      const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
+      expect(error.code).toBe("disk_full");
+      expect(error.message).toContain("brain_crash_looping");
+      expect(error.message).toContain("4 consecutive failures");
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      removeTempDir(adeHome);
+    }
+  });
+
+  it("codes a missing unowned primary endpoint as socket_stale_no_owner", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-stale-socket-"));
+    const originalAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    try {
+      const pool = new LocalRuntimeConnectionPool("1.2.3", {
+        debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      } as never, {
+        queryServiceStatus: () => ({
+          ok: true,
+          serviceName: "com.ade.runtime",
+          action: "status",
+          installed: true,
+          running: false,
+          path: "/tmp/com.ade.runtime.plist",
+          message: "ADE service is installed.",
+        }),
+      });
+      const internals = pool as unknown as {
+        createConnection: () => Promise<unknown>;
+        tryConnect: () => Promise<unknown>;
+        tryRepairServiceConnection: () => Promise<unknown>;
+      };
+      vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+      vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+
+      const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
+      expect(error.code).toBe("socket_stale_no_owner");
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      removeTempDir(adeHome);
+    }
   });
 
   it("does not spawn a primary sync runtime when service repair is not configured", async () => {

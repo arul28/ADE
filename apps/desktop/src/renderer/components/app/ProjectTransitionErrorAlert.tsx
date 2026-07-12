@@ -18,9 +18,15 @@ export function ProjectTransitionErrorAlert() {
       role="alert"
     >
       <WarningCircle size={15} weight="fill" className="mt-0.5 shrink-0" />
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-        {projectTransitionError}
-      </span>
+      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+        <div>{projectTransitionError.message}</div>
+        {projectTransitionError.detail ? (
+          <details className="mt-1 text-red-100/75">
+            <summary className="cursor-pointer select-none">Technical details</summary>
+            <div className="mt-1">{projectTransitionError.detail}</div>
+          </details>
+        ) : null}
+      </div>
       <button
         type="button"
         className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-current opacity-75 transition-opacity hover:opacity-100"
