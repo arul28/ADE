@@ -375,6 +375,10 @@ ade usage budget get --text
 ade usage budget set --from-file budget.json
 ade usage budget check --provider claude --scope global
 ade usage budget cumulative --scope global --text
+ade storage snapshot --text                          # categorized ADE disk usage + free space (mirrors the desktop storage dashboard)
+ade storage snapshot --refresh --text                # force a fresh scan instead of the cached snapshot
+ade storage compress --text                          # losslessly compress old chat/terminal history
+ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
 ade actions list --domain chat --text
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id

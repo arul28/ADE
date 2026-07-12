@@ -99,7 +99,9 @@ import {
   readLastFailure,
   recordLastFailure,
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
-import type { AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
+import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
+import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
 
 type JsonObject = Record<string, unknown>;
@@ -208,6 +210,8 @@ type FormatterId =
   | "search-results"
   | "search-status"
   | "external-sessions"
+  | "storage-snapshot"
+  | "storage-compress"
   | "sync-web";
 
 type ChatWaitTarget =
@@ -548,6 +552,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
@@ -1981,6 +1986,22 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage budget set --from-file budget.json  Save budget guardrail config
     $ ade usage budget check --provider claude --scope global
     $ ade usage budget cumulative --scope global    Cumulative spend for the current week
+`,
+  storage: `${ADE_BANNER}
+  ADE storage insights and disk hygiene
+
+  Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
+  build output, caches, proof attachments, recovery backups, database) and the
+  volume's free space, mirroring the desktop Settings storage dashboard. The
+  snapshot is read-only; compression is lossless and safe. Target-scoped cleanup
+  (which deletes files) is intentionally left to the action bridge.
+
+    $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
+    $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
+    $ ade storage compress --text                   Losslessly compress old chat/terminal history
+    $ ade storage actions --text                    List raw storage service actions
+    $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
+    $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
 `,
   secrets: `${ADE_BANNER}
   ADE project secrets
@@ -9846,6 +9867,52 @@ function buildUsagePlan(args: string[]): CliPlan {
   };
 }
 
+function buildStoragePlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.storage ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "snapshot";
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "storage actions",
+      steps: [listActionsStep("actions", "storage")],
+    };
+  if (sub === "action")
+    return {
+      kind: "execute",
+      label: "storage action",
+      steps: [buildActionRunStep(["storage", ...args])],
+    };
+  if (sub === "snapshot" || sub === "get" || sub === "status" || sub === "scan") {
+    const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
+    return {
+      kind: "execute",
+      label: "storage snapshot",
+      formatter: "storage-snapshot",
+      steps: [
+        actionStep(
+          "result",
+          "storage",
+          "getSnapshot",
+          forceRefresh ? { forceRefresh: true } : {},
+        ),
+      ],
+    };
+  }
+  if (sub === "compress") {
+    return {
+      kind: "execute",
+      label: "storage compress",
+      formatter: "storage-compress",
+      steps: [actionStep("result", "storage", "compressNow", {})],
+    };
+  }
+  throw new CliUsageError(
+    "storage supports snapshot, compress, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
+  );
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -11124,6 +11191,7 @@ function buildCliPlan(
     project: "projects",
     quota: "usage",
     quotas: "usage",
+    disk: "storage",
     skills: "skill",
     gh: "github",
     create: "new",
@@ -11357,6 +11425,8 @@ function buildCliPlan(
     return buildBrowserPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
+  if (primary === "storage" || primary === "disk")
+    return buildStoragePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting")
@@ -11846,6 +11916,50 @@ function checkPathReadiness(): ReadinessCheck {
   };
 }
 
+function checkStorageReadiness(projectRoot: string): ReadinessCheck {
+  // The disk-pressure module is brain-safe (fs/statfs only), so doctor can take a
+  // one-shot reading without a running brain. maxAgeMs: 0 forces a fresh sample.
+  try {
+    const monitor = createDiskPressureMonitor({
+      roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+    });
+    const snap = monitor.getSnapshot({ maxAgeMs: 0 });
+    const urgent = isUrgentDiskPressure(snap.state);
+    const summary = `${snap.state} · ${formatBytes(snap.freeBytes)} free of ${formatBytes(snap.totalBytes)}`;
+    return {
+      ready: !urgent,
+      status: snap.state === "normal"
+        ? "ready"
+        : snap.state === "warning"
+          ? "warning"
+          : "missing",
+      message: snap.state === "normal"
+        ? `Disk has headroom (${summary}).`
+        : `Disk pressure is ${summary}.`,
+      nextAction: urgent
+        ? "Free up disk space; ADE pauses new agent work and CLI launches when storage is critical."
+        : snap.state === "warning"
+          ? "Disk is getting low; run 'ade storage snapshot --text' to see what ADE is holding."
+          : undefined,
+      details: {
+        state: snap.state,
+        freeBytes: snap.freeBytes,
+        totalBytes: snap.totalBytes,
+        freeFraction: snap.freeFraction,
+      },
+    };
+  } catch (error) {
+    return {
+      ready: true,
+      status: "unavailable",
+      message: "Disk pressure state is unavailable on this platform.",
+      details: {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
 function requireAdeLayout(): {
   resolveAdeLayout: (projectRoot: string) => { secretsDir: string };
 } {
@@ -11902,6 +12016,7 @@ function buildReadinessSnapshot(args: {
     providers: checkProviderReadiness(projectConfig),
     computerUse: checkComputerUseReadiness(),
     path: checkPathReadiness(),
+    storage: checkStorageReadiness(connection.projectRoot),
   };
   const recommendations = Object.entries(checks)
     .filter(([, check]) => check.nextAction)
@@ -11976,6 +12091,7 @@ function buildReadinessSnapshot(args: {
     providers: checks.providers,
     computerUse: checks.computerUse,
     path: checks.path,
+    storage: checks.storage,
     auth: {
       localProjectAccess: projectInitialized && actions.length > 0,
       providerSecretsExposed: false,
@@ -13906,6 +14022,11 @@ async function runBrainCommand(
       ? await readBrainSyncStatus(options, socketOverride)
       : null;
     const pairing = isRecord(sync) ? sync.pairingConnectInfo : null;
+    // A present machine last-failure report means the most recent brain
+    // startup/serve (or a project DB open) failed and has not recovered — the
+    // serve path clears it on a successful listen. Surface it as a plain
+    // one-liner so `ade brain status --text` matches the Desktop recovery screen.
+    const lastFailure = readLastFailure({ kind: "machine" });
     return {
       ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
       service,
@@ -13913,6 +14034,7 @@ async function runBrainCommand(
       sync,
       port: isRecord(pairing) ? pairing.port ?? null : null,
       connectedPeers: isRecord(sync) ? sync.connectedPeers ?? null : null,
+      lastFailure: lastFailure ? formatLastFailureLine(lastFailure) : null,
       message: isRecord(runtime) && typeof runtime.message === "string"
         ? runtime.message
         : service.message,
@@ -15363,6 +15485,71 @@ function formatAutomationCleanups(value: unknown): string {
   );
 }
 
+function formatBytes(bytes: unknown): string {
+  const value = typeof bytes === "number" && Number.isFinite(bytes) ? bytes : 0;
+  const abs = Math.abs(value);
+  if (abs < 1024) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  let scaled = value / 1024;
+  let unitIndex = 0;
+  while (Math.abs(scaled) >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  const rounded = Math.abs(scaled) >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+  return `${rounded} ${units[unitIndex]}`;
+}
+
+function formatStorageSnapshot(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const volume = isRecord(value.volume) ? value.volume : {};
+  const freeBytes = typeof volume.freeBytes === "number" ? volume.freeBytes : null;
+  const totalBytes = typeof volume.totalBytes === "number" ? volume.totalBytes : null;
+  const volumeSummary = freeBytes != null && totalBytes != null
+    ? `${formatBytes(freeBytes)} free of ${formatBytes(totalBytes)}`
+    : null;
+  const header = renderKeyValues("ADE storage", [
+    ["project", value.projectRoot],
+    ["ade data", formatBytes(value.totalAdeBytes)],
+    ["volume", volumeSummary],
+    ["scanned", value.generatedAt],
+    ["truncated", value.truncated === true ? "yes (scan incomplete)" : undefined],
+  ]);
+  const categories = Array.isArray(value.categories) ? value.categories : [];
+  const rows = categories
+    .filter(isRecord)
+    .sort((a, b) => (Number(b.bytes) || 0) - (Number(a.bytes) || 0))
+    .map((category) => [
+      cell(category.id, 24),
+      formatBytes(category.bytes),
+      typeof category.fileCount === "number" ? String(category.fileCount) : "-",
+      cell(category.safety, 16),
+      typeof category.compressibleBytes === "number" && category.compressibleBytes > 0
+        ? `${formatBytes(category.compressibleBytes)} compressible`
+        : "",
+    ]);
+  const table = renderTable(
+    ["CATEGORY", "SIZE", "FILES", "SAFETY", "NOTE"],
+    rows,
+    "No ADE-managed storage categories were found.",
+  );
+  return `${header}\n\n${table}`;
+}
+
+function formatStorageCompression(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  return renderKeyValues("ADE storage compression", [
+    ["files compressed", value.filesCompressed],
+    ["reclaimed", formatBytes(value.savedBytes)],
+  ]);
+}
+
+function formatLastFailureLine(report: AdeLastFailureReport): string {
+  const repeat = report.count > 1 ? ` x${report.count}` : "";
+  const scope = report.projectRoot ? ` [${report.projectRoot}]` : "";
+  return `${report.code} (${report.component}${repeat}) at ${report.at}${scope} — ${report.message}`;
+}
+
 function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
@@ -16677,6 +16864,8 @@ function formatTextOutput(
         isRecord(value) && isRecord(value.computerUse) ? value.computerUse : {};
       const pathStatus =
         isRecord(value) && isRecord(value.path) ? value.path : {};
+      const storage =
+        isRecord(value) && isRecord(value.storage) ? value.storage : {};
       const recommendations =
         isRecord(value) && Array.isArray(value.recommendations)
           ? value.recommendations
@@ -16699,6 +16888,7 @@ function formatTextOutput(
           ["providers", providers.message],
           ["computer use", computerUse.message],
           ["path", pathStatus.message],
+          ["storage", storage.message],
           ["recommendation", isRecord(value) ? value.recommendation : null],
         ]),
         ...(recommendations.length
@@ -16839,6 +17029,10 @@ function formatTextOutput(
       return formatExternalSessions(value);
     case "sync-web":
       return formatSyncWebPairing(value);
+    case "storage-snapshot":
+      return formatStorageSnapshot(value);
+    case "storage-compress":
+      return formatStorageCompression(value);
     case "action-result":
     default:
       if (isRecord(value))

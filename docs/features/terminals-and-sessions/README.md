@@ -74,7 +74,15 @@ and in tests.
   `processRegistryService` pid so cross-process reconcile/dispose paths
   can tell live siblings from crashed owners. Also owns
   `sendToSession` and `resumeSession` for tracked CLI continuation and
-  prompt-free relaunch. ~4,450 lines.
+  prompt-free relaunch. Creating a new tracked agent CLI PTY is gated on
+  disk pressure through the optional `diskPressureMonitor`
+  (`canPerform("cli_launch")`): under `exhausted` pressure the create throws a
+  `disk_full`-coded error instead of spawning. Transcript reads tolerate
+  compaction — `readTranscriptTail` / `readTranscriptRange` transparently fall
+  back to a `<transcript>.gz` generation via `readHistoryFileSync`, and create
+  reinflates a compressed transcript (`reinflateHistoryFileSync`) before
+  reopening it for append. `isTranscriptPathActive(path)` lets the history
+  compressor skip transcripts a live PTY is still writing. ~4,450 lines.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
   `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive
@@ -91,7 +99,9 @@ and in tests.
   belongs to a sibling and must be left alone; a row whose owner is known on
   this machine but no longer live can be marked `detached`; a row with an
   unknown owner identity is preserved because it may have synced from another
-  machine. ~580 lines. Branch rewrite.
+  machine. Its transcript-tail read transparently falls back to a
+  `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
+  transcript still replays. ~580 lines. Branch rewrite.
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
   table, which is excluded from CRR replication because PIDs are OS-local.
@@ -113,7 +123,10 @@ and in tests.
 - `apps/desktop/src/main/services/processes/processService.ts` — managed
   process lifecycle keyed by `runId` (multi-run history per
   `(laneId, processId)`), readiness checks, restart policy with
-  exponential backoff, stack buttons, process-group filtering. ~870 lines.
+  exponential backoff, stack buttons, process-group filtering. `start` is
+  gated on disk pressure through the optional `diskPressureMonitor`
+  (`canPerform("process_start")`): under `exhausted` pressure it throws a
+  `disk_full`-coded error rather than launching. ~870 lines.
 - `apps/desktop/src/main/services/processes/processService.test.ts` —
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
@@ -933,6 +946,17 @@ Processes (managed):
   survives resume.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
+- Disk-pressure gating is enforced at the *start* boundary only:
+  `ptyService.create` refuses a new tracked agent CLI PTY and
+  `processService.start` refuses a managed process under `exhausted`
+  pressure (`disk_full` code). Existing sessions and running processes are
+  never killed by pressure. See
+  [Storage and recovery](../storage-and-recovery/README.md#disk-pressure-and-enforcement).
+- A transcript may exist only as a `<transcript>.gz` after history
+  compaction. Read paths (`ptyService`/`sessionService` tails, search) handle
+  this transparently, but any new code that opens a transcript by its raw
+  `.log`/`.jsonl` path must check for the `.gz` sibling or reinflate first —
+  `ptyService.create` reinflates before append.
 - Reconcile and dispose paths gate on `processRegistryService` live and
   known-owner sets. Adding a new sweep path that operates on
   `terminal_sessions` without consulting the registry can mark another
@@ -966,3 +990,6 @@ Processes (managed):
 - Universal search: [../search/](../search/) — terminal/CLI-session scrollback
   transcripts (`.log`) are FTS-indexed (ANSI-stripped, chunked by byte offset)
   as the `terminal` search source, deep-linking back to the scrollback position.
+- Storage and recovery: [../storage-and-recovery/](../storage-and-recovery/) —
+  the disk-pressure gate that refuses new CLI/process launches, and the lossless
+  history compression that transcript reads transparently reinflate.

@@ -131,10 +131,12 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  AI Connections, Secrets, Background Jobs, Lane Templates, and Stats. Legacy
+  AI Connections, Secrets, Background Jobs, Lane Templates, Storage, and
+  Stats. Legacy
   `workspace`, `project`, `context`, `integrations`, `github`, and
   `linear` deep links land in General; `providers` lands in AI
-  Connections; `automations` lands in Background Jobs. Welcome video
+  Connections; `automations` lands in Background Jobs; `disk` lands in
+  Storage. Welcome video
   replay and help preferences live under the Help menu in the top bar,
   not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
@@ -225,6 +227,16 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
+- `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
+  `settings/storage/StorageCleanupDialog.tsx` and `settings/storage/storageView.ts`
+  — Settings > Storage. Renders the current volume-pressure state, a category
+  breakdown of ADE's on-disk footprint, and per-category removable items;
+  offers preview-confirmed cleanup and a manual history-compression action.
+  `storageView.ts` holds the pure snapshot→cleanup-target mapping and category
+  presentation metadata (unit-tested without a DOM); the dashboard reads
+  `window.ade.storage.*`. The domain lives in
+  [Storage and recovery](../storage-and-recovery/README.md), which owns the
+  disk-pressure monitor and `storageInsightsService` behind those IPCs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
   — multi-device sync management. The default `variant="all"` shows phone,
   web-client, and desktop-peer controls in Settings; `"phone"` and `"web"`
@@ -497,6 +509,7 @@ changing rather than which service backs it:
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus the project-wide **Pause all scheduled work** control for Claude wakeups, cron tasks, and loops. Pausing keeps schedules armed and suppresses `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
+| Storage | `StorageSection.tsx`, `storage/StorageCleanupDialog.tsx`, `storage/storageView.ts` | Disk-usage dashboard: current volume pressure, ADE storage broken down by category (lanes/worktrees, chats & terminal history, caches, build & release, proof & attachments, recovery backups, database), preview-confirmed cleanup of the removable subset, and a manual "compress old history" action. Reads `window.ade.storage.getPressure` / `getSnapshot` and mutates through `compressNow` / `cleanupPreview` / `cleanup`. Deep links from `?tab=storage` and `?tab=disk` (via `TAB_ALIASES`). See [Storage and recovery](../storage-and-recovery/README.md). |
 | Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard: overview stat tiles, an activity/tokens/code/clients module, and split AI-usage and GitHub-vs-local Code & PRs panels, with project/machine scope and day/week/month/year/all ranges. Fast cached local-provider, project-DB, GitHub, and cross-client activity. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
 > Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`) and Settings > Usage > Limits. The Activity tab is the retrospective cross-client dashboard.

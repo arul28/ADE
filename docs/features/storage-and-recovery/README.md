@@ -6,19 +6,27 @@
 |---|---|
 | `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database, runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. |
 | `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, appends the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, and implements explicit `recoverContinuity` modes. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
+| `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
 | `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
 | `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. |
 | `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. |
-| `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes. |
+| `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
+| `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
 | `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. |
-| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. |
-| `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. |
-| `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures, diagnosis, repair progress, next action, and technical details. |
-| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. |
+| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. |
+| `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
+| `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures, diagnosis, repair progress, next action, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. |
+| `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`. |
+| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
 | `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard with volume pressure, category totals, cleanup preview/confirmation, and manual history compression. |
+| `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. |
+| `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers: category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems`, which map a snapshot item to a typed `StorageCleanupTarget` (path-derived kind, archived-lane id lookup) so the removable set the UI offers matches what the backend will accept. |
+| `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: `DiskPressureState`/`DiskPressureSnapshot`/`DiskPressureThresholds`, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. |
+| `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, and `mapKvDbOpenErrorCode`. |
+| `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
 
 ## Behavior
 
@@ -111,7 +119,21 @@ fails open and logs each root once.
 | History compression | Allow | Allow | Refuse | Refuse |
 
 Existing sessions and processes are not killed when pressure rises. The gates
-apply at the next write-producing start boundary.
+apply at the next write-producing start boundary. Enforcement lives at each
+start boundary rather than in one place: `agentChatService` gates a new turn
+(`chat_turn`), `ptyService.create` gates a new tracked CLI PTY (`cli_launch`),
+`processService.start` gates a managed process (`process_start`), and the
+history compressor gates its own sweeps (`compression`). Every refusal throws a
+`disk_full`-coded error whose message is the user-facing copy in
+`DISK_PRESSURE_REFUSAL_MESSAGES`. The monitor and `storageInsightsService` are
+constructed in both `apps/desktop/src/main/main.ts` (desktop) and
+`apps/ade-cli/src/bootstrap.ts` (runtime), so the gate applies on the local
+brain and the desktop in-process path alike.
+
+Reads never break because history was compacted: `ptyService`,
+`sessionService`, and `searchService` transparently fall back to a `.gz`
+generation through `readHistoryFileSync`, and `ptyService.create` reinflates a
+compressed transcript before reopening it for append.
 
 ### Storage categories and cleanup safety
 
