@@ -92,6 +92,7 @@ import {
 import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
+import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
@@ -3291,6 +3292,23 @@ function renderEvent(
             open in /cloud
           </a>
         </div>
+      );
+    }
+    // A chat whose provider thread couldn't be resumed after a disk-full incident
+    // carries a persisted continuity-recovery detail — render the dedicated card
+    // (retry / recover-from-history / start-new) instead of a plain notice chip.
+    // The `subagent_spawned` continuity notice keeps its deep-link chip above.
+    if (
+      event.detail
+      && typeof event.detail === "object"
+      && event.detail.kind === "continuity_recovery"
+    ) {
+      return (
+        <ChatContinuityRecoveryCard
+          detail={event.detail}
+          sessionId={options?.sessionId ?? null}
+          turnActive={Boolean(options?.sessionTurnActive)}
+        />
       );
     }
     const inferredSeverity = event.severity
