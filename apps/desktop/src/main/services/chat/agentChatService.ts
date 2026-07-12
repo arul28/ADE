@@ -25959,7 +25959,11 @@ export function createAgentChatService(args: {
       };
       if (isFork) {
         if (!alreadyDispatched) {
-          if (!record.forkMaterializedAt) {
+          // Re-materialize when the fork side effects never completed OR the
+          // destination chat had to be recreated (deterministic id, prior one
+          // deleted) — a fresh session must be seeded even if a prior attempt
+          // materialized into the now-gone chat.
+          if (!record.forkMaterializedAt || !reusedSession) {
             await materializeCrossMachineFork({
               capsule,
               handoffId,

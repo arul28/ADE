@@ -5347,6 +5347,83 @@ describe("createAgentChatService", () => {
         }
       });
 
+      it("re-materializes into a recreated destination chat even when the fork marker is set", async () => {
+        const branchRef = "feature/handoff-fork-recreated";
+        installCleanCrossMachineGitFixture(branchRef);
+        installRealTranscriptParser();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-recreated");
+        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+        const values = new Map<string, unknown>();
+        const { service, sessionService } = createService({
+          db: {
+            getJson: vi.fn((key: string) => values.get(key) ?? null),
+            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+          },
+        });
+        const sourceEnvelope: AgentChatEventEnvelope = {
+          sessionId: "source-session",
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "recreated-envelope", text: "Recreated history" },
+        };
+        const capsule = makeForkCapsule({
+          handoffId: "handoff-claude-recreated-1",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "source-session",
+            provider: "claude",
+            model: "claude-sonnet-5",
+            title: "Recreated fork",
+            laneName: "Recreated fork",
+            branchRef,
+            headSha: HANDOFF_TEST_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          transcriptEnvelopes: {
+            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
+            truncated: false,
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+        let materializeAttempts = 0;
+        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
+          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
+            materializeAttempts += 1;
+          }
+          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
+        }) as typeof fs.promises.writeFile);
+
+        try {
+          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+          expect(materializeAttempts).toBe(1);
+
+          // Simulate: post-materialization failure recorded AND the destination
+          // chat deleted before the retry. The marker alone must not skip
+          // seeding a freshly recreated session.
+          const recordEntry = [...values.entries()].find(([key, value]) =>
+            key.includes("handoff-claude-recreated-1")
+            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
+          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
+          values.set(recordEntry![0], {
+            ...(recordEntry![1] as Record<string, unknown>),
+            state: "failed",
+            lastError: "mock failure before dispatch",
+          });
+          mockState.sessions.delete(first.session.id);
+
+          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+          expect(second.session.id).toBe(first.session.id);
+          expect(second.reusedSession).toBe(false);
+          expect(materializeAttempts).toBe(2);
+          expect(sessionService.create).toHaveBeenCalledTimes(2);
+        } finally {
+          writeFile.mockRestore();
+        }
+      });
+
       it("does not clobber a pre-existing Codex rollout and still forks the thread", async () => {
         const branchRef = "feature/handoff-codex-fork";
         installCleanCrossMachineGitFixture(branchRef);
