@@ -170,6 +170,19 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 
+export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
+
+export type AgentChatContinuityRecovery = {
+  state: "required" | "reconstructed";
+  reason: AgentChatResumeFailureKind;
+  provider: string;
+  originalThreadId: string | null;
+  at: string;
+  detail?: string;
+  reconstructedThreadId?: string;
+  supersededBySessionId?: string;
+};
+
 export type AgentChatNoticeDetailMetric = {
   label: string;
   value: string;
@@ -182,6 +195,12 @@ export type AgentChatNoticeDetailSection = {
 };
 
 export type AgentChatNoticeDetail = {
+  kind?: "continuity_recovery";
+  state?: "required" | "reconstructed";
+  reason?: AgentChatResumeFailureKind;
+  originalThreadId?: string | null;
+  reconstructedThreadId?: string;
+  supersededBySessionId?: string;
   title?: string;
   summary?: string;
   metrics?: AgentChatNoticeDetailMetric[];
@@ -565,6 +584,11 @@ export type AgentChatEvent =
         category: "auth" | "rate_limit" | "budget" | "network" | "busy" | "unknown" | "agent_cli_missing" | "agent_cli_auth";
         provider?: string;
         model?: string;
+        resumeFailure?: {
+          kind: AgentChatResumeFailureKind;
+          rolloutFileFound: boolean | null;
+          detail: string;
+        };
         agentCli?: {
           agent: string;
           displayName: string;
@@ -1196,6 +1220,8 @@ export type AgentChatSession = {
   idleSinceAt?: string | null;
   archivedAt?: string | null;
   threadId?: string;
+  continuityRecovery?: AgentChatContinuityRecovery;
+  recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
@@ -1257,6 +1283,8 @@ export type AgentChatSessionSummary = {
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   threadId?: string;
+  continuityRecovery?: AgentChatContinuityRecovery;
+  recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
   /**
@@ -1612,6 +1640,7 @@ export type AgentChatCreateArgs = {
   requestedCwd?: string;
   runtimeMode?: AgentChatRuntimeMode;
   goal?: string | null;
+  recoveredFromSessionId?: string;
   // Orchestration-mode fields — set when spawning into an orchestration run.
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
@@ -1958,6 +1987,20 @@ export type AgentChatSetScheduledWorkPausedResult = {
   sessionId: string;
   paused: boolean;
   nextWakeAt: string | null;
+};
+
+export type AgentChatRecoverContinuityArgs = {
+  sessionId: string;
+  mode: "retry_original" | "recover_from_history" | "start_new_chat";
+};
+
+export type AgentChatContinuityRecoveryResult = {
+  ok: boolean;
+  mode: AgentChatRecoverContinuityArgs["mode"];
+  threadId?: string;
+  newSessionId?: string;
+  capsulePreview?: string;
+  reason?: AgentChatResumeFailureKind | "not_required" | "unsupported_provider" | "missing_original_thread" | "recovery_failed";
 };
 
 export type AgentChatCancelSteerArgs = {

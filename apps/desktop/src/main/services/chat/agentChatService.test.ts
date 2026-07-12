@@ -6193,7 +6193,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
     });
 
-    it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
+    it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {
       const primarySend = vi.fn().mockResolvedValue(undefined);
       const recoverySend = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -6269,13 +6269,18 @@ describe("createAgentChatService", () => {
 
       const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
-      expect(persisted.sdkSessionId).toEqual(expect.any(String));
-      expect(persisted.sdkSessionId).not.toBe("sdk-session-1");
+      expect(persisted.sdkSessionId).toBeUndefined();
+      expect(persisted.continuityRecovery).toMatchObject({
+        state: "required",
+        reason: "thread_missing",
+        provider: "claude",
+        originalThreadId: expect.any(String),
+      });
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
       expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
       expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
-      expect(recoverySend).toHaveBeenCalledWith("System initialization check. Respond with only the word READY.");
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+      expect(recoverySend).not.toHaveBeenCalled();
     });
 
     it("keeps continuity compaction scoped to identity sessions", async () => {
@@ -6354,7 +6359,9 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
       expect(persisted.continuitySummary).toBeUndefined();
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
+      expect(persisted.continuityRecovery).toMatchObject({ state: "required", provider: "claude" });
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+      expect(recoverySend).not.toHaveBeenCalled();
     });
   });
 
@@ -28877,5 +28884,257 @@ describe("durable chat metadata and transcript continuity", () => {
       "agent_chat.transcript_tail_healed",
       { path: path.resolve(transcriptFile), priorSize: Buffer.byteLength(`${JSON.stringify(prefix)}\n${fragment}`) },
     );
+  });
+});
+
+describe("explicit provider-thread continuity recovery", () => {
+  const metadataPath = (sessionId: string) => path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`);
+  const ledgerPath = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions", "thread-pointers.jsonl");
+  const transcriptPath = (sessionId: string) => path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
+
+  async function createPersistedCodexThread() {
+    const first = createService();
+    const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+    const turn = first.service.runSessionTurn({ sessionId: session.id, text: "Keep the original thread." });
+    await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true));
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "turn/started", params: { turn: { id: "turn-1", status: "inProgress" } } });
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed" } } });
+    await turn;
+    first.service.forceDisposeAll();
+    mockState.codexRequestPayloads = [];
+    return session;
+  }
+
+  it("preserves the pointer and emits a failed turn plus recovery notice when resume reports not found", async () => {
+    const session = await createPersistedCodexThread();
+    const resumeCommand = mockState.sessions.get(session.id)?.resumeCommand;
+    mockState.codexResponseOverrides.set("thread/resume", { error: { code: -32000, message: "thread not found" } });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Continue." }, { awaitDispatch: true }))
+      .rejects.toThrow("Could not resume the original Codex thread");
+    await vi.waitFor(() => expect(events.some((entry) => entry.event.type === "done" && entry.event.status === "failed")).toBe(true));
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery: { state: "required", reason: "thread_missing", originalThreadId: "thread-1" },
+    });
+    expect(mockState.sessions.get(session.id)?.resumeCommand).toBe(resumeCommand);
+    expect(events.some((entry) => entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.kind === "continuity_recovery")).toBe(true);
+  });
+
+  it("keeps MCP startup failures retryable without continuity recovery", async () => {
+    const session = await createPersistedCodexThread();
+    mockState.codexResponseOverrides.set("thread/resume", { error: { code: -32000, message: "MCP server startup failed" } });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Retry later." }, { awaitDispatch: true })).rejects.toThrow();
+    await vi.waitFor(() => expect(events.some((entry) => entry.event.type === "error")).toBe(true));
+
+    expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
+    expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+    expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+      errorInfo: { resumeFailure: { kind: "provider_environment" } },
+    });
+  });
+
+  it("fails new turns fast while recovery is required without contacting the provider", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    mockState.codexRequestPayloads = [];
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Do not dispatch." }))
+      .rejects.toMatchObject({ code: "continuity_recovery_required" });
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start" || payload.method === "thread/resume")).toBe(false);
+    expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message.includes("original AI thread"))).toBe(true);
+  });
+
+  it("retries the original pointer explicitly and clears recovery on success", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", () => ({ thread: { id: "thread-1" } }));
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
+      .resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original", threadId: "thread-1" }));
+    expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
+    expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message === "Reconnected to the original thread.")).toBe(true);
+  });
+
+  it("reconstructs a bounded hidden history capsule in the same chat", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const envelope = (sequence: number, event: Record<string, unknown>) => JSON.stringify({
+      sessionId: session.id,
+      sequence,
+      timestamp: new Date(1_760_000_000_000 + sequence).toISOString(),
+      event,
+    });
+    fs.writeFileSync(transcriptPath(session.id), [
+      envelope(1, { type: "user_message", text: "Original task" }),
+      `{"oversized":"${"x".repeat(3 * 1024 * 1024)}"}`,
+      envelope(2, { type: "user_message", text: "Most recent request" }),
+      envelope(3, { type: "todo_update", items: [{ id: "one", description: "Keep continuity", status: "in_progress" }] }),
+    ].join("\n") + "\n");
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    mockState.codexRequestPayloads = [];
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" });
+
+    expect(result).toMatchObject({ ok: true, mode: "recover_from_history", threadId: "thread-2" });
+    expect(Buffer.byteLength(result.capsulePreview ?? "", "utf8")).toBeLessThanOrEqual(24 * 1024);
+    expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "reconstructed",
+      originalThreadId: "thread-1",
+      reconstructedThreadId: "thread-2",
+    });
+    expect(events.some((entry) => entry.event.type === "user_message"
+      && entry.event.displayText === "Rebuilt this chat's AI thread from ADE history."
+      && entry.event.metadata?.hideFullPrompt === true)).toBe(true);
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
+      pointer: "thread-2",
+      prevPointer: "thread-1",
+    });
+  });
+
+  it("creates a distinct same-lane chat and records the recovery relationship", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "start_new_chat" });
+    expect(result.ok).toBe(true);
+    expect(result.newSessionId).not.toBe(session.id);
+    expect(readPersistedChatState(result.newSessionId!).recoveredFromSessionId).toBe(session.id);
+    expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "required",
+      supersededBySessionId: result.newSessionId,
+    });
+    expect(events.some((entry) => entry.sessionId === session.id
+      && entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.spawnedSession?.sessionId === result.newSessionId)).toBe(true);
+  });
+
+  it("moves a stale Claude SDK pointer into continuity recovery and records the prior pointer", async () => {
+    let streamCall = 0;
+    const handle = {
+      send: vi.fn().mockResolvedValue(undefined),
+      stream: vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stale", slash_commands: [] };
+          return;
+        }
+        throw new Error("session not found");
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-stale",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+    const { service } = createService();
+    const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+    await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
+    const originalSdkSessionId = readPersistedChatState(session.id).sdkSessionId as string;
+
+    await service.sendMessage({ sessionId: session.id, text: "Continue the Claude task." });
+    await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "required",
+      provider: "claude",
+      originalThreadId: originalSdkSessionId,
+    }));
+
+    expect(readPersistedChatState(session.id).sdkSessionId).toBeUndefined();
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
+      pointer: null,
+      prevPointer: originalSdkSessionId,
+    });
+  });
+
+  it("reconciles missing metadata from ledger, resume command, transcript, or marks recovery required", async () => {
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const { service, sessionService } = createService();
+    const sessions = await Promise.all(["ledger", "resume", "transcript", "none"].map((title) =>
+      service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4", title })));
+    service.forceDisposeAll();
+    const [ledger, resume, transcript, none] = sessions;
+    for (const session of sessions) {
+      fs.rmSync(metadataPath(session.id), { force: true });
+      fs.rmSync(`${metadataPath(session.id)}.lkg`, { force: true });
+    }
+    fs.writeFileSync(ledgerPath(), `${JSON.stringify({
+      sessionId: ledger.id, provider: "codex", pointer: "thread-ledger", prevPointer: null,
+      reason: "persist_change", at: new Date().toISOString(),
+    })}\n`);
+    sessionService.setResumeCommand(resume.id, "chat:codex:thread-resume");
+    sessionService.setResumeCommand(transcript.id, null);
+    sessionService.setResumeCommand(none.id, null);
+    fs.writeFileSync(transcriptPath(transcript.id), `${JSON.stringify({
+      sessionId: transcript.id,
+      timestamp: new Date().toISOString(),
+      event: { type: "codex_token_usage", usage: { threadId: "thread-transcript" } },
+    })}\n`);
+
+    service.reconcileThreadPointerFromRedundantSources(ledger.id);
+    service.reconcileThreadPointerFromRedundantSources(resume.id);
+    service.reconcileThreadPointerFromRedundantSources(transcript.id);
+    service.reconcileThreadPointerFromRedundantSources(none.id);
+
+    expect(readPersistedChatState(ledger.id).threadId).toBe("thread-ledger");
+    expect(readPersistedChatState(resume.id).threadId).toBe("thread-resume");
+    expect(readPersistedChatState(transcript.id).threadId).toBe("thread-transcript");
+    expect(readPersistedChatState(none.id).continuityRecovery).toMatchObject({ state: "required", reason: "unknown" });
   });
 });

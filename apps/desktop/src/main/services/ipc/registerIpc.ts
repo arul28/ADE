@@ -288,6 +288,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
@@ -3551,21 +3553,25 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
-    const requestedRoot = args.rootPath?.trim();
-    if (requestedRoot) {
-      return await switchProjectFromDialog(requestedRoot);
+    try {
+      const requestedRoot = args.rootPath?.trim();
+      if (requestedRoot) {
+        return await switchProjectFromDialog(requestedRoot);
+      }
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Open repository",
+        properties: ["openDirectory"]
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      const selected = result.filePaths[0]!;
+      return await switchProjectFromDialog(selected);
+    } catch (error) {
+      return surfaceCodedError(error);
     }
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const options: Electron.OpenDialogOptions = {
-      title: "Open repository",
-      properties: ["openDirectory"]
-    };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-    const selected = result.filePaths[0]!;
-    return await switchProjectFromDialog(selected);
   });
 
   ipcMain.handle(
@@ -3956,11 +3962,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
-    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-    if (!rootPath) return getCtx().project;
-    const ctx = getCtx();
-    if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
-    return await switchProjectFromDialog(rootPath);
+    try {
+      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) return getCtx().project;
+      const ctx = getCtx();
+      if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
+      return await switchProjectFromDialog(rootPath);
+    } catch (error) {
+      return surfaceCodedError(error);
+    }
   });
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
@@ -6367,6 +6377,14 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(arg);
   });
+
+  ipcMain.handle(
+    IPC.agentChatRecoverContinuity,
+    async (_event, arg: AgentChatRecoverContinuityArgs): Promise<AgentChatContinuityRecoveryResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.recoverContinuity(arg);
+    },
+  );
 
   ipcMain.handle(
     IPC.agentChatSetScheduledWorkPaused,

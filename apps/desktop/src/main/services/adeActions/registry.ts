@@ -452,6 +452,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getParallelLaunchState",
     "interrupt",
     "recoverCodexTurn",
+    "recoverContinuity",
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
@@ -790,6 +791,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",
       input: "object { sessionId: string, turnId: string, action: \"wait\" | \"steer\" | \"interrupt_retry_same_thread\" | \"restart_resume_thread\" }",
       example: "ade actions run chat.recoverCodexTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"wait\"}'",
+    },
+    recoverContinuity: {
+      description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
+      input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
+      example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
     },
   },
   "external-sessions": {

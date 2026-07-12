@@ -79,6 +79,11 @@ import {
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import {
+  classifyCodexResumeFailure,
+  type ResumeFailureClassification,
+} from "./providerResumeClassifier";
+import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
+import {
   mcpElicitationAllowsAlways,
   mcpElicitationContent,
   mcpElicitationQuestions,
@@ -156,6 +161,8 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
+  AgentChatContinuityRecovery,
+  AgentChatContinuityRecoveryResult,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineHandoffCapsule,
@@ -171,6 +178,7 @@ import type {
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
+  AgentChatRecoverContinuityArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
@@ -560,6 +568,8 @@ type PersistedChatState = {
   codexGoal?: CodexThreadGoal | null;
   codexTokenUsage?: CodexThreadTokenUsage | null;
   threadId?: string;
+  continuityRecovery?: AgentChatContinuityRecovery;
+  recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
@@ -606,6 +616,40 @@ type PersistedChatState = {
   orchestrationBundlePath?: string;
   updatedAt: string;
 };
+
+function normalizeContinuityRecovery(value: unknown): AgentChatContinuityRecovery | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const state = record.state === "required" || record.state === "reconstructed" ? record.state : null;
+  const reason = record.reason === "thread_missing"
+    || record.reason === "provider_environment"
+    || record.reason === "transient"
+    || record.reason === "unknown"
+    ? record.reason
+    : null;
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  const at = typeof record.at === "string" ? record.at.trim() : "";
+  const originalThreadId = typeof record.originalThreadId === "string"
+    ? record.originalThreadId.trim() || null
+    : record.originalThreadId === null
+      ? null
+      : undefined;
+  if (!state || !reason || !provider || !at || originalThreadId === undefined) return undefined;
+  return {
+    state,
+    reason,
+    provider,
+    originalThreadId,
+    at,
+    ...(typeof record.detail === "string" && record.detail.trim() ? { detail: record.detail.trim().slice(0, 2_000) } : {}),
+    ...(typeof record.reconstructedThreadId === "string" && record.reconstructedThreadId.trim()
+      ? { reconstructedThreadId: record.reconstructedThreadId.trim() }
+      : {}),
+    ...(typeof record.supersededBySessionId === "string" && record.supersededBySessionId.trim()
+      ? { supersededBySessionId: record.supersededBySessionId.trim() }
+      : {}),
+  };
+}
 
 function isPersistedChatStateShape(value: unknown): value is PersistedChatState {
   if (!value || typeof value !== "object") return false;
@@ -9814,6 +9858,8 @@ export function createAgentChatService(args: {
       ...(managed.session.codexGoal ? { codexGoal: normalizeAdeCodexGoal(managed.session.codexGoal) } : {}),
       ...(managed.session.codexTokenUsage ? { codexTokenUsage: managed.session.codexTokenUsage } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.session.continuityRecovery ? { continuityRecovery: managed.session.continuityRecovery } : {}),
+      ...(managed.session.recoveredFromSessionId ? { recoveredFromSessionId: managed.session.recoveredFromSessionId } : {}),
       ...(managed.session.importedFrom
         ? { importedFrom: managed.session.importedFrom }
         : prevPersisted?.importedFrom ? { importedFrom: prevPersisted.importedFrom } : {}),
@@ -10037,6 +10083,7 @@ export function createAgentChatService(args: {
       const codexTokenUsageRecord = asRecord(record.codexTokenUsage);
       const codexTokenUsage = codexTokenUsageRecord ? normalizeCodexThreadTokenUsage(codexTokenUsageRecord) : null;
       const importedFrom = normalizeImportedFrom(record.importedFrom);
+      const continuityRecovery = normalizeContinuityRecovery(record.continuityRecovery);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
@@ -10162,6 +10209,10 @@ export function createAgentChatService(args: {
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
+        ...(continuityRecovery ? { continuityRecovery } : {}),
+        ...(typeof record.recoveredFromSessionId === "string" && record.recoveredFromSessionId.trim().length
+          ? { recoveredFromSessionId: record.recoveredFromSessionId.trim() }
+          : {}),
         ...(droidSdkSessionId ? { droidSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
@@ -10219,6 +10270,163 @@ export function createAgentChatService(args: {
       return hydrated;
     } catch {
       return null;
+    }
+  };
+
+  type ReconciledPointerCandidate = {
+    provider: Exclude<AgentChatProvider, "unified">;
+    pointer: string;
+    source: "ledger" | "resume_command" | "transcript";
+    at: string;
+  };
+
+  const parseResumeCommandPointer = (resumeCommand: string | null | undefined): Omit<ReconciledPointerCandidate, "source" | "at"> | null => {
+    const command = resumeCommand?.trim() ?? "";
+    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor):(.+)$/u);
+    if (chatMatch?.[1] && chatMatch[2]?.trim()) {
+      return { provider: chatMatch[1] as ReconciledPointerCandidate["provider"], pointer: chatMatch[2].trim() };
+    }
+    const claudeMatch = command.match(/(?:^|\s)claude(?:\s+[^\s]+)*\s+--resume\s+([^\s]+)/u);
+    return claudeMatch?.[1]
+      ? { provider: "claude", pointer: claudeMatch[1].trim() }
+      : null;
+  };
+
+  const pointerFromTranscriptTail = (
+    sessionId: string,
+    provider: Exclude<AgentChatProvider, "unified">,
+  ): ReconciledPointerCandidate | null => {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return null;
+    try {
+      const { envelopes } = parseTranscriptHistoryTail(sessionId, transcriptPath);
+      for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+        const envelope = envelopes[index]!;
+        const event = envelope.event as AgentChatEvent & Record<string, unknown>;
+        const usage = event.type === "codex_token_usage" && event.usage && typeof event.usage === "object"
+          ? event.usage as Record<string, unknown>
+          : null;
+        const pointer = typeof usage?.threadId === "string"
+          ? usage.threadId.trim()
+          : typeof event.threadId === "string"
+            ? event.threadId.trim()
+            : typeof envelope.provenance?.threadId === "string"
+              ? envelope.provenance.threadId.trim()
+              : "";
+        if (pointer) return { provider, pointer, source: "transcript", at: envelope.timestamp };
+      }
+    } catch {
+      // A missing or malformed transcript simply removes this redundant source.
+    }
+    return null;
+  };
+
+  const pointerStatePatch = (
+    candidate: ReconciledPointerCandidate,
+  ): Partial<PersistedChatState> => {
+    switch (candidate.provider) {
+      case "codex": return { threadId: candidate.pointer };
+      case "claude": return { sdkSessionId: candidate.pointer };
+      case "droid": return { droidSdkSessionId: candidate.pointer };
+      case "cursor": return { cursorSdkAgentId: candidate.pointer };
+      case "opencode": return { providerSessionId: candidate.pointer };
+      default: return {};
+    }
+  };
+
+  const reconcileThreadPointerFromRedundantSources = (sessionId: string): PersistedChatState | null => {
+    const row = sessionService.get(sessionId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    const fallbackProvider = providerFromToolType(row.toolType);
+    const provider = fallbackProvider === "unified" ? "opencode" : fallbackProvider;
+    const candidates: ReconciledPointerCandidate[] = [];
+    const ledgerEntry = readThreadPointerLedger(chatSessionsDir).get(sessionId);
+    if (ledgerEntry?.pointer) {
+      candidates.push({
+        provider: ledgerEntry.provider,
+        pointer: ledgerEntry.pointer,
+        source: "ledger",
+        at: ledgerEntry.at,
+      });
+    }
+    const resumePointer = parseResumeCommandPointer(row.resumeCommand);
+    if (resumePointer) {
+      candidates.push({
+        ...resumePointer,
+        source: "resume_command",
+        at: row.lastActivityAt ?? row.endedAt ?? row.startedAt,
+      });
+    }
+    const transcriptPointer = pointerFromTranscriptTail(sessionId, provider);
+    if (transcriptPointer) candidates.push(transcriptPointer);
+
+    let winner = candidates[0] ?? null;
+    if (winner?.provider === "codex" && probeCodexRolloutFile(winner.pointer) === false) {
+      const winnerAt = Date.parse(winner.at);
+      const olderWithRollout = candidates.slice(1).find((candidate) => {
+        if (candidate.provider !== "codex" || probeCodexRolloutFile(candidate.pointer) !== true) return false;
+        const candidateAt = Date.parse(candidate.at);
+        return Number.isFinite(winnerAt) && Number.isFinite(candidateAt)
+          ? Math.abs(winnerAt - candidateAt) <= 24 * 60 * 60 * 1_000
+          : false;
+      });
+      if (olderWithRollout) winner = olderWithRollout;
+    }
+
+    const updatedAt = nowIso();
+    const recovered: PersistedChatState = {
+      version: 2,
+      sessionId,
+      laneId: row.laneId,
+      provider: winner?.provider ?? provider,
+      model: fallbackModelForProvider(winner?.provider ?? provider),
+      ...(winner
+        ? pointerStatePatch(winner)
+        : {
+            continuityRecovery: {
+              state: "required",
+              reason: "unknown",
+              provider,
+              originalThreadId: null,
+              at: updatedAt,
+              detail: "ADE could not reconstruct the original provider thread pointer from durable sources.",
+            },
+          }),
+      updatedAt,
+    };
+    try {
+      writeJsonWithPrevious(metadataPathFor(sessionId), recovered, {
+        validate: isPersistedChatStateShape,
+        fsync: Boolean(winner),
+      });
+      if (winner) {
+        if (winner.provider === "codex") {
+          sessionService.setResumeCommand(sessionId, `chat:codex:${winner.pointer}`);
+        }
+        if (winner.source !== "ledger") {
+          recordThreadPointerChange({
+            sessionId,
+            provider: winner.provider,
+            pointer: winner.pointer,
+            prevPointer: null,
+            reason: `reconcile_${winner.source}`,
+            at: updatedAt,
+          });
+        }
+      }
+      logger.warn("agent_chat.thread_pointer_reconciled", {
+        sessionId,
+        source: winner?.source ?? "none",
+        provider: winner?.provider ?? provider,
+        pointerFound: Boolean(winner),
+      });
+      return recovered;
+    } catch (error) {
+      logger.warn("agent_chat.thread_pointer_reconcile_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return recovered;
     }
   };
 
@@ -12966,7 +13174,7 @@ export function createAgentChatService(args: {
       throw new Error(`Session '${sessionId}' is not an agent chat session.`);
     }
 
-    const persisted = readPersistedState(sessionId);
+    const persisted = readPersistedState(sessionId) ?? reconcileThreadPointerFromRedundantSources(sessionId);
     const provider = persisted?.provider ?? providerFromToolType(row.toolType);
     lastPersistedPointerFingerprints.set(
       sessionId,
@@ -13023,6 +13231,8 @@ export function createAgentChatService(args: {
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
+        ...(persisted?.continuityRecovery ? { continuityRecovery: persisted.continuityRecovery } : {}),
+        ...(persisted?.recoveredFromSessionId ? { recoveredFromSessionId: persisted.recoveredFromSessionId } : {}),
         ...(persisted?.runtimeMode ? { runtimeMode: persisted.runtimeMode } : {}),
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
@@ -17184,17 +17394,27 @@ export function createAgentChatService(args: {
             || msg.includes("session expired");
         };
         if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
+          const staleSdkSessionId = runtime.sdkSessionId;
           logger.warn("agent_chat.claude_sdk_session_error", {
             sessionId: managed.session.id,
-            sdkSessionId: runtime.sdkSessionId,
+            sdkSessionId: staleSdkSessionId,
             error: effectiveError instanceof Error ? effectiveError.message : String(effectiveError),
           });
+          const recovery: AgentChatContinuityRecovery = {
+            state: "required",
+            reason: "thread_missing",
+            provider: "claude",
+            originalThreadId: staleSdkSessionId,
+            at: nowIso(),
+            detail: effectiveError instanceof Error ? effectiveError.message.slice(0, 2_000) : String(effectiveError).slice(0, 2_000),
+          };
+          managed.session.continuityRecovery = recovery;
           runtime.sdkSessionId = null;
           managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed);
-          prewarmClaudeQuery(managed);
+          emitContinuityRecoveryNotice(managed, recovery, turnId);
         }
       }
 
@@ -22502,6 +22722,11 @@ export function createAgentChatService(args: {
     sandbox: AgentChatCodexSandbox;
   } | null;
 
+  type CodexPointerReplacementToken = {
+    originalThreadId: string | null;
+    mode: "recover_from_history" | "explicit_reset";
+  };
+
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
     codexPolicy: CodexPolicy;
   } => {
@@ -22540,7 +22765,25 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
+    options: { allowReplacePointer?: CodexPointerReplacementToken },
   ): Promise<void> => {
+    const persistedThreadId = readPersistedState(managed.session.id)?.threadId?.trim() || null;
+    const existingThreadId = managed.session.threadId?.trim() || persistedThreadId;
+    const replacementToken = options.allowReplacePointer;
+    if (
+      (managed.session.continuityRecovery?.state === "required" && !replacementToken)
+      || (existingThreadId && (!replacementToken || replacementToken.originalThreadId !== existingThreadId))
+    ) {
+      logger.warn("agent_chat.fresh_thread_blocked", {
+        sessionId: managed.session.id,
+        threadId: existingThreadId,
+        replacementMode: replacementToken?.mode ?? null,
+      });
+      throw Object.assign(
+        new Error("Starting a fresh provider thread would replace this chat's existing continuity pointer."),
+        { code: "provider_thread_replace_blocked" as const },
+      );
+    }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const reasoningEffort = resolveCodexReasoningEffortForRuntime(
       managed.session.reasoningEffort,
@@ -24248,6 +24491,7 @@ export function createAgentChatService(args: {
     requestedCwd,
     runtimeMode,
     goal: requestedGoal,
+    recoveredFromSessionId,
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -24523,6 +24767,7 @@ export function createAgentChatService(args: {
         capabilityMode,
         completion: null,
         ...(normalizedGoal ? { goal: normalizedGoal } : {}),
+        ...(recoveredFromSessionId?.trim() ? { recoveredFromSessionId: recoveredFromSessionId.trim() } : {}),
         status: "idle",
         idleSinceAt: null,
         createdAt: startedAt,
@@ -26115,6 +26360,7 @@ export function createAgentChatService(args: {
           ? "Use the attached issue context."
           : "";
     if (!trimmed.length) return null;
+    assertContinuityDispatchAllowed(managed);
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
@@ -26369,9 +26615,22 @@ export function createAgentChatService(args: {
       managed.runtime.activeTurnId = null;
     }
 
+    const resumeFailure = error && typeof error === "object"
+      ? (error as { resumeFailureClassification?: ResumeFailureClassification }).resumeFailureClassification
+      : undefined;
     emitChatEvent(managed, {
       type: "error",
       message,
+      ...(resumeFailure
+        ? {
+            errorInfo: {
+              category: resumeFailure.kind === "transient" ? "network" as const : "unknown" as const,
+              provider: managed.session.provider,
+              model: managed.session.model,
+              resumeFailure,
+            },
+          }
+        : {}),
       turnId,
     });
     emitChatEvent(managed, {
@@ -26391,6 +26650,77 @@ export function createAgentChatService(args: {
 
     appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
+  };
+
+  const emitContinuityRecoveryNotice = (
+    managed: ManagedChatSession,
+    recovery: AgentChatContinuityRecovery,
+    turnId?: string,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "thread_error",
+      severity: "error",
+      status: recovery.state,
+      message: recovery.state === "required"
+        ? "This chat's original AI thread could not be resumed. Your chat history and project files are still here."
+        : "Rebuilt this chat's AI thread from ADE history.",
+      detail: {
+        kind: "continuity_recovery",
+        state: recovery.state,
+        reason: recovery.reason,
+        originalThreadId: recovery.originalThreadId,
+        ...(recovery.reconstructedThreadId ? { reconstructedThreadId: recovery.reconstructedThreadId } : {}),
+        ...(recovery.supersededBySessionId ? { supersededBySessionId: recovery.supersededBySessionId } : {}),
+      },
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const codexResumeFailureError = (
+    managed: ManagedChatSession,
+    threadId: string,
+    error: unknown,
+  ): Error => {
+    const classification = classifyCodexResumeFailure(error, threadId);
+    logger.warn("agent_chat.codex_resume_failure_classified", {
+      sessionId: managed.session.id,
+      threadId,
+      kind: classification.kind,
+      rolloutFileFound: classification.rolloutFileFound,
+      detail: classification.detail,
+    });
+    if (classification.kind === "thread_missing" || classification.kind === "unknown") {
+      const recovery: AgentChatContinuityRecovery = {
+        state: "required",
+        reason: classification.kind,
+        provider: "codex",
+        originalThreadId: threadId,
+        at: nowIso(),
+        detail: classification.detail,
+      };
+      managed.session.continuityRecovery = recovery;
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, recovery);
+    }
+    return Object.assign(
+      new Error(`Could not resume the original Codex thread: ${classification.detail}`),
+      {
+        code: "provider_thread_resume_failed" as const,
+        resumeFailureClassification: classification,
+      },
+    );
+  };
+
+  const assertContinuityDispatchAllowed = (managed: ManagedChatSession): void => {
+    const recovery = managed.session.continuityRecovery;
+    if (recovery?.state !== "required") return;
+    emitContinuityRecoveryNotice(managed, recovery);
+    persistChatState(managed);
+    throw Object.assign(
+      new Error("This chat requires an explicit continuity recovery action before another turn can be sent."),
+      { code: "continuity_recovery_required" as const },
+    );
   };
 
   const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
@@ -29345,10 +29675,10 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               error: resumeError instanceof Error ? resumeError.message : String(resumeError)
             });
-            await startFreshCodexThread(managed, runtime, codexPolicy);
+            throw codexResumeFailureError(managed, threadIdToResume, resumeError);
           }
         } else {
-          await startFreshCodexThread(managed, runtime, codexPolicy);
+          await startFreshCodexThread(managed, runtime, codexPolicy, {});
         }
       }
 
@@ -29758,6 +30088,7 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
+    assertContinuityDispatchAllowed(managed);
     if (dispatchMode && managed.session.provider !== "claude") {
       throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
     }
@@ -30289,6 +30620,7 @@ export function createAgentChatService(args: {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(mode)}`);
     }
     const managed = ensureManagedSession(sessionId);
+    assertContinuityDispatchAllowed(managed);
     if (managed.session.provider === "codex") {
       throw new Error("dispatchSteer is not supported on Codex sessions.");
     }
@@ -30761,7 +31093,9 @@ export function createAgentChatService(args: {
             threadId,
             error: resumeError instanceof Error ? resumeError.message : String(resumeError)
           });
-          await startFreshCodexThread(managed, runtime, codexPolicy);
+          const classifiedError = codexResumeFailureError(managed, threadId, resumeError);
+          emitManagedSendFailure(managed, classifiedError);
+          throw classifiedError;
         }
       }
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
@@ -30816,6 +31150,318 @@ export function createAgentChatService(args: {
       sessionService.setOwnerPid(sessionId, processRegistry.pid, processRegistry.startedAt);
     }
     return managed.session;
+  };
+
+  const truncateContinuityText = (value: string, maxBytes: number): string => {
+    if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+    let text = Buffer.from(value, "utf8").subarray(0, Math.max(0, maxBytes - 3)).toString("utf8");
+    while (Buffer.byteLength(`${text}...`, "utf8") > maxBytes) text = text.slice(0, -1);
+    return `${text.replace(/\uFFFD$/u, "").trimEnd()}...`;
+  };
+
+  const buildContinuityCapsule = (managed: ManagedChatSession): string => {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
+    let envelopes: AgentChatEventEnvelope[] = [];
+    if (transcriptPath) {
+      try {
+        const stat = fs.statSync(transcriptPath);
+        const prefixLength = Math.min(stat.size, 128 * 1024);
+        const fd = fs.openSync(transcriptPath, "r");
+        try {
+          const prefix = Buffer.allocUnsafe(prefixLength);
+          const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
+          envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
+        } finally {
+          fs.closeSync(fd);
+        }
+        envelopes.push(...parseTranscriptHistoryTail(managed.session.id, transcriptPath).envelopes);
+      } catch {
+        // The bounded in-memory history below remains available.
+      }
+    }
+    const deduped = new Map<string, AgentChatEventEnvelope>();
+    for (const envelope of envelopes) {
+      if (envelope.sessionId !== managed.session.id) continue;
+      const key = envelope.sequence != null
+        ? `sequence:${envelope.sequence}`
+        : `${envelope.timestamp}:${JSON.stringify(envelope.event)}`;
+      deduped.set(key, envelope);
+    }
+    envelopes = [...deduped.values()].sort((left, right) =>
+      (left.sequence != null && right.sequence != null)
+        ? left.sequence - right.sequence
+        : Date.parse(left.timestamp) - Date.parse(right.timestamp));
+
+    const users = envelopes
+      .filter((entry) => entry.event.type === "user_message")
+      .map((entry) => {
+        const event = entry.event as Extract<AgentChatEvent, { type: "user_message" }>;
+        return event.displayText?.trim() || event.text.trim();
+      })
+      .filter(Boolean);
+    const assistants = envelopes.flatMap((entry) => {
+      if (entry.event.type === "text" && entry.event.text.trim()) return [entry.event.text.trim()];
+      if (entry.event.type !== "plan") return [];
+      return [[
+        entry.event.explanation?.trim(),
+        ...entry.event.steps.map((step) => `${step.status}: ${step.text}`),
+      ].filter(Boolean).join("\n")];
+    }).filter(Boolean);
+    const latestTodo = [...envelopes].reverse().find((entry) => entry.event.type === "todo_update");
+    const latestPlan = [...envelopes].reverse().find((entry) => entry.event.type === "plan");
+    let lastUserIndex = -1;
+    for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+      if (envelopes[index]!.event.type === "user_message") {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const unanswered = lastUserIndex >= 0
+      && !envelopes.slice(lastUserIndex + 1).some((entry) => entry.event.type === "text")
+      ? users.at(-1) ?? null
+      : null;
+    const row = sessionService.get(managed.session.id);
+    const lane = laneService.getLaneBaseAndBranch(managed.session.laneId);
+    const lines = [
+      "# ADE continuity capsule",
+      "",
+      `Chat: ${truncateContinuityText(row?.title?.trim() || defaultChatSessionTitle(managed.session.provider), 512)}`,
+      `Provider: ${managed.session.provider}`,
+      `Lane branch: ${lane.branchRef}`,
+      `Worktree: ${lane.worktreePath}`,
+      "",
+      "## Original task",
+      truncateContinuityText(users[0] ?? "No durable first user message was available.", 3_000),
+      "",
+      "## Recent user messages (newest first)",
+      ...(users.slice(-6).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_000)}`) || ["None available."]),
+      "",
+      "## Recent assistant summaries (newest first)",
+      ...(assistants.slice(-4).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_500)}`) || ["None available."]),
+    ];
+    if (latestPlan?.event.type === "plan") {
+      lines.push("", "## Latest plan", truncateContinuityText([
+        latestPlan.event.explanation?.trim(),
+        ...latestPlan.event.steps.map((step) => `- [${step.status}] ${step.text}`),
+      ].filter(Boolean).join("\n"), 3_000));
+    }
+    if (latestTodo?.event.type === "todo_update") {
+      lines.push("", "## Latest todo snapshot", truncateContinuityText(
+        latestTodo.event.items.map((item) => `- [${item.status}] ${item.description}`).join("\n"),
+        3_000,
+      ));
+    }
+    if (unanswered) lines.push("", "## Most recent unanswered request", truncateContinuityText(unanswered, 3_000));
+    lines.push("", "Continue from this bounded ADE history. Verify current project state before changing files.");
+    return truncateContinuityText(lines.join("\n"), 24 * 1024);
+  };
+
+  const recoverContinuity = async (
+    args: AgentChatRecoverContinuityArgs,
+  ): Promise<AgentChatContinuityRecoveryResult> => {
+    const sessionId = args.sessionId.trim();
+    const managed = ensureManagedSession(sessionId);
+    const recovery = managed.session.continuityRecovery;
+    if (recovery?.state !== "required") {
+      return { ok: false, mode: args.mode, reason: "not_required" };
+    }
+    if (args.mode === "start_new_chat" && recovery.supersededBySessionId) {
+      return {
+        ok: false,
+        mode: args.mode,
+        reason: "not_required",
+        newSessionId: recovery.supersededBySessionId,
+      };
+    }
+
+    if (args.mode === "start_new_chat") {
+      const row = sessionService.get(sessionId);
+      const created = await createSessionInternal({
+        laneId: managed.session.laneId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        title: row?.title ? `${row.title} (recovered)` : undefined,
+        sessionProfile: managed.session.sessionProfile,
+        reasoningEffort: managed.session.reasoningEffort,
+        fastMode: managed.session.fastMode,
+        permissionMode: managed.session.permissionMode,
+        interactionMode: managed.session.interactionMode,
+        claudePermissionMode: managed.session.claudePermissionMode,
+        claudeOutputStyle: managed.session.claudeOutputStyle,
+        codexApprovalPolicy: managed.session.codexApprovalPolicy,
+        codexSandbox: managed.session.codexSandbox,
+        codexConfigSource: managed.session.codexConfigSource,
+        opencodePermissionMode: managed.session.opencodePermissionMode,
+        droidPermissionMode: managed.session.droidPermissionMode,
+        cursorModeId: managed.session.cursorModeId,
+        cursorConfigValues: managed.session.cursorConfigValues,
+        surface: managed.session.surface,
+        requestedCwd: managed.session.requestedCwd ?? undefined,
+        recoveredFromSessionId: sessionId,
+      });
+      managed.session.continuityRecovery = { ...recovery, supersededBySessionId: created.id };
+      persistChatState(managed);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "subagent_spawned",
+        message: "Started a new chat because this chat's original AI thread is still unavailable.",
+        detail: {
+          kind: "continuity_recovery",
+          state: "required",
+          reason: recovery.reason,
+          originalThreadId: recovery.originalThreadId,
+          supersededBySessionId: created.id,
+          spawnedSession: {
+            sessionId: created.id,
+            laneId: created.laneId,
+            title: sessionService.get(created.id)?.title ?? undefined,
+          },
+        },
+      });
+      return { ok: true, mode: args.mode, newSessionId: created.id };
+    }
+
+    const originalThreadId = recovery.originalThreadId?.trim() || null;
+
+    if (args.mode === "retry_original") {
+      if (!originalThreadId) return { ok: false, mode: args.mode, reason: "missing_original_thread" };
+      if (managed.session.provider === "codex") {
+        delete managed.session.continuityRecovery;
+        managed.session.threadId = originalThreadId;
+        persistChatState(managed);
+        const runtime = await ensureCodexSessionRuntime(managed);
+        const { codexPolicy } = resolveCodexThreadParams(managed);
+        try {
+          refreshCodexDynamicTools(managed, runtime);
+          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+            threadId: originalThreadId,
+            model: managed.session.model,
+            cwd: managed.laneWorktreePath,
+            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            developerInstructions: buildCodexDeveloperInstructions({
+              laneWorktreePath: managed.laneWorktreePath,
+              session: managed.session,
+              collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+              linearDirective: resolveSessionLinearDirective(managed.session.id),
+            }),
+            ...codexServiceTierArgs(managed.session),
+            ...codexPolicyArgs(codexPolicy),
+            excludeTurns: true,
+          });
+          const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+            ? resumeResponse.thread.id
+            : originalThreadId;
+          applyCodexEffectiveThreadState(managed, resumeResponse, { requestedCodexPolicy: codexPolicy });
+          managed.session.threadId = resumedThreadId;
+          runtime.threadResumed = true;
+          runtime.canAttachResumedTurnStart = true;
+          sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
+          persistChatState(managed);
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          return { ok: true, mode: args.mode, threadId: resumedThreadId };
+        } catch (error) {
+          const classifiedError = codexResumeFailureError(managed, originalThreadId, error) as Error & {
+            resumeFailureClassification?: ResumeFailureClassification;
+          };
+          const classification = classifiedError.resumeFailureClassification;
+          if (!managed.session.continuityRecovery) {
+            managed.session.continuityRecovery = {
+              state: "required",
+              reason: classification?.kind ?? "unknown",
+              provider: "codex",
+              originalThreadId,
+              at: nowIso(),
+              detail: classification?.detail ?? classifiedError.message,
+            };
+            persistChatState(managed);
+            emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+          }
+          return { ok: false, mode: args.mode, reason: classification?.kind ?? "unknown" };
+        }
+      }
+      if (managed.session.provider === "claude") {
+        const runtime = ensureClaudeSessionRuntime(managed);
+        resetClaudeQuerySession(managed, runtime, "session_reset");
+        runtime.sdkSessionId = originalThreadId;
+        delete managed.session.continuityRecovery;
+        managed.runtimeInvalidated = false;
+        try {
+          await ensureClaudeQuery(managed, runtime);
+          persistChatState(managed);
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          return { ok: true, mode: args.mode, threadId: originalThreadId };
+        } catch (error) {
+          managed.session.continuityRecovery = {
+            ...recovery,
+            at: nowIso(),
+            detail: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+          };
+          persistChatState(managed);
+          return { ok: false, mode: args.mode, reason: "thread_missing" };
+        }
+      }
+      return { ok: false, mode: args.mode, reason: "unsupported_provider" };
+    }
+
+    const capsule = buildContinuityCapsule(managed);
+    if (managed.session.provider === "codex") {
+      const runtime = await ensureCodexSessionRuntime(managed);
+      if (runtime.activeTurnId || managed.session.status === "active") {
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
+      const { codexPolicy } = resolveCodexThreadParams(managed);
+      await startFreshCodexThread(managed, runtime, codexPolicy, {
+        allowReplacePointer: { originalThreadId, mode: "recover_from_history" },
+      });
+      const reconstructedThreadId = managed.session.threadId?.trim() || "";
+      delete managed.session.continuityRecovery;
+      persistChatState(managed);
+      await sendMessage({
+        sessionId,
+        text: capsule,
+        displayText: "Rebuilt this chat's AI thread from ADE history.",
+        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+      }, { awaitDispatch: true });
+      managed.session.continuityRecovery = {
+        state: "reconstructed",
+        reason: recovery.reason,
+        provider: "codex",
+        originalThreadId,
+        reconstructedThreadId,
+        at: nowIso(),
+        ...(recovery.detail ? { detail: recovery.detail } : {}),
+      };
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+      return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
+    }
+    if (managed.session.provider === "claude") {
+      const runtime = ensureClaudeSessionRuntime(managed);
+      resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+      delete managed.session.continuityRecovery;
+      persistChatState(managed);
+      await sendMessage({
+        sessionId,
+        text: capsule,
+        displayText: "Rebuilt this chat's AI thread from ADE history.",
+        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+      }, { awaitDispatch: true });
+      const reconstructedThreadId = runtime.sdkSessionId?.trim() || "";
+      managed.session.continuityRecovery = {
+        state: "reconstructed",
+        reason: recovery.reason,
+        provider: "claude",
+        originalThreadId,
+        at: nowIso(),
+        ...(reconstructedThreadId ? { reconstructedThreadId } : {}),
+      };
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+      return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
+    }
+    return { ok: false, mode: args.mode, reason: "unsupported_provider" };
   };
 
   const recoverCodexTurn = async ({
@@ -31150,6 +31796,12 @@ export function createAgentChatService(args: {
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
+        : {}),
+      ...(liveSession?.continuityRecovery || persisted?.continuityRecovery
+        ? { continuityRecovery: liveSession?.continuityRecovery ?? persisted?.continuityRecovery }
+        : {}),
+      ...(liveSession?.recoveredFromSessionId || persisted?.recoveredFromSessionId
+        ? { recoveredFromSessionId: liveSession?.recoveredFromSessionId ?? persisted?.recoveredFromSessionId }
         : {}),
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
@@ -35255,11 +35907,16 @@ export function createAgentChatService(args: {
           purpose,
           error: error instanceof Error ? error.message : String(error),
         });
-        throw new Error(`Could not resume this Codex thread for ${purpose}: ${error instanceof Error ? error.message : String(error)}`);
+        const classifiedError = codexResumeFailureError(managed, threadId, error);
+        emitManagedSendFailure(managed, classifiedError);
+        throw Object.assign(
+          new Error(`Could not resume this Codex thread for ${purpose}: ${classifiedError.message}`),
+          classifiedError,
+        );
       }
     }
 
-    await startFreshCodexThread(managed, runtime, codexPolicy);
+    await startFreshCodexThread(managed, runtime, codexPolicy, {});
     threadId = managed.session.threadId?.trim() ?? "";
     if (!threadId) {
       throw new Error(`Could not start Codex ${purpose} for this chat.`);
@@ -35508,6 +36165,7 @@ export function createAgentChatService(args: {
     cancelDispatchedSteer,
     interrupt,
     recoverCodexTurn,
+    recoverContinuity,
     resumeSession,
     listSessions,
     getSessionSummary,
@@ -35545,6 +36203,7 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    reconcileThreadPointerFromRedundantSources,
     warmupModel,
     listSubagents,
     getSessionCapabilities,

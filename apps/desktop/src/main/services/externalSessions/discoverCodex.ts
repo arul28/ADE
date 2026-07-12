@@ -100,9 +100,41 @@ function sortedChildDirs(dir: string, pattern: RegExp): string[] {
     .sort((left, right) => right.localeCompare(left));
 }
 
-function matchesCodexLookup(entryName: string, sessionId: string | null): boolean {
+export function matchesCodexLookup(entryName: string, sessionId: string | null): boolean {
   if (!sessionId) return true;
   return entryName.endsWith(`-${sessionId}.jsonl`) || entryName.endsWith(`-${sessionId}.jsonl.zst`);
+}
+
+export function probeCodexRolloutFile(
+  threadId: string,
+  opts: { codexHome?: string; maxEntries?: number; maxDurationMs?: number } = {},
+): boolean | null {
+  const normalizedThreadId = threadId.trim();
+  if (!normalizedThreadId) return false;
+  const configuredHome = opts.codexHome?.trim()
+    || (typeof process.env.CODEX_HOME === "string" ? process.env.CODEX_HOME.trim() : "");
+  const sessionsDir = path.join(configuredHome ? path.resolve(configuredHome) : path.join(resolveHomeDir({}), ".codex"), "sessions");
+  const maxEntries = Math.max(1, Math.min(opts.maxEntries ?? 4_096, 20_000));
+  const maxDurationMs = Math.max(1, Math.min(opts.maxDurationMs ?? 50, 500));
+  const deadline = Date.now() + maxDurationMs;
+  const pending = [sessionsDir];
+  let scanned = 0;
+
+  try {
+    if (!fs.existsSync(sessionsDir)) return false;
+    while (pending.length && scanned < maxEntries && Date.now() <= deadline) {
+      const dir = pending.pop()!;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        scanned += 1;
+        if (entry.isFile() && matchesCodexLookup(entry.name, normalizedThreadId)) return true;
+        if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
+        if (scanned >= maxEntries || Date.now() > deadline) break;
+      }
+    }
+    return false;
+  } catch {
+    return null;
+  }
 }
 
 function collectRecentCodexSessionCandidates(

@@ -294,6 +294,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -1204,6 +1206,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "approveToolUse",
   "interrupt",
   "recoverCodexTurn",
+  "recoverContinuity",
   "steer",
   "cancelSteer",
   "editSteer",
@@ -5297,6 +5300,19 @@ contextBridge.exposeInMainWorld("ade", {
         "recoverCodexTurn",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatRecoverCodexTurn, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    recoverContinuity: async (
+      args: AgentChatRecoverContinuityArgs,
+    ): Promise<AgentChatContinuityRecoveryResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+        "chat",
+        "recoverContinuity",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRecoverContinuity, args),
       );
       agentChatSummaryCache.clear();
       return result;

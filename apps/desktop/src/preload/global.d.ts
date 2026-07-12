@@ -118,6 +118,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -1358,6 +1360,9 @@ declare global {
         recoverCodexTurn: (
           args: AgentChatRecoverCodexTurnArgs,
         ) => Promise<AgentChatRecoverCodexTurnResult>;
+        recoverContinuity: (
+          args: AgentChatRecoverContinuityArgs,
+        ) => Promise<AgentChatContinuityRecoveryResult>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
