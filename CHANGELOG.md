@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.23] - 2026-07-12
+
+### Changed
+
+- Kept context usage accurate after compaction across desktop, ADE Code, and iOS.
+- Strengthened Claude SDK turn lifecycle and steering for active turns, scheduled work, and subagent activity.
+- Preferred independently installed Git over Apple's license-gated Git on macOS, including login-shell discovery.
+
+### Fixed
+
+- Moved project-transition failures from a truncated top-bar pill to a full-width, wrapping, dismissible alert.
+- Explained that Apple's Xcode license prompt comes from the Git executable rather than ADE's iOS Simulator or code-signing features.
+- Preserved complete remote project-add errors on iOS instead of limiting danger messages to three lines.
+
 ## [1.2.22] - 2026-07-11
 
 ### Changed
@@ -705,7 +719,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.22...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.23...HEAD
+[1.2.23]: https://github.com/arul28/ADE/compare/v1.2.22...v1.2.23
 [1.2.22]: https://github.com/arul28/ADE/compare/v1.2.21...v1.2.22
 [1.2.21]: https://github.com/arul28/ADE/compare/v1.2.20...v1.2.21
 [1.2.20]: https://github.com/arul28/ADE/compare/v1.2.19...v1.2.20
