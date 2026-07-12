@@ -122,13 +122,14 @@ export function probeCodexRolloutFile(
 
   try {
     if (!fs.existsSync(sessionsDir)) return false;
-    while (pending.length && scanned < maxEntries && Date.now() <= deadline) {
+    while (pending.length) {
+      if (scanned >= maxEntries || Date.now() > deadline) return null;
       const dir = pending.pop()!;
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (scanned >= maxEntries || Date.now() > deadline) return null;
         scanned += 1;
         if (entry.isFile() && matchesCodexLookup(entry.name, normalizedThreadId)) return true;
         if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
-        if (scanned >= maxEntries || Date.now() > deadline) break;
       }
     }
     return false;

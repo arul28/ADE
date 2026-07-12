@@ -33,7 +33,7 @@ function boundedErrorDetail(error: unknown): string {
 export function classifyCodexResumeFailure(
   error: unknown,
   threadId: string,
-  opts: { codexHome?: string } = {},
+  opts: { codexHome?: string; maxEntries?: number; maxDurationMs?: number } = {},
 ): ResumeFailureClassification {
   const rolloutFileFound = probeCodexRolloutFile(threadId, opts);
   const detail = boundedErrorDetail(error);
@@ -53,7 +53,7 @@ export function classifyCodexResumeFailure(
   }
 
   const threadMissing = /\b(?:no thread|thread not found|unknown thread|not found)\b/u.test(text);
-  if (threadMissing && rolloutFileFound !== true) {
+  if (threadMissing && rolloutFileFound === false) {
     return { kind: "thread_missing", rolloutFileFound, detail };
   }
 

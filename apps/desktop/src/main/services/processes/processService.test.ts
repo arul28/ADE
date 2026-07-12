@@ -1227,7 +1227,7 @@ describe("processService PTY-backed run commands", () => {
     }
   });
 
-  it("refuses new starts when exhausted without affecting a running process", async () => {
+  it("refuses single, stack, and restart launches when exhausted", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-disk-pressure-"));
     const db = await openKvDb(path.join(tmpDir, "kv.sqlite"), createLogger());
     const projectId = "proj-disk-pressure";
@@ -1246,7 +1246,12 @@ describe("processService PTY-backed run commands", () => {
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ["lane-pressure", projectId, "Lane Pressure", null, "worktree", "main", "feature/pressure", tmpDir, null, 0, null, null, null, null, "active", now, null],
     );
-    const config = makeMinimalConfig([{ id: "web", command: ["npm", "run", "dev"] }]);
+    const config = makeMinimalConfig([
+      { id: "web", command: ["npm", "run", "dev"] },
+      { id: "worker", command: ["npm", "run", "worker"] },
+    ], {
+      stackButtons: [{ id: "worker-stack", name: "Worker", processIds: ["worker"], startOrder: "parallel" }],
+    });
     const service = createProcessService({
       db,
       projectId,
@@ -1286,8 +1291,18 @@ describe("processService PTY-backed run commands", () => {
         code: "disk_full",
         message: expect.stringContaining("almost out of storage"),
       });
+      await expect(service.startStack({ laneId: "lane-pressure", stackId: "worker-stack" })).rejects.toMatchObject({
+        code: "disk_full",
+        message: expect.stringContaining("almost out of storage"),
+      });
+      await expect(service.restart({ laneId: "lane-pressure", processId: "web" })).rejects.toMatchObject({
+        code: "disk_full",
+        message: expect.stringContaining("almost out of storage"),
+      });
       expect(ptyService.create).toHaveBeenCalledTimes(1);
-      expect(service.listRuntime("lane-pressure")[0]).toMatchObject({ runId: running.runId, status: "running" });
+      expect(service.listRuntime("lane-pressure")).toEqual([
+        expect.objectContaining({ runId: running.runId, status: "exited" }),
+      ]);
     } finally {
       service.disposeAll();
       db.close();

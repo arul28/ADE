@@ -1122,11 +1122,21 @@ describe("ADE CLI", () => {
     ).toEqual({ name: "list_ade_actions", arguments: { domain: "storage" } });
 
     expect(
-      expectExecutePlan(buildCliPlan(["storage", "action", "cleanupPreview"]))
+      expectExecutePlan(buildCliPlan([
+        "storage",
+        "action",
+        "cleanupPreview",
+        "--input-json",
+        '{"targets":["cache"]}',
+      ]))
         .steps[0]?.params,
     ).toEqual({
       name: "run_ade_action",
-      arguments: { domain: "storage", action: "cleanupPreview", args: {} },
+      arguments: {
+        domain: "storage",
+        action: "cleanupPreview",
+        args: { targets: ["cache"] },
+      },
     });
 
     expect(() => buildCliPlan(["storage", "bogus"])).toThrow(/storage supports/);

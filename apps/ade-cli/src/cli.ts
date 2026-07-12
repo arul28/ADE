@@ -9885,12 +9885,14 @@ function buildStoragePlan(args: string[]): CliPlan {
       label: "storage actions",
       steps: [listActionsStep("actions", "storage")],
     };
-  if (sub === "action")
+  if (sub === "action") {
+    const action = requireValue(firstPositional(args), "storage action");
     return {
       kind: "execute",
       label: "storage action",
-      steps: [buildActionRunStep(["storage", ...args])],
+      steps: [buildActionRunStep(["storage", action, ...args])],
     };
+  }
   if (sub === "snapshot" || sub === "get" || sub === "status" || sub === "scan") {
     const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
     return {

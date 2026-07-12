@@ -55,11 +55,23 @@ describe("classifyCodexResumeFailure", () => {
     expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: true });
   });
 
-  it("classifies not-found with an unavailable probe as thread_missing", () => {
+  it("keeps not-found unknown when the rollout probe is unavailable", () => {
     const result = classifyCodexResumeFailure("no thread was found", "thread-e", {
       codexHome: codexHome("error", "thread-e"),
     });
-    expect(result).toMatchObject({ kind: "thread_missing", rolloutFileFound: null });
+    expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: null });
+  });
+
+  it("keeps not-found unknown when the rollout probe exhausts its entry budget", () => {
+    const root = codexHome("absent", "thread-budget");
+    fs.mkdirSync(path.join(root, "sessions", "pending"));
+
+    const result = classifyCodexResumeFailure("thread not found", "thread-budget", {
+      codexHome: root,
+      maxEntries: 1,
+    });
+
+    expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: null });
   });
 
   it.each(["present", "absent", "error"] as const)("keeps gibberish unknown with a %s rollout probe", (probe) => {

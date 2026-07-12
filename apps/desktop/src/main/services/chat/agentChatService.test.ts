@@ -30518,7 +30518,7 @@ describe("explicit provider-thread continuity recovery", () => {
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
     expect(readPersistedChatState(session.id)).toMatchObject({
       threadId: "thread-1",
-      continuityRecovery: { state: "required", reason: "thread_missing", originalThreadId: "thread-1" },
+      continuityRecovery: { state: "required", reason: "unknown", originalThreadId: "thread-1" },
     });
     expect(mockState.sessions.get(session.id)?.resumeCommand).toBe(resumeCommand);
     expect(events.some((entry) => entry.event.type === "system_notice"
@@ -30614,6 +30614,79 @@ describe("explicit provider-thread continuity recovery", () => {
 
     mockState.pendingCodexResponses.splice(0).forEach((respond) => respond());
     await expect(first).resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original" }));
+  });
+
+  it("leaves required recovery untouched when disk pressure blocks history reconstruction", async () => {
+    const session = await createPersistedCodexThread();
+    const continuityRecovery = {
+      state: "required" as const,
+      reason: "thread_missing" as const,
+      provider: "codex" as const,
+      originalThreadId: "thread-1",
+      at: new Date().toISOString(),
+    };
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery,
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      diskPressureMonitor: {
+        canPerform: vi.fn(() => ({
+          allowed: false,
+          state: "exhausted",
+          code: "disk_full",
+          message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+        })),
+      },
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    mockState.codexRequestPayloads = [];
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" }))
+      .resolves.toEqual({ ok: false, mode: "recover_from_history", reason: "recovery_failed" });
+
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery,
+    });
+    expect(mockState.codexRequestPayloads).toEqual([]);
+    expect(events.filter((entry) => entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.kind === "disk_pressure")).toHaveLength(1);
+  });
+
+  it("restores required recovery and the original pointer when capsule dispatch rejects", async () => {
+    const session = await createPersistedCodexThread();
+    const continuityRecovery = {
+      state: "required" as const,
+      reason: "thread_missing" as const,
+      provider: "codex" as const,
+      originalThreadId: "thread-1",
+      at: new Date().toISOString(),
+    };
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery,
+    });
+    const { service, sessionService } = createService();
+    const originalResumeCommand = sessionService.get(session.id)?.resumeCommand;
+    mockState.codexRequestPayloads = [];
+    mockState.codexResponseOverrides.set("turn/start", {
+      error: { code: -32000, message: "capsule dispatch rejected" },
+    });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" }))
+      .resolves.toEqual({ ok: false, mode: "recover_from_history", reason: "recovery_failed" });
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery,
+    });
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)?.pointer).toBe("thread-1");
+    expect(sessionService.get(session.id)?.resumeCommand).toBe(originalResumeCommand);
   });
 
   it("reconstructs a bounded hidden history capsule in the same chat", async () => {

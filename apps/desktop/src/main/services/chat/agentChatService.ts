@@ -27155,7 +27155,11 @@ export function createAgentChatService(args: {
     runtime,
     cloudOverrides,
     allowActiveSession = false,
-  }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
+    allowContinuityRecovery = false,
+  }: AgentChatSendArgs & {
+    allowActiveSession?: boolean;
+    allowContinuityRecovery?: boolean;
+  }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
@@ -27167,7 +27171,7 @@ export function createAgentChatService(args: {
           ? "Use the attached issue context."
           : "";
     if (!trimmed.length) return null;
-    assertContinuityDispatchAllowed(managed);
+    if (!allowContinuityRecovery) assertContinuityDispatchAllowed(managed);
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
@@ -32307,25 +32311,77 @@ export function createAgentChatService(args: {
       return { ok: false, mode: args.mode, reason: "unsupported_provider" };
     }
 
+    const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+    if (diskDecision && !diskDecision.allowed) {
+      emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+
     const capsule = buildContinuityCapsule(managed);
+    let preparedCapsule: PreparedSendMessage | null;
+    try {
+      preparedCapsule = prepareSendMessage({
+        sessionId,
+        text: capsule,
+        displayText: "Rebuilt this chat's AI thread from ADE history.",
+        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        allowContinuityRecovery: true,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.continuity_recovery_prepare_failed", {
+        sessionId,
+        provider: managed.session.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+    if (!preparedCapsule) {
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       if (runtime.activeTurnId || managed.session.status === "active") {
         return { ok: false, mode: args.mode, reason: "recovery_failed" };
       }
-      const { codexPolicy } = resolveCodexThreadParams(managed);
-      await startFreshCodexThread(managed, runtime, codexPolicy, {
-        allowReplacePointer: { originalThreadId, mode: "recover_from_history" },
-      });
-      const reconstructedThreadId = managed.session.threadId?.trim() || "";
-      delete managed.session.continuityRecovery;
-      persistChatState(managed);
-      await sendMessage({
-        sessionId,
-        text: capsule,
-        displayText: "Rebuilt this chat's AI thread from ADE history.",
-        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
-      }, { awaitDispatch: true });
+      const originalResumeCommand = sessionService.get(sessionId)?.resumeCommand ?? null;
+      let reconstructedThreadId = "";
+      let dispatched = false;
+      try {
+        const { codexPolicy } = resolveCodexThreadParams(managed);
+        await startFreshCodexThread(managed, runtime, codexPolicy, {
+          allowReplacePointer: { originalThreadId, mode: "recover_from_history" },
+        });
+        reconstructedThreadId = managed.session.threadId?.trim() || "";
+        await sendMessage({
+          sessionId,
+          text: capsule,
+          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        }, {
+          awaitDispatch: true,
+          preparedMessage: preparedCapsule,
+          onBackendDispatched: () => {
+            dispatched = true;
+          },
+        });
+      } catch (error) {
+        logger.warn("agent_chat.continuity_recovery_dispatch_failed", {
+          sessionId,
+          provider: "codex",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!dispatched) {
+        if (originalThreadId) managed.session.threadId = originalThreadId;
+        else delete managed.session.threadId;
+        managed.session.continuityRecovery = recovery;
+        runtime.threadResumed = false;
+        runtime.canAttachResumedTurnStart = false;
+        sessionService.setResumeCommand(sessionId, originalResumeCommand);
+        persistChatState(managed);
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
       managed.session.continuityRecovery = {
         state: "reconstructed",
         reason: recovery.reason,
@@ -32341,15 +32397,33 @@ export function createAgentChatService(args: {
     }
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
-      resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
-      delete managed.session.continuityRecovery;
-      persistChatState(managed);
-      await sendMessage({
-        sessionId,
-        text: capsule,
-        displayText: "Rebuilt this chat's AI thread from ADE history.",
-        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
-      }, { awaitDispatch: true });
+      let dispatched = false;
+      try {
+        resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+        await sendMessage({
+          sessionId,
+          text: capsule,
+          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        }, {
+          awaitDispatch: true,
+          preparedMessage: preparedCapsule,
+          onBackendDispatched: () => {
+            dispatched = true;
+          },
+        });
+      } catch (error) {
+        logger.warn("agent_chat.continuity_recovery_dispatch_failed", {
+          sessionId,
+          provider: "claude",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!dispatched) {
+        managed.session.continuityRecovery = recovery;
+        persistChatState(managed);
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
       const reconstructedThreadId = runtime.sdkSessionId?.trim() || "";
       managed.session.continuityRecovery = {
         state: "reconstructed",

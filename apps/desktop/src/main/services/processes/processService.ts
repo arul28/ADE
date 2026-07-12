@@ -598,6 +598,12 @@ export function createProcessService({
     definition: ProcessDefinition,
     opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {},
   ): Promise<ProcessRuntime> => {
+    const decision = diskPressureMonitor?.canPerform("process_start");
+    if (decision && !decision.allowed) {
+      throw Object.assign(new Error(decision.message), {
+        code: decision.code satisfies AdeRecoveryErrorCode,
+      });
+    }
     if (!opts.skipTrust) projectConfigService.getExecutableConfig();
 
     if (!definition.command.length || !definition.command[0]?.trim()) {
@@ -873,12 +879,6 @@ export function createProcessService({
     },
 
     async start(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      const decision = diskPressureMonitor?.canPerform("process_start");
-      if (decision && !decision.allowed) {
-        throw Object.assign(new Error(decision.message), {
-          code: decision.code satisfies AdeRecoveryErrorCode,
-        });
-      }
       return await startById(arg.laneId, arg.processId);
     },
 
