@@ -1734,6 +1734,11 @@ private struct WorkChatComposerDraftInput: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if compact {
+        WorkComposerSuggestionStrip(controller: suggestionController)
+          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+
+        WorkChatInputAttachmentTray(attachments: $inputAttachments)
+
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
             WorkChatComposerTextField(
@@ -1741,6 +1746,10 @@ private struct WorkChatComposerDraftInput: View {
               controller: suggestionController,
               canCompose: canCompose,
               placeholder: composerPlaceholder,
+              onPasteImages: { images in
+                guard canUploadAttachments else { return }
+                workChatInputPasteImages(images, into: $inputAttachments)
+              },
               maxLines: 1
             )
           }
