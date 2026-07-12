@@ -27,14 +27,31 @@ vi.mock("./useCtoModelOptions", () => ({
     model: "sonnet",
     modelId,
     reasoningEffort: null,
+    supportsFastMode: modelId !== "anthropic/claude-opus-4-8",
   }),
 }));
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
-  ModelPicker: (props: { value: string; onChange: (id: string) => void }) => (
-    <button data-testid="model-picker" onClick={() => props.onChange("anthropic/claude-opus-4-8")}>
-      {props.value}
-    </button>
+  ModelPicker: (props: {
+    value: string;
+    onChange: (id: string) => void;
+    fastModeActive?: boolean;
+    onFastModeToggle?: (next: boolean) => void;
+  }) => (
+    <>
+      <button data-testid="model-picker" onClick={() => props.onChange("anthropic/claude-opus-4-8")}>
+        {props.value}
+      </button>
+      {props.onFastModeToggle ? (
+        <button
+          data-testid="model-fast-toggle"
+          aria-pressed={props.fastModeActive === true}
+          onClick={() => props.onFastModeToggle?.(!(props.fastModeActive === true))}
+        >
+          Fast
+        </button>
+      ) : null}
+    </>
   ),
 }));
 
@@ -64,6 +81,7 @@ const SESSION = {
   modelId: "anthropic/claude-sonnet-5",
   sessionProfile: "persistent_identity",
   reasoningEffort: null,
+  fastMode: false,
   executionMode: null,
   identityKey: "cto",
   capabilityMode: "full_tooling",
@@ -73,11 +91,13 @@ const SESSION = {
   threadId: "thread-1",
 } as const;
 
-describe("CtoPage model badge", () => {
+describe("CtoPage settings", () => {
   const originalAde = globalThis.window.ade;
+  const ensureSession = vi.fn().mockResolvedValue(SESSION);
   const updateSession = vi.fn().mockResolvedValue({ ...SESSION, modelId: "anthropic/claude-opus-4-8" });
 
   beforeEach(() => {
+    ensureSession.mockReset().mockResolvedValue(SESSION);
     updateSession.mockClear();
     useAppStore.setState({
       lanes: [{ id: "lane-primary", name: "Primary", laneType: "primary" } as never],
@@ -93,7 +113,7 @@ describe("CtoPage model badge", () => {
           completedSteps: ["identity"],
           dismissedAt: null,
         }),
-        ensureSession: vi.fn().mockResolvedValue(SESSION),
+        ensureSession,
         updateIdentity: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
       },
     } as never;
@@ -111,16 +131,59 @@ describe("CtoPage model badge", () => {
     expect(await screen.findByTestId("cto-agent-chat-pane")).toBeTruthy();
   });
 
-  it("routes a header model switch through agentChat.updateSession on the locked session", async () => {
+  it("keeps personality and model controls off the main chat header", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");
 
+    expect(screen.queryByText("Strategic")).toBeNull();
+    expect(screen.queryByTestId("model-picker")).toBeNull();
+  });
+
+  it("routes a settings model switch through agentChat.updateSession on the locked session", async () => {
+    ensureSession.mockResolvedValueOnce({ ...SESSION, fastMode: true });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
     fireEvent.click(screen.getByTestId("model-picker"));
 
     await waitFor(() => expect(updateSession).toHaveBeenCalledTimes(1));
-    expect(updateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "cto-session", modelId: "anthropic/claude-opus-4-8" }),
-    );
+    expect(updateSession).toHaveBeenCalledWith({
+      sessionId: "cto-session",
+      modelId: "anthropic/claude-opus-4-8",
+      reasoningEffort: null,
+      fastMode: false,
+    });
+  });
+
+  it("keeps Fast mode in settings and updates the locked CTO session", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    expect(screen.queryByTestId("model-fast-toggle")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    fireEvent.click(screen.getByTestId("model-fast-toggle"));
+
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
+      sessionId: "cto-session",
+      fastMode: true,
+    }));
+  });
+
+  it("turns Fast mode off from settings on the locked CTO session", async () => {
+    ensureSession.mockResolvedValueOnce({ ...SESSION, fastMode: true });
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
+    const fastToggle = screen.getByTestId("model-fast-toggle");
+    expect(fastToggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(fastToggle);
+
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
+      sessionId: "cto-session",
+      fastMode: false,
+    }));
   });
 });
 

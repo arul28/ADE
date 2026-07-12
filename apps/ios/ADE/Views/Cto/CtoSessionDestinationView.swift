@@ -51,7 +51,8 @@ struct CtoSessionDestinationView: View {
         isLive: isLive,
         navigationChrome: navigationChrome,
         showsLaneActions: false,
-        navigationTitleOverride: navigationTitle
+        navigationTitleOverride: navigationTitle,
+        compactComposer: true
       )
       .environmentObject(syncService)
     }

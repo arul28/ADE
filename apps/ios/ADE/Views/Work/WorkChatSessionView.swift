@@ -212,6 +212,7 @@ struct WorkChatSessionView: View {
   /// still says idle while chat events are already streaming — without it
   /// the chat renders output with no stop button or working indicator.
   var liveTurnActiveHint: Bool? = nil
+  var compactComposer = false
   var isPersonalChat: Bool = false
   var personalAttachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
@@ -739,6 +740,7 @@ struct WorkChatSessionView: View {
         sending: sending && !sendWillQueue,
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
+        compact: compactComposer,
         // Show Stop while a live turn has current transcript activity. The
         // broader live hint can lag after `done`; this stricter gate keeps the
         // composer from showing Stop after the completed-turn separator appears.
@@ -767,7 +769,7 @@ struct WorkChatSessionView: View {
         }
       )
     }
-    .padding(.horizontal, 16)
+    .padding(.horizontal, compactComposer ? 12 : 16)
     .padding(.top, 4)
     .padding(.bottom, 0)
   }
@@ -1644,6 +1646,7 @@ private struct WorkChatComposerCard: View {
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
+  let compact: Bool
   /// True while the assistant is streaming a response. Swaps the Send button
   /// Desktop parity: red bordered stop control in the composer while a turn is
   /// active (`border-red-500/25 bg-red-500/[0.08] text-red-400/80`).
@@ -1670,6 +1673,7 @@ private struct WorkChatComposerCard: View {
       sending: sending,
       settingsMutationInFlight: settingsMutationInFlight,
       codexFastModeOverride: codexFastModeOverride,
+      compact: compact,
       showInterrupt: showInterrupt,
       interruptInFlight: interruptInFlight,
       onInterrupt: onInterrupt,
@@ -1679,7 +1683,7 @@ private struct WorkChatComposerCard: View {
       onSent: onSent
     )
     .padding(.horizontal, 12)
-    .padding(.vertical, 10)
+    .padding(.vertical, compact ? 8 : 10)
     .background(composerSurface)
   }
 
@@ -1706,6 +1710,7 @@ private struct WorkChatComposerDraftInput: View {
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
+  let compact: Bool
   let showInterrupt: Bool
   let interruptInFlight: Bool
   let onInterrupt: @MainActor () async -> Void
@@ -1728,31 +1733,65 @@ private struct WorkChatComposerDraftInput: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      WorkComposerSuggestionStrip(controller: suggestionController)
-        .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+      if compact {
+        WorkComposerSuggestionStrip(controller: suggestionController)
+          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
 
-      WorkChatInputAttachmentTray(attachments: $inputAttachments)
+        WorkChatInputAttachmentTray(attachments: $inputAttachments)
 
-      WorkChatComposerTextField(
-        draftState: draftState,
-        controller: suggestionController,
-        canCompose: canCompose,
-        placeholder: composerPlaceholder,
-        onPasteImages: { images in
-          guard canUploadAttachments else { return }
-          workChatInputPasteImages(images, into: $inputAttachments)
+        HStack(alignment: .center, spacing: 8) {
+          if !isDictating {
+            WorkChatComposerTextField(
+              draftState: draftState,
+              controller: suggestionController,
+              canCompose: canCompose,
+              placeholder: composerPlaceholder,
+              onPasteImages: { images in
+                guard canUploadAttachments else { return }
+                workChatInputPasteImages(images, into: $inputAttachments)
+              },
+              maxLines: 1
+            )
+          }
+
+          DictationMicButton(
+            draft: $draftState.text,
+            coordinator: dictationCoordinator,
+            targetId: dictationTargetId,
+            onRecordingChange: { isDictating = $0 }
+          )
+          .frame(maxWidth: isDictating ? .infinity : nil)
+
+          if !isDictating {
+            sendOrInterruptControls()
+          }
         }
-      )
+      } else {
+        WorkComposerSuggestionStrip(controller: suggestionController)
+          .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
 
-      if showInterrupt && hasSendableDraftOrAttachment {
-        Text("Message will stage behind the active turn.")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
-      }
+        WorkChatInputAttachmentTray(attachments: $inputAttachments)
 
-      HStack(alignment: .center, spacing: 8) {
+        WorkChatComposerTextField(
+          draftState: draftState,
+          controller: suggestionController,
+          canCompose: canCompose,
+          placeholder: composerPlaceholder,
+          onPasteImages: { images in
+            guard canUploadAttachments else { return }
+            workChatInputPasteImages(images, into: $inputAttachments)
+          }
+        )
+
+        if showInterrupt && hasSendableDraftOrAttachment {
+          Text("Message will stage behind the active turn.")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
+        }
+
+        HStack(alignment: .center, spacing: 8) {
         // Leading controls collapse while dictating so the recording pill can
         // expand into the row without a layout jump.
         if !isDictating {
@@ -1804,33 +1843,8 @@ private struct WorkChatComposerDraftInput: View {
         )
         .frame(maxWidth: isDictating ? .infinity : nil)
 
-        if !isDictating {
-          if showInterrupt {
-            if hasSendableDraftOrAttachment {
-              stopButton()
-              WorkChatComposerSendButton(
-                draftState: draftState,
-                attachments: $inputAttachments,
-                canSend: canSend,
-                canUploadAttachments: canUploadAttachments,
-                sending: sending,
-                accessibilityLabelText: "Stage message",
-                onSend: onSend,
-                onSent: onSent
-              )
-            } else {
-              stopButton()
-            }
-          } else {
-            WorkChatComposerSendButton(
-              draftState: draftState,
-              attachments: $inputAttachments,
-              canSend: canSend,
-              canUploadAttachments: canUploadAttachments,
-              sending: sending,
-              onSend: onSend,
-              onSent: onSent
-            )
+          if !isDictating {
+            sendOrInterruptControls()
           }
         }
       }
@@ -1843,6 +1857,37 @@ private struct WorkChatComposerDraftInput: View {
     .onAppear { configureSuggestionController() }
     .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
+  }
+
+  @ViewBuilder
+  private func sendOrInterruptControls() -> some View {
+    if showInterrupt {
+      if hasSendableDraftOrAttachment {
+        stopButton()
+        WorkChatComposerSendButton(
+          draftState: draftState,
+          attachments: $inputAttachments,
+          canSend: canSend,
+          canUploadAttachments: canUploadAttachments,
+          sending: sending,
+          accessibilityLabelText: "Stage message",
+          onSend: onSend,
+          onSent: onSent
+        )
+      } else {
+        stopButton()
+      }
+    } else {
+      WorkChatComposerSendButton(
+        draftState: draftState,
+        attachments: $inputAttachments,
+        canSend: canSend,
+        canUploadAttachments: canUploadAttachments,
+        sending: sending,
+        onSend: onSend,
+        onSent: onSent
+      )
+    }
   }
 
   private func configureSuggestionController() {
@@ -2098,6 +2143,7 @@ private struct WorkChatComposerTextField: View {
   let canCompose: Bool
   let placeholder: String
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  var maxLines = 6
   @State private var measuredHeight: CGFloat = 24
 
   var body: some View {
@@ -2107,7 +2153,8 @@ private struct WorkChatComposerTextField: View {
       canCompose: canCompose,
       placeholder: placeholder,
       measuredHeight: $measuredHeight,
-      onPasteImages: onPasteImages
+      onPasteImages: onPasteImages,
+      maxLines: maxLines
     )
     .frame(height: measuredHeight)
     .frame(maxWidth: .infinity, alignment: .leading)

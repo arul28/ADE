@@ -11,8 +11,6 @@ struct CtoIdentityEditor: View {
   @State private var localPersonality: String = "strategic"
   @State private var localVerbosity: String = CtoWorkStyle.defaultStyle.verbosity
   @State private var localProactivity: String = CtoWorkStyle.defaultStyle.proactivity
-  @State private var localProvider: String = ""
-  @State private var localModel: String = ""
   @State private var localExtension: String = ""
 
   @State private var isSaving = false
@@ -60,17 +58,6 @@ struct CtoIdentityEditor: View {
               CtoSegmentedRow(title: "Proactivity", options: CtoWorkStyle.proactivityOptions, selection: $localProactivity)
             }
             .padding(.vertical, 4)
-          }
-
-          Section("Model") {
-            TextField("anthropic", text: $localProvider)
-              .textInputAutocapitalization(.never)
-              .disableAutocorrection(true)
-              .font(.system(.body, design: .monospaced))
-            TextField("claude-sonnet-5", text: $localModel)
-              .textInputAutocapitalization(.never)
-              .disableAutocorrection(true)
-              .font(.system(.body, design: .monospaced))
           }
 
           Section {
@@ -134,8 +121,6 @@ struct CtoIdentityEditor: View {
       localVerbosity = style.verbosity
       localProactivity = style.proactivity
     }
-    localProvider = identity.modelPreferences.provider
-    localModel = identity.modelPreferences.model
     localExtension = identity.systemPromptExtension ?? ""
   }
 
@@ -170,23 +155,6 @@ struct CtoIdentityEditor: View {
         verbosity: localVerbosity,
         proactivity: localProactivity,
         escalationThreshold: existingStyle.escalationThreshold
-      )
-    }
-
-    let trimmedProvider = localProvider.trimmingCharacters(in: .whitespacesAndNewlines)
-    let trimmedModel = localModel.trimmingCharacters(in: .whitespacesAndNewlines)
-    let currentProvider = identity.modelPreferences.provider
-    let currentModel = identity.modelPreferences.model
-
-    // Only send modelPreferences if at least one of the two changed, and
-    // always send both fields together so the server doesn't see a malformed
-    // partial (the desktop type requires both).
-    if !trimmedProvider.isEmpty, !trimmedModel.isEmpty,
-       trimmedProvider != currentProvider || trimmedModel != currentModel {
-      patch.modelPreferences = CtoModelPreferences(
-        provider: trimmedProvider,
-        model: trimmedModel,
-        reasoningEffort: identity.modelPreferences.reasoningEffort
       )
     }
 

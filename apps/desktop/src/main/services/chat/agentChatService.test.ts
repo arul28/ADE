@@ -5903,6 +5903,34 @@ describe("createAgentChatService", () => {
       db.close();
     });
 
+    it("keeps CTO full access when a model switch crosses providers", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      try {
+        const { service } = createService({ ctoStateService, ctoMemoryService });
+        const session = await service.ensureIdentitySession({
+          identityKey: "cto",
+          laneId: "lane-1",
+        });
+
+        const updated = await service.updateSession({
+          sessionId: session.id,
+          modelId: "openai/gpt-5.5",
+        });
+
+        expect(updated.provider).toBe("codex");
+        expect(updated.permissionMode).toBe("full-auto");
+        expect(updated.codexApprovalPolicy).toBe("never");
+        expect(updated.codexSandbox).toBe("danger-full-access");
+        expect(ctoStateService.getIdentity().modelPreferences.modelId).toBe("openai/gpt-5.5");
+      } finally {
+        db.close();
+      }
+    });
+
     it("injects durable memory into the CTO reconstruction context", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       ctoMemoryService.appendMemoryFact("The build long-pole is the Windows runner.");

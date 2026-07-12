@@ -53,15 +53,6 @@ struct CtoRootScreen: View {
   private var topBar: some View {
     ADERootTopBar(title: topBarTitle) {
       if isOnboarded {
-        Text(ctoPersonalityLabel(for: snapshot?.identity.personality))
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.ctoAccent)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 5)
-          .background(ADEColor.ctoAccent.opacity(0.14), in: Capsule())
-          .overlay(Capsule().stroke(ADEColor.ctoAccent.opacity(0.28), lineWidth: 0.5))
-          .accessibilityLabel("Personality: \(ctoPersonalityLabel(for: snapshot?.identity.personality))")
-
         Button {
           showingSettings = true
         } label: {

@@ -187,6 +187,8 @@ function buildCtoEnvironmentKnowledge(): string {
   "Tool calling convention:",
   "  - Use the `ade` CLI per the ADE CLI operating guidance in your doctrine.",
   "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
+  "  - Every ADE service action exposed to agents is manageable from the CLI. Prefer a typed `ade <domain> ...` command, then use the runtime-generated `ade actions list --text` catalog and `ade actions run <domain.action>` for exact read, view, edit, and control coverage.",
+  "  - Never rely on a memorized action inventory: the live action catalog and bundled `ade-*` skills are the source of truth for the installed ADE version.",
   "",
   "## PR Lifecycle in ADE",
   "",
