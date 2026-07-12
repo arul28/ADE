@@ -1033,6 +1033,10 @@ function formatProjectTransitionError(
     message: recoveryMessage ?? fallback,
     ...(code ? { code } : {}),
     ...(recoveryMessage && raw ? { detail: raw } : {}),
+    // A rootPath encoded into the coded error (open-repo dialog failures pick
+    // the path in the main process, so the renderer never saw it) lets the
+    // recovery screen offer Repair instead of the generic banner.
+    ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
   };
 }
 

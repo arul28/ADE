@@ -1743,11 +1743,11 @@ export function registerIpc({
   // "github_not_connected", "remote_already_exists"). Electron IPC strips
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
-  const surfaceCodedError = (error: unknown): never => {
+  const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
-        const wrapped = new Error(encodeCodedErrorMessage(code, error.message));
+        const wrapped = new Error(encodeCodedErrorMessage(code, error.message, meta));
         throw wrapped;
       }
     }
@@ -3610,9 +3610,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
+    // The chosen root is only known in the main process (the OS dialog picks
+    // it), so a coded open failure must carry it back to the renderer for the
+    // recovery screen — otherwise a disk-full/db-repair failure from the Open
+    // Repository flow falls back to the generic banner with no Repair action.
+    let chosenRoot: string | undefined;
     try {
       const requestedRoot = args.rootPath?.trim();
       if (requestedRoot) {
+        chosenRoot = requestedRoot;
         return await switchProjectFromDialog(requestedRoot);
       }
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
@@ -3625,9 +3631,10 @@ export function registerIpc({
         return null;
       }
       const selected = result.filePaths[0]!;
+      chosenRoot = selected;
       return await switchProjectFromDialog(selected);
     } catch (error) {
-      return surfaceCodedError(error);
+      return surfaceCodedError(error, chosenRoot ? { rootPath: chosenRoot } : undefined);
     }
   });
 

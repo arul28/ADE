@@ -32239,9 +32239,12 @@ export function createAgentChatService(args: {
         delete managed.session.continuityRecovery;
         managed.session.threadId = originalThreadId;
         persistChatState(managed);
-        const runtime = await ensureCodexSessionRuntime(managed);
-        const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
+          // Runtime setup (ensure/resolve) can throw before the resume — keep
+          // it inside the try so the catch below re-marks continuity recovery
+          // and the user never loses the recovery card on a setup failure.
+          const runtime = await ensureCodexSessionRuntime(managed);
+          const { codexPolicy } = resolveCodexThreadParams(managed);
           refreshCodexDynamicTools(managed, runtime);
           const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId: originalThreadId,

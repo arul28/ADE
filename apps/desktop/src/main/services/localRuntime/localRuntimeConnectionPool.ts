@@ -68,6 +68,7 @@ type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
+const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
@@ -798,6 +799,20 @@ export class LocalRuntimeConnectionPool {
       });
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      // A hung `serve --uninstall-service` (e.g. a stuck login-item removal)
+      // must not leave the repair flow waiting forever; time it out, kill the
+      // child, and reject so the caller reports a repair failure instead of
+      // silently proceeding to exclusive database work.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { child.kill("SIGKILL"); } catch { /* child may already be gone */ }
+        const message = "ADE service login item removal timed out.";
+        this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, reason: "timeout", message });
+        reject(new Error(message));
+      }, LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS);
+      timer.unref?.();
       child.stdout?.on("data", (chunk) => {
         stdout += chunk.toString("utf8");
       });
@@ -805,10 +820,16 @@ export class LocalRuntimeConnectionPool {
         stderr += chunk.toString("utf8");
       });
       child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this.logger.warn("local_runtime.service_uninstall_failed", { error: error.message });
         reject(error);
       });
       child.once("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         const output = stdout.trim();
         const parsed = parseRuntimeServiceManagerOutput(output);
         const failed = code !== 0 || parsed?.ok === false;
