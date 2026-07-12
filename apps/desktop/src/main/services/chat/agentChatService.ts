@@ -30751,6 +30751,17 @@ export function createAgentChatService(args: {
     const routableText = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0;
+    // Gate BEFORE routing to steer: a send to an already-active chat becomes a
+    // steer() (which has no disk gate of its own), so checking after the route
+    // would let critical/exhausted pressure keep appending user input and
+    // driving provider work for active sessions while only idle sends paused.
+    if (routableText) {
+      const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+      if (diskDecision && !diskDecision.allowed) {
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        return;
+      }
+    }
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       return steer({
         sessionId: args.sessionId,
@@ -30763,13 +30774,6 @@ export function createAgentChatService(args: {
         executionMode: args.executionMode,
         interactionMode: args.interactionMode,
       });
-    }
-    if (routableText) {
-      const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
-      if (diskDecision && !diskDecision.allowed) {
-        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
-        return;
-      }
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);

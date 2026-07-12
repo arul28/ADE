@@ -2119,6 +2119,40 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("blocks an exhausted send that would route to a steer on an active chat", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const canPerform = vi.fn(() => ({
+        allowed: false,
+        state: "exhausted" as const,
+        code: "disk_full" as const,
+        message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+      }));
+      const { service } = createService({
+        diskPressureMonitor: { canPerform },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      // Make the session look active so routeActiveToSteer would otherwise
+      // convert the send into a steer() that bypasses the disk gate.
+      service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." });
+      await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
+      mockState.codexRequestPayloads = [];
+
+      const result = await service.sendMessage(
+        { sessionId: session.id, text: "Squeeze in more." },
+        { routeActiveToSteer: true },
+      );
+
+      // The gate ran before routing, so no steer was issued and no new
+      // provider work started.
+      expect(result).toBeUndefined();
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start" || p.method === "turn/steer")).toBe(false);
+      expect(events.some((entry) => entry.event.type === "system_notice"
+        && typeof entry.event.detail === "object"
+        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
     it.each([
       ["warning monitor", { canPerform: vi.fn(() => ({ allowed: true, state: "warning" })) }],
       ["absent monitor", undefined],
