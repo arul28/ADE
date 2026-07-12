@@ -226,12 +226,18 @@ export async function transplantClaudeSession(args: {
 
   if (args.fork) {
     await rewriteClaudeSessionFile({ sourcePath, targetPath, newSessionId, targetCwd });
-    await copyClaudeSidecarDirectory({
-      sourceDir: sourceSidecarDir,
-      targetDir: targetSidecarDir,
-      newSessionId,
-      targetCwd,
-    });
+    try {
+      await copyClaudeSidecarDirectory({
+        sourceDir: sourceSidecarDir,
+        targetDir: targetSidecarDir,
+        newSessionId,
+        targetCwd,
+      });
+    } catch (error) {
+      await fs.promises.rm(targetSidecarDir, { recursive: true, force: true }).catch(() => undefined);
+      await fs.promises.unlink(targetPath).catch(() => undefined);
+      throw error;
+    }
     return { newSessionId, targetPath };
   }
 

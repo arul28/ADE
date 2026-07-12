@@ -831,6 +831,10 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
 } from "./agentChatService";
+import {
+  enforceCrossMachineForkEncodedBudget,
+  gunzipFromBase64,
+} from "./crossMachineForkTransport";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -4882,6 +4886,36 @@ describe("createAgentChatService", () => {
     const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");
 
     describe("fork mode", () => {
+      it("caps gzip inflation before an oversized fork payload is allocated", () => {
+        const compressed = zlib.gzipSync(Buffer.alloc(100 * 1024)).toString("base64");
+        expect(() => gunzipFromBase64(compressed, 1024)).toThrow();
+      });
+
+      it("rejects a fork whose required encoded payload exceeds the transport budget", () => {
+        const transport = makeForkCapsule().forkTransport!;
+        transport.mainFile.contentBase64Gzip = "A".repeat(11);
+
+        expect(() => enforceCrossMachineForkEncodedBudget(transport, undefined, 10)).toThrow(/too large/);
+      });
+
+      it("drops side files when that rescues the fork transport budget", () => {
+        const transport = makeForkCapsule().forkTransport!;
+        transport.mainFile.contentBase64Gzip = "A".repeat(6);
+        transport.sideFiles = [{
+          relPath: "sidecar.jsonl",
+          contentBase64Gzip: "A".repeat(3),
+          uncompressedBytes: 1,
+        }];
+        const transcriptEnvelopes = {
+          contentBase64Gzip: "A".repeat(2),
+          uncompressedBytes: 1,
+          truncated: false,
+        };
+
+        expect(enforceCrossMachineForkEncodedBudget(transport, transcriptEnvelopes, 10)).toBe(true);
+        expect(transport.sideFiles).toBeUndefined();
+      });
+
       it("validates fork transport invariants and fingerprints the whole capsule", async () => {
         installCleanCrossMachineGitFixture();
         const { service } = createService();
@@ -5108,7 +5142,85 @@ describe("createAgentChatService", () => {
         expect(fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"))).toEqual(providerFilesAfterFirst);
       });
 
-      it("materializes and forks a Codex rollout on the destination", async () => {
+      it("re-materializes a fork when the first accept fails after creating the chat", async () => {
+        const branchRef = "feature/handoff-fork-retry";
+        installCleanCrossMachineGitFixture(branchRef);
+        installRealTranscriptParser();
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-retry");
+        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+        const values = new Map<string, unknown>();
+        const { service, sessionService, laneService } = createService({
+          db: {
+            getJson: vi.fn((key: string) => values.get(key) ?? null),
+            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+          },
+        });
+        const sourceEnvelope: AgentChatEventEnvelope = {
+          sessionId: "source-session",
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId: "retry-envelope", text: "Retry this history" },
+        };
+        const capsule = makeForkCapsule({
+          handoffId: "handoff-claude-retry-1",
+          source: {
+            machineName: "Source Mac",
+            sessionId: "source-session",
+            provider: "claude",
+            model: "claude-sonnet-5",
+            title: "Retry fork",
+            laneName: "Retry fork",
+            branchRef,
+            headSha: HANDOFF_TEST_SHA,
+            originUrl: "https://github.com/example/ade.git",
+          },
+          transcriptEnvelopes: {
+            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
+            truncated: false,
+          },
+        });
+        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+        let materializeAttempts = 0;
+        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
+          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
+            materializeAttempts += 1;
+            if (materializeAttempts === 1) throw new Error("mock materialize failure");
+          }
+          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
+        }) as typeof fs.promises.writeFile);
+
+        try {
+          await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
+            .rejects.toThrow("mock materialize failure");
+          expect([...values.values()]).toEqual(expect.arrayContaining([
+            expect.objectContaining({ state: "failed", sessionId: expect.any(String) }),
+          ]));
+
+          const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+          const destinationLane = await laneService.getSummary(accepted.laneId);
+          const targetProviderDir = path.join(
+            process.env.CLAUDE_CONFIG_DIR,
+            "projects",
+            String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
+          );
+          expect(materializeAttempts).toBe(2);
+          expect(fs.readdirSync(targetProviderDir).some((name) => name.endsWith(".jsonl"))).toBe(true);
+          await vi.waitFor(() => {
+            expect(fs.readFileSync(
+              path.join(tmpRoot, ".ade", "transcripts", "chat", `${accepted.session.id}.jsonl`),
+              "utf8",
+            )).toContain("Retry this history");
+          });
+          expect(sessionService.create).toHaveBeenCalledTimes(1);
+        } finally {
+          writeFile.mockRestore();
+        }
+      });
+
+      it("does not clobber a pre-existing Codex rollout and still forks the thread", async () => {
         const branchRef = "feature/handoff-codex-fork";
         installCleanCrossMachineGitFixture(branchRef);
         process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-accept");
@@ -5140,8 +5252,6 @@ describe("createAgentChatService", () => {
           },
         });
         const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-
-        const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
         const now = new Date();
         const rolloutPath = path.join(
           process.env.CODEX_HOME,
@@ -5151,7 +5261,12 @@ describe("createAgentChatService", () => {
           String(now.getDate()).padStart(2, "0"),
           "rollout-source-codex-thread.jsonl",
         );
-        expect(fs.readFileSync(rolloutPath, "utf8")).toBe(rollout);
+        fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+        fs.writeFileSync(rolloutPath, "existing local rollout", "utf8");
+
+        const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+        expect(fs.readFileSync(rolloutPath, "utf8")).toBe("existing local rollout");
         expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
           expect.objectContaining({
             method: "thread/fork",
@@ -5161,11 +5276,14 @@ describe("createAgentChatService", () => {
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith(accepted.session.id, "chat:codex:forked-thread");
       });
 
-      it("exports, imports, and forks an OpenCode session across machines", async () => {
+      it.each([
+        ["plain-text", "Imported session: ses_imported1", "ses_imported1"],
+        ["JSON", JSON.stringify({ sessionID: "ses_json1" }), "ses_json1"],
+      ])("exports, imports, and forks an OpenCode session with %s import output", async (_shape, importStdout, importedId) => {
         installCleanCrossMachineGitFixture();
         installCliCaptureMock((args) => {
           if (args[0] === "export") return { stdout: JSON.stringify({ id: args[1], messages: [] }) };
-          if (args[0] === "import") return { stdout: JSON.stringify({ sessionID: "imported-1" }) };
+          if (args[0] === "import") return { stdout: importStdout };
           return { stdout: "", stderr: "unexpected CLI call", exitCode: 1 };
         });
         vi.mocked(streamText).mockReturnValue({
@@ -5195,8 +5313,8 @@ describe("createAgentChatService", () => {
           capsule: prepared.capsule,
           capsuleFingerprint: prepared.capsuleFingerprint,
         });
-        expect(mockState.openCodeForkCalls).toEqual(expect.arrayContaining([{ id: "imported-1" }]));
-        expect(readPersistedChatState(accepted.session.id).providerSessionId).toBe("imported-1-fork");
+        expect(mockState.openCodeForkCalls).toEqual(expect.arrayContaining([{ id: importedId }]));
+        expect(readPersistedChatState(accepted.session.id).providerSessionId).toBe(`${importedId}-fork`);
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
           accepted.session.id,
           `chat:opencode:${accepted.session.id}`,

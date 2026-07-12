@@ -327,12 +327,38 @@ describe("CrossMachineHandoffModal", () => {
       },
       capsuleFingerprint: "a".repeat(64),
       usedFallbackSummary: false,
-      sanitizedSensitiveContext: false,
+      sanitizedSensitiveContext: true,
     }));
   }
 
   it("defaults to fork and passes mode + sourceProvider into the destination preflight", async () => {
     stubPrepareByMode();
+    vi.mocked(window.ade.remoteRuntime.getConnectionSnapshot).mockResolvedValue({
+      connectedCount: 1,
+      updatedAt: Date.now(),
+      connections: [{
+        target: {
+          id: "machine-1",
+          name: "Studio",
+          hostname: "studio.local",
+          sshUser: null,
+          port: null,
+          sshKeyPath: null,
+          lastSeenArch: "arm64",
+          runtimeBinaryVersion: "1.2.3",
+          lastConnectedAt: Date.now(),
+        },
+        state: "connected",
+        arch: "arm64",
+        version: "1.2.3",
+        route: { kind: "lan", endpoint: "studio.local" },
+        capabilities: { projects: true, machineProjects: { handoffStoragePreflight: true } },
+        projects: [],
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+        connectedAt: Date.now(),
+      }],
+    });
     callAction.mockReset();
     callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string; args: { mode?: string } }) => {
       if (payload.action === "preflightCrossMachineDestination") {
@@ -363,6 +389,11 @@ describe("CrossMachineHandoffModal", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
     expect(screen.getByText(/Sent: the full conversation history/i)).toBeTruthy();
+    expect(screen.getByText(/history is sent exactly as recorded — anything pasted into this conversation is included/i)).toBeTruthy();
+    expect(screen.getByText("ADE removed secret-shaped values from your note.")).toBeTruthy();
+    expect(screen.getByTestId("insecure-consent-review").textContent).toBe(
+      "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded.",
+    );
 
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "fork" }));
     expect(callAction).toHaveBeenNthCalledWith(
@@ -376,6 +407,7 @@ describe("CrossMachineHandoffModal", () => {
     );
 
     // Send payload path is unchanged: only capsule + fingerprint travel.
+    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
     expect(await screen.findByText("Handoff complete")).toBeTruthy();
     expect(callAction).toHaveBeenNthCalledWith(
@@ -411,6 +443,69 @@ describe("CrossMachineHandoffModal", () => {
     const forkButton = await screen.findByRole("button", { name: /^fork$/i });
     expect(forkButton).toHaveProperty("disabled", true);
     expect(screen.getByText(/Cursor can't fork chat history/i)).toBeTruthy();
+  });
+
+  it("defaults Droid handoffs to brief while keeping fork selectable", async () => {
+    stubPrepareByMode();
+    callAction.mockReset();
+    callAction.mockImplementation(async (_target: string, _project: string, payload: { action: string }) => {
+      if (payload.action === "preflightCrossMachineDestination") return { result: preflightResult() };
+      return { result: ACCEPT_RESULT };
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="droid"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("button", { name: /^brief$/i })).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /^fork$/i })).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "brief" })));
+  });
+
+  it("offers the brief fallback for a non-portable Droid fork", async () => {
+    prepareCrossMachineHandoff.mockReset();
+    prepareCrossMachineHandoff.mockRejectedValueOnce(
+      new Error("Droid sessions aren't portable between machines yet. Use a brief handoff instead."),
+    );
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="droid"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        forkAvailableModelIds={["openai/gpt-5.5"]}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^fork$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/history can't move between machines — a brief works everywhere/i)).toBeTruthy();
   });
 
   it("offers a one-click brief when the destination is too old to fork", async () => {

@@ -34,6 +34,7 @@ import {
   requireRemoteRuntimeRouteKind,
 } from "../../../shared/crossMachineHandoff";
 import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
 import type { ProviderFamily } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { cn } from "../ui/cn";
@@ -54,14 +55,7 @@ type HandoffMode = "brief" | "fork";
 type ForkHandoffSupport = { supported: boolean; reason?: string };
 
 function providerDisplayLabel(provider: AgentChatProvider | null | undefined): string {
-  switch (provider) {
-    case "claude": return "Claude";
-    case "codex": return "Codex";
-    case "cursor": return "Cursor";
-    case "droid": return "Droid";
-    case "opencode": return "OpenCode";
-    default: return "This chat";
-  }
+  return providerDisplayLabelShared(provider, "This chat");
 }
 
 /**
@@ -76,6 +70,9 @@ function forkFallbackReasonForPrepareError(message: string): string | null {
   }
   if (/can'?t be forked|cannot be forked|not forkable/i.test(message)) {
     return "This chat's history can't be forked — a brief works everywhere.";
+  }
+  if (/aren'?t portable|not portable/i.test(message)) {
+    return "This chat's history can't move between machines — a brief works everywhere.";
   }
   return null;
 }
@@ -293,11 +290,11 @@ export function CrossMachineHandoffModal({
     setRouteApproved(false);
     setResult(null);
     setSourceMarkerWarning(null);
-    setMode(sourceProviderSupportsFork ? "fork" : "brief");
+    setMode(sourceProvider === "droid" ? "brief" : (sourceProviderSupportsFork ? "fork" : "brief"));
     setForkHandoffSupport(null);
     setForkFallbackReason(null);
     void loadInitial();
-  }, [loadInitial, open, sourceProviderSupportsFork]);
+  }, [loadInitial, open, sourceProvider, sourceProviderSupportsFork]);
 
   useEffect(() => {
     if (!open) return;
@@ -440,6 +437,7 @@ export function CrossMachineHandoffModal({
   // One-click recovery: drop to a brief and re-run prepare + preflight. Used both
   // when the source history is too big and when the destination can't fork.
   const sendAsBrief = useCallback(() => {
+    setStage("choose");
     setMode("brief");
     setForkHandoffSupport(null);
     setForkFallbackReason(null);
@@ -580,7 +578,7 @@ export function CrossMachineHandoffModal({
   const routeNeedsApproval = isInsecureRoute(selectedConnection);
   const reviewIsFork = prepared?.capsule.mode === "fork";
   const insecureConsentLine = reviewIsFork
-    ? "This connection is authenticated but not end-to-end encrypted. Your full chat history and branch are sent — never secrets or terminals."
+    ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
   return (
@@ -936,7 +934,7 @@ export function CrossMachineHandoffModal({
                     <>
                       <span>Sent: the full conversation history</span>
                       <span>Sent: the branch and commit, plus your note</span>
-                      <span>Never sent: secrets, terminals, and caches</span>
+                      <span>The history is sent exactly as recorded — anything pasted into this conversation is included.</span>
                     </>
                   ) : (
                     <>
@@ -949,7 +947,9 @@ export function CrossMachineHandoffModal({
                 </div>
                 {prepared.sanitizedSensitiveContext ? (
                   <div className="mt-2 flex items-center gap-1.5 text-[10px] leading-4 text-emerald-200/65">
-                    <CheckCircle size={12} weight="fill" /> ADE removed detected secret-shaped values or source-only absolute paths from the {reviewIsFork ? "history" : "summary"}.
+                    <CheckCircle size={12} weight="fill" /> {reviewIsFork
+                      ? "ADE removed secret-shaped values from your note."
+                      : "ADE removed detected secret-shaped values or source-only absolute paths from the summary."}
                   </div>
                 ) : null}
               </div>

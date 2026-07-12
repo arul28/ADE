@@ -49,6 +49,7 @@ import {
   type TerminalToolType,
 } from "../../../shared/types";
 import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
   buildChatContextAttachmentPrompt,
@@ -241,17 +242,8 @@ const AUTO_CREATE_LANE_OPTION = {
   branchRef: null,
 };
 
-const HANDOFF_PROVIDER_LABELS: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  opencode: "OpenCode",
-  droid: "Droid",
-  cursor: "Cursor",
-};
-
 function handoffProviderDisplayName(provider: string | null | undefined): string {
-  if (!provider) return "this provider";
-  return HANDOFF_PROVIDER_LABELS[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+  return providerDisplayLabel(provider, "this provider");
 }
 
 /**
