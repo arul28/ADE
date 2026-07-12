@@ -8742,9 +8742,11 @@ export function AgentChatPane({
         : visualContextDisplayChips
       : text.length
         ? text
-        : contextAttachmentsSnapshot.length
-          ? "Attached issue context"
-          : text;
+        : attachmentsSnapshot.length
+          ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+          : contextAttachmentsSnapshot.length
+            ? "Attached issue context"
+            : text;
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
@@ -8766,7 +8768,9 @@ export function AgentChatPane({
       let justCreatedSession = false;
       const finalTextPrefix = visualContextPrefix;
       let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
-      if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
+      if (!finalText.trim().length && attachmentsSnapshot.length) {
+        finalText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+      } else if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
         finalText = "Use the attached issue context.";
       }
       const finalDisplayText = visualContextDisplayChips
@@ -8775,7 +8779,9 @@ export function AgentChatPane({
           : visualContextDisplayChips
         : text.length
           ? text
-          : "Attached issue context";
+          : attachmentsSnapshot.length
+            ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+            : "Attached issue context";
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);

@@ -25853,9 +25853,13 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
-    const trimmed = trimmedText.length || !publicContextAttachments.length
+    const trimmed = trimmedText.length
       ? trimmedText
-      : "Use the attached issue context.";
+      : attachments.length
+        ? "Please review the attached files."
+        : publicContextAttachments.length
+          ? "Use the attached issue context."
+          : "";
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
@@ -29302,7 +29306,9 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
-    const routableText = args.text.trim().length > 0 || (args.contextAttachments?.length ?? 0) > 0;
+    const routableText = args.text.trim().length > 0
+      || (args.attachments?.length ?? 0) > 0
+      || (args.contextAttachments?.length ?? 0) > 0;
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       return steer({
         sessionId: args.sessionId,
@@ -29491,9 +29497,9 @@ export function createAgentChatService(args: {
     }
     const trimmed = text.trim();
     const steerId = randomUUID();
-    // Allow context-only steers: if text is empty but issue context attachments
-    // are present, prepareSendMessage will substitute a fallback prompt.
-    if (!trimmed.length && contextAttachments.length === 0) {
+    // Allow attachment-only steers: prepareSendMessage substitutes the same
+    // fallback prompt used by normal attachment-only sends.
+    if (!trimmed.length && attachments.length === 0 && contextAttachments.length === 0) {
       return { steerId, queued: false };
     }
 

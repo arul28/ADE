@@ -24356,7 +24356,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
-    it("does not steer an empty send during an active turn", async () => {
+    it("ignores empty active-turn sends but queues attachment-only steers", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
@@ -24414,9 +24414,30 @@ describe("createAgentChatService", () => {
         event.event.type === "user_message" && event.event.deliveryState === "queued",
       )).toBe(false);
 
+      const attachmentPath = path.join(tmpRoot, "attachment-only-steer.txt");
+      fs.writeFileSync(attachmentPath, "Attachment-only steer context.");
+      const attachmentResult = await service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        attachments: [{ path: attachmentPath, type: "file" }],
+      }, { routeActiveToSteer: true });
+      expect(attachmentResult).toMatchObject({ queued: true, steerId: expect.any(String) });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text === "Please review the attached files."
+        && event.event.deliveryState === "queued"
+        && event.event.attachments?.some((attachment) => attachment.path === attachmentPath),
+      )).toBe(true);
+
       finishActiveTurn();
       await activeTurn;
-      // A queued steer would have started a third stream turn on delivery.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([payload]) =>
+          JSON.stringify(payload).includes("Please review the attached files."),
+        )).toBe(true);
+      });
+      // Claude's persistent streaming-input query consumes the queued steer
+      // without creating a replacement SDK stream.
       expect(streamCall).toBe(2);
     });
 
