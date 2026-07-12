@@ -8848,11 +8848,8 @@ describe("createAgentChatService", () => {
         };
         yield {
           type: "system",
-          subtype: "task_notification",
-          task_id: "bgo5i8f6y",
-          status: "completed",
-          summary: "Process exited",
-          usage: { duration_ms: 9000 },
+          subtype: "background_tasks_changed",
+          tasks: [],
         };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -8871,6 +8868,11 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "running");
       expect((runningRow.event as any).kind).toBe("background_task");
       expect((runningRow.event as any).title).toBe("Run codex gpt-5.6-sol backend implementation (background)");
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bgo5i8f6y"
+        && (e.event as any).status === "completed",
+      )).toBe(true);
       expect(events.some((e) =>
         e.event.type === "scheduled_work_update"
         && (e.event as any).id === "background:foreground-bash",

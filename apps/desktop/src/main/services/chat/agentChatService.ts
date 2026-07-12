@@ -11048,6 +11048,20 @@ export function createAgentChatService(args: {
       });
     }
 
+    // This is a full live-membership level, not a delta. If a shell/Monitor row
+    // ADE previously opened from this level disappears, settle that durable UI
+    // row even when the matching task_notification edge was missed. Keep the
+    // activeSubagents entry intact: level/bookend ordering is unspecified, and
+    // a later real notification must still be able to correct status/summary.
+    for (const taskId of runtime.liveBackgroundTaskIds) {
+      if (nextIds.has(taskId) || !runtime.seenBackgroundTaskIds.has(taskId)) continue;
+      emitClaudeBackgroundTaskUpdate(managed, runtime, {
+        taskId,
+        status: "completed",
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+    }
+
     runtime.liveBackgroundTaskIds.clear();
     for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
     runtime.backgroundTasksLevelObserved = true;
