@@ -605,7 +605,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "start",
     "stop",
   ],
-  storage: ["cleanup", "cleanupPreview", "getSnapshot"],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -3022,6 +3022,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!storageInsightsService) return null;
   return {
     getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
+    compressNow: () => storageInsightsService.compressNow(),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {

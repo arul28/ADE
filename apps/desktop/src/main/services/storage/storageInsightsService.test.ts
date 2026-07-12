@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageCleanupPreview, StorageCleanupTarget } from "../../../shared/types/storage";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createStorageInsightsService } from "./storageInsightsService";
+import { recordLastFailure } from "../runtime/lastFailureStore";
 
 const logger = {
   debug: vi.fn(),
@@ -111,6 +112,73 @@ describe("storageInsightsService", () => {
     expect(byId.chats_history.items.every((item) => !item.path.startsWith(lanePath))).toBe(true);
     expect(byId.lanes_worktrees.items[0]).toMatchObject({ label: "Active lane", laneStatus: "active", safety: "protected" });
     expect(snapshot.totalAdeBytes).toBe(snapshot.categories.reduce((sum, category) => sum + category.bytes, 0));
+  });
+
+  it("reports compressed history bytes separately from remaining compressible bytes", async () => {
+    const compressedPath = path.join(projectRoot, ".ade", "transcripts", "chat", "old.jsonl.gz");
+    const plainPath = path.join(projectRoot, ".ade", "transcripts", "chat", "plain.jsonl");
+    writeSized(compressedPath, 17);
+    writeSized(plainPath, 23);
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60_000);
+    fs.utimesSync(compressedPath, old, old);
+    fs.utimesSync(plainPath, old, old);
+
+    const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger }).getSnapshot();
+    const history = snapshot.categories.find((category) => category.id === "chats_history")!;
+
+    expect(history.compressedBytes).toBe(17);
+    expect(history.compressibleBytes).toBe(23);
+  });
+
+  it("compressNow runs one bounded history sweep", async () => {
+    const transcriptPath = path.join(projectRoot, ".ade", "transcripts", "chat", "compress-now.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, `${"repeatable history ".repeat(100)}\n`);
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60_000);
+    fs.utimesSync(transcriptPath, old, old);
+    const diskPressure = {
+      getSnapshot: () => ({
+        state: "normal" as const,
+        freeBytes: 100 * 1024 ** 3,
+        totalBytes: 200 * 1024 ** 3,
+        freeFraction: 0.5,
+        perRoot: [],
+        sampledAt: new Date().toISOString(),
+      }),
+      canPerform: () => ({ allowed: true as const, state: "normal" as const }),
+      subscribe: () => () => {},
+    };
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      diskPressure,
+      isPathActive: () => false,
+    });
+
+    await expect(service.compressNow()).resolves.toMatchObject({ filesCompressed: 1 });
+    expect(fs.existsSync(transcriptPath)).toBe(false);
+    expect(fs.existsSync(`${transcriptPath}.gz`)).toBe(true);
+    service.dispose();
+  });
+
+  it("keeps old recovery backups review-first while a database-open failure is fresh", async () => {
+    const backupPath = path.join(projectRoot, ".ade", "ade.db.recovery-old.bak");
+    writeSized(backupPath, 19);
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    fs.utimesSync(backupPath, old, old);
+    recordLastFailure({ kind: "project", projectRoot }, {
+      code: "db_integrity",
+      component: "project_db_open",
+      message: "database failed",
+      projectRoot,
+    });
+
+    const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger }).getSnapshot();
+    const backup = snapshot.categories.find((category) => category.id === "recovery_backups")!.items[0];
+
+    expect(backup).toMatchObject({ path: backupPath, safety: "review_first" });
   });
 
   it("classifies active, archived, and orphaned worktrees, including orphaned bytes", async () => {

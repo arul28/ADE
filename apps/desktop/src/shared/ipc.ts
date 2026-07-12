@@ -4,6 +4,7 @@ export const IPC = {
   appGetResourceUsage: "ade.app.getResourceUsage",
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
+  storageCompressNow: "ade.storage.compressNow",
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",
   appGetLatestRelease: "ade.app.getLatestRelease",

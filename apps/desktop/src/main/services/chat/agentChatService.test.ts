@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
@@ -17399,6 +17400,48 @@ describe("createAgentChatService", () => {
   });
 
   describe("getChatEventHistory", () => {
+    it("hydrates identical events from a compressed transcript", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-01T10:00:00.000Z",
+        event: { type: "text", text: "compressed history" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(`${transcriptFile}.gz`, gzipSync(`${JSON.stringify(envelope)}\n`));
+      fs.rmSync(transcriptFile, { force: true });
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("compressed history") ? [envelope] : []);
+
+      expect(service.getChatEventHistory(session.id).events).toEqual([envelope]);
+    });
+
+    it("prefers the plain transcript in a both-exist crash window", async () => {
+      const { service, logger } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const plainEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-01T10:00:00.000Z",
+        event: { type: "text", text: "plain wins" },
+        sequence: 1,
+      };
+      const gzipEnvelope: AgentChatEventEnvelope = {
+        ...plainEnvelope,
+        event: { type: "text", text: "gzip loses" },
+      };
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(plainEnvelope)}\n`);
+      fs.writeFileSync(`${transcriptFile}.gz`, gzipSync(`${JSON.stringify(gzipEnvelope)}\n`));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("plain wins") ? [plainEnvelope] : [gzipEnvelope]);
+
+      expect(service.getChatEventHistory(session.id).events).toEqual([plainEnvelope]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.transcript_plain_preferred",
+        expect.objectContaining({ path: expect.stringContaining(`${session.id}.jsonl`) }),
+      );
+    });
+
     it("returns an empty history for an unknown session", async () => {
       const { service } = createService();
       const history = service.getChatEventHistory("unknown-session");

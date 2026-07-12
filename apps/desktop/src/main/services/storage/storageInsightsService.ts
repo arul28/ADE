@@ -8,6 +8,7 @@ import type {
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
+  StorageCompressionResult,
   StorageItem,
   StorageSafety,
   StorageSnapshot,
@@ -15,6 +16,13 @@ import type {
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { readLastFailure } from "../runtime/lastFailureStore";
+import type { DiskPressureMonitor } from "./diskPressure";
+import {
+  createHistoryCompressor,
+  type CompressionRoots,
+  type CompressionSweepSummary,
+} from "./historyCompression";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
@@ -24,6 +32,8 @@ const MAX_CATEGORY_ITEMS = 50;
 const STALE_AGE_MS = 7 * 24 * 60 * 60_000;
 const COMPRESSIBLE_AGE_MS = 30 * 24 * 60 * 60_000;
 const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/;
+const HISTORY_SWEEP_START_DELAY_MS = 10 * 60_000;
+const HISTORY_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
 
 type LaneRow = {
   id: string;
@@ -45,6 +55,7 @@ type PathSize = {
   fileCount: number;
   lastModifiedMs: number | null;
   oldFileBytes: number;
+  compressedBytes: number;
 };
 
 type ValidatedTarget = {
@@ -63,7 +74,41 @@ export type StorageInsightsServiceOptions = {
   cacheTtlMs?: number;
   scanEntryLimit?: number;
   scanBudgetMs?: number;
+  diskPressure?: DiskPressureMonitor | null;
+  isPathActive?: (path: string) => boolean;
 };
+
+export function isObsoleteRecoveryBackup(
+  backupPath: string,
+  options: { projectRoot: string; db: AdeDb; now?: number },
+): boolean {
+  const now = options.now ?? Date.now();
+  if (!RECOVERY_BACKUP_PATTERN.test(path.basename(backupPath))) return false;
+  let backup: fs.Stats;
+  try {
+    backup = fs.statSync(backupPath);
+  } catch {
+    return false;
+  }
+  if (!backup.isFile() || now - backup.mtimeMs <= STALE_AGE_MS) return false;
+  const lastFailure = readLastFailure({ kind: "project", projectRoot: options.projectRoot });
+  const failureAt = lastFailure ? Date.parse(lastFailure.at) : Number.NaN;
+  if (
+    lastFailure?.component === "project_db_open"
+    && Number.isFinite(failureAt)
+    && now - failureAt >= 0
+    && now - failureAt <= STALE_AGE_MS
+  ) {
+    return false;
+  }
+  try {
+    const rows = options.db.all<Record<string, unknown>>("pragma quick_check");
+    const messages = rows.map((row) => String(Object.values(row)[0] ?? "").toLowerCase());
+    return messages.length === 1 && messages[0] === "ok";
+  } catch {
+    return false;
+  }
+}
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -138,7 +183,7 @@ async function walkPath(
   state: WalkState | null,
   excludedRoots: readonly string[] = [],
 ): Promise<PathSize> {
-  const result: PathSize = { bytes: 0, fileCount: 0, lastModifiedMs: null, oldFileBytes: 0 };
+  const result: PathSize = { bytes: 0, fileCount: 0, lastModifiedMs: null, oldFileBytes: 0, compressedBytes: 0 };
   const pending = [path.resolve(rootPath)];
   const oldBefore = Date.now() - COMPRESSIBLE_AGE_MS;
 
@@ -178,7 +223,8 @@ async function walkPath(
       } else {
         result.bytes += entry.stat.size;
         result.fileCount += 1;
-        if (entry.stat.mtimeMs < oldBefore) result.oldFileBytes += entry.stat.size;
+        if (entry.currentPath.endsWith(".gz")) result.compressedBytes += entry.stat.size;
+        else if (entry.stat.mtimeMs < oldBefore) result.oldFileBytes += entry.stat.size;
       }
     }
   }
@@ -206,6 +252,52 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const scanBudgetMs = options.scanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
   let cachedSnapshot: { value: StorageSnapshot; createdAt: number } | null = null;
   const previewIdentities = new Map<string, string>();
+  const compressionRoots: CompressionRoots = [
+    { path: layout.chatTranscriptsDir, kind: "chat_transcript" },
+    // PTY transcripts are direct children. Nested process/test logs have
+    // independent writers and are deliberately excluded from automatic work.
+    { path: layout.transcriptsDir, kind: "terminal_log", recursive: false },
+  ];
+  const compressor = createHistoryCompressor({
+    logger: options.logger,
+    diskPressure: options.diskPressure,
+    // Without the runtime's in-memory ownership signal, compression is unsafe.
+    isPathActive: options.isPathActive ?? (() => true),
+  });
+  let sweepFlight: Promise<CompressionSweepSummary> | null = null;
+  let firstSweepTimer: ReturnType<typeof setTimeout> | null = null;
+  let dailySweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  const runCompressionSweep = (opts?: { maxFiles?: number }): Promise<CompressionSweepSummary> => {
+    if (sweepFlight) return sweepFlight;
+    sweepFlight = compressor.runIdleSweep(compressionRoots, opts).finally(() => {
+      sweepFlight = null;
+      cachedSnapshot = null;
+    });
+    return sweepFlight;
+  };
+
+  if (options.isPathActive && options.diskPressure) {
+    firstSweepTimer = setTimeout(() => {
+      firstSweepTimer = null;
+      void runCompressionSweep().catch((error) => {
+        options.logger.warn("storage.history_sweep_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      dailySweepTimer = setInterval(() => {
+        void runCompressionSweep().catch((error) => {
+          options.logger.warn("storage.history_sweep_failed", {
+            projectRoot,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, HISTORY_SWEEP_INTERVAL_MS);
+      dailySweepTimer.unref?.();
+    }, HISTORY_SWEEP_START_DELAY_MS);
+    firstSweepTimer.unref?.();
+  }
 
   const listLaneRows = (): LaneRow[] => options.db.all<LaneRow>(
     "select id, name, worktree_path, archived_at from lanes",
@@ -230,7 +322,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     detail?: string;
     laneStatus?: StorageItem["laneStatus"];
     excludedRoots?: string[];
-  }): Promise<{ item: StorageItem; oldFileBytes: number } | null> => {
+  }): Promise<{ item: StorageItem; oldFileBytes: number; compressedBytes: number } | null> => {
     const anchor = isSameOrWithin(projectRoot, args.path)
       ? projectRoot
       : isSameOrWithin(adeHome, args.path)
@@ -253,6 +345,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         ...(args.laneStatus ? { laneStatus: args.laneStatus } : {}),
       },
       oldFileBytes: size.oldFileBytes,
+      compressedBytes: size.compressedBytes,
     };
   };
 
@@ -262,6 +355,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     fallbackSafety: StorageSafety,
     state: WalkState,
     compressibleBytes?: number,
+    compressedBytes?: number,
   ): StorageCategorySnapshot => {
     const sorted = [...allItems].sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
     if (sorted.length > MAX_CATEGORY_ITEMS) state.truncated = true;
@@ -272,6 +366,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       safety: dominantSafety(allItems, fallbackSafety),
       items: sorted.slice(0, MAX_CATEGORY_ITEMS),
       ...(compressibleBytes == null ? {} : { compressibleBytes }),
+      ...(compressedBytes == null ? {} : { compressedBytes }),
     };
   };
 
@@ -290,6 +385,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     };
 
     let compressibleBytes = 0;
+    let compressedBytes = 0;
     for (const [chatPath, label] of [
       [layout.transcriptsDir, "Chat and terminal history"],
       [path.join(layout.cacheDir, "terminal-snapshots"), "Terminal snapshots"],
@@ -298,6 +394,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (entry) {
         add("chats_history", entry.item);
         compressibleBytes += entry.oldFileBytes;
+        compressedBytes += entry.compressedBytes;
       }
     }
 
@@ -439,7 +536,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         base: layout.adeDir,
         path: backupPath,
         label: "Recovery backup",
-        safety: "review_first",
+        safety: isObsoleteRecoveryBackup(backupPath, { projectRoot, db: options.db })
+          ? "safe_to_remove"
+          : "review_first",
         state,
       }))?.item);
     }
@@ -456,7 +555,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const categories = [
-      buildCategory("chats_history", categoryItems.get("chats_history") ?? [], "compressible", state, compressibleBytes),
+      buildCategory("chats_history", categoryItems.get("chats_history") ?? [], "compressible", state, compressibleBytes, compressedBytes),
       buildCategory("lanes_worktrees", categoryItems.get("lanes_worktrees") ?? [], "review_first", state),
       buildCategory("build_release", categoryItems.get("build_release") ?? [], "safe_to_remove", state),
       buildCategory("caches", categoryItems.get("caches") ?? [], "safe_to_remove", state),
@@ -641,5 +740,17 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return result;
   };
 
-  return { getSnapshot, cleanupPreview, cleanup };
+  const compressNow = async (): Promise<StorageCompressionResult> => {
+    const result = await runCompressionSweep();
+    return { filesCompressed: result.filesCompressed, savedBytes: result.savedBytes };
+  };
+
+  const dispose = (): void => {
+    if (firstSweepTimer) clearTimeout(firstSweepTimer);
+    if (dailySweepTimer) clearInterval(dailySweepTimer);
+    firstSweepTimer = null;
+    dailySweepTimer = null;
+  };
+
+  return { getSnapshot, cleanupPreview, cleanup, compressNow, dispose };
 }

@@ -28,6 +28,12 @@ export type StorageCategorySnapshot = {
   safety: StorageSafety;
   items: StorageItem[];
   compressibleBytes?: number;
+  compressedBytes?: number;
+};
+
+export type StorageCompressionResult = {
+  filesCompressed: number;
+  savedBytes: number;
 };
 
 export type StorageSnapshot = {

@@ -646,6 +646,7 @@ import type {
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
+  StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
@@ -717,6 +718,7 @@ declare global {
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
         getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
+        compressNow: () => Promise<StorageCompressionResult>;
         cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],

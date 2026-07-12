@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import { createSearchService, type SearchService } from "./searchService";
@@ -129,6 +130,37 @@ describe("searchService", () => {
     expect(hit!.snippet.toLowerCase()).toContain("flaky");
     expect(hit!.matchRanges.length).toBeGreaterThan(0);
     expect(hit!.deepLink).toContain("event=0");
+  });
+
+  it("rebuilds searchable chat and terminal history from compressed transcripts", async () => {
+    const chat = makeSession({ id: "chat-gz", title: "Compressed chat" });
+    const terminalPath = path.join(root, "transcripts", "terminal-gz.log");
+    const terminal = makeSession({
+      id: "terminal-gz",
+      title: "Compressed terminal",
+      toolType: "shell",
+      status: "completed",
+      transcriptPath: terminalPath,
+    });
+    sessions.push(chat, terminal);
+    writeChatLine(
+      chat.id,
+      { type: "user_message", text: "compressed quasar chat" },
+      "2026-07-05T10:00:00.000Z",
+    );
+    writeTerminalOutput(terminal.id, "compressed nebula terminal\n");
+    const chatPath = path.join(root, "transcripts", "chat", `${chat.id}.jsonl`);
+    fs.writeFileSync(`${chatPath}.gz`, gzipSync(fs.readFileSync(chatPath)));
+    fs.unlinkSync(chatPath);
+    fs.writeFileSync(`${terminalPath}.gz`, gzipSync(fs.readFileSync(terminalPath)));
+    fs.unlinkSync(terminalPath);
+
+    service.notifyChatEvent(chat.id);
+    service.notifyTerminalData(terminal.id);
+    await service.processPendingNow();
+
+    expect((await service.query({ query: "quasar" })).results.some((result) => result.kind === "chat")).toBe(true);
+    expect((await service.query({ query: "nebula" })).results.some((result) => result.kind === "terminal")).toBe(true);
   });
 
   it("uses persisted chat envelope sequence for deep link anchors", async () => {

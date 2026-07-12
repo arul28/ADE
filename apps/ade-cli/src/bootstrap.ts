@@ -1388,6 +1388,10 @@ export async function createAdeRuntime(args: {
     adeHome: resolveMachineAdeLayout().adeDir,
     db,
     logger,
+    diskPressure: diskPressureMonitor,
+    isPathActive: (filePath) =>
+      Boolean(agentChatService?.isTranscriptPathActive(filePath))
+      || ptyService.isTranscriptPathActive(filePath),
   });
   const budgetCapService = createBudgetCapService({
     db,
@@ -1654,6 +1658,7 @@ export async function createAdeRuntime(args: {
       swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
+      swallow(() => storageInsightsService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => runtimeDiagnosticsService.dispose());

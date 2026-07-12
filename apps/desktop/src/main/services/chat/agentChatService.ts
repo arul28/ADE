@@ -124,6 +124,10 @@ import {
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
+import {
+  readHistoryFileSync,
+  reinflateHistoryFileSync,
+} from "../storage/historyCompression";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -2378,6 +2382,9 @@ function flushQueuedTranscriptWrite(filePath: string): void {
   if (!pending.chunks.length) return;
   try {
     fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
+    reinflateHistoryFileSync(normalizedPath, (targetPath, data) => {
+      writeFileAtomic(targetPath, data, { fsync: true });
+    });
     let chunk = Buffer.concat(pending.chunks);
     if (!checkedTranscriptTails.has(normalizedPath)) {
       checkedTranscriptTails.add(normalizedPath);
@@ -7854,7 +7861,7 @@ export function createAgentChatService(args: {
     try {
       const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
       if (!transcriptPath) return [];
-      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
       return [];
@@ -7865,6 +7872,27 @@ export function createAgentChatService(args: {
     transcriptPath: string,
     stat: fs.Stats,
   ): { raw: string; truncated: boolean; startOffset: number } => {
+    if (transcriptPath.endsWith(".gz")) {
+      const full = readHistoryFileSync(transcriptPath);
+      const size = full.length;
+      const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
+      let slice = full.subarray(start);
+      let startOffset = start;
+      if (start > 0 && slice.length > 0) {
+        const nextNewline = slice.indexOf(0x0a);
+        if (nextNewline >= 0 && start + nextNewline + 1 < size) {
+          slice = slice.subarray(nextNewline + 1);
+          startOffset = start + nextNewline + 1;
+        } else {
+          slice = Buffer.alloc(0);
+        }
+      }
+      return {
+        raw: slice.toString("utf8"),
+        truncated: start > 0,
+        startOffset: start > 0 ? startOffset : 0,
+      };
+    }
     const size = stat.size;
     const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
     // Read one extra byte before the window (when possible) so a window
@@ -7973,14 +8001,21 @@ export function createAgentChatService(args: {
     };
     for (const candidatePath of transcriptPathCandidatesForSessionId(sessionId, managed)) {
       try {
-        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+        const plainPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        const gzipPath = resolveReadableChatPath(`${candidatePath}.gz`, "agent_chat.transcript_read_skipped_path_outside_ade");
+        const plainExists = Boolean(plainPath && fs.existsSync(plainPath));
+        const gzipExists = Boolean(gzipPath && fs.existsSync(gzipPath));
+        if (plainExists && gzipExists) {
+          logger.warn("agent_chat.transcript_plain_preferred", { path: plainPath, compressedPath: gzipPath });
+        }
+        const transcriptPath = plainExists ? plainPath : gzipExists ? gzipPath : null;
+        if (!transcriptPath) continue;
         const stat = fs.statSync(transcriptPath);
         if (!stat.isFile()) continue;
         const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath);
         const candidate: Candidate = {
           path: transcriptPath,
-          size: stat.size,
+          size: transcriptPath.endsWith(".gz") ? readHistoryFileSync(transcriptPath).length : stat.size,
           mtimeMs: stat.mtimeMs,
           envelopeCount: parsed.envelopes.length,
           hasCapNotice: parsed.hasCapNotice,
@@ -8027,7 +8062,7 @@ export function createAgentChatService(args: {
     const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
     if (!transcriptPath) return [];
     try {
-      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
         .filter((entry) => entry.sessionId === sessionId);
     } catch {
       return [];
@@ -8050,7 +8085,7 @@ export function createAgentChatService(args: {
       }
 
       const map = new Map<string, AgentChatSubagentSnapshot>();
-      const raw = fs.readFileSync(transcriptPath, "utf8");
+      const raw = readHistoryFileSync(transcriptPath).toString("utf8");
       for (const line of raw.split(/\r?\n/)) {
         if (!line.includes("subagent_")) continue;
         let envelope: AgentChatEventEnvelope | null = null;
@@ -36187,6 +36222,18 @@ export function createAgentChatService(args: {
     });
   });
 
+  const isTranscriptPathActive = (filePath: string): boolean => {
+    const normalized = path.resolve(filePath);
+    if (pendingTranscriptWrites.has(normalized) || checkedTranscriptTails.has(normalized)) return true;
+    for (const managed of managedSessions.values()) {
+      if (transcriptPathCandidatesForSessionId(managed.session.id, managed)
+        .some((candidate) => path.resolve(candidate) === normalized)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   return {
     createSession,
     importExternalChatSession,
@@ -36256,6 +36303,7 @@ export function createAgentChatService(args: {
     forceDisposeAll,
     updateSession,
     reconcileThreadPointerFromRedundantSources,
+    isTranscriptPathActive,
     warmupModel,
     listSubagents,
     getSessionCapabilities,

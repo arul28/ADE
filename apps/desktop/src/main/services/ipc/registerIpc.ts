@@ -604,6 +604,7 @@ import type {
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
+  StorageCompressionResult,
   StorageSnapshot,
 } from "../../../shared/types/storage";
 import type { createBudgetCapService } from "../usage/budgetCapService";
@@ -3565,6 +3566,11 @@ export function registerIpc({
   ): Promise<StorageSnapshot> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.compressNow();
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (

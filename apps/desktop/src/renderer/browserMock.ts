@@ -3283,6 +3283,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         truncated: false,
       }),
       cleanupPreview: resolvedArg({ items: [], totalBytes: 0, blocked: [] }),
+      compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
     },
     project: {

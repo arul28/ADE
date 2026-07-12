@@ -3511,6 +3511,10 @@ app.whenReady().then(async () => {
       adeHome: machineAdeLayout.adeDir,
       db,
       logger,
+      diskPressure: diskPressureMonitor,
+      isPathActive: (filePath) =>
+        agentChatService.isTranscriptPathActive(filePath)
+        || ptyService.isTranscriptPathActive(filePath),
     });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
@@ -4460,6 +4464,11 @@ app.whenReady().then(async () => {
       ctx.rpcSocketServer?.close();
     } catch {
       // ignore
+    }
+    try {
+      ctx.storageInsightsService?.dispose();
+    } catch {
+      // Scheduled maintenance teardown is best effort.
     }
     try {
       if (ctx.rpcSocketPath && !isAdeRuntimeNamedPipePath(ctx.rpcSocketPath)) {

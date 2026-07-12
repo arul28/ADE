@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
@@ -77,6 +78,24 @@ describe("clampHistoryPageBytes", () => {
 });
 
 describe("readTranscriptHistoryPage", () => {
+  it("returns identical events from a compressed transcript", () => {
+    const { size } = writeTranscript([
+      envelopeLine({ text: "compressed first", sequence: 1 }),
+      envelopeLine({ text: "compressed second", sequence: 2 }),
+    ]);
+    const compressedPath = `${transcriptPath}.gz`;
+    fs.writeFileSync(compressedPath, gzipSync(fs.readFileSync(transcriptPath)));
+    fs.unlinkSync(transcriptPath);
+
+    const page = readTranscriptHistoryPage({
+      transcriptPath: compressedPath,
+      sessionId: SESSION_ID,
+      beforeOffset: size,
+    });
+
+    expect(page.envelopes.map(eventText)).toEqual(["compressed first", "compressed second"]);
+  });
+
   it("returns an empty head-reached page for beforeOffset <= 0", () => {
     writeTranscript([envelopeLine({ text: "a" })]);
     for (const beforeOffset of [0, -1, Number.NaN]) {

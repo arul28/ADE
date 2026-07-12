@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { readHistoryFileSync } from "../storage/historyCompression";
 
 /**
  * Byte-window pager for chat transcript JSONL files.
@@ -67,6 +68,27 @@ export function readTranscriptHistoryPage(args: {
   if (beforeOffset <= 0) return { ...EMPTY_PAGE };
 
   const pageBytes = clampHistoryPageBytes(args.maxBytes);
+  if (transcriptPath.endsWith(".gz")) {
+    const full = readHistoryFileSync(transcriptPath);
+    const end = Math.min(beforeOffset, full.length);
+    if (end <= 0) return { ...EMPTY_PAGE };
+    const start = Math.max(0, end - pageBytes);
+    const readStart = Math.max(0, start - 1);
+    let slice = full.subarray(readStart, end);
+    let startOffset = readStart;
+    if (readStart > 0) {
+      const firstNewline = slice.indexOf(0x0a);
+      const lineStart = firstNewline >= 0 ? readStart + firstNewline + 1 : -1;
+      if (lineStart < 0 || lineStart >= end) {
+        return { envelopes: [], startOffset: start, hasMore: start > 0 };
+      }
+      startOffset = lineStart;
+      slice = slice.subarray(firstNewline + 1);
+    }
+    const envelopes = parseAgentChatTranscript(slice.toString("utf8"))
+      .filter((entry) => entry.sessionId === sessionId);
+    return { envelopes, startOffset, hasMore: startOffset > 0 };
+  }
   const stat = fs.statSync(transcriptPath);
   const end = Math.min(beforeOffset, stat.size);
   if (end <= 0) return { ...EMPTY_PAGE };

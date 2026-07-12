@@ -9,6 +9,7 @@ import type {
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
+  StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
 import type {
@@ -3304,6 +3305,10 @@ contextBridge.exposeInMainWorld("ade", {
     getSnapshot: async (args: { forceRefresh?: boolean } = {}): Promise<StorageSnapshot> =>
       callProjectRuntimeActionOr("storage", "getSnapshot", { args }, () =>
         ipcRenderer.invoke(IPC.storageGetSnapshot, args),
+      ),
+    compressNow: async (): Promise<StorageCompressionResult> =>
+      callProjectRuntimeActionOr("storage", "compressNow", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.storageCompressNow),
       ),
     cleanupPreview: async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> =>
       callProjectRuntimeActionOr("storage", "cleanupPreview", { args: { targets } }, () =>

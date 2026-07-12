@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readHistoryFileSync } from "../storage/historyCompression";
 import { Buffer } from "node:buffer";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -531,16 +532,18 @@ export function createSearchService(deps: SearchServiceDeps) {
   const chatTranscriptPathFor = (session: TerminalSessionSummary): string | null => {
     const durable = path.join(deps.chatTranscriptsDir, `${session.id}.jsonl`);
     if (fs.existsSync(durable)) return durable;
+    if (fs.existsSync(`${durable}.gz`)) return `${durable}.gz`;
     const legacy = path.join(deps.transcriptsDir, `${session.id}.chat.jsonl`);
     if (fs.existsSync(legacy)) return legacy;
+    if (fs.existsSync(`${legacy}.gz`)) return `${legacy}.gz`;
     // Only trust the row's transcriptPath when it is a chat JSONL — terminal
     // sessions carry a .log path here.
     if (
       session.transcriptPath &&
       session.transcriptPath.endsWith(".jsonl") &&
-      fs.existsSync(session.transcriptPath)
+      (fs.existsSync(session.transcriptPath) || fs.existsSync(`${session.transcriptPath}.gz`))
     ) {
-      return session.transcriptPath;
+      return fs.existsSync(session.transcriptPath) ? session.transcriptPath : `${session.transcriptPath}.gz`;
     }
     return null;
   };
@@ -567,7 +570,9 @@ export function createSearchService(deps: SearchServiceDeps) {
 
     let source = getSource(sourceId);
     const priorState = source.state ? (JSON.parse(source.state) as { path?: string }) : null;
-    if (priorState?.path && priorState.path !== filePath) {
+    const canonicalFilePath = filePath.endsWith(".gz") ? filePath.slice(0, -3) : filePath;
+    const canonicalPriorPath = priorState?.path?.endsWith(".gz") ? priorState.path.slice(0, -3) : priorState?.path;
+    if (canonicalPriorPath && canonicalPriorPath !== canonicalFilePath) {
       // Transcript moved (durable file appeared) — reindex from scratch.
       withTransaction(() => {
         deleteDocsWhere("session_id = ? AND kind = 'chat' AND doc_id NOT LIKE '%:meta'", [sessionId]);
@@ -575,34 +580,47 @@ export function createSearchService(deps: SearchServiceDeps) {
       source = { cursor: 0, docSeq: 0, state: null };
     }
 
-    let stat: fs.Stats;
+    let fileSize: number;
+    let compressed: Buffer | null = null;
     try {
-      stat = await fs.promises.stat(filePath);
+      if (filePath.endsWith(".gz")) {
+        compressed = readHistoryFileSync(filePath);
+        fileSize = compressed.length;
+      } else {
+        fileSize = (await fs.promises.stat(filePath)).size;
+      }
     } catch {
       return;
     }
-    if (stat.size < source.cursor) {
+    if (fileSize < source.cursor) {
       // Truncated/rewritten (e.g. storage compaction) — reindex from scratch.
       withTransaction(() => {
         deleteDocsWhere("session_id = ? AND kind = 'chat' AND doc_id NOT LIKE '%:meta'", [sessionId]);
       });
       source = { cursor: 0, docSeq: 0, state: null };
     }
-    if (stat.size === source.cursor) {
+    if (fileSize === source.cursor) {
       putSource(sourceId, "chat-session", source.cursor, source.docSeq, JSON.stringify({ path: filePath }));
       return;
     }
 
-    const readEnd = Math.min(stat.size, source.cursor + MAX_READ_BYTES_PER_PASS);
-    const buf = Buffer.alloc(readEnd - source.cursor);
-    const handle = await fs.promises.open(filePath, "r");
-    try {
-      await handle.read(buf, 0, buf.length, source.cursor);
-    } finally {
-      await handle.close();
+    const readEnd = compressed
+      ? fileSize
+      : Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    let buf: Buffer;
+    if (compressed) {
+      buf = compressed.subarray(source.cursor, readEnd);
+    } else {
+      buf = Buffer.alloc(readEnd - source.cursor);
+      const handle = await fs.promises.open(filePath, "r");
+      try {
+        await handle.read(buf, 0, buf.length, source.cursor);
+      } finally {
+        await handle.close();
+      }
     }
     const lastNewline = buf.lastIndexOf(0x0a);
-    if (lastNewline < 0 && readEnd < stat.size) {
+    if (lastNewline < 0 && readEnd < fileSize) {
       // A single line larger than the read window; skip past it defensively.
       putSource(sourceId, "chat-session", readEnd, source.docSeq, JSON.stringify({ path: filePath }));
       enqueue("chat-session", sessionId, 0);
@@ -652,13 +670,17 @@ export function createSearchService(deps: SearchServiceDeps) {
       putSource(sourceId, "chat-session", source.cursor + consumed, docSeq, JSON.stringify({ path: filePath }));
     });
 
-    if (source.cursor + consumed < stat.size) enqueue("chat-session", sessionId, 0);
+    if (source.cursor + consumed < fileSize) enqueue("chat-session", sessionId, 0);
   };
 
   const terminalTranscriptPathFor = (session: TerminalSessionSummary): string | null => {
-    if (session.transcriptPath && session.transcriptPath.endsWith(".log")) return session.transcriptPath;
+    if (session.transcriptPath && session.transcriptPath.endsWith(".log")) {
+      if (fs.existsSync(session.transcriptPath)) return session.transcriptPath;
+      if (fs.existsSync(`${session.transcriptPath}.gz`)) return `${session.transcriptPath}.gz`;
+    }
     const fallback = path.join(deps.transcriptsDir, `${session.id}.log`);
-    return fs.existsSync(fallback) ? fallback : null;
+    if (fs.existsSync(fallback)) return fallback;
+    return fs.existsSync(`${fallback}.gz`) ? `${fallback}.gz` : null;
   };
 
   const processTerminalSession = async (sessionId: string): Promise<void> => {
@@ -677,30 +699,43 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (!filePath) return;
 
     let source = getSource(sourceId);
-    let stat: fs.Stats;
+    let fileSize: number;
+    let compressed: Buffer | null = null;
     try {
-      stat = await fs.promises.stat(filePath);
+      if (filePath.endsWith(".gz")) {
+        compressed = readHistoryFileSync(filePath);
+        fileSize = compressed.length;
+      } else {
+        fileSize = (await fs.promises.stat(filePath)).size;
+      }
     } catch {
       return;
     }
-    if (stat.size < source.cursor) {
+    if (fileSize < source.cursor) {
       withTransaction(() => {
         deleteDocsWhere("session_id = ? AND kind = 'terminal' AND doc_id NOT LIKE '%:meta'", [sessionId]);
       });
       source = { cursor: 0, docSeq: 0, state: null };
     }
-    if (stat.size === source.cursor) return;
+    if (fileSize === source.cursor) return;
 
-    const readEnd = Math.min(stat.size, source.cursor + MAX_READ_BYTES_PER_PASS);
-    const buf = Buffer.alloc(readEnd - source.cursor);
-    const handle = await fs.promises.open(filePath, "r");
-    try {
-      await handle.read(buf, 0, buf.length, source.cursor);
-    } finally {
-      await handle.close();
+    const readEnd = compressed
+      ? fileSize
+      : Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    let buf: Buffer;
+    if (compressed) {
+      buf = compressed.subarray(source.cursor, readEnd);
+    } else {
+      buf = Buffer.alloc(readEnd - source.cursor);
+      const handle = await fs.promises.open(filePath, "r");
+      try {
+        await handle.read(buf, 0, buf.length, source.cursor);
+      } finally {
+        await handle.close();
+      }
     }
 
-    const force = session.status !== "running" && readEnd === stat.size;
+    const force = session.status !== "running" && readEnd === fileSize;
     const { chunks, consumedBytes } = chunkTerminalTranscript(buf, source.cursor, { force });
     if (consumedBytes === 0) return;
 
@@ -728,7 +763,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       putSource(sourceId, "terminal-session", source.cursor + consumedBytes, docSeq, null);
     });
 
-    if (source.cursor + consumedBytes < stat.size) enqueue("terminal-session", sessionId, 0);
+    if (source.cursor + consumedBytes < fileSize) enqueue("terminal-session", sessionId, 0);
   };
 
   const processPr = async (prId: string): Promise<void> => {
