@@ -31,6 +31,8 @@ import {
   normalizeGitRemoteIdentity,
   requireRemoteRuntimeRouteKind,
 } from "../../../shared/crossMachineHandoff";
+import type { ProviderFamily } from "../../../shared/modelRegistry";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { cn } from "../ui/cn";
 
 type SourceCheck = {
@@ -122,6 +124,10 @@ export function CrossMachineHandoffModal({
   sourceSessionId,
   sourceLaneId,
   target,
+  modelId,
+  onModelChange,
+  availableModelIds,
+  onOpenSignIn,
   turnActive,
   awaitingInput,
   onStopTurn,
@@ -132,6 +138,11 @@ export function CrossMachineHandoffModal({
   sourceSessionId: string;
   sourceLaneId: string;
   target: AgentChatCrossMachineTargetConfig;
+  /** Destination model for the new chat; the modal owns this choice now. */
+  modelId?: string;
+  onModelChange?: (modelId: string) => void;
+  availableModelIds?: string[];
+  onOpenSignIn?: (family?: ProviderFamily) => void;
   turnActive: boolean;
   awaitingInput: boolean;
   onStopTurn: () => Promise<void>;
@@ -480,10 +491,10 @@ export function CrossMachineHandoffModal({
             </div>
             <div className="min-w-0">
               <h2 id="cross-machine-handoff-title" className="font-sans text-[14px] font-semibold text-fg/92">
-                Send chat to another machine
+                Continue on another computer
               </h2>
               <p className="mt-1 text-[11px] leading-4 text-fg/48">
-                ADE publishes the exact source commit, recreates the lane, and starts a new chat from a bounded brief.
+                Continue this chat on one of your other computers. ADE copies your branch over and starts a new chat where this one left off.
               </p>
             </div>
           </div>
@@ -538,23 +549,23 @@ export function CrossMachineHandoffModal({
             <div className="grid gap-5 md:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
               <div className="space-y-3">
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">1 · Source readiness</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Nothing is transferred until every source check passes.</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Get this machine ready</div>
+                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Your work needs to be committed and pushed so the other machine can pick it up.</div>
                 </div>
                 {loading ? <CheckRow label="Inspecting source lane" detail="Checking Git state and publication" state="pending" /> : (
                   <>
                     <CheckRow
                       label="Working tree"
-                      detail={sourceCheck.lane?.status.dirty ? "Uncommitted files must be committed or discarded" : "No uncommitted source changes"}
+                      detail={sourceCheck.lane?.status.dirty ? "Commit or discard your changes first" : "No uncommitted changes"}
                       state={sourceCheck.lane?.status.dirty ? "error" : sourceCheck.lane ? "ok" : "pending"}
                     />
                     <CheckRow
                       label="Remote branch"
-                      detail={sourceCheck.needsPush ? "The source branch still needs to be published" : sourceCheck.branch ? `${sourceCheck.branch} is published` : "Branch unavailable"}
+                      detail={sourceCheck.needsPush ? "This branch still needs to be pushed" : sourceCheck.branch ? `${sourceCheck.branch} is pushed` : "Branch unavailable"}
                       state={sourceCheck.needsPush ? "warn" : sourceCheck.branch ? "ok" : "error"}
                     />
                     <CheckRow
-                      label="Repository identity"
+                      label="Repository"
                       detail={sourceCheck.originUrl ? normalizeGitRemoteIdentity(sourceCheck.originUrl) ?? sourceCheck.originUrl : "No origin remote configured"}
                       state={sourceCheck.originUrl ? "ok" : "error"}
                     />
@@ -597,8 +608,8 @@ export function CrossMachineHandoffModal({
 
               <div className="space-y-3">
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">2 · Destination</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Choose a connected ADE machine with a compatible runtime.</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Choose a machine</div>
+                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Computers connected to ADE appear here.</div>
                 </div>
                 <div className="space-y-2">
                   {eligibleConnections.map((connection) => {
@@ -645,14 +656,29 @@ export function CrossMachineHandoffModal({
                     </div>
                   ) : null}
                 </div>
+                {onModelChange && modelId != null ? (
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Model for the new chat</span>
+                    <div>
+                      <ModelPicker
+                        value={modelId}
+                        onChange={onModelChange}
+                        surfaceKey="cross-machine-handoff"
+                        compact
+                        {...(availableModelIds ? { availableModelIds } : {})}
+                        {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                      />
+                    </div>
+                  </div>
+                ) : null}
                 <label className="block">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Continuation note</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Note for the new chat</span>
                   <textarea
                     value={continuationPrompt}
                     onChange={(event) => setContinuationPrompt(event.target.value)}
                     maxLength={4000}
                     rows={4}
-                    placeholder="Optional. ADE will otherwise tell the destination chat to continue from the handoff brief."
+                    placeholder="Optional. Tell the new chat what to do next; otherwise it just continues from the summary."
                     className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-white/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
                   />
                   <span className="mt-1 block text-right text-[9px] text-fg/28">{continuationPrompt.length} / 4,000</span>
@@ -667,7 +693,7 @@ export function CrossMachineHandoffModal({
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Repository setup</div>
                 <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Clone on {selectedConnection.target.name}?</h3>
                 <p className="mt-1 text-[11px] leading-5 text-fg/48">
-                  ADE did not find this repository in the destination project registry. It can clone the published origin before creating the lane.
+                  This repository isn&rsquo;t on {selectedConnection.target.name} yet. ADE will clone it there first.
                 </p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
@@ -683,7 +709,7 @@ export function CrossMachineHandoffModal({
               ))}
               {routeNeedsApproval ? (
                 <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {routeLabel(selectedConnection)} is authenticated, but ADE does not provide end-to-end transport encryption on this route. The capsule excludes secrets and full provider history.
+                  This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.
                 </div>
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
@@ -694,7 +720,7 @@ export function CrossMachineHandoffModal({
                   className="mt-0.5 accent-sky-400"
                 />
                 <span className="text-[10px] leading-4 text-fg/58">
-                  Clone the repository and create local ADE metadata on {selectedConnection.target.name}. No source secrets, caches, terminals, or uncommitted files will be copied.
+                  Clone the repository on {selectedConnection.target.name}. Nothing uncommitted or secret leaves this machine.
                 </span>
               </label>
             </div>
@@ -705,13 +731,13 @@ export function CrossMachineHandoffModal({
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Final review</div>
                 <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Ready to continue on {selectedConnection.target.name}</h3>
-                <p className="mt-1 text-[11px] leading-5 text-fg/48">ADE rechecks these conditions when you send. A retry uses the same handoff ID, so it cannot create duplicate lanes or chats.</p>
+                <p className="mt-1 text-[11px] leading-5 text-fg/48">ADE double-checks everything when you send. Retrying is safe — it never creates duplicates.</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
-                <CheckRow label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Destination project ready"} state="ok" />
+                <CheckRow label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
                 <CheckRow label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
-                <CheckRow label="Model access" detail={destinationPreflight.modelAvailable ? "Destination model and provider are available" : "Destination model access is missing"} state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"} />
-                <CheckRow label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Create a new lane from the remote branch"} state="ok" />
+                <CheckRow label="Model access" detail={destinationPreflight.modelAvailable ? "The model is available there" : "That model isn't available there yet"} state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"} />
+                <CheckRow label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
               {destinationPreflight.warnings.map((message) => (
                 <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
@@ -721,17 +747,17 @@ export function CrossMachineHandoffModal({
               ))}
               <div className="rounded-xl border border-white/[0.065] bg-white/[0.025] p-3">
                 <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/42">
-                  <HardDrives size={13} /> Portable context only
+                  <HardDrives size={13} /> What gets sent
                 </div>
                 <div className="mt-2 grid gap-x-6 gap-y-1 text-[10px] leading-4 text-fg/48 sm:grid-cols-2">
-                  <span>Included: bounded brief and recent file/command/error references</span>
-                  <span>Included: branch, exact commit, model settings, and user note</span>
-                  <span>Excluded: provider-native session IDs and full transcripts</span>
-                  <span>Excluded: secrets, terminals, caches, and local artifacts</span>
+                  <span>Sent: a short summary of this chat</span>
+                  <span>Sent: the branch and commit, plus your note</span>
+                  <span>Never sent: secrets, terminals, and caches</span>
+                  <span>Never sent: the raw transcript</span>
                 </div>
                 {prepared.sanitizedSensitiveContext ? (
                   <div className="mt-2 flex items-center gap-1.5 text-[10px] leading-4 text-emerald-200/65">
-                    <CheckCircle size={12} weight="fill" /> ADE removed detected secret-shaped values or source-only absolute paths from the capsule.
+                    <CheckCircle size={12} weight="fill" /> ADE removed detected secret-shaped values or source-only absolute paths from the summary.
                   </div>
                 ) : null}
               </div>
@@ -739,7 +765,7 @@ export function CrossMachineHandoffModal({
                 <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5">
                   <input type="checkbox" checked={routeApproved} onChange={(event) => setRouteApproved(event.target.checked)} className="mt-0.5 accent-amber-400" />
                   <span className="text-[10px] leading-4 text-amber-100/72">
-                    I understand {routeLabel(selectedConnection)} is authenticated but not end-to-end encrypted by ADE, and I want to send this bounded capsule.
+                    This connection is authenticated but not end-to-end encrypted. Only the summary above is sent — never secrets.
                   </span>
                 </label>
               ) : null}
@@ -757,7 +783,7 @@ export function CrossMachineHandoffModal({
           <div className="min-w-0 text-[10px] text-fg/38">
             {busyLabel ? (
               <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
-            ) : stage === "choose" ? "Source data stays untouched until final confirmation." : stage === "complete" ? "The source chat remains available." : "Retry is safe after a disconnect."}
+            ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {stage === "clone" || stage === "review" ? (
@@ -785,7 +811,7 @@ export function CrossMachineHandoffModal({
                 onClick={() => void prepareDestination()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 transition-colors hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Review destination <ArrowRight size={12} />
+                Continue <ArrowRight size={12} />
               </button>
             ) : null}
             {stage === "clone" ? (
@@ -805,7 +831,7 @@ export function CrossMachineHandoffModal({
                 onClick={() => void sendHandoff()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Send and continue <ArrowRight size={12} />
+                Send chat <ArrowRight size={12} />
               </button>
             ) : null}
             {stage === "complete" ? (

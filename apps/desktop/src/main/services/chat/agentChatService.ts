@@ -264,6 +264,7 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
 } from "../../../shared/types";
+import { providerSupportsHandoffFork } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
   normalizeChatContextAttachments,
@@ -3600,6 +3601,17 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "cursor") return "Cursor Chat";
   if (provider === "droid") return "Droid Chat";
   return "AI Chat";
+}
+
+function handoffProviderLabel(provider: AgentChatProvider): string {
+  switch (provider) {
+    case "claude": return "Claude";
+    case "codex": return "Codex";
+    case "cursor": return "Cursor";
+    case "droid": return "Droid";
+    case "opencode": return "OpenCode";
+    default: return String(provider);
+  }
 }
 
 const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat"]);
@@ -9634,7 +9646,7 @@ export function createAgentChatService(args: {
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
         ? { droidSdkSessionId: managed.runtime.sdkSessionId }
-        : {}),
+        : prevPersisted?.droidSdkSessionId ? { droidSdkSessionId: prevPersisted.droidSdkSessionId } : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
@@ -9981,6 +9993,24 @@ export function createAgentChatService(args: {
       return hydrated;
     } catch {
       return null;
+    }
+  };
+
+  const seedForkedProviderPointer = (
+    sessionId: string,
+    patch: { providerSessionId?: string; droidSdkSessionId?: string },
+  ): void => {
+    const current = readPersistedState(sessionId);
+    if (!current) return;
+    const next: PersistedChatState = { ...current, ...patch, updatedAt: nowIso() };
+    try {
+      fs.mkdirSync(path.dirname(metadataPathFor(sessionId)), { recursive: true });
+      fs.writeFileSync(metadataPathFor(sessionId), JSON.stringify(next, null, 2), "utf8");
+    } catch (error) {
+      logger.warn("agent_chat.seed_fork_pointer_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -24415,11 +24445,39 @@ export function createAgentChatService(args: {
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
     const handoffMode = args.mode ?? "brief";
-    const canForkProviderHistory =
-      (managed.session.provider === "claude" && targetProvider === "claude")
-      || (managed.session.provider === "codex" && targetProvider === "codex");
-    if (handoffMode === "fork" && !canForkProviderHistory) {
-      throw new Error("Full-history fork is only available when handing off within Claude or within Codex.");
+    const requestedTargetLaneId = typeof args.targetLaneId === "string" ? args.targetLaneId.trim() : "";
+    const sourceLaneId = managed.session.laneId;
+    let resolvedTargetLaneId = sourceLaneId;
+    if (requestedTargetLaneId && requestedTargetLaneId !== sourceLaneId) {
+      if (handoffMode === "fork") {
+        throw new Error("Fork handoff keeps the new chat in the source lane; use a brief handoff to move lanes.");
+      }
+      try {
+        resolveLaneLaunchContext({
+          laneService,
+          projectRoot,
+          laneId: requestedTargetLaneId,
+          purpose: "hand off this chat",
+        });
+      } catch {
+        throw new Error(`Unknown or unavailable lane '${requestedTargetLaneId}' for this handoff.`);
+      }
+      const targetLaneSummary = await laneService.getSummary(requestedTargetLaneId, { includeStatus: true }).catch(() => null);
+      if (targetLaneSummary?.archivedAt) {
+        throw new Error(`Lane '${requestedTargetLaneId}' is archived; pick an active lane for this handoff.`);
+      }
+      resolvedTargetLaneId = requestedTargetLaneId;
+    }
+    const targetLaneId = resolvedTargetLaneId;
+    const sourceProvider = managed.session.provider;
+    if (handoffMode === "fork") {
+      if (!providerSupportsHandoffFork(sourceProvider)) {
+        const label = handoffProviderLabel(sourceProvider);
+        throw new Error(`Full-history fork isn't available for ${label} chats. Use a brief handoff instead.`);
+      }
+      if (targetProvider !== sourceProvider) {
+        throw new Error("Full-history fork requires the same provider on both sides. Use a brief handoff to switch providers.");
+      }
     }
     const sourceClaudeRuntime = handoffMode === "fork" && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
@@ -24446,6 +24504,45 @@ export function createAgentChatService(args: {
         throw new Error(`Codex thread/fork did not return a new thread id for '${sourceThreadId}'.`);
       }
       sourceCodexForkThreadId = forkedThreadId;
+    }
+    let sourceOpenCodeForkSessionId: string | null = null;
+    if (handoffMode === "fork" && sourceProvider === "opencode") {
+      if (managed.runtime?.kind !== "opencode") {
+        try {
+          await startOpenCodeSessionRuntime(managed);
+        } catch {
+          throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
+        }
+      }
+      if (managed.runtime?.kind !== "opencode") {
+        throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
+      }
+      const handle = managed.runtime.handle;
+      const forkResponse = await handle.client.session.fork({
+        path: { id: handle.sessionId },
+        query: { directory: handle.directory },
+        throwOnError: true,
+      });
+      const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
+      if (!forkedId) {
+        throw new Error(`OpenCode session fork did not return a new session id for '${handle.sessionId}'.`);
+      }
+      sourceOpenCodeForkSessionId = forkedId;
+    }
+    let sourceDroidForkSessionId: string | null = null;
+    if (handoffMode === "fork" && sourceProvider === "droid") {
+      let droidRuntime: DroidRuntime;
+      try {
+        droidRuntime = await ensureDroidRuntime(managed);
+      } catch {
+        throw new Error("Unable to start the Droid session to fork this chat. Use a brief handoff instead.");
+      }
+      const forkResult = await droidRuntime.sdk.request<{ newSessionId?: string }>("fork_session");
+      const newSessionId = typeof forkResult?.newSessionId === "string" ? forkResult.newSessionId.trim() : "";
+      if (!newSessionId) {
+        throw new Error("Droid fork did not return a new session id.");
+      }
+      sourceDroidForkSessionId = newSessionId;
     }
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
@@ -24475,7 +24572,7 @@ export function createAgentChatService(args: {
     }
 
     const created = await createSession({
-      laneId: managed.session.laneId,
+      laneId: targetLaneId,
       provider: targetProvider,
       model: targetModel,
       modelId: targetDescriptor.id,
@@ -24517,6 +24614,14 @@ export function createAgentChatService(args: {
           createdManaged.runtime.canAttachResumedTurnStart = false;
         }
         sessionService.setResumeCommand(createdManaged.session.id, `chat:codex:${sourceCodexForkThreadId}`);
+      }
+      if (createdManaged.session.provider === "opencode" && sourceOpenCodeForkSessionId) {
+        seedForkedProviderPointer(created.id, { providerSessionId: sourceOpenCodeForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:opencode:${created.id}`);
+      }
+      if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
+        seedForkedProviderPointer(created.id, { droidSdkSessionId: sourceDroidForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
       }
     }
     const inheritedGoal = trimLine(sourceSession.goal)

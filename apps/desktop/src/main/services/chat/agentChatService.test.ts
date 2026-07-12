@@ -50,6 +50,7 @@ const mockState = vi.hoisted(() => ({
   codexThreadCounter: 0,
   codexTurnCounter: 0,
   openCodeSessionCounter: 0,
+  openCodeForkCalls: [] as Array<{ id: string }>,
   openCodeSessions: new Map<string, {
     events: any[];
     waiters: Array<() => void>;
@@ -344,6 +345,11 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     const client = {
       __sessionId: sessionId,
       session: {
+        fork: vi.fn(async ({ path }: { path: { id: string } }) => {
+          const forkedId = `${path.id}-fork`;
+          mockState.openCodeForkCalls.push({ id: path.id });
+          return { data: { id: forkedId } };
+        }),
         promptAsync: vi.fn(async ({ body }: { body?: any } = {}) => {
           state.promptBodies.push(body ?? {});
           void (async () => {
@@ -766,7 +772,13 @@ vi.mock("./droidSdkPool", () => ({
       sdkSessionId,
       currentModelId: initialSettings.modelId ?? "claude-sonnet-4-5-20250929",
       availableModels,
-      request: vi.fn(async () => null),
+      request: vi.fn(async (type: string) => {
+        if (type === "fork_session") {
+          mockState.droidSessionCounter += 1;
+          return { newSessionId: `droid-forked-${mockState.droidSessionCounter}` };
+        }
+        return null;
+      }),
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
         mockState.droidPromptCalls.push(payload);
         if (mockState.droidPromptGate) await mockState.droidPromptGate;
@@ -1148,12 +1160,7 @@ function createMockLaneService() {
           laneType: lane.laneType,
         };
       }
-      return {
-        baseRef: "main",
-        branchRef: "feature/selected",
-        worktreePath: tmpRoot,
-        laneType: "feature",
-      };
+      throw new Error(`Lane not found: ${laneId}`);
     }),
     list: vi.fn(async () => lanes),
     getSummary: vi.fn(async (laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
@@ -1695,6 +1702,7 @@ beforeEach(() => {
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
   mockState.openCodeSessionCounter = 0;
+  mockState.openCodeForkCalls = [];
   mockState.openCodeSessions.clear();
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
@@ -4055,6 +4063,70 @@ describe("createAgentChatService", () => {
       }, { timeout: 2000, interval: 50 });
     });
 
+    it("brief handoff creates the new chat in the requested target lane", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetLaneId: "lane-2",
+      });
+
+      expect(result.session.laneId).toBe("lane-2");
+      expect(result.session.provider).toBe("opencode");
+      expect(result.session.modelId).toBe("opencode/openai/gpt-5.4-mini");
+    });
+
+    it("brief handoff rejects an unknown target lane", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetLaneId: "lane-nope",
+      })).rejects.toThrow("Unknown or unavailable lane");
+      expect(source.laneId).toBe("lane-1");
+      expect(mockState.sessions.size).toBe(1);
+    });
+
+    it("fork handoff rejects a differing target lane", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        targetLaneId: "lane-2",
+      })).rejects.toThrow("keeps the new chat in the source lane");
+      expect(source.laneId).toBe("lane-1");
+      expect(mockState.sessions.size).toBe(1);
+    });
+
     it("does not seed Codex brief handoffs as provider goals", async () => {
       const { service, sessionService } = createService();
       const source = await service.createSession({
@@ -4168,6 +4240,96 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("forks an OpenCode chat from the source session without injecting a summary prompt", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "hi",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+      const promptCountBeforeFork = [...mockState.openCodeSessions.values()]
+        .reduce((count, state) => count + state.promptBodies.length, 0);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+      const promptCountAfterFork = [...mockState.openCodeSessions.values()]
+        .reduce((count, state) => count + state.promptBodies.length, 0);
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("opencode");
+      expect(mockState.openCodeForkCalls.length).toBeGreaterThanOrEqual(1);
+      expect(persisted.providerSessionId).toEqual(expect.stringMatching(/-fork$/));
+      expect(promptCountAfterFork).toBe(promptCountBeforeFork);
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("forks a Droid chat and resumes the forked session id", async () => {
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "hi",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+      const sourcePooled = mockState.droidPooled;
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("droid");
+      expect(sourcePooled.request).toHaveBeenCalledWith("fork_session");
+      expect(persisted.droidSdkSessionId).toEqual(expect.stringMatching(/^droid-forked-/));
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("rejects a Cursor fork with a brief-suggesting message", async () => {
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      })).rejects.toThrow("Full-history fork isn't available for Cursor");
+      expect(mockState.sessions.size).toBe(1);
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
     it("sends only the user note when forking with a handoff note", async () => {

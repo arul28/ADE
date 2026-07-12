@@ -157,12 +157,16 @@ describe("CrossMachineHandoffModal", () => {
 
   it("shows only compatible connected machines and completes an existing-repo handoff", async () => {
     const onFinished = vi.fn();
+    const onModelChange = vi.fn();
     render(
       <CrossMachineHandoffModal
         open
         sourceSessionId="session-1"
         sourceLaneId="lane-1"
         target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={onModelChange}
+        availableModelIds={["openai/gpt-5.5"]}
         turnActive={false}
         awaitingInput={false}
         onStopTurn={vi.fn()}
@@ -174,12 +178,13 @@ describe("CrossMachineHandoffModal", () => {
     expect(await screen.findByText("Studio")).toBeTruthy();
     expect(screen.queryByText("Old Mac")).toBeNull();
     expect(screen.getByText(/1 connected machine needs an ADE update/i)).toBeTruthy();
+    expect(screen.getByText("Model for the new chat")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /review destination/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
     expect(screen.getByText(/feature\/handoff · 1234567890/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /send and continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
     expect(await screen.findByText("Handoff complete")).toBeTruthy();
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({
       sourceSessionId: "session-1",
@@ -243,7 +248,7 @@ describe("CrossMachineHandoffModal", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: /review destination/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText(/Clone on Studio/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /clone repository/i }));
@@ -283,9 +288,9 @@ describe("CrossMachineHandoffModal", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: /review destination/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /send and continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
 
     expect(await screen.findByText("Handoff complete")).toBeTruthy();
     expect(screen.getByText(/destination succeeded, but ADE could not mark the source chat/i)).toBeTruthy();
