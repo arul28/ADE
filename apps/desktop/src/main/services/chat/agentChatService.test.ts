@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
-import { getSessionInfo, getSessionMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
@@ -238,6 +238,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   })),
   getSessionInfo: vi.fn(),
   getSessionMessages: vi.fn(),
+  getSubagentMessages: vi.fn(),
   listSessions: vi.fn(),
   query: vi.fn(),
   renameSession: vi.fn(async () => undefined),
@@ -866,12 +867,13 @@ function legacyClaudeSendPayload(message: unknown): unknown {
   const record = message as {
     type?: unknown;
     shouldQuery?: unknown;
+    priority?: unknown;
     message?: { content?: Array<Record<string, unknown>> };
   };
   if (record.type !== "user") {
     return message;
   }
-  if (record.shouldQuery === false) {
+  if (record.shouldQuery === false || record.priority != null) {
     return message;
   }
   const content = record.message?.content;
@@ -1383,6 +1385,7 @@ function installClaudeWakeupFixture(args: {
   sdkSessionId: string;
   delaySeconds: number;
   prompt?: string;
+  lingerAfterTurn?: Promise<void>;
 }) {
   let streamCall = 0;
   const send = vi.fn().mockResolvedValue(undefined);
@@ -1423,6 +1426,9 @@ function installClaudeWakeupFixture(args: {
         session_id: args.sdkSessionId,
         usage: { input_tokens: 1, output_tokens: 1 },
       };
+      if (args.lingerAfterTurn) {
+        await args.lingerAfterTurn;
+      }
     })()),
     close,
     sessionId: args.sdkSessionId,
@@ -1728,6 +1734,8 @@ beforeEach(() => {
   vi.mocked(startup).mockReset();
   vi.mocked(getSessionMessages).mockReset();
   vi.mocked(getSessionMessages).mockResolvedValue([]);
+  vi.mocked(getSubagentMessages).mockReset();
+  vi.mocked(getSubagentMessages).mockResolvedValue([]);
   vi.mocked(tagSession).mockClear();
   installClaudeSdkCompatMocks();
   vi.mocked(resolveClaudeCodeExecutable).mockClear();
@@ -2539,6 +2547,44 @@ describe("createAgentChatService", () => {
       expect(doneEvent?.event.type).toBe("done");
       expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
+    });
+
+    it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {
+      const diagnostic = "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null";
+      const diagnosticOnlyEvents = await runClaudeStreamFixture({
+        sdkSessionId: "sdk-ede-diagnostic-only",
+        messages: [{
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [diagnostic],
+          session_id: "sdk-ede-diagnostic-only",
+        }],
+      });
+
+      expect(diagnosticOnlyEvents.filter((event) => event.event.type === "error")).toEqual([]);
+      expect(diagnosticOnlyEvents.findLast((event) => event.event.type === "done")?.event).toMatchObject({
+        type: "done",
+        status: "completed",
+      });
+
+      const mixedEvents = await runClaudeStreamFixture({
+        sdkSessionId: "sdk-ede-diagnostic-mixed",
+        messages: [{
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [diagnostic, "Real Claude failure"],
+          session_id: "sdk-ede-diagnostic-mixed",
+        }],
+      });
+      const mixedErrors = mixedEvents
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "error" }> => event.type === "error")
+        .map((event) => event.message);
+
+      expect(mixedErrors).toEqual(["Real Claude failure"]);
+      expect(mixedErrors.join("\n")).not.toContain("[ede_diagnostic]");
     });
 
     it("fast-fails a logged-out Claude turn into the inline re-login card", async () => {
@@ -7465,7 +7511,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
-    it("does not mark SubagentStop hooks completed before task notification status arrives", async () => {
+    it("caches SubagentStop hooks without publishing lifecycle edges before task notifications", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
@@ -7508,8 +7554,12 @@ describe("createAgentChatService", () => {
         { signal: new AbortController().signal } as any,
       );
 
-      expect(events.some((event) => event.event.type === "subagent_started")).toBe(true);
+      // Hooks are cache/enrichment signals only. The SDK task_started and
+      // task_notification messages own visible lifecycle edges so the hook and
+      // stream cannot produce duplicate rows.
+      expect(events.some((event) => event.event.type === "subagent_started")).toBe(false);
       expect(events.some((event) => event.event.type === "subagent_result")).toBe(false);
+      expect(service.hasActiveWorkloads()).toBe(true);
     });
   });
 
@@ -8272,7 +8322,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("keeps emitting subagent_* events for a real subagent (Task tool with agentType)", async () => {
+    it("keeps a native background Agent in Subagents without a duplicate Background row", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -8297,7 +8347,7 @@ describe("createAgentChatService", () => {
                 type: "tool_use",
                 id: "toolu_real_1",
                 name: "Task",
-                input: { subagent_type: "Explore", description: "Explore the repo", prompt: "Look around." },
+                input: { subagent_type: "Explore", description: "Explore the repo", prompt: "Look around.", run_in_background: true },
               },
             ],
             usage: { input_tokens: 1, output_tokens: 1 },
@@ -8308,7 +8358,21 @@ describe("createAgentChatService", () => {
           subtype: "task_started",
           task_id: "task-real-1",
           parent_tool_use_id: "toolu_real_1",
+          subagent_type: "Explore",
+          task_type: "local_agent",
           description: "Explore the repo",
+        };
+        // The SDK does not guarantee ordering between the lifecycle edge and
+        // the authoritative background-membership level. The live smoke sent
+        // task_started first, so exercise the late correction path here.
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "task-real-1",
+            task_type: "local_agent",
+            description: "Explore the repo",
+          }],
         };
         yield {
           type: "system",
@@ -8351,9 +8415,13 @@ describe("createAgentChatService", () => {
       const startEnvelope = await waitForEvent(
         events,
         (e): e is AgentChatEventEnvelope =>
-          e.event.type === "subagent_started" && (e.event as any).taskId === "task-real-1",
+          e.event.type === "subagent_started"
+          && (e.event as any).taskId === "task-real-1"
+          && (e.event as any).background === true,
       );
       expect((startEnvelope.event as any).agentType).toBe("Explore");
+      expect((startEnvelope.event as any).background).toBe(true);
+      expect((startEnvelope.event as any).providerSessionId).toBe(readPersistedChatState(session.id).sdkSessionId);
       // A real subagent must NOT produce a background_task scheduled row.
       expect(events.some((e) =>
         e.event.type === "scheduled_work_update"
@@ -8513,6 +8581,24 @@ describe("createAgentChatService", () => {
       expect(terminalCount).toBe(1);
     });
 
+    it("does not duplicate hook-native subagents into Background", async () => {
+      const { events, fireSnapshot } = await bootClaudeHooks("sdk-bg-agent-filter");
+
+      await fireSnapshot([
+        { id: "agent-1", type: "subagent", status: "running", description: "Review code", agent_type: "reviewer" },
+        { id: "shell-1", type: "shell", status: "running", description: "Watch build", command: "npm run watch" },
+      ]);
+
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:agent-1",
+      )).toBe(false);
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:shell-1",
+      )).toBe(true);
+    });
+
     it("converges hook diff-close with a task_notification terminal (no duplicate distinct terminal events)", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
@@ -8574,7 +8660,7 @@ describe("createAgentChatService", () => {
       expect(terminalStatuses.length).toBeGreaterThanOrEqual(1);
     });
 
-    it("keeps a still-open background task running across a normal turn boundary (no turn-end stop)", async () => {
+    it("keeps background work across a turn boundary, then settles it when the idle query dies", async () => {
       // A run_in_background shell keeps running across turns: the SDK query
       // stays alive and delivers the real completion on a later turn. Turn end
       // must NOT falsely settle it as stopped.
@@ -8583,8 +8669,11 @@ describe("createAgentChatService", () => {
       let warmupComplete = false;
       let turnDone: (() => void) | null = null;
       const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      let endQuery: (() => void) | null = null;
+      const queryEndPromise = new Promise<void>((resolve) => { endQuery = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
         if (streamCall === 1) {
@@ -8596,6 +8685,11 @@ describe("createAgentChatService", () => {
         // Background shell starts but never reports a notification this turn.
         yield {
           type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "bg-orphan" }],
+        };
+        yield {
+          type: "system",
           subtype: "task_started",
           task_id: "bg-orphan",
           description: "long lived background",
@@ -8604,9 +8698,11 @@ describe("createAgentChatService", () => {
         };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        await queryEndPromise;
+        throw new Error("idle query transport closed");
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send, stream, close: vi.fn(), sessionId: "sdk-bg-sweep", setPermissionMode,
+        send, stream, close, sessionId: "sdk-bg-sweep", setPermissionMode,
       } as any);
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
@@ -8622,8 +8718,9 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
       // Wait for the turn to actually settle so any (erroneous) turn-end sweep
       // would have fired by now.
-      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
-        e.event.type === "done" && (e.event as any).status === "completed");
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "done" && (e.event as any).status === "completed")).toBe(true);
+      }, { timeout: 3_000 });
 
       // The background row must NOT have been settled at the turn boundary.
       const terminalBgRows = events.filter((e) =>
@@ -8634,6 +8731,13 @@ describe("createAgentChatService", () => {
       // And no subagent_result leaked for the background shell.
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "bg-orphan")).toBe(false);
+      endQuery!();
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-orphan"
+        && (e.event as any).status === "stopped");
+      await vi.waitFor(() => expect(service.hasActiveWorkloads()).toBe(false));
+      expect(close).toHaveBeenCalled();
     });
 
     it("settles a still-open background task as stopped on interrupt (genuine teardown)", async () => {
@@ -8691,10 +8795,10 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("routes a local_bash run_in_background shell to background_task rows, not subagent events, with background flag", async () => {
-      // The Claude Agent SDK tags Bash run_in_background with task_type
-      // "local_bash". It must land in the background pane (never the roster) and
-      // its scheduled_work row must be a background_task.
+    it("uses the SDK background level to distinguish background and foreground local_bash tasks", async () => {
+      // `local_bash` is the implementation kind for both foreground and
+      // background Bash. Only the SDK's authoritative membership level makes
+      // the latter a Background row.
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -8713,6 +8817,51 @@ describe("createAgentChatService", () => {
         yield {
           type: "system",
           subtype: "task_started",
+          task_id: "foreground-bash",
+          description: "Foreground build",
+          command: "sleep 1; echo done",
+          task_type: "local_bash",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "foreground-bash",
+          status: "completed",
+          summary: "Process exited",
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "promoted-background-bash",
+          description: "Promote this Bash task",
+          command: "sleep 5",
+          task_type: "local_bash",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          task_id: "promoted-background-bash",
+          patch: { status: "running", is_backgrounded: true },
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "promoted-background-bash",
+          status: "completed",
+          summary: "Process exited",
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "bgo5i8f6y",
+            task_type: "local_bash",
+            description: "Run codex gpt-5.6-sol backend implementation (background)",
+          }],
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
           task_id: "bgo5i8f6y",
           description: "Run codex gpt-5.6-sol backend implementation (background)",
           command: "codex exec -m gpt-5.6-sol",
@@ -8720,11 +8869,8 @@ describe("createAgentChatService", () => {
         };
         yield {
           type: "system",
-          subtype: "task_notification",
-          task_id: "bgo5i8f6y",
-          status: "completed",
-          summary: "Process exited",
-          usage: { duration_ms: 9000 },
+          subtype: "background_tasks_changed",
+          tasks: [],
         };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -8743,6 +8889,19 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "running");
       expect((runningRow.event as any).kind).toBe("background_task");
       expect((runningRow.event as any).title).toBe("Run codex gpt-5.6-sol backend implementation (background)");
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bgo5i8f6y"
+        && (e.event as any).status === "completed",
+      )).toBe(true);
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:foreground-bash",
+      )).toBe(false);
+      expect(events.filter((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:promoted-background-bash",
+      ).map((e) => (e.event as any).status)).toEqual(["running", "completed"]);
 
       // No subagent_* events for a background shell (this is the background:false
       // spawn-flag pollution the classifier now prevents).
@@ -8847,7 +9006,7 @@ describe("createAgentChatService", () => {
       expect((terminal!.event as any).title).toBe("Run codex gpt-5.6-sol backend implementation");
     });
 
-    it("does not cross-wire finalSummary between two concurrent subagents on an empty task_notification", async () => {
+    it("keeps each concurrent subagent's real final text over a generic task notification", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -8872,10 +9031,11 @@ describe("createAgentChatService", () => {
         ], usage: { input_tokens: 1, output_tokens: 1 } } };
         yield { type: "system", subtype: "task_started", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", description: "review A" };
         yield { type: "system", subtype: "task_started", task_id: "task-B", agent_id: "agent-B", parent_tool_use_id: "toolu_B", description: "review B" };
+        yield { type: "system", subtype: "task_updated", task_id: "task-A", patch: { status: "completed" } };
         // The SubagentStop hooks fire out-of-band (below). Wait for them, then
-        // deliver an EMPTY-summary notification for A.
+        // deliver the generic completion summary for A.
         await stopHooksFiredPromise;
-        yield { type: "system", subtype: "task_notification", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", status: "completed", summary: "" };
+        yield { type: "system", subtype: "task_notification", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", status: "completed", summary: "Agent finished" };
         await turnDonePromise;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
@@ -8896,16 +9056,16 @@ describe("createAgentChatService", () => {
         e.event.type === "subagent_started" && (e.event as any).taskId === "task-B");
 
       const sig = { signal: new AbortController().signal } as any;
-      // B finishes with a distinctive final message; A finishes with none.
+      // Both finish with distinctive messages; A's generic notification must
+      // keep A's hook result and never steal B's.
       await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-B", agent_type: "reviewer", last_assistant_message: "B-SECRET-RESULT" } as any, undefined as any, sig);
-      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-A", agent_type: "reviewer", last_assistant_message: "" } as any, undefined as any, sig);
+      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-A", agent_type: "reviewer", last_assistant_message: "A-REAL-RESULT" } as any, undefined as any, sig);
       stopHooksFired!();
 
-      // A's empty-summary notification must NOT surface B's finalSummary.
       const aResult = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-A");
       expect(JSON.stringify(aResult.event)).not.toContain("B-SECRET-RESULT");
-      expect((aResult.event as any).summary ?? "").not.toContain("B-SECRET-RESULT");
+      expect((aResult.event as any).summary).toBe("A-REAL-RESULT");
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -11055,6 +11215,90 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("treats an idle-reader EDE diagnostic as internal lifecycle noise", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const diagnostic = "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null";
+      let streamCall = 0;
+      let releaseIdle!: () => void;
+      const releaseIdlePromise = new Promise<void>((resolve) => { releaseIdle = resolve; });
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-idle-ede-diagnostic",
+              slash_commands: [],
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-idle-ede-diagnostic",
+          };
+          await releaseIdlePromise;
+          yield {
+            type: "assistant",
+            uuid: "assistant-idle-ede-diagnostic",
+            message: {
+              id: "message-idle-ede-diagnostic",
+              content: [{ type: "text", text: "Background work finished." }],
+              usage: { input_tokens: 1, output_tokens: 3 },
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: [diagnostic],
+            session_id: "sdk-idle-ede-diagnostic",
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-idle-ede-diagnostic",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Finish the foreground turn, then report background work.",
+      });
+      releaseIdle();
+
+      const idleDone = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } => event.sessionId === session.id
+          && event.event.type === "done"
+          && event.event.turnId.startsWith("claude-idle-"),
+      );
+      expect(idleDone.event.status).toBe("completed");
+      expect(events.some((event) => event.event.type === "error" && event.event.message.includes("[ede_diagnostic]"))).toBe(false);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "agent_chat.claude_internal_diagnostic",
+        expect.objectContaining({
+          source: "idle_reader",
+          diagnostics: [diagnostic],
+        }),
+      );
+    });
+
     it("groups idle-reader Claude deltas by the stable message id and suppresses the repeated snapshot", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -11319,12 +11563,45 @@ describe("createAgentChatService", () => {
           type: "system",
           subtype: "task_started",
           session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          task_type: "local_bash",
+          description: "Idle promoted Bash",
+          command: "sleep 10",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          patch: { status: "running", is_backgrounded: true },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-queued-steer",
           task_id: "cron-task-queued-steer",
           task_type: "cron",
           description: "Check queued steer",
         };
+        yield {
+          type: "assistant",
+          uuid: "assistant-background-progress",
+          message: {
+            id: "msg-background-progress",
+            content: [{ type: "text", text: "The background check is still running." }],
+            usage: { input_tokens: 1, output_tokens: 2 },
+          },
+        };
 
         await finishBackgroundPromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          status: "completed",
+          summary: "Process exited",
+        };
         yield {
           type: "system",
           subtype: "task_updated",
@@ -11388,7 +11665,15 @@ describe("createAgentChatService", () => {
         (event): event is AgentChatEventEnvelope =>
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
+          && event.event.id === "background:idle-promoted-bash"
           && event.event.status === "running",
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "text"
+          && event.event.text.includes("background check is still running"),
       );
 
       const steerResult = await service.steer({
@@ -12435,6 +12720,10 @@ describe("createAgentChatService", () => {
         sdkSessionId: "sdk-pending-native-wake",
         delaySeconds: 60,
         prompt: "Stale native wake must not survive dispose.",
+        // Keep the stable SDK query alive after the foreground result so the
+        // scheduler exercises the native pending-wake handoff instead of the
+        // cold-query fallback path.
+        lingerAfterTurn: new Promise<void>(() => undefined),
       });
       const { service } = createService({
         db: scheduledWork.db,
@@ -12445,11 +12734,13 @@ describe("createAgentChatService", () => {
         provider: "claude",
         model: "sonnet",
       });
-      await service.runSessionTurn({
+      const foregroundTurn = service.runSessionTurn({
         sessionId: session.id,
         text: "Queue a native wake.",
       });
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await foregroundTurn;
+      await vi.advanceTimersByTimeAsync(59_000);
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("fired");
       expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(1);
 
@@ -22868,6 +23159,55 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("uses the parent SDK session captured when an older Claude subagent started", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-current", responseText: "unused" });
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId: "sdk-current",
+      });
+      const transcriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(transcriptPath, `${JSON.stringify({
+        sessionId: session.id,
+        timestamp: "2026-07-10T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_started",
+          taskId: "task-old",
+          agentId: "agent-old",
+          providerSessionId: "sdk-old",
+          description: "Older child",
+        },
+      })}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => String(raw)
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)));
+      vi.mocked(getSubagentMessages).mockResolvedValue([{
+        type: "assistant",
+        uuid: "child-old-answer",
+        session_id: "sdk-old",
+        parent_tool_use_id: "tool-old",
+        message: { role: "assistant", content: [{ type: "text", text: "Historical child answer" }] },
+      }] as any);
+
+      const result = await service.getSubagentTranscript({
+        sessionId: session.id,
+        agentId: "agent-old",
+        taskId: "task-old",
+      });
+
+      expect(getSubagentMessages).toHaveBeenCalledWith(
+        "sdk-old",
+        "agent-old",
+        expect.objectContaining({ dir: fs.realpathSync(tmpRoot) }),
+      );
+      expect(result).toEqual([
+        expect.objectContaining({ uuid: "child-old-answer", text: "Historical child answer" }),
+      ]);
+    });
+
     it("gates main transcripts to Claude and byte-bounds the response", async () => {
       const { service } = createService();
       const codex = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
@@ -23986,10 +24326,12 @@ describe("createAgentChatService", () => {
         interactionMode: "plan",
       }, { routeActiveToSteer: true });
       expect(result).toMatchObject({ queued: true, steerId: expect.any(String) });
-      // The queued chip shows the display text, not the raw prompt text.
+      // Transcript events retain the raw prompt for delivery while exposing
+      // the shorter display label separately for the queued chip.
       expect(events.some((event) =>
         event.event.type === "user_message"
-        && event.event.text === "Follow up soon"
+        && event.event.text === "Follow up when the active turn finishes"
+        && event.event.displayText === "Follow up soon"
         && event.event.deliveryState === "queued"
       )).toBe(true);
 
@@ -24014,7 +24356,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
-    it("does not steer an empty send during an active turn", async () => {
+    it("ignores empty active-turn sends but queues attachment-only steers", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
@@ -24072,9 +24414,30 @@ describe("createAgentChatService", () => {
         event.event.type === "user_message" && event.event.deliveryState === "queued",
       )).toBe(false);
 
+      const attachmentPath = path.join(tmpRoot, "attachment-only-steer.txt");
+      fs.writeFileSync(attachmentPath, "Attachment-only steer context.");
+      const attachmentResult = await service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        attachments: [{ path: attachmentPath, type: "file" }],
+      }, { routeActiveToSteer: true });
+      expect(attachmentResult).toMatchObject({ queued: true, steerId: expect.any(String) });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text === "Please review the attached files."
+        && event.event.deliveryState === "queued"
+        && event.event.attachments?.some((attachment) => attachment.path === attachmentPath),
+      )).toBe(true);
+
       finishActiveTurn();
       await activeTurn;
-      // A queued steer would have started a third stream turn on delivery.
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([payload]) =>
+          JSON.stringify(payload).includes("Please review the attached files."),
+        )).toBe(true);
+      });
+      // Claude's persistent streaming-input query consumes the queued steer
+      // without creating a replacement SDK stream.
       expect(streamCall).toBe(2);
     });
 
@@ -24436,31 +24799,24 @@ describe("createAgentChatService", () => {
       expect(deliveredWithUpdatedText).toBeUndefined();
     });
 
-    it("dispatchSteer mode:'inline' sends with shouldQuery:false and clears the queue", async () => {
+    it("sends atomic and staged inline steers as querying priority-next messages", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-      let streamCall = 0;
       let interruptedTurnClosed = false;
+      let releaseWarmup!: () => void;
+      const warmupGate = new Promise<void>((resolve) => {
+        releaseWarmup = resolve;
+      });
 
       const stream = vi.fn(() => (async function* () {
-        streamCall += 1;
-        if (streamCall === 1) {
-          yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
-          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-          return;
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Working..." }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        while (!interruptedTurnClosed) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
-        if (streamCall === 2) {
-          yield {
-            type: "assistant",
-            message: { content: [{ type: "text", text: "Working..." }], usage: { input_tokens: 1, output_tokens: 1 } },
-          };
-          while (!interruptedTurnClosed) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-          }
-          return;
-        }
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
 
       const mockSession = {
@@ -24472,12 +24828,71 @@ describe("createAgentChatService", () => {
       };
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(mockSession as any);
       vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(mockSession as any);
+      vi.mocked(startup).mockImplementationOnce(async () => {
+        await warmupGate;
+        return {
+          query: (prompt: unknown) => bridgeClaudeSessionToQuery(mockSession, prompt),
+          close: () => mockSession.close(),
+        } as any;
+      });
 
       const { service } = createService({ onEvent: (e: AgentChatEventEnvelope) => events.push(e) });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
 
       const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Do work", timeoutMs: 15_000 });
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started");
+
+      const guarded = await service.steer({ sessionId: session.id, text: "dispatch exactly once" });
+      expect(guarded.queued).toBe(true);
+      const guardedDispatchPromise = service.dispatchSteer({
+        sessionId: session.id,
+        steerId: guarded.steerId,
+        mode: "inline",
+      });
+      await expect(service.cancelSteer({
+        sessionId: session.id,
+        steerId: guarded.steerId,
+        requireQueued: true,
+      })).rejects.toThrow("already being dispatched");
+
+      const directPromise = service.steer({
+        sessionId: session.id,
+        text: "send this atomically",
+        dispatchMode: "inline",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(send.mock.calls.some((call: any[]) => call[0]?.priority === "next")).toBe(false);
+      releaseWarmup();
+      const guardedDispatch = await guardedDispatchPromise;
+      const direct = await directPromise;
+      expect(guardedDispatch.dispatchedAt).not.toBeNull();
+      await expect(service.cancelSteer({
+        sessionId: session.id,
+        steerId: guarded.steerId,
+        requireQueued: true,
+      })).rejects.toThrow("no longer queued");
+      expect(events.filter((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).steerId === guarded.steerId
+        && (e.event as any).deliveryState === "inline",
+      )).toHaveLength(1);
+      expect(direct).toMatchObject({ queued: false, steerId: expect.any(String) });
+      expect(events.some((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).text === "send this atomically"
+        && (e.event as any).deliveryState === "queued",
+      )).toBe(false);
+      await vi.waitFor(() => {
+        expect(send.mock.calls.map((call: any[]) => call[0]).find((arg: any) =>
+          arg?.priority === "next"
+          && arg?.shouldQuery === true
+          && JSON.stringify(arg).includes("send this atomically"),
+        )).toBeDefined();
+      });
+      const sentPayloads = send.mock.calls.map((call: any[]) => call[0]);
+      expect(sentPayloads.findIndex((payload: any) => typeof payload === "string" && payload.includes("Do work")))
+        .toBeLessThan(sentPayloads.findIndex((payload: any) => payload?.priority === "next"));
 
       await service.steer({ sessionId: session.id, text: "fold this in" });
       const queued = events.find((e) =>
@@ -24488,18 +24903,23 @@ describe("createAgentChatService", () => {
       expect(queued).toBeDefined();
       const steerId = (queued!.event as any).steerId as string;
 
-      // Dispatch inline — should call session.send with shouldQuery:false
+      // Dispatch inline — Claude consumes priority-next between tool steps.
       const result = await service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
       expect(result.dispatchedAt).not.toBeNull();
 
       // The 2nd send call (after the initial turn's send) is the inline dispatch
       const inlineSendCall = send.mock.calls.find((c: any[]) => {
         const arg = c[0];
-        return typeof arg === "object" && arg && (arg as any).shouldQuery === false;
+        return typeof arg === "object"
+          && arg
+          && (arg as any).shouldQuery === true
+          && (arg as any).priority === "next"
+          && JSON.stringify(arg).includes("fold this in");
       });
       expect(inlineSendCall).toBeDefined();
       const inlinePayload = inlineSendCall![0] as any;
-      expect(inlinePayload.shouldQuery).toBe(false);
+      expect(inlinePayload.shouldQuery).toBe(true);
+      expect(inlinePayload.priority).toBe("next");
       expect(inlinePayload.message?.content).toEqual(
         expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("fold this in") })]),
       );
@@ -24517,7 +24937,7 @@ describe("createAgentChatService", () => {
       await activeTurn;
     });
 
-    it("dispatchSteer mode:'interrupt' moves the steer to head, sets interrupted, and calls query.interrupt", async () => {
+    it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -24577,14 +24997,14 @@ describe("createAgentChatService", () => {
       const result = await service.dispatchSteer({ sessionId: session.id, steerId, mode: "interrupt" });
       expect(result.dispatchedAt).not.toBeNull();
 
-      // The SDK's query.interrupt should have been invoked
-      expect(queryInterrupt).toHaveBeenCalledTimes(1);
+      const interruptPayload = send.mock.calls
+        .map((call: any[]) => call[0])
+        .find((arg: any) => arg?.priority === "now" && arg?.shouldQuery === true);
+      expect(interruptPayload).toBeDefined();
+      expect(queryInterrupt).not.toHaveBeenCalled();
 
-      // Simulate the SDK responding to the interrupt by letting the mock stream exit.
-      // (service.interrupt() would short-circuit here because dispatchSteer already
-      // set runtime.interrupted = true.)
-      interruptedTurnClosed = true;
-      await activeTurn.catch(() => {});
+      await service.interrupt({ sessionId: session.id });
+      await activeTurn;
     });
 
     it("dispatchSteer no-ops when the steerId is not in the queue", async () => {
@@ -24609,6 +25029,70 @@ describe("createAgentChatService", () => {
         mode: "inline",
       });
       expect(result.dispatchedAt).toBeNull();
+    });
+
+    it("delivers a restored staged Claude message as a fresh turn and clears persistence", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const handle = {
+        send,
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-restored", slash_commands: [] };
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          yield {
+            type: "assistant",
+            session_id: "sdk-restored",
+            message: { content: [{ type: "text", text: "Handled restored message." }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-restored",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const sessionId = "restored-staged-claude";
+      const steerId = "restored-steer";
+      sessionService.create({
+        sessionId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Restored staged chat",
+        startedAt: "2026-07-10T12:00:00.000Z",
+      });
+      writePersistedChatState(sessionId, {
+        version: 2,
+        sessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        sdkSessionId: "sdk-restored",
+        pendingSteers: [{ steerId, text: "Handle this restored message" }],
+        updatedAt: "2026-07-10T12:00:00.000Z",
+      });
+      await service.resumeSession({ sessionId });
+
+      const result = await service.dispatchSteer({ sessionId, steerId, mode: "inline" });
+
+      expect(result.dispatchedAt).not.toBeNull();
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Handle this restored message"));
+      expect(send.mock.calls.some((call: any[]) => call[0]?.priority != null)).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && (event.event as any).steerId === steerId
+        && /delivering/i.test((event.event as any).message)
+      )).toBe(true);
+      expect(readPersistedChatState(sessionId).pendingSteers).toBeUndefined();
     });
 
     it("dispatchSteer rejects on Codex sessions", async () => {
@@ -24678,7 +25162,10 @@ describe("createAgentChatService", () => {
       // Capture the UUID we sent on the SDK message
       const inlineSendCall = send.mock.calls.find((c: any[]) => {
         const arg = c[0];
-        return typeof arg === "object" && arg && (arg as any).shouldQuery === false;
+        return typeof arg === "object"
+          && arg
+          && (arg as any).shouldQuery === true
+          && (arg as any).priority === "next";
       });
       const sentUuid = (inlineSendCall![0] as any).uuid as string;
       expect(typeof sentUuid).toBe("string");
@@ -24687,13 +25174,6 @@ describe("createAgentChatService", () => {
       const cancelResult = await service.cancelDispatchedSteer({ sessionId: session.id, steerId });
       expect(cancelResult.cancelled).toBe(false);
       expect(cancelAsyncMessage).not.toHaveBeenCalled();
-
-      const notice = events.find((e) =>
-        e.event.type === "system_notice"
-        && (e.event as any).steerId === steerId
-        && /does not support cancelling/i.test((e.event as any).message),
-      );
-      expect(notice).toBeDefined();
 
       // Cleanup
       await service.interrupt({ sessionId: session.id });
@@ -25579,7 +26059,7 @@ describe("createAgentChatService", () => {
     expect(sessionOpts).toEqual(expect.objectContaining({
       includePartialMessages: true,
       agentProgressSummaries: true,
-      forwardSubagentText: true,
+      forwardSubagentText: false,
     }));
   });
 
@@ -27433,14 +27913,18 @@ describe("createAgentChatService", () => {
     mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
       releaseGate = resolve;
     });
+    const firstPrompt = "Keep this Cursor turn open while I switch models.";
+    const matchingFirstPromptCalls = () => mockState.cursorSdkSendCalls.filter((call) =>
+      String(call.promptText ?? "").includes(firstPrompt)
+    );
     const pendingTurn = service.sendMessage({
       sessionId: session.id,
-      text: "Keep this Cursor turn open while I switch models.",
+      text: firstPrompt,
     }, { awaitDispatch: true });
 
     try {
       await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+        expect(matchingFirstPromptCalls()).toHaveLength(1);
       });
 
       await expect(service.updateSession({
@@ -27457,6 +27941,7 @@ describe("createAgentChatService", () => {
       releaseGate();
       await pendingTurn;
     }
+    expect(matchingFirstPromptCalls()).toHaveLength(1);
 
     await vi.waitFor(() => {
       expect(releaseCursorSdkConnection).toHaveBeenCalledTimes(1);

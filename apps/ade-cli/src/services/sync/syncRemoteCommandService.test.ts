@@ -406,6 +406,45 @@ describe("createSyncRemoteCommandService", () => {
     expect(recoverCodexTurn).not.toHaveBeenCalled();
   });
 
+  it("preserves Claude priority steering and guarded queue cancellation", async () => {
+    const steer = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: false });
+    const cancelSteer = vi.fn().mockResolvedValue(undefined);
+    const { service } = createService({ agentChatService: { steer, cancelSteer } });
+
+    await expect(service.execute(makePayload("chat.steer", {
+      sessionId: "chat-1",
+      text: "Redirect the active turn.",
+      dispatchMode: "interrupt",
+    }))).resolves.toEqual({ ok: true, steerId: "steer-1", queued: false });
+    expect(steer).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "Redirect the active turn.",
+      dispatchMode: "interrupt",
+    });
+
+    await expect(service.execute(makePayload("chat.cancelSteer", {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      requireQueued: true,
+    }))).resolves.toEqual({ ok: true });
+    expect(cancelSteer).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      requireQueued: true,
+    });
+
+    await expect(service.execute(makePayload("chat.steer", {
+      sessionId: "chat-1",
+      text: "Invalid mode.",
+      dispatchMode: "later",
+    }))).rejects.toThrow("chat.steer dispatchMode must be 'inline' or 'interrupt'.");
+    await expect(service.execute(makePayload("chat.cancelSteer", {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      requireQueued: "yes",
+    }))).rejects.toThrow("chat.cancelSteer requireQueued must be a boolean.");
+  });
+
   it("omits non-finite work.resumeCliSession dimensions", async () => {
     const { service, ptyService } = createService();
 

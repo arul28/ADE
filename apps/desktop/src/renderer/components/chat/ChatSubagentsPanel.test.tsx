@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
@@ -70,6 +70,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("renders the Progress section with bar, counter, and checklist", () => {
@@ -602,6 +603,35 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Completed \(1\)/i }));
     expect(screen.getByText("done")).toBeTruthy();
     expect(screen.queryByText("running")).toBeNull();
+  });
+
+  it("keeps live subagent and background durations ticking past one minute", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T00:01:05.000Z"));
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        backgroundItems={[
+          scheduledSnapshot({
+            id: "bg-running",
+            kind: "background_task",
+            status: "running",
+            title: "sleep 90",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("1m 5s")).toHaveLength(2);
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(screen.getAllByText("1m 6s")).toHaveLength(2);
   });
 
   it("keeps the small case free of collapse, Completed, Show all, and Clear chrome", () => {

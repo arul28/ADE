@@ -12,7 +12,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import { formatSubagentDurationMs } from "../../lib/format";
+import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
@@ -476,9 +476,13 @@ function elapsedText(snapshot: ChatSubagentSnapshot, nowMs?: number): string | n
   const liveElapsedMs = snapshot.status === "running" && Number.isFinite(startedAt) && typeof nowMs === "number"
     ? Math.max(0, nowMs - startedAt)
     : null;
-  const elapsedMs = snapshot.usage?.durationMs
-    ?? liveElapsedMs
+  const elapsedMs = liveElapsedMs
+    ?? snapshot.usage?.durationMs
     ?? Math.max(0, updatedAt - startedAt);
+  if (snapshot.status === "running") {
+    const formatted = formatDurationMs(elapsedMs);
+    return formatted === "--" ? null : formatted;
+  }
   return formatSubagentDurationMs(elapsedMs);
 }
 
@@ -660,10 +664,15 @@ function ScheduleHistoryRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot 
 }
 
 // Duration between two ISO timestamps, formatted compactly (or null).
-function backgroundDurationLabel(snapshot: ChatScheduledWorkSnapshot): string | null {
+function backgroundDurationLabel(snapshot: ChatScheduledWorkSnapshot, nowMs?: number): string | null {
   const start = Date.parse(snapshot.createdAt);
-  const end = Date.parse(snapshot.updatedAt);
+  const isRunning = snapshot.status === "running" || snapshot.status === "fired";
+  const end = isRunning && typeof nowMs === "number" ? nowMs : Date.parse(snapshot.updatedAt);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  if (isRunning) {
+    const formatted = formatDurationMs(end - start);
+    return formatted === "--" ? null : formatted;
+  }
   return formatSubagentDurationMs(end - start);
 }
 
@@ -678,8 +687,14 @@ function BackgroundCommandRow({ snapshot }: { snapshot: ChatScheduledWorkSnapsho
   const rawCommand = (snapshot.title || snapshot.prompt || snapshot.summary || "").trim();
   const label = backgroundCommandLabel(rawCommand) || rawCommand || "Background command";
   const cwd = backgroundCommandCwd(rawCommand);
-  const duration = backgroundDurationLabel(snapshot);
   const isRunning = snapshot.status === "running" || snapshot.status === "fired";
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isRunning]);
+  const duration = backgroundDurationLabel(snapshot, nowMs);
   const isProblem = snapshot.status === "failed" || snapshot.status === "missed";
   const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
 

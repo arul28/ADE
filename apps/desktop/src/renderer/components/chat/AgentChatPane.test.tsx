@@ -473,6 +473,7 @@ function installAdeMocks(options?: {
     ? vi.fn().mockRejectedValue(options.steerError)
     : vi.fn().mockResolvedValue(options?.steerResult ?? { steerId: "steer-default", queued: true });
   const dispatchSteer = vi.fn().mockResolvedValue({ dispatchedAt: Date.now() });
+  const cancelSteer = vi.fn().mockResolvedValue(undefined);
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
@@ -582,6 +583,7 @@ function installAdeMocks(options?: {
         return sessions.find((s) => s.sessionId === sessionId) ?? null;
       }),
       editSteer: vi.fn().mockResolvedValue(undefined),
+      cancelSteer,
       dispatchSteer,
       updateSession: vi.fn().mockResolvedValue(undefined),
       archive,
@@ -675,6 +677,7 @@ function installAdeMocks(options?: {
     send,
     steer,
     dispatchSteer,
+    cancelSteer,
     list,
     create,
     createLane,
@@ -2525,51 +2528,121 @@ describe("AgentChatPane submit recovery", () => {
       expect(steer).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
+        displayText: "Stop checking docs and just drive the browser.",
       });
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
 
-  it("folds a Send now draft into the running Claude turn via inline dispatch", async () => {
+  it("sends a running-turn Claude draft atomically with inline delivery", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
       model: "anthropic/claude-sonnet-5",
       modelId: "anthropic/claude-sonnet-5",
     });
-    // The steer call returns the minted id directly; the pane dispatches that
-    // exact id inline — no scanning the pending-steer list for a new entry.
     const { steer, dispatchSteer } = installAdeMocks({
       sessions: [session],
       transcript: buildStatusStartedTranscript(session.sessionId),
       includeClaudeModel: true,
-      steerResult: { steerId: "steer-live", queued: true },
+      steerResult: { steerId: "steer-live", queued: false },
     });
 
     renderPane(session);
 
     const textbox = await screen.findByPlaceholderText("Steer the active turn...");
     fireEvent.change(textbox, { target: { value: "Fold this into the live turn." } });
-    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
 
     await waitFor(() => {
       expect(steer).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId: session.sessionId,
           text: "Fold this into the live turn.",
+          displayText: "Fold this into the live turn.",
+          dispatchMode: "inline",
         }),
       );
     });
+    expect(dispatchSteer).not.toHaveBeenCalled();
+  });
+
+  it("restores queued Edit content only to the chat that owned it", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      title: "Primary Claude chat",
+    });
+    const otherSession = buildSession("session-2", {
+      provider: "claude",
+      model: "anthropic/claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      title: "Other Claude chat",
+    });
+    const { cancelSteer, emitChatEvent } = installAdeMocks({
+      sessions: [session, otherSession],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+      includeClaudeModel: true,
+    });
+    let resolveCancel!: () => void;
+    const cancelPromise = new Promise<void>((resolve) => {
+      resolveCancel = resolve;
+    });
+    cancelSteer.mockImplementationOnce(() => cancelPromise);
+
+    renderTabbedPane(session);
+    await screen.findByPlaceholderText("Steer the active turn...");
+    const primaryTab = await screen.findByRole("button", { name: /Primary Claude chat/i });
+    const otherTab = await screen.findByRole("button", { name: /Other Claude chat/i });
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.000Z",
+        event: {
+          type: "user_message",
+          steerId: "steer-edit",
+          deliveryState: "queued",
+          text: "[injected context]\n\nRevise this queued instruction.",
+          displayText: "Revise this queued instruction.",
+          attachments: [{ path: "docs/queued.md", type: "file" }],
+        },
+      });
+    });
+
+    expect(await screen.findByText("Revise this queued instruction.")).toBeTruthy();
+    expect(screen.queryByText(/injected context/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit queued message" }));
+    fireEvent.click(otherTab);
 
     await waitFor(() => {
-      expect(dispatchSteer).toHaveBeenCalledWith({
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    await act(async () => {
+      resolveCancel();
+      await cancelPromise;
+    });
+
+    await waitFor(() => {
+      expect(cancelSteer).toHaveBeenCalledWith({
         sessionId: session.sessionId,
-        steerId: "steer-live",
-        mode: "inline",
+        steerId: "steer-edit",
+        requireQueued: true,
       });
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+      expect(screen.queryByText("queued.md")).toBeNull();
+    });
+
+    fireEvent.click(primaryTab);
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Revise this queued instruction.");
+      expect(screen.getByText("queued.md")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Edit queued message" })).toBeNull();
     });
   });
 
-  it("dispatches an Interrupt & replace draft with the exact minted steer id", async () => {
+  it("selects Interrupt & send, then sends it atomically", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
       model: "anthropic/claude-sonnet-5",
@@ -2579,7 +2652,7 @@ describe("AgentChatPane submit recovery", () => {
       sessions: [session],
       transcript: buildStatusStartedTranscript(session.sessionId),
       includeClaudeModel: true,
-      steerResult: { steerId: "steer-replace", queued: true },
+      steerResult: { steerId: "steer-replace", queued: false },
     });
 
     renderPane(session);
@@ -2587,21 +2660,21 @@ describe("AgentChatPane submit recovery", () => {
     const textbox = await screen.findByPlaceholderText("Steer the active turn...");
     fireEvent.change(textbox, { target: { value: "Actually, do this instead." } });
     fireEvent.click(screen.getByRole("button", { name: "More send options" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Interrupt & replace/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Interrupt & send/i }));
+    expect(steer).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt & send" }));
 
     await waitFor(() => {
       expect(steer).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: session.sessionId, text: "Actually, do this instead." }),
+        expect.objectContaining({
+          sessionId: session.sessionId,
+          text: "Actually, do this instead.",
+          displayText: "Actually, do this instead.",
+          dispatchMode: "interrupt",
+        }),
       );
     });
-
-    await waitFor(() => {
-      expect(dispatchSteer).toHaveBeenCalledWith({
-        sessionId: session.sessionId,
-        steerId: "steer-replace",
-        mode: "interrupt",
-      });
-    });
+    expect(dispatchSteer).not.toHaveBeenCalled();
   });
 
   it("restores the draft and surfaces a notice when the steer queue is full", async () => {
@@ -2621,7 +2694,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = (await screen.findByPlaceholderText("Steer the active turn...")) as HTMLTextAreaElement;
     fireEvent.change(textbox, { target: { value: "This one should bounce." } });
-    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
 
     await waitFor(() => {
       expect(steer).toHaveBeenCalledTimes(1);
@@ -3060,6 +3133,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(steer).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
+        displayText: "Recover by starting a new turn.",
       });
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -3088,6 +3162,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(steer).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         text: "Please keep going.",
+        displayText: "Please keep going.",
       });
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });

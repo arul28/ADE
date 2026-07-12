@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, GearSix, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, ShieldCheck, ShieldWarning, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DeviceMobile, GearSix, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, ShieldCheck, ShieldWarning, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -870,123 +870,57 @@ function PendingSteerItem({
   onSendNow,
   onInterrupt,
 }: {
-  steer: { steerId: string; text: string };
+  steer: {
+    steerId: string;
+    text: string;
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  };
   onCancel: () => void;
-  onEdit: (text: string) => void;
+  onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(steer.text);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [editing]);
-
-  useEffect(() => {
-    if (!editing) {
-      setEditText(steer.text);
-    }
-  }, [editing, steer.text]);
-
-  function cancelEdit(): void {
-    setEditing(false);
-    setEditText(steer.text);
-  }
-
-  function commitEdit(): void {
-    const trimmed = editText.trim();
-    if (!trimmed.length) {
-      onCancel();
-      return;
-    }
-    if (trimmed !== steer.text) {
-      onEdit(trimmed);
-    }
-    setEditing(false);
-  }
-
   return (
     <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
       <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
-      {editing ? (
-        <div className="flex-1 min-w-0">
-          <textarea
-            ref={inputRef}
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                commitEdit();
-              } else if (e.key === "Escape") {
-                cancelEdit();
-              }
-            }}
-            className="w-full resize-none rounded border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/82 outline-none focus:border-[var(--chat-accent)]/30"
-            rows={1}
-          />
-          <div className="mt-1 flex gap-1">
-            <button
-              type="button"
-              onClick={commitEdit}
-              className="inline-flex h-5 items-center gap-0.5 rounded border border-[var(--chat-accent)]/20 bg-[var(--chat-accent)]/8 px-1.5 text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-[var(--chat-accent)] hover:bg-[var(--chat-accent)]/14"
-            >
-              <Check size={9} weight="bold" /> Save
-            </button>
-            <button
-              type="button"
-              onClick={cancelEdit}
-              className="inline-flex h-5 items-center rounded border border-white/[0.06] px-1.5 text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 hover:text-fg/60"
-            >
-              Cancel
-            </button>
-          </div>
+      <div className="flex-1 min-w-0">
+        <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
+          Sends after turn
         </div>
-      ) : (
-        <div className="flex-1 min-w-0">
-          <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
-            Sends after turn
-          </div>
-          <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
-            {steer.text}
-          </div>
+        <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
+          {steer.text}
         </div>
-      )}
-      {!editing ? (
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           {onSendNow ? (
-            <SmartTooltip forceEnabled content={{ label: "Send now", description: "Fold this message into the running turn — the agent picks it up between tool calls, like Claude Code." }}>
+            <SmartTooltip forceEnabled content={{ label: "Send during turn", description: "Claude picks this up after the current tool step, before continuing." }}>
               <button
                 type="button"
                 onClick={onSendNow}
                 className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-[var(--chat-accent)]/12 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
-                aria-label="Send now"
+                aria-label="Send during turn"
               >
                 <ArrowBendDownRight size={11} weight="bold" />
               </button>
             </SmartTooltip>
           ) : null}
           {onInterrupt ? (
-            <SmartTooltip forceEnabled content={{ label: "Send & interrupt", description: "Stop the current turn and run this message instead." }}>
+            <SmartTooltip forceEnabled content={{ label: "Interrupt & send", description: "Stop Claude's current model step and redirect it to this message now." }}>
               <button
                 type="button"
                 onClick={onInterrupt}
                 className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-amber-500/12 hover:text-amber-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-                aria-label="Send and interrupt"
+                aria-label="Interrupt and send"
               >
                 <Lightning size={11} weight="fill" />
               </button>
             </SmartTooltip>
           ) : null}
-          <SmartTooltip forceEnabled content={{ label: "Edit queued message", description: "Change this queued steer message before ADE sends it to the running chat." }}>
+          <SmartTooltip forceEnabled content={{ label: "Edit queued message", description: "Move this message back to the composer so you can edit it and choose how to send it again." }}>
             <button
               type="button"
-              onClick={() => setEditing(true)}
+              onClick={onEdit}
               className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
               aria-label="Edit queued message"
             >
@@ -1003,31 +937,55 @@ function PendingSteerItem({
               <X size={11} weight="bold" />
             </button>
           </SmartTooltip>
-        </div>
-      ) : null}
+      </div>
     </div>
   );
 }
 
 /**
- * Active-turn send affordance modeled on Claude Code: a split button whose
- * primary click folds the draft into the running turn ("Send now"), with a
- * caret menu for the queue / interrupt alternatives. All controls carry
- * force-enabled tooltips so hover always explains the action.
+ * Active-turn send affordance modeled on Claude Code: the caret selects the
+ * delivery mode, while the primary button and Enter execute that mode. All
+ * controls carry force-enabled tooltips so hover explains the action.
  */
+type ActiveTurnSendMode = "inline" | "queue" | "interrupt";
+
+const ACTIVE_TURN_SEND_COPY: Record<ActiveTurnSendMode, { label: string; description: string }> = {
+  inline: {
+    label: "Send during turn",
+    description: "Claude picks this up after the current tool step, before continuing.",
+  },
+  queue: {
+    label: "Send after turn",
+    description: "Stage this message until the current turn is fully finished.",
+  },
+  interrupt: {
+    label: "Interrupt & send",
+    description: "Stop Claude's current model step and redirect it to this message now.",
+  },
+};
+
+function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {
+  if (mode === "interrupt") return <Lightning size={size} weight="fill" />;
+  if (mode === "queue") return <Clock size={size} weight="bold" />;
+  return <ArrowBendDownRight size={size} weight="bold" />;
+}
+
 function ActiveTurnSendButton({
   enabled,
-  onSendNow,
-  onQueue,
-  onInterrupt,
+  mode,
+  allowInterrupt,
+  onModeChange,
+  onSend,
 }: {
   enabled: boolean;
-  onSendNow: () => void;
-  onQueue: () => void;
-  onInterrupt?: () => void;
+  mode: ActiveTurnSendMode;
+  allowInterrupt: boolean;
+  onModeChange: (mode: ActiveTurnSendMode) => void;
+  onSend: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const caretRef = useRef<HTMLButtonElement | null>(null);
+  const selectedCopy = ACTIVE_TURN_SEND_COPY[mode];
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -1048,28 +1006,21 @@ function ActiveTurnSendButton({
     };
   }, [menuOpen]);
 
-  // Close the menu whenever the actions become unavailable (e.g. the draft is
-  // cleared out from under an open menu).
-  useEffect(() => {
-    if (!enabled && menuOpen) setMenuOpen(false);
-  }, [enabled, menuOpen]);
-
   return (
     <div className="relative inline-flex items-center">
       <div className="inline-flex items-center overflow-hidden rounded-full">
         <SmartTooltip
           forceEnabled
           content={{
-            label: "Send now",
-            description:
-              "Fold this message into the running turn — the agent picks it up between tool calls, like Claude Code.",
+            label: selectedCopy.label,
+            description: selectedCopy.description,
           }}
         >
           <button
             type="button"
             disabled={!enabled}
-            onClick={onSendNow}
-            aria-label="Send now"
+            onClick={onSend}
+            aria-label={selectedCopy.label}
             className={cn(
               "inline-flex h-7 items-center justify-center gap-1 rounded-l-full pl-2.5 pr-2 transition-all active:scale-[0.98]",
               enabled
@@ -1077,29 +1028,26 @@ function ActiveTurnSendButton({
                 : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
             )}
           >
-            <ArrowUp size={14} weight="bold" />
+            <ActiveTurnSendIcon mode={mode} />
           </button>
         </SmartTooltip>
         <SmartTooltip
           forceEnabled
           content={{
             label: "More send options",
-            description: "Queue this message for after the turn, or interrupt and replace the current turn.",
+            description: "Choose how the next message should reach Claude during this turn.",
           }}
         >
           <button
             ref={caretRef}
             type="button"
-            disabled={!enabled}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="More send options"
             onClick={() => setMenuOpen((current) => !current)}
             className={cn(
               "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all active:scale-[0.98]",
-              enabled
-                ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
-                : "cursor-not-allowed border-white/[0.03] bg-white/[0.06] text-muted-fg/20",
+              "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white",
             )}
           >
             <CaretDown
@@ -1131,48 +1079,45 @@ function ActiveTurnSendButton({
                     width,
                   }}
                 >
-                  <SmartTooltip
-                    forceEnabled
-                    content={{
-                      label: "Queue for after turn",
-                      description: "Hold this message and send it after the current turn finishes.",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        onQueue();
-                        setMenuOpen(false);
-                      }}
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/80 transition-colors hover:bg-white/[0.05] hover:text-fg"
-                    >
-                      <ArrowBendDownRight size={13} weight="bold" className="shrink-0 text-fg/45" />
-                      Queue for after turn
-                    </button>
-                  </SmartTooltip>
-                  {onInterrupt ? (
-                    <SmartTooltip
-                      forceEnabled
-                      content={{
-                        label: "Interrupt & replace",
-                        description: "Stop the current turn and run this message instead.",
-                      }}
-                    >
+                  {(["inline", "queue", ...(allowInterrupt ? ["interrupt" as const] : [])] as const).map((option, index) => {
+                    const copy = ACTIVE_TURN_SEND_COPY[option];
+                    const selected = option === mode;
+                    return (
                       <button
+                        key={option}
                         type="button"
-                        role="menuitem"
+                        role="menuitemradio"
+                        aria-checked={selected}
                         onClick={() => {
-                          onInterrupt();
+                          onModeChange(option);
                           setMenuOpen(false);
                         }}
-                        className="flex w-full items-center gap-2.5 border-t border-white/[0.05] px-3 py-2 text-left text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/80 transition-colors hover:bg-amber-500/[0.08] hover:text-amber-100"
+                        className={cn(
+                          "flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05]",
+                          index > 0 && "border-t border-white/[0.05]",
+                          option === "interrupt" && "hover:bg-amber-500/[0.08]",
+                        )}
                       >
-                        <Lightning size={13} weight="fill" className="shrink-0 text-amber-400/80" />
-                        Interrupt &amp; replace
+                        <span className={cn(
+                          "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
+                          option === "interrupt" && "text-amber-400/80",
+                        )}>
+                          <ActiveTurnSendIcon mode={option} size={13} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/85">
+                            {copy.label}
+                          </span>
+                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*9.5/14)] leading-[1.35] text-fg/40">
+                            {copy.description}
+                          </span>
+                        </span>
+                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
+                          {selected ? <Check size={11} weight="bold" /> : null}
+                        </span>
                       </button>
-                    </SmartTooltip>
-                  ) : null}
+                    );
+                  })}
                 </div>
               );
             })(),
@@ -1423,9 +1368,19 @@ export function AgentChatComposer({
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
-  pendingSteers?: Array<{ steerId: string; text: string }>;
+  pendingSteers?: Array<{
+    steerId: string;
+    text: string;
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  }>;
   onCancelSteer?: (steerId: string) => void;
-  onEditSteer?: (steerId: string, text: string) => void;
+  onEditSteer?: (
+    steerId: string,
+    text: string,
+    attachments: AgentChatFileRef[],
+    contextAttachments: AgentChatContextAttachment[],
+  ) => void;
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
   /**
@@ -1512,6 +1467,14 @@ export function AgentChatComposer({
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
+  const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
+  const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
+    ? "inline"
+    : activeTurnSendMode;
+
+  useEffect(() => {
+    setActiveTurnSendMode("inline");
+  }, [sessionId, turnActive]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -3032,11 +2995,10 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    // Claude Code parity: pressing Enter mid-turn folds the draft into the
-    // running turn ("Send now") rather than only staging it. Other providers
-    // (no inline-steer dispatch) keep the queue-on-Enter behavior.
+    // During a Claude turn, Enter follows the delivery mode selected from the
+    // split send button. Other providers keep their queue-on-Enter behavior.
     if (turnActive && onSendSteerNow) {
-      if (activeSteerEnabled) onSendSteerNow();
+      if (activeSteerEnabled) submitActiveTurnDraft();
       return;
     }
     submitComposerDraft();
@@ -3219,12 +3181,25 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !singleModelReady || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
+    const hasAttachmentOnlySubmit = allowAttachmentOnlySubmit && attachments.length > 0;
+    if (busy || !singleModelReady || (!draft.trim().length && !hasAttachmentOnlySubmit && !hasContextSelection && contextAttachmentCount === 0)) {
       if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+
+  const submitActiveTurnDraft = useCallback(() => {
+    if (effectiveActiveTurnSendMode === "queue") {
+      submitComposerDraft();
+      return;
+    }
+    if (effectiveActiveTurnSendMode === "interrupt") {
+      onSendSteerInterrupt?.();
+      return;
+    }
+    onSendSteerNow?.();
+  }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
@@ -3295,6 +3270,7 @@ export function AgentChatComposer({
   // whitespace-only draft disables the send actions instead of silently no-oping.
   const activeTurnHasContent =
     draft.trim().length > 0
+    || (allowAttachmentOnlySubmit && attachments.length > 0)
     || hasIosElementContext
     || hasAppControlContext
     || hasBuiltInBrowserContext
@@ -4331,13 +4307,14 @@ export function AgentChatComposer({
                 ) : null}
                 {!composerInputLocked ? (
                   onSendSteerNow ? (
-                    // Claude Code parity: primary click folds the draft into the
-                    // live turn; caret menu keeps queue / interrupt-replace.
+                    // Claude Code parity: the caret selects delivery behavior;
+                    // the primary button and Enter execute that selection.
                     <ActiveTurnSendButton
                       enabled={activeSteerEnabled}
-                      onSendNow={onSendSteerNow}
-                      onQueue={submitComposerDraft}
-                      onInterrupt={onSendSteerInterrupt}
+                      mode={effectiveActiveTurnSendMode}
+                      allowInterrupt={Boolean(onSendSteerInterrupt)}
+                      onModeChange={setActiveTurnSendMode}
+                      onSend={submitActiveTurnDraft}
                     />
                   ) : (
                     // Providers without inline-steer dispatch keep the single
@@ -4450,7 +4427,9 @@ export function AgentChatComposer({
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
             </span>
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              Hover to send now, interrupt, edit, or remove.
+              {onDispatchSteerInline || onDispatchSteerInterrupt
+                ? "Hover to send during the turn, interrupt, edit, or remove."
+                : "Hover to edit or remove."}
             </span>
           </div>
           {pendingSteers.map((steer) => (
@@ -4458,7 +4437,12 @@ export function AgentChatComposer({
               key={steer.steerId}
               steer={steer}
               onCancel={() => onCancelSteer?.(steer.steerId)}
-              onEdit={(text) => onEditSteer?.(steer.steerId, text)}
+              onEdit={() => onEditSteer?.(
+                steer.steerId,
+                steer.text,
+                steer.attachments,
+                steer.contextAttachments,
+              )}
               onSendNow={onDispatchSteerInline ? () => onDispatchSteerInline(steer.steerId) : undefined}
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />

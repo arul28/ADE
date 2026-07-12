@@ -166,6 +166,7 @@ import type {
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
   AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatCancelDispatchedSteerArgs,
@@ -464,13 +465,32 @@ import {
 } from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
-const CLAUDE_AGENT_SDK_VERSION = "0.3.202";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.207";
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
   "claude_sdk.api": CLAUDE_AGENT_SDK_API,
 } as const;
+
+function partitionClaudeResultErrors(value: unknown): {
+  all: string[];
+  internalDiagnostics: string[];
+  userFacing: string[];
+} {
+  const all = Array.isArray(value) ? value.map(String) : [];
+  const internalDiagnostics: string[] = [];
+  const userFacing: string[] = [];
+  for (const error of all) {
+    if (error.trim().startsWith(CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX)) {
+      internalDiagnostics.push(error);
+    } else {
+      userFacing.push(error);
+    }
+  }
+  return { all, internalDiagnostics, userFacing };
+}
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -850,6 +870,15 @@ type ClaudeRuntime = {
    * this durable record is the guard. Bounded to the most recent messages.
    */
   emittedTextByAssistantMessage: Map<string, Map<number, string>>;
+  /**
+   * Full level-set reported by SDK `background_tasks_changed`. Unlike paired
+   * task edge events, this cannot leave ADE believing a finished task is live
+   * (or miss a still-live task after an edge race). It exists primarily to
+   * protect the long-lived query from idle cleanup and runtime eviction.
+   */
+  liveBackgroundTaskIds: Set<string>;
+  /** True after this CLI process has emitted its first authoritative level. */
+  backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
   /**
    * Sticky per-background-task title, keyed by taskId. The first meaningful
@@ -867,9 +896,18 @@ type ClaudeRuntime = {
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
   activeTurnId: string | null;
+  /** Orders active-turn steers after the parent turn's first SDK input push. */
+  initialInputDispatchGate: {
+    turnId: string;
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    settled: boolean;
+  } | null;
+  /** Prevents turn-finalization from auto-delivering a staged row while the
+   * user is explicitly dispatching it with Claude's priority queue. */
+  dispatchingSteerIds: Set<string>;
   pendingSteers: QueuedSteer[];
-  /** UUIDs of inline-dispatched steer messages, keyed by steerId. */
-  dispatchedInlineSteers: Map<string, string>;
   approvals: Map<string, PendingClaudeApproval>;
   interrupted: boolean;
   /** Set when early interrupt events have been emitted to avoid duplicate emission later. */
@@ -889,6 +927,25 @@ type ClaudeRuntime = {
   /** Set after we've emitted the once-per-session "Approaching plan limit" notice. */
   rateLimitWarningEmitted: boolean;
 };
+
+function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
+  runtime.liveBackgroundTaskIds.clear();
+  runtime.backgroundTasksLevelObserved = false;
+}
+
+function settleClaudeInitialInputDispatch(
+  runtime: ClaudeRuntime,
+  error?: Error,
+): void {
+  const gate = runtime.initialInputDispatchGate;
+  if (!gate || gate.settled) return;
+  gate.settled = true;
+  if (runtime.initialInputDispatchGate === gate) {
+    runtime.initialInputDispatchGate = null;
+  }
+  if (error) gate.reject(error);
+  else gate.resolve();
+}
 
 const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/permissions", description: "Set what Codex can do without asking first.", source: "sdk" },
@@ -1426,14 +1483,23 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.activeSubagents.size > 0
         || runtime.pendingPlanFollowups.length > 0
       );
-    case "claude":
+    case "claude": {
+      // Before the first level signal, task edge state is the only evidence we
+      // have. Once observed, background_tasks_changed is authoritative for
+      // background agents/shells; only foreground subagent edges remain an
+      // independent workload signal.
+      const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
+        (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
+      );
       return Boolean(
         runtime.busy
         || runtime.activeTurnId
         || runtime.pendingSteers.length > 0
         || runtime.approvals.size > 0
-        || runtime.activeSubagents.size > 0
+        || hasUnlevelledSubagent
+        || runtime.liveBackgroundTaskIds.size > 0
       );
+    }
     case "opencode":
       return Boolean(
         runtime.busy
@@ -3370,10 +3436,11 @@ const CLAUDE_TASK_TYPE_SET = new Set<ClaudeTaskType>(CLAUDE_TASK_TYPES);
 function normalizeClaudeTaskType(value: unknown): ClaudeTaskType | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
-  // The SDK tags a Bash run_in_background shell as "local_bash"; it is a
-  // background task (background-work pane, never the subagent roster), so fold
-  // it onto "background" — the id space every downstream branch already keys on.
-  if (trimmed === "local_bash") return "background";
+  // `local_bash` describes the task implementation, not whether it is actually
+  // backgrounded. Claude emits it for ordinary foreground Bash tools too. Keep
+  // it in the non-agent bucket until run_in_background, task_updated, or the
+  // authoritative background_tasks_changed level proves otherwise.
+  if (trimmed === "local_bash") return "other";
   return CLAUDE_TASK_TYPE_SET.has(trimmed as ClaudeTaskType) ? (trimmed as ClaudeTaskType) : undefined;
 }
 
@@ -7282,7 +7349,7 @@ export function createAgentChatService(args: {
       supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
       getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
       rewindFiles?: (userMessageId: string, options?: { dryRun?: boolean }) => Promise<ClaudeRewindFilesResult>;
-      interrupt?: () => Promise<void>;
+      interrupt?: ClaudeQuery["interrupt"];
       stopTask?: ClaudeQuery["stopTask"];
   } => {
     return {
@@ -9579,20 +9646,22 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
         : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
-      ...(managed.runtime?.kind === "claude" && managed.runtime.pendingSteers.length > 0
-        ? {
-            pendingSteers: managed.runtime.pendingSteers.map((s): PersistedPendingSteer => ({
-              steerId: s.steerId,
-              text: s.text,
-              ...(s.displayText ? { displayText: s.displayText } : {}),
-              ...(s.attachments.length ? { attachments: s.attachments } : {}),
-              ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
-              ...(s.metadata ? { metadata: s.metadata } : {}),
-              ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
-              ...(s.executionMode ? { executionMode: s.executionMode } : {}),
-              ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
-            })),
-          }
+      ...(managed.runtime?.kind === "claude"
+        ? managed.runtime.pendingSteers.length > 0
+          ? {
+              pendingSteers: managed.runtime.pendingSteers.map((s): PersistedPendingSteer => ({
+                steerId: s.steerId,
+                text: s.text,
+                ...(s.displayText ? { displayText: s.displayText } : {}),
+                ...(s.attachments.length ? { attachments: s.attachments } : {}),
+                ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
+                ...(s.metadata ? { metadata: s.metadata } : {}),
+                ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
+                ...(s.executionMode ? { executionMode: s.executionMode } : {}),
+                ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
+              })),
+            }
+          : {}
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
@@ -10773,7 +10842,19 @@ export function createAgentChatService(args: {
     const stashed = parentToolUseId
       ? runtime.taskToolInputByToolUseId.get(parentToolUseId)
       : undefined;
-    const taskType = normalizeClaudeTaskType(taskMsg.task_type) ?? existing?.taskType;
+    const rawTaskType = compactString(taskMsg.task_type);
+    const taskId = compactString(taskMsg.task_id) ?? existing?.taskId;
+    const patch = asRecord(taskMsg.patch);
+    const localBash = rawTaskType === "local_bash";
+    const localBashIsBackground = localBash && Boolean(
+      existing?.background === true
+        || (taskId && runtime.liveBackgroundTaskIds.has(taskId))
+        || isBackgroundTask(taskMsg)
+        || patch?.is_backgrounded === true,
+    );
+    const taskType = localBashIsBackground
+      ? "background"
+      : normalizeClaudeTaskType(taskMsg.task_type) ?? existing?.taskType;
     const messageAgentType = compactString(taskMsg.subagent_type);
     const classificationAgentType = stashed?.subagentType ?? messageAgentType ?? existing?.agentType;
     const agentType = classificationAgentType ?? stashed?.name;
@@ -10793,9 +10874,28 @@ export function createAgentChatService(args: {
       agentType,
       command,
       description,
+      localBash,
       backgroundShell: isBackgroundShellCommand(input),
       realSubagent: isRealSubagent(input),
     };
+  };
+
+  const promoteClaudeBackgroundedNonAgentTask = (
+    runtime: ClaudeRuntime,
+    taskId: string,
+    existing: ClaudeActiveSubagent | undefined,
+    patch: Record<string, unknown>,
+  ): ClaudeActiveSubagent | undefined => {
+    if (!existing?.nonAgentTaskRun || patch.is_backgrounded !== true) return existing;
+    const promoted: ClaudeActiveSubagent = {
+      ...existing,
+      description: compactString(patch.description) ?? existing.description,
+      background: true,
+      taskType: "background",
+      nonAgentTaskRun: false,
+    };
+    runtime.activeSubagents.set(taskId, promoted);
+    return promoted;
   };
 
   // The SubagentStop hook keys `finalSummary` by `agent_id`, but the task_*
@@ -10895,6 +10995,95 @@ export function createAgentChatService(args: {
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
     }
+  };
+
+  const isClaudeAgentBackgroundTaskType = (value: unknown): boolean => {
+    const taskType = compactString(value)?.toLowerCase();
+    return taskType === "subagent"
+      || taskType === "agent"
+      || taskType === "local_agent"
+      || taskType === "workflow"
+      || taskType === "local_workflow";
+  };
+
+  const applyClaudeBackgroundTasksLevel = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    tasks: unknown,
+  ): void => {
+    const nextIds = new Set<string>();
+    for (const rawTask of Array.isArray(tasks) ? tasks : []) {
+      const task = asRecord(rawTask);
+      const taskId = compactString(task?.task_id);
+      if (!task || !taskId) continue;
+      nextIds.add(taskId);
+
+      const description = compactString(task.description) ?? "Background work";
+      if (isClaudeAgentBackgroundTaskType(task.task_type)) {
+        const existing = resolveClaudeActiveSubagent(runtime, taskId, taskId);
+        if (!existing || existing.background === true) continue;
+        runtime.activeSubagents.set(taskId, { ...existing, background: true });
+
+        // The level signal usually precedes task_started, but ordering is
+        // intentionally unspecified. If it arrives second, append an enriched
+        // start snapshot so every consumer corrects the existing row in place.
+        if (
+          runtime.emittedSubagentStartIds.has(existing.taskId)
+          || Boolean(existing.agentId && runtime.emittedSubagentStartIds.has(existing.agentId))
+        ) {
+          emitChatEvent(managed, {
+            type: "subagent_started",
+            taskId: existing.taskId,
+            ...(existing.agentId ? { agentId: existing.agentId } : {}),
+            ...(existing.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
+            ...(existing.agentType ? { agentType: existing.agentType } : {}),
+            parentToolUseId: existing.parentToolUseId ?? null,
+            description: existing.description || description,
+            background: true,
+            ...(existing.taskType ? { taskType: existing.taskType } : {}),
+            ...(existing.workflowName ? { workflowName: existing.workflowName } : {}),
+            ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+            ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
+          });
+        }
+        continue;
+      }
+
+      const existing = runtime.activeSubagents.get(taskId);
+      if (existing?.nonAgentTaskRun) {
+        runtime.activeSubagents.set(taskId, {
+          ...existing,
+          background: true,
+          taskType: "background",
+          nonAgentTaskRun: false,
+        });
+      }
+      emitClaudeBackgroundTaskUpdate(managed, runtime, {
+        taskId,
+        status: "running",
+        title: description,
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+    }
+
+    // This is a full live-membership level, not a delta. If a shell/Monitor row
+    // ADE previously opened from this level disappears, settle that durable UI
+    // row even when the matching task_notification edge was missed. Keep the
+    // activeSubagents entry intact: level/bookend ordering is unspecified, and
+    // a later real notification must still be able to correct status/summary.
+    for (const taskId of runtime.liveBackgroundTaskIds) {
+      if (nextIds.has(taskId) || !runtime.seenBackgroundTaskIds.has(taskId)) continue;
+      emitClaudeBackgroundTaskUpdate(managed, runtime, {
+        taskId,
+        status: "completed",
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      });
+    }
+
+    runtime.liveBackgroundTaskIds.clear();
+    for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
+    runtime.backgroundTasksLevelObserved = true;
+    managed.lastActivityTimestamp = Date.now();
   };
 
   const closeOpenClaudeBackgroundTasks = (
@@ -11132,8 +11321,17 @@ export function createAgentChatService(args: {
       if (!task) continue;
       const id = compactString(task.id);
       if (!id) continue;
-      snapshotBackgroundTaskIds.add(id);
       const type = compactString(task.type);
+      // Claude's hook snapshot is session-wide and includes native subagents
+      // and workflows alongside shell/Monitor work. Agents already have a
+      // richer subagent_* lifecycle; projecting them again as background rows
+      // creates two peer entries for one task. Keep only the real background
+      // work here. Child shell/Monitor rows intentionally remain session-wide,
+      // matching Claude Code.
+      if (isClaudeAgentBackgroundTaskType(type) || compactString(task.agent_type)) {
+        continue;
+      }
+      snapshotBackgroundTaskIds.add(id);
       const description = compactString(task.description);
       const command = compactString(task.command);
       const agentType = compactString(task.agent_type);
@@ -12206,26 +12404,30 @@ export function createAgentChatService(args: {
       if (preserveProviderResumeState) persistChatState(managed);
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.query?.close(); } catch { /* ignore */ }
-      if (
-        openCodeReason === "ended_session"
-        || openCodeReason === "handle_close"
-        || openCodeReason === "model_switch"
-      ) {
-        claudeSubprocessReaper.reapForSession(managed.session.id, openCodeReason);
-      }
+      // Every teardown abandons this query's control channel. Enforce process
+      // ownership even for idle eviction so an ended iterator cannot leave a
+      // detached Claude worker (or its children) behind.
+      claudeSubprocessReaper.reapForSession(managed.session.id, openCodeReason);
       managed.runtime.inputPump?.close();
       try { managed.runtime.warmQuery?.close(); } catch { /* ignore */ }
+      settleClaudeInitialInputDispatch(managed.runtime, new Error("Claude runtime was closed before the turn input was dispatched."));
+      resetClaudeProcessBackgroundLevel(managed.runtime);
       managed.runtime.query = null;
       managed.runtime.inputPump = null;
       managed.runtime.warmQuery = null;
       managed.runtime.warmupDone = null;
-      // Settle any still-open background shell rows as stopped before the maps
-      // are cleared, so teardown never leaves a persisted "running" row.
-      closeOpenClaudeBackgroundTasks(managed, managed.runtime, "stopped", managed.runtime.activeTurnId ?? undefined);
-      managed.runtime.activeSubagents.clear();
+      // Query is already null, so settle every visible background/native task
+      // without trying provider stopTask on the dead control channel.
+      void stopActiveClaudeSubagents(
+        managed,
+        managed.runtime,
+        managed.runtime.activeTurnId ?? undefined,
+        "The Claude session ended before this task reported completion.",
+      );
       managed.runtime.emittedSubagentStartIds.clear();
       managed.runtime.taskToolInputByToolUseId.clear();
       managed.runtime.workflowAgentsByTask.clear();
+      managed.runtime.dispatchingSteerIds.clear();
       for (const pending of managed.runtime.approvals.values()) {
         pending.resolve({ decision: "cancel" });
       }
@@ -13479,7 +13681,15 @@ export function createAgentChatService(args: {
     toolUseMetaByContentIndex: Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>;
     currentStreamMessageId: string | null;
     streamedTextByContentIndex: Map<number, string>;
+    recentTextDeltaBuffer: string;
     scheduledWakeAttached: boolean;
+  };
+
+  const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
+    if (msg.type !== "assistant" && msg.type !== "stream_event" && msg.type !== "tool_progress") {
+      return false;
+    }
+    return compactString((msg as unknown as Record<string, unknown>).parent_tool_use_id) != null;
   };
 
   const startClaudeIdleTurn = (
@@ -13604,9 +13814,11 @@ export function createAgentChatService(args: {
     state.turnId = null;
     state.currentStreamMessageId = null;
     state.streamedTextByContentIndex.clear();
+    state.recentTextDeltaBuffer = "";
     if (runtime.pendingSteers.length && managed.runtime === runtime) {
       runtime.idleReaderPromise = null;
-      await deliverNextQueuedSteer(managed, runtime);
+      const delivered = await deliverNextQueuedSteer(managed, runtime);
+      if (!delivered) startClaudeIdleReader(managed, runtime, "turn_completed");
     }
   };
 
@@ -13623,7 +13835,9 @@ export function createAgentChatService(args: {
     const taskId = compactString(msg.task_id);
     if (!taskId) return true;
     const notificationAgentId = compactString(msg.agent_id);
-    const existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
+    const taskPatch = subtype === "task_updated" ? asRecord(msg.patch) ?? {} : {};
+    let existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
+    existing = promoteClaudeBackgroundedNonAgentTask(runtime, taskId, existing, taskPatch);
     // Ambient (skip_transcript) tasks and non-agent task runs are both tracked
     // but never surfaced — swallow every follow-up subtype, deleting on the
     // terminal one so the entry does not leak.
@@ -13650,7 +13864,8 @@ export function createAgentChatService(args: {
       });
       return true;
     }
-    const taskType = normalizeClaudeTaskType(msg.task_type) ?? existing?.taskType;
+    const classification = classifyClaudeTaskMessage(runtime, msg, existing);
+    const taskType = classification.taskType;
     const workflowName = normalizeClaudeWorkflowName(msg.workflow_name) ?? existing?.workflowName;
     const parentToolUseId = taskParentToolUseId(msg) ?? existing?.parentToolUseId ?? null;
     const agentId = notificationAgentId ?? existing?.agentId;
@@ -13658,8 +13873,11 @@ export function createAgentChatService(args: {
     const agentType = compactString(msg.subagent_type) ?? existing?.agentType;
     const command = compactString(msg.command) ?? existing?.command;
     const description = compactString(msg.description) ?? existing?.description ?? "Background task";
-    const backgroundShell = classifyClaudeTaskMessage(runtime, msg, existing).backgroundShell;
-    const turnId = startClaudeIdleTurn(managed, runtime, state, taskType === "cron" ? "Claude scheduled task is running" : "Claude background task is running");
+    const backgroundShell = classification.backgroundShell;
+    // Progress from a task that outlives its parent turn must not manufacture a
+    // new main-thread turn. A genuine parent assistant frame (normally the
+    // completion wake-up) will start the next idle turn when it arrives.
+    const turnId = state.turnId ?? undefined;
     // Background shell commands are tracked as background scheduled_work rows,
     // not subagents — mirror the main-loop gating in every idle subtype.
     if (backgroundShell) {
@@ -13701,8 +13919,18 @@ export function createAgentChatService(args: {
         return true;
       }
       // task_updated: emit a terminal background row only on completion.
-      const patch = asRecord(msg.patch) ?? {};
+      const patch = taskPatch;
       const status = compactString(patch.status);
+      if (patch.is_backgrounded === true && status !== "completed" && status !== "failed" && status !== "killed") {
+        emitClaudeBackgroundTaskUpdate(managed, runtime, {
+          taskId,
+          status: "running",
+          title: existing?.description ?? description,
+          command,
+          turnId,
+        });
+        return true;
+      }
       if (status === "completed" || status === "failed" || status === "killed") {
         runtime.activeSubagents.delete(taskId);
         if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
@@ -13719,7 +13947,12 @@ export function createAgentChatService(args: {
       return true;
     }
     if (subtype === "task_started") {
-      const background = taskType === "background" || taskType === "cron" || taskType === "local_workflow" || isBackgroundTask(msg);
+      const background = taskType === "background"
+        || taskType === "cron"
+        || taskType === "local_workflow"
+        || runtime.liveBackgroundTaskIds.has(taskId)
+        || isBackgroundTask(msg)
+        || (parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId)?.isBackground === true : false);
       // An explicit task_type "other" with no agent metadata is a plain Claude
       // Code task run, not a subagent — track it for cleanup but never emit
       // subagent rows. Uses the same shared predicate as the foreground path
@@ -13788,11 +14021,15 @@ export function createAgentChatService(args: {
         agentId: notificationAgentId,
         parentToolUseId,
       });
-      const summary = String(msg.summary ?? gatedFinalSummary ?? "");
+      const finalStatus = msg.status === "completed" ? "completed" : msg.status === "stopped" ? "stopped" : "failed";
+      const summary = String(
+        finalStatus === "completed"
+          ? gatedFinalSummary ?? msg.summary ?? ""
+          : msg.summary ?? gatedFinalSummary ?? "",
+      );
       runtime.activeSubagents.delete(taskId);
       if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
       if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
-      const finalStatus = msg.status === "completed" ? "completed" : msg.status === "stopped" ? "stopped" : "failed";
       if (taskType === "cron") {
         const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
         if (scheduledWorkId) {
@@ -13828,7 +14065,31 @@ export function createAgentChatService(args: {
     }
     const patch = asRecord(msg.patch) ?? {};
     const status = compactString(patch.status);
-    const summary = compactString(msg.summary) ?? compactString(patch.error) ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
+    const summary = status === "completed" && existing?.finalSummary
+      ? existing.finalSummary
+      : compactString(msg.summary)
+        ?? compactString(patch.error)
+        ?? existing?.finalSummary
+        ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
+    if (status === "completed" && classification.realSubagent) {
+      // task_updated is a state patch. The SDK's task_notification is the
+      // terminal edge and follows SubagentStop, which carries the child's real
+      // final text. Publishing here would lock in "Status: completed" and gate
+      // the richer notification as a duplicate.
+      runtime.activeSubagents.set(taskId, {
+        taskId,
+        description,
+        parentToolUseId,
+        background: patch.is_backgrounded === true || existing?.background === true,
+        finalSummary: existing?.finalSummary,
+        ...(agentType ? { agentType } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(taskType ? { taskType } : {}),
+        ...(workflowName ? { workflowName } : {}),
+      });
+      return true;
+    }
     if (status === "completed" || status === "failed" || status === "killed") {
       runtime.activeSubagents.delete(taskId);
       if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
@@ -13909,6 +14170,11 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     }
 
+    // Native background-subagent assistant/tool frames are forwarded over the
+    // parent Query for observation. They belong to the subagent transcript,
+    // which ADE reads through getSubagentTranscript, not the main chat.
+    if (isClaudeForwardedSubagentMessage(msg)) return;
+
     if (msg.type === "system" && record.subtype === "init") {
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
@@ -13921,6 +14187,11 @@ export function createAgentChatService(args: {
         applyClaudeSlashCommands(runtime, record.commands as any[]);
         persistChatState(managed);
       }
+      return;
+    }
+
+    if (msg.type === "system" && record.subtype === "background_tasks_changed") {
+      applyClaudeBackgroundTasksLevel(managed, runtime, record.tasks);
       return;
     }
 
@@ -14011,8 +14282,16 @@ export function createAgentChatService(args: {
           const emittedRecord = providerMessageId ? claudeEmittedTextRecord(runtime, providerMessageId) : null;
           const streamedPrefix = emittedRecord?.get(index)
             ?? (snapshotMatchesCurrentStream ? state.streamedTextByContentIndex.get(index) ?? "" : "");
+          const replayedStreamPrefix = state.recentTextDeltaBuffer.length > 0
+            && text.startsWith(state.recentTextDeltaBuffer);
+          const replayedSnapshotPrefix = state.recentTextDeltaBuffer.length > 0
+            && state.recentTextDeltaBuffer.startsWith(text);
           let textToEmit: string;
-          if (!streamedPrefix.length) {
+          if (replayedSnapshotPrefix) {
+            textToEmit = "";
+          } else if (!streamedPrefix.length && replayedStreamPrefix) {
+            textToEmit = text.slice(state.recentTextDeltaBuffer.length);
+          } else if (!streamedPrefix.length) {
             textToEmit = text;
           } else if (text.startsWith(streamedPrefix)) {
             textToEmit = text.slice(streamedPrefix.length);
@@ -14032,10 +14311,13 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
-          emittedRecord?.set(index, textToEmit.length ? text : streamedPrefix);
+          emittedRecord?.set(index, text.length >= streamedPrefix.length ? text : streamedPrefix);
           if (snapshotMatchesCurrentStream) {
             state.streamedTextByContentIndex.set(index, text);
           }
+          state.recentTextDeltaBuffer = replayedSnapshotPrefix
+            ? state.recentTextDeltaBuffer.slice(text.length)
+            : "";
         } else if (block.type === "thinking") {
           const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
           if (text.trim().length) {
@@ -14088,6 +14370,7 @@ export function createAgentChatService(args: {
       if (event.type === "message_start") {
         const message = asRecord(event.message);
         state.streamedTextByContentIndex.clear();
+        state.recentTextDeltaBuffer = "";
         state.currentStreamMessageId = compactString(message?.id) ?? compactString(streamMsg.uuid) ?? null;
         return;
       }
@@ -14096,6 +14379,7 @@ export function createAgentChatService(args: {
         if (delta?.type === "text_delta") {
           const text = typeof delta.text === "string" ? delta.text : "";
           if (text.length) {
+            state.recentTextDeltaBuffer += text;
             state.assistantText += text;
             if (contentIndex != null) {
               state.streamedTextByContentIndex.set(
@@ -14208,6 +14492,20 @@ export function createAgentChatService(args: {
     if (msg.type === "result") {
       const resultMsg = record;
       const turnId = state.turnId;
+      const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
+      const diagnosticOnlyError = resultMsg.is_error === true
+        && resultErrors.all.length > 0
+        && resultErrors.userFacing.length === 0;
+      const resultIsError = resultMsg.is_error === true && !diagnosticOnlyError;
+      if (resultErrors.internalDiagnostics.length > 0) {
+        logger.debug("agent_chat.claude_internal_diagnostic", {
+          ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+          sessionId: managed.session.id,
+          turnId,
+          source: "idle_reader",
+          diagnostics: resultErrors.internalDiagnostics,
+        });
+      }
       const usage = asRecord(resultMsg.usage);
       if (usage) {
         state.usage = {
@@ -14220,12 +14518,12 @@ export function createAgentChatService(args: {
       if (typeof resultMsg.total_cost_usd === "number") {
         state.costUsd = resultMsg.total_cost_usd;
       }
-      if (resultMsg.is_error === true && Array.isArray(resultMsg.errors) && turnId) {
-        for (const error of resultMsg.errors) {
-          emitChatEvent(managed, { type: "error", message: String(error), turnId });
+      if (resultIsError && turnId) {
+        for (const error of resultErrors.userFacing) {
+          emitChatEvent(managed, { type: "error", message: error, turnId });
         }
       }
-      await finishClaudeIdleTurn(managed, runtime, state, resultMsg.is_error === true ? "failed" : "completed");
+      await finishClaudeIdleTurn(managed, runtime, state, resultIsError ? "failed" : "completed");
       return;
     }
 
@@ -14280,6 +14578,7 @@ export function createAgentChatService(args: {
       toolUseMetaByContentIndex: new Map(),
       currentStreamMessageId: null,
       streamedTextByContentIndex: new Map(),
+      recentTextDeltaBuffer: "",
       scheduledWakeAttached: false,
     };
 
@@ -14301,6 +14600,51 @@ export function createAgentChatService(args: {
         runtime.pendingPostResultNextSettledAt = Date.now();
       }
       return true;
+    };
+
+    const terminateEndedQuery = async (
+      status: "completed" | "failed",
+      summary: string,
+      reaperReason: string,
+    ): Promise<void> => {
+      if (
+        managed.runtime !== runtime
+        || runtime.query !== sessionQuery
+        || runtime.idleReaderGeneration !== generation
+      ) {
+        return;
+      }
+
+      const turnId = state.turnId ?? runtime.activeTurnId ?? undefined;
+      // Invalidate the dead iterator before finalizing the idle turn. That
+      // finalization may deliver a queued message, which must start a fresh
+      // query instead of pushing into this ended input stream.
+      runtime.idleReaderGeneration += 1;
+      runtime.idleReaderPromise = null;
+      runtime.queryGeneration += 1;
+      runtime.queryStartPromise = null;
+      runtime.pendingPostResultNext = null;
+      runtime.pendingPostResultNextSettledAt = null;
+      try { sessionQuery.close(); } catch { /* ignore */ }
+      runtime.inputPump?.close();
+      runtime.query = null;
+      runtime.inputPump = null;
+      runtime.warmupDone = null;
+      resetClaudeProcessBackgroundLevel(runtime);
+      claudeSubprocessReaper.reapForSession(managed.session.id, reaperReason);
+
+      // The process is gone, so every still-open task edge is now terminal.
+      // Query is already null, which deliberately prevents provider stopTask
+      // calls against a dead control channel while still settling all UI rows.
+      await stopActiveClaudeSubagents(managed, runtime, turnId, summary);
+
+      if (state.turnId && runtime.activeTurnId === state.turnId) {
+        await finishClaudeIdleTurn(managed, runtime, state, status);
+      } else if (runtime.pendingSteers.length && managed.runtime === runtime) {
+        await deliverNextQueuedSteer(managed, runtime);
+      } else {
+        persistChatState(managed);
+      }
     };
 
     runtime.idleReaderPromise = (async () => {
@@ -14344,6 +14688,11 @@ export function createAgentChatService(args: {
               sessionId: managed.session.id,
               error: error instanceof Error ? error.message : String(error),
             });
+            await terminateEndedQuery(
+              "failed",
+              "Claude's background query ended before this task reported completion.",
+              "claude_idle_reader_next_failed",
+            );
             return;
           }
           if (
@@ -14367,7 +14716,11 @@ export function createAgentChatService(args: {
             runtime.pendingPostResultNextSettledAt = null;
           }
           if (next.done) {
-            await finishClaudeIdleTurn(managed, runtime, state, "completed");
+            await terminateEndedQuery(
+              "completed",
+              "Claude's background query ended before this task reported completion.",
+              "claude_idle_reader_done",
+            );
             return;
           }
           await handleClaudeIdleMessage(managed, runtime, next.value, state);
@@ -14377,9 +14730,11 @@ export function createAgentChatService(args: {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
         });
-        if (state.turnId && runtime.activeTurnId === state.turnId) {
-          await finishClaudeIdleTurn(managed, runtime, state, "failed").catch(() => undefined);
-        }
+        await terminateEndedQuery(
+          "failed",
+          "Claude's background query ended before this task reported completion.",
+          "claude_idle_reader_failed",
+        ).catch(() => undefined);
       } finally {
         if (runtime.idleReaderGeneration === generation && runtime.idleReaderPromise) {
           runtime.idleReaderPromise = null;
@@ -14419,6 +14774,23 @@ export function createAgentChatService(args: {
     const userMessageId = randomUUID();
     runtime.busy = true;
     runtime.activeTurnId = turnId;
+    settleClaudeInitialInputDispatch(runtime, new Error("A newer Claude turn replaced the pending input dispatch."));
+    let resolveInitialInput!: () => void;
+    let rejectInitialInput!: (error: Error) => void;
+    const initialInputPromise = new Promise<void>((resolve, reject) => {
+      resolveInitialInput = resolve;
+      rejectInitialInput = reject;
+    });
+    // A host steer may be the only waiter; keep a rejection from becoming an
+    // unhandled promise while preserving rejection for callers that do await it.
+    void initialInputPromise.catch(() => undefined);
+    runtime.initialInputDispatchGate = {
+      turnId,
+      promise: initialInputPromise,
+      resolve: resolveInitialInput,
+      reject: rejectInitialInput,
+      settled: false,
+    };
     runtime.interrupted = false;
     runtime.interruptEventsEmitted = false;
     runtime.resolvedToolUseIds.clear();
@@ -14649,7 +15021,10 @@ export function createAgentChatService(args: {
             turnPermissionMode,
             error: String(permErr),
           });
-          resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+          resetClaudeQuerySession(managed, runtime, "session_reset", {
+            clearSdkSessionId: true,
+            preserveInitialInputDispatchGate: true,
+          });
           sessionQuery = await ensureClaudeQuery(managed, runtime);
           sessionControl = getClaudeQueryControl(sessionQuery);
           if (typeof sessionControl.setPermissionMode === "function") {
@@ -14675,7 +15050,11 @@ export function createAgentChatService(args: {
 
       const pendingPostResultSettledBeforeInput = runtime.pendingPostResultNextSettledAt != null;
       bumpClaudeIdleDeadline();
-      runtime.inputPump?.push(messageToSend);
+      if (!runtime.inputPump) {
+        throw new Error("Claude's live input stream closed before the turn could be dispatched.");
+      }
+      runtime.inputPump.push(messageToSend);
+      settleClaudeInitialInputDispatch(runtime);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
@@ -14852,6 +15231,10 @@ export function createAgentChatService(args: {
           persistChatState(managed);
         }
 
+        if (isClaudeForwardedSubagentMessage(msg)) {
+          continue;
+        }
+
         if (resultSeen && (msg as any).type !== "prompt_suggestion" && isStalePostResultTailMessage(msg)) {
           logStalePostResultTailDiscard(msg);
           continue;
@@ -14892,6 +15275,11 @@ export function createAgentChatService(args: {
             applyClaudeSlashCommands(runtime, commandsMsg.commands);
             persistChatState(managed);
           }
+          continue;
+        }
+
+        if (msg.type === "system" && (msg as any).subtype === "background_tasks_changed") {
+          applyClaudeBackgroundTasksLevel(managed, runtime, (msg as any).tasks);
           continue;
         }
 
@@ -15372,9 +15760,10 @@ export function createAgentChatService(args: {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
-          const existing = runtime.activeSubagents.get(taskId);
-          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           const patch = asRecord(taskMsg.patch) ?? {};
+          let existing = runtime.activeSubagents.get(taskId);
+          existing = promoteClaudeBackgroundedNonAgentTask(runtime, taskId, existing, patch);
+          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           const status = compactString(patch.status);
           const description = compactString(patch.description) ?? existing?.description ?? "Task update";
           const parentToolUseId = existing?.parentToolUseId ?? null;
@@ -15384,13 +15773,29 @@ export function createAgentChatService(args: {
           const taskType = existing?.taskType;
           const workflowName = existing?.workflowName;
           const background = patch.is_backgrounded === true || existing?.background === true;
-          const summary = compactString(patch.error)
-            ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
+          const classification = classifyClaudeTaskMessage(
+            runtime,
+            taskMsg as Record<string, unknown>,
+            existing,
+          );
+          const summary = status === "completed" && existing?.finalSummary
+            ? existing.finalSummary
+            : compactString(patch.error)
+              ?? existing?.finalSummary
+              ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
           // Background shell commands are tracked as background scheduled_work
           // rows, not subagents. Emit a terminal background row on completion,
           // and nothing for interim updates.
-          if (classifyClaudeTaskMessage(runtime, taskMsg as Record<string, unknown>, existing).backgroundShell) {
-            if (status === "completed" || status === "failed" || status === "killed") {
+          if (classification.backgroundShell) {
+            if (patch.is_backgrounded === true && status !== "completed" && status !== "failed" && status !== "killed") {
+              emitClaudeBackgroundTaskUpdate(managed, runtime, {
+                taskId,
+                status: "running",
+                title: existing?.description ?? description,
+                command: existing?.command,
+                ...(turnId ? { turnId } : {}),
+              });
+            } else if (status === "completed" || status === "failed" || status === "killed") {
               runtime.activeSubagents.delete(taskId);
               if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
               emitClaudeBackgroundTaskUpdate(managed, runtime, {
@@ -15402,6 +15807,24 @@ export function createAgentChatService(args: {
                 ...(turnId ? { turnId } : {}),
               });
             }
+            continue;
+          }
+          if (status === "completed" && classification.realSubagent) {
+            // Wait for task_notification: it follows SubagentStop and therefore
+            // has access to the child's real final text. task_updated alone is
+            // not the terminal rendering edge for native Agents/workflows.
+            runtime.activeSubagents.set(taskId, {
+              taskId,
+              description,
+              parentToolUseId,
+              background,
+              finalSummary: existing?.finalSummary,
+              ...(agentType ? { agentType } : {}),
+              ...(agentId ? { agentId } : {}),
+              ...(parentAgentId ? { parentAgentId } : {}),
+              ...(taskType ? { taskType } : {}),
+              ...(workflowName ? { workflowName } : {}),
+            });
             continue;
           }
           if (status === "completed" || status === "failed" || status === "killed") {
@@ -15505,7 +15928,11 @@ export function createAgentChatService(args: {
             ? taskMsg.agent_id.trim()
             : undefined;
           const parentAgentId = compactString(taskMsg.parent_agent_id);
-          const taskType = normalizeClaudeTaskType(taskMsg.task_type);
+          const classification = classifyClaudeTaskMessage(
+            runtime,
+            taskMsg as Record<string, unknown>,
+          );
+          const taskType = classification.taskType;
           const workflowName = normalizeClaudeWorkflowName(taskMsg.workflow_name);
           // The SDK sets task_type explicitly. When absent, fall back to the
           // legacy hints (run_in_background field, Task-tool stash) so older
@@ -15513,13 +15940,14 @@ export function createAgentChatService(args: {
           const background = taskType === "background"
             || taskType === "cron"
             || taskType === "local_workflow"
+            || runtime.liveBackgroundTaskIds.has(taskId)
             || isBackgroundTask(taskMsg as Record<string, unknown>)
             || stashed?.isBackground === true;
           const command = compactString(taskMsg.command);
           // A background *shell* command (Bash run_in_background) has task_type
           // "local_bash"/"background" and no real subagent agentType. It must NOT
           // surface as a subagent row; it belongs in the background-work pane.
-          if (isBackgroundShellCommand({ taskType, agentType, command, description })) {
+          if (classification.backgroundShell) {
             runtime.activeSubagents.set(taskId, {
               taskId,
               description,
@@ -15639,7 +16067,16 @@ export function createAgentChatService(args: {
             agentId: notificationAgentId,
             parentToolUseId,
           });
-          const summary = String(taskMsg.summary ?? gatedFinalSummary ?? "");
+          const finalStatus = taskMsg.status === "completed"
+            ? "completed"
+            : taskMsg.status === "stopped"
+              ? "stopped"
+              : "failed";
+          const summary = String(
+            finalStatus === "completed"
+              ? gatedFinalSummary ?? taskMsg.summary ?? ""
+              : taskMsg.summary ?? gatedFinalSummary ?? "",
+          );
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
           const agentType = existing?.agentType
             ?? stashed?.subagentType
@@ -15693,7 +16130,7 @@ export function createAgentChatService(args: {
             ...(parentAgentId ? { parentAgentId } : {}),
             ...(agentType ? { agentType } : {}),
             parentToolUseId,
-            status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
+            status: finalStatus,
             summary,
             finalSummary: summary,
             usage: taskMsg.usage ? {
@@ -16122,6 +16559,20 @@ export function createAgentChatService(args: {
         // result — turn complete
         if (msg.type === "result") {
           const resultMsg = msg as any;
+          const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
+          const diagnosticOnlyError = resultMsg.is_error === true
+            && resultErrors.all.length > 0
+            && resultErrors.userFacing.length === 0;
+          const resultIsError = resultMsg.is_error === true && !diagnosticOnlyError;
+          if (resultErrors.internalDiagnostics.length > 0) {
+            logger.debug("agent_chat.claude_internal_diagnostic", {
+              ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+              sessionId: managed.session.id,
+              turnId,
+              source: "active_turn",
+              diagnostics: resultErrors.internalDiagnostics,
+            });
+          }
           for (const modelName of extractReportedModelUsageNames(resultMsg.modelUsage)) {
             reportedUsageModels.add(modelName);
           }
@@ -16136,28 +16587,28 @@ export function createAgentChatService(args: {
           if (typeof resultMsg.total_cost_usd === "number") {
             costUsd = resultMsg.total_cost_usd;
           }
-          if (resultMsg.is_error && resultMsg.errors?.length) {
+          if (resultIsError && resultErrors.userFacing.length > 0) {
             // A logged-out result surfaces here as 401 / "invalid authentication
             // credentials" errors — route them into the re-login card rather than
             // dumping raw API error text.
-            if (isClaudeRuntimeAuthError(resultMsg.errors.map(String).join(" "))) {
+            if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
               failClaudeTurnUnauthenticated();
             }
             if (onBackendDispatched) {
-              throw new Error(resultMsg.errors.map(String).join("\n"));
+              throw new Error(resultErrors.userFacing.join("\n"));
             }
-            for (const err of resultMsg.errors) {
+            for (const err of resultErrors.userFacing) {
               emitChatEvent(managed, {
                 type: "error",
-                message: String(err),
+                message: err,
                 turnId,
               });
             }
           }
-          if (resultMsg.is_error && onBackendDispatched) {
+          if (resultIsError && onBackendDispatched) {
             throw new Error("Claude rejected the prompt before starting the turn.");
           }
-          if (!resultMsg.is_error) {
+          if (!resultIsError) {
             markBackendDispatched();
           }
           if (Array.isArray(resultMsg.permission_denials) && resultMsg.permission_denials.length > 0) {
@@ -16331,7 +16782,8 @@ export function createAgentChatService(args: {
 
       // Process queued steers (skip if session was disposed during execution)
       if (runtime.pendingSteers.length) {
-        await deliverNextQueuedSteer(managed, runtime);
+        const delivered = await deliverNextQueuedSteer(managed, runtime);
+        if (!delivered) startClaudeIdleReader(managed, runtime, "turn_completed");
       } else {
         startClaudeIdleReader(managed, runtime, "turn_completed");
       }
@@ -16344,13 +16796,14 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       const effectiveError = timeoutError ?? error;
+      settleClaudeInitialInputDispatch(
+        runtime,
+        effectiveError instanceof Error ? effectiveError : new Error(String(effectiveError)),
+      );
       const finalToolStatus: "completed" | "failed" | "interrupted" =
         runtime.interrupted || isAbortRelatedError(effectiveError)
           ? "interrupted"
           : "failed";
-      if (finalToolStatus === "interrupted") {
-        await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
-      }
       flushOpenClaudeToolUses(finalToolStatus);
       flushClaudeStructuredActivities(finalToolStatus);
 
@@ -16360,10 +16813,24 @@ export function createAgentChatService(args: {
       if (!runtime.interrupted) {
         try { runtime.query?.close(); } catch { /* ignore */ }
         runtime.inputPump?.close();
+        runtime.queryGeneration += 1;
+        runtime.queryStartPromise = null;
+        runtime.pendingPostResultNext = null;
+        runtime.pendingPostResultNextSettledAt = null;
+        resetClaudeProcessBackgroundLevel(runtime);
         runtime.query = null;
         runtime.inputPump = null;
         runtime.warmupDone = null;
+        claudeSubprocessReaper.reapForSession(managed.session.id, "claude_turn_failed");
       }
+      await stopActiveClaudeSubagents(
+        managed,
+        runtime,
+        turnId,
+        finalToolStatus === "interrupted"
+          ? "Interrupted"
+          : "Claude's query ended before this task reported completion.",
+      );
       const doneModel = buildDoneModelPayload();
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
@@ -18663,9 +19130,16 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     event: Extract<AgentChatEvent, { type: "subagent_started" }>,
   ): void => {
+    const alreadyStarted = runtime.emittedSubagentStartIds.has(event.taskId)
+      || Boolean(event.agentId && runtime.emittedSubagentStartIds.has(event.agentId));
     runtime.emittedSubagentStartIds.add(event.taskId);
     if (event.agentId) runtime.emittedSubagentStartIds.add(event.agentId);
-    emitChatEvent(managed, event);
+    if (alreadyStarted) return;
+    const providerSessionId = runtime.sdkSessionId?.trim();
+    emitChatEvent(managed, {
+      ...event,
+      ...(providerSessionId ? { providerSessionId } : {}),
+    });
   };
 
   const emitClaudeSubagentResult = (
@@ -21943,15 +22417,8 @@ export function createAgentChatService(args: {
                 taskId,
                 description: input.agent_type,
                 parentToolUseId: null,
-              });
-              emitClaudeSubagentStarted(managed, runtime, {
-                type: "subagent_started",
-                taskId,
                 agentId: input.agent_id,
                 agentType: input.agent_type,
-                parentToolUseId: null,
-                description: input.agent_type,
-                turnId: runtime.activeTurnId ?? undefined,
               });
             }
             return { continue: true };
@@ -22153,7 +22620,10 @@ export function createAgentChatService(args: {
       includeHookEvents: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
-      forwardSubagentText: true,
+      // ADE renders native subagents from getSubagentMessages() in their own
+      // drill-in transcript. Do not ask the parent query to replay full child
+      // text; default tool heartbeat frames are still filtered defensively.
+      forwardSubagentText: false,
       enableFileCheckpointing: true,
       skills: "all",
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
@@ -22325,9 +22795,12 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     reason: "interrupt" | "teardown" | "session_reset" | "timeout",
-    options: { clearSdkSessionId?: boolean } = {},
+    options: { clearSdkSessionId?: boolean; preserveInitialInputDispatchGate?: boolean } = {},
   ): void => {
     cancelClaudeWarmup(managed, runtime, reason);
+    if (!options.preserveInitialInputDispatchGate) {
+      settleClaudeInitialInputDispatch(runtime, new Error(`Claude query reset before turn input dispatch (${reason}).`));
+    }
     runtime.idleReaderGeneration += 1;
     runtime.idleReaderPromise = null;
     try { runtime.query?.close(); } catch { /* ignore */ }
@@ -22342,12 +22815,18 @@ export function createAgentChatService(args: {
     // the reset. A leaked twin keeps streaming the same resumed session into a
     // dead reader, and its background children die silently later.
     claudeSubprocessReaper.reapForSession(managed.session.id, `claude_${reason}`);
-    const hadOpenBackgroundTasks = runtime.seenBackgroundTaskIds.size > 0;
-    // Tearing down the query orphans any still-open background shell: its
-    // completion notification can only ever arrive on THIS query, so settle the
-    // rows as stopped before the tracking maps are cleared. (Turn boundaries do
-    // NOT do this — the query survives them and delivers the real completion.)
-    closeOpenClaudeBackgroundTasks(managed, runtime, "stopped");
+    const hadOpenBackgroundTasks = runtime.seenBackgroundTaskIds.size > 0
+      || runtime.liveBackgroundTaskIds.size > 0;
+    // Tearing down the query orphans every still-open task: completion can only
+    // arrive on THIS query, so settle background shells, native subagents, and
+    // workflow agents before clearing their tracking maps. Query is already
+    // null, so this performs no provider stopTask calls.
+    void stopActiveClaudeSubagents(
+      managed,
+      runtime,
+      runtime.activeTurnId ?? undefined,
+      "The Claude session restarted before this task reported completion.",
+    );
     if (hadOpenBackgroundTasks) {
       emitChatEvent(managed, {
         type: "system_notice",
@@ -22358,12 +22837,16 @@ export function createAgentChatService(args: {
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
     runtime.emittedSubagentStartIds.clear();
+    resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
     runtime.backgroundTaskTitleById.clear();
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
     runtime.activeProviderCronIds.clear();
     runtime.activeProviderCronIdsByPrompt.clear();
+    if (!options.preserveInitialInputDispatchGate) {
+      runtime.dispatchingSteerIds.clear();
+    }
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -22542,6 +23025,9 @@ export function createAgentChatService(args: {
 
   const startClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     const startGeneration = runtime.queryGeneration;
+    // background_tasks_changed is per CLI process and emits no startup value.
+    // A new process must never inherit the prior process's level set.
+    resetClaudeProcessBackgroundLevel(runtime);
     const pump = new ClaudeInputPump();
     const assertCurrentStart = (spawnedQuery?: ClaudeQuery): void => {
       if (runtime.queryGeneration === startGeneration) return;
@@ -22656,6 +23142,11 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
+    // A user-selected priority dispatch owns the staged queue while its SDK
+    // message is being built. Do not auto-deliver another row at the parent
+    // turn boundary; the idle reader will consume the explicit dispatch, then
+    // remaining staged rows can proceed in order.
+    if (runtime.kind === "claude" && runtime.dispatchingSteerIds.size > 0) return false;
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
@@ -22813,20 +23304,14 @@ export function createAgentChatService(args: {
       : metadata;
     emitChatEvent(managed, {
       type: "user_message",
-      text: displayText,
+      text,
+      ...(displayText !== text ? { displayText } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
       ...(queuedMetadata && Object.keys(queuedMetadata).length ? { metadata: queuedMetadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
-    });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      steerId,
-      message: `Message queued (#${runtime.pendingSteers.length}) — will be sent after the current turn.`,
-      turnId: runtime.activeTurnId ?? undefined,
     });
     persistChatState(managed);
     return true;
@@ -23143,6 +23628,8 @@ export function createAgentChatService(args: {
       scheduledWorkSignatures: new Map(),
       taskTodos: { seeded: false, byId: new Map() },
       emittedTextByAssistantMessage: new Map(),
+      liveBackgroundTaskIds: new Set(),
+      backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
       backgroundTaskTitleById: new Map(),
       scheduledWorkKindById: new Map(),
@@ -23153,8 +23640,9 @@ export function createAgentChatService(args: {
       slashCommands: [],
       busy: false,
       activeTurnId: null,
+      initialInputDispatchGate: null,
+      dispatchingSteerIds: new Set(),
       pendingSteers: hydratePersistedPendingSteers(persisted, managed),
-      dispatchedInlineSteers: new Map<string, string>(),
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       interruptEventsEmitted: false,
@@ -25365,9 +25853,13 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
-    const trimmed = trimmedText.length || !publicContextAttachments.length
+    const trimmed = trimmedText.length
       ? trimmedText
-      : "Use the attached issue context.";
+      : attachments.length
+        ? "Please review the attached files."
+        : publicContextAttachments.length
+          ? "Use the attached issue context."
+          : "";
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
@@ -28814,7 +29306,9 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
-    const routableText = args.text.trim().length > 0 || (args.contextAttachments?.length ?? 0) > 0;
+    const routableText = args.text.trim().length > 0
+      || (args.attachments?.length ?? 0) > 0
+      || (args.contextAttachments?.length ?? 0) > 0;
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       return steer({
         sessionId: args.sessionId,
@@ -28941,16 +29435,78 @@ export function createAgentChatService(args: {
     }
   }
 
-  const steer = async ({ sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const dispatchClaudeSteerMessage = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    steer: QueuedSteer,
+    mode: AgentChatDispatchSteerMode,
+    onAccepted?: () => void,
+  ): Promise<number> => {
+    const initialInputGate = runtime.initialInputDispatchGate;
+    if (runtime.busy && initialInputGate) {
+      await initialInputGate.promise;
+    }
+    if (!runtime.inputPump) {
+      await ensureClaudeQuery(managed, runtime);
+    }
+    if (!runtime.inputPump) {
+      throw new Error("Claude's live input stream is not ready.");
+    }
+
+    const dispatchUuid = randomUUID();
+    const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
+    const promptText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
+    const sdkMsg = await buildClaudeV2MessageAsync(promptText, steer.resolvedAttachments, {
+      baseDir: managed.laneWorktreePath,
+      sessionId: runtime.sdkSessionId ?? null,
+      forceUserMessage: true,
+      getDirtyFileTextForPath,
+    }) as unknown as SDKUserMessage;
+
+    // Match Claude Code's own command queue. "next" is consumed between tool
+    // steps; "now" aborts only the live model request and redirects without
+    // tearing down the SDK query or killing unrelated background work.
+    sdkMsg.priority = mode === "interrupt" ? "now" : "next";
+    sdkMsg.shouldQuery = true;
+    sdkMsg.uuid = dispatchUuid;
+
+    runtime.inputPump.push(sdkMsg);
+    onAccepted?.();
+
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: steer.text,
+      ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+      ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+      ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+      ...(steer.metadata ? { metadata: steer.metadata } : {}),
+      steerId: steer.steerId,
+      deliveryState: "inline",
+      turnId: runtime.activeTurnId ?? undefined,
+    });
+    persistChatState(managed);
+    if (!runtime.busy && !runtime.activeTurnId && !runtime.idleReaderPromise) {
+      startClaudeIdleReader(managed, runtime, "query_ready");
+    }
+    return Date.now();
+  };
+
+  const steer = async ({ sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+    if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
+      throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
+    }
     const trimmed = text.trim();
     const steerId = randomUUID();
-    // Allow context-only steers: if text is empty but issue context attachments
-    // are present, prepareSendMessage will substitute a fallback prompt.
-    if (!trimmed.length && contextAttachments.length === 0) {
+    // Allow attachment-only steers: prepareSendMessage substitutes the same
+    // fallback prompt used by normal attachment-only sends.
+    if (!trimmed.length && attachments.length === 0 && contextAttachments.length === 0) {
       return { steerId, queued: false };
     }
 
     const managed = ensureManagedSession(sessionId);
+    if (dispatchMode && managed.session.provider !== "claude") {
+      throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
+    }
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
@@ -29250,6 +29806,22 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
       if (runtime.busy || managed.session.status === "active") {
+        if (dispatchMode) {
+          const immediateSteer: QueuedSteer = {
+            steerId,
+            text: preparedSteer.submittedText,
+            ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
+            attachments: preparedSteer.attachments,
+            contextAttachments: preparedSteer.contextAttachments,
+            resolvedAttachments: preparedSteer.resolvedAttachments,
+            ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+            ...(reasoningEffort != null ? { reasoningEffort } : {}),
+            ...(executionMode ? { executionMode } : {}),
+            ...(interactionMode ? { interactionMode } : {}),
+          };
+          await dispatchClaudeSteerMessage(managed, runtime, immediateSteer, dispatchMode);
+          return { steerId, queued: false };
+        }
         const queued = enqueueSteerOrDrop(
           managed,
           runtime,
@@ -29337,27 +29909,26 @@ export function createAgentChatService(args: {
           },
           { awaitDispatch: false },
         );
+      } else if (statusBefore === "active") {
+        await steer({
+          sessionId,
+          text,
+          attachments,
+          contextAttachments,
+          metadata,
+          dispatchMode: "interrupt",
+        });
       } else {
-        try {
-          await interrupt({ sessionId }, { requireClaudeProviderInterrupt: true });
-          await sendMessage(
-            {
-              sessionId,
-              text,
-              attachments,
-              contextAttachments,
-              metadata,
-            },
-            { awaitBackendDispatch: true },
-          );
-        } catch (error) {
-          logger.warn("agent_chat.interrupt_replace_failed", {
+        await sendMessage(
+          {
             sessionId,
-            provider: managed.session.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          throw error;
-        }
+            text,
+            attachments,
+            contextAttachments,
+            metadata,
+          },
+          { awaitBackendDispatch: true },
+        );
       }
       return {
         sessionId,
@@ -29389,15 +29960,23 @@ export function createAgentChatService(args: {
     };
   };
 
-  const cancelSteer = async ({ sessionId, steerId }: AgentChatCancelSteerArgs): Promise<void> => {
+  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
-    if (!runtime || runtime.kind === "codex") return;
+    if (!runtime || runtime.kind === "codex") {
+      if (requireQueued) throw new Error("This message is no longer queued.");
+      return;
+    }
 
     const queue = runtime.pendingSteers;
+    if (requireQueued && runtime.kind === "claude" && runtime.dispatchingSteerIds.has(steerId)) {
+      throw new Error("This message is already being dispatched.");
+    }
     const idx = queue.findIndex((s) => s.steerId === steerId);
     if (idx !== -1) {
       queue.splice(idx, 1);
+    } else if (requireQueued) {
+      throw new Error("This message is no longer queued.");
     }
     // Always emit the cancelled notice — even when the steer already left the
     // server-side queue (e.g. dispatched inline before this call landed) — so
@@ -29452,6 +30031,9 @@ export function createAgentChatService(args: {
     steerId,
     mode,
   }: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
+    if (mode !== "inline" && mode !== "interrupt") {
+      throw new Error(`Unsupported Claude steer dispatch mode: ${String(mode)}`);
+    }
     const managed = ensureManagedSession(sessionId);
     if (managed.session.provider === "codex") {
       throw new Error("dispatchSteer is not supported on Codex sessions.");
@@ -29473,79 +30055,17 @@ export function createAgentChatService(args: {
 
     const steer = queue[idx];
 
-    if (mode === "inline") {
-      if (!runtime.inputPump) {
-        // No active query — can't fold mid-turn; fall back to a fresh
-        // send. Only splice from the queue once `prepareSendMessage` accepts
-        // the steer; otherwise leave it queued so the user can retry rather
-        // than losing the message silently.
-        const prepared = prepareSendMessage({
-          sessionId,
-          text: steer.text,
-          displayText: steer.text,
-          attachments: steer.attachments,
-          contextAttachments: steer.contextAttachments,
-          metadata: steer.metadata,
-        });
-        if (!prepared) {
-          logger.warn("agent_chat.dispatch_steer_inline_drop_skipped", {
-            sessionId,
-            steerId,
-          });
-          return { dispatchedAt: null };
-        }
-        queue.splice(idx, 1);
-        await executePreparedSendMessage(prepared);
-        persistChatState(managed);
-        return { dispatchedAt: Date.now() };
-      }
-      queue.splice(idx, 1);
-
-      // Build an SDK user message with shouldQuery:false. The SDK appends it
-      // to the in-flight transcript and the model picks it up at the next
-      // thinking step without triggering a separate assistant turn.
-      const dispatchUuid = randomUUID();
-      const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
-      const inlineSteerText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
-      const sdkMsg = await buildClaudeV2MessageAsync(inlineSteerText, steer.resolvedAttachments, {
-        baseDir: managed.laneWorktreePath,
-        sessionId: runtime.sdkSessionId ?? null,
-        forceUserMessage: true,
-        getDirtyFileTextForPath,
-      }) as unknown as SDKUserMessage;
-      sdkMsg.shouldQuery = false;
-      sdkMsg.uuid = dispatchUuid;
-
-      try {
-        runtime.inputPump.push(sdkMsg);
-      } catch (err) {
-        // Re-queue at the original position so the user can retry / it flushes naturally.
-        queue.splice(idx, 0, steer);
-        logger.warn("agent_chat.dispatch_steer_inline_failed", {
-          sessionId,
-          steerId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      }
-
-      runtime.dispatchedInlineSteers.set(steerId, dispatchUuid);
-
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: steer.text,
-        ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
-        ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
-        ...(steer.metadata ? { metadata: steer.metadata } : {}),
-        steerId,
-        deliveryState: "inline",
-        turnId: runtime.activeTurnId ?? undefined,
-      });
-      persistChatState(managed);
-      return { dispatchedAt: Date.now() };
-    }
-
-    if (mode === "interrupt") {
+    // A restored/idle staged row may have no query consumer attached. Pushing
+    // a priority message into a freshly created input pump here would run with
+    // no foreground loop or idle reader. Deliver it as a normal turn instead;
+    // active setup races still use the priority path and wait on the parent
+    // turn's initial-input gate below.
+    const hasPriorityMessageConsumer = Boolean(
+      runtime.busy
+      || runtime.activeTurnId
+      || runtime.idleReaderPromise,
+    );
+    if (!hasPriorityMessageConsumer) {
       const prepared = prepareSendMessage({
         sessionId,
         text: steer.text,
@@ -29553,42 +30073,71 @@ export function createAgentChatService(args: {
         attachments: steer.attachments,
         contextAttachments: steer.contextAttachments,
         metadata: steer.metadata,
-        reasoningEffort: normalizeReasoningEffort(managed.session.reasoningEffort),
+        reasoningEffort: steer.reasoningEffort,
         executionMode: steer.executionMode,
         interactionMode: steer.interactionMode,
         allowActiveSession: true,
       });
       if (!prepared) return { dispatchedAt: null };
 
-      // Keep the replacement out of interrupt()'s queued-steer cancellation,
-      // then acknowledge only after Claude has accepted the replacement turn.
       queue.splice(idx, 1);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Delivering your queued message...",
+      });
+      persistChatState(managed);
       try {
-        await interrupt({ sessionId }, { requireClaudeProviderInterrupt: true });
-        await sendMessage({
-          sessionId,
-          text: prepared.submittedText,
-          displayText: prepared.visibleText,
-          attachments: prepared.attachments,
-          contextAttachments: prepared.contextAttachments,
-          metadata: prepared.metadata,
-          reasoningEffort: normalizeReasoningEffort(managed.session.reasoningEffort),
-          executionMode: steer.executionMode,
-          interactionMode: steer.interactionMode,
-        }, { awaitBackendDispatch: true });
+        await executePreparedSendMessage(prepared);
       } catch (error) {
         if (!queue.some((entry) => entry.steerId === steerId)) {
           queue.splice(Math.min(idx, queue.length), 0, steer);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: steer.text,
+            ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+            ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+            ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+            ...(steer.metadata ? { metadata: steer.metadata } : {}),
+            steerId,
+            deliveryState: "queued",
+          });
           persistChatState(managed);
         }
-        logger.warn("agent_chat.dispatch_steer_interrupt_replace_failed", {
-          sessionId,
-          steerId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return { dispatchedAt: null };
+        throw error;
       }
       return { dispatchedAt: Date.now() };
+    }
+
+    if (mode === "inline" || mode === "interrupt") {
+      if (runtime.dispatchingSteerIds.has(steerId)) {
+        throw new Error("This queued Claude message is already being dispatched.");
+      }
+      runtime.dispatchingSteerIds.add(steerId);
+      try {
+        const dispatchedAt = await dispatchClaudeSteerMessage(
+          managed,
+          runtime,
+          steer,
+          mode,
+          () => {
+            const acceptedIndex = queue.findIndex((entry) => entry.steerId === steerId);
+            if (acceptedIndex >= 0) queue.splice(acceptedIndex, 1);
+          },
+        );
+        return { dispatchedAt };
+      } catch (error) {
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        runtime.dispatchingSteerIds.delete(steerId);
+      }
     }
 
     return { dispatchedAt: null };
@@ -29606,17 +30155,7 @@ export function createAgentChatService(args: {
     if (!runtime || runtime.kind !== "claude") {
       return { cancelled: false };
     }
-    if (!runtime.dispatchedInlineSteers.has(steerId)) return { cancelled: false };
     logger.warn("agent_chat.cancel_dispatched_steer_unavailable", { sessionId, steerId });
-    runtime.dispatchedInlineSteers.delete(steerId);
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      steerId,
-      message: "Claude Agent SDK does not support cancelling inline-dispatched steers after they have been streamed.",
-      turnId: runtime.activeTurnId ?? undefined,
-    });
-    persistChatState(managed);
     return { cancelled: false };
   };
 
@@ -29831,6 +30370,7 @@ export function createAgentChatService(args: {
       });
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    settleClaudeInitialInputDispatch(runtime, new Error("Claude turn was interrupted before its input was dispatched."));
     await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
     runtime.queryGeneration += 1;
     runtime.queryStartPromise = null;
@@ -29844,6 +30384,7 @@ export function createAgentChatService(args: {
     // resetClaudeQuerySession applies on reset/remodel).
     claudeSubprocessReaper.reapForSession(managed.session.id, "claude_interrupt");
     runtime.inputPump?.close();
+    resetClaudeProcessBackgroundLevel(runtime);
     runtime.query = null;
     runtime.inputPump = null;
     runtime.warmupDone = null;
@@ -31955,6 +32496,7 @@ export function createAgentChatService(args: {
         && !managed.closed
         && managed.session.status === "idle"
         && !hasLivePendingInput(managed)
+        && !hasRuntimeActiveWorkload(managed.runtime)
         && now - managed.lastActivityTimestamp > getSessionInactivityTimeoutMs(managed)
       ) {
         teardownRuntime(managed, "idle_ttl");
@@ -31973,6 +32515,7 @@ export function createAgentChatService(args: {
       if (!managed.runtime) continue;
       if (managed.session.status !== "idle") continue;
       if (hasLivePendingInput(managed)) continue;
+      if (hasRuntimeActiveWorkload(managed.runtime)) continue;
       if (managed.lastActivityTimestamp < oldestTimestamp) {
         oldestTimestamp = managed.lastActivityTimestamp;
         oldest = managed;
@@ -33207,6 +33750,33 @@ export function createAgentChatService(args: {
       .filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
   }
 
+  function readClaudeSubagentProviderSessionId(
+    sessionId: string,
+    taskId: string | null,
+    agentId: string,
+  ): string | null {
+    const persisted = readFullTranscriptEnvelopesForSessionId(sessionId);
+    const buffered = eventHistoryBySession.get(sessionId) ?? [];
+    const envelopes = mergeEnvelopeStreams(persisted, buffered);
+    const findNewestMatch = (
+      predicate: (event: Extract<AgentChatEvent, { type: "subagent_started" }>) => boolean,
+    ): string | null => {
+      for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+        const event = envelopes[index]?.event;
+        if (event?.type !== "subagent_started" || !predicate(event)) continue;
+        const providerSessionId = event.providerSessionId?.trim();
+        if (providerSessionId) return providerSessionId;
+      }
+      return null;
+    };
+
+    if (taskId) {
+      const exactTaskMatch = findNewestMatch((event) => event.taskId === taskId);
+      if (exactTaskMatch) return exactTaskMatch;
+    }
+    return findNewestMatch((event) => event.agentId === agentId || event.taskId === agentId);
+  }
+
   /**
    * Fetch the transcript of a subagent run within an existing chat session.
    *
@@ -33233,12 +33803,14 @@ export function createAgentChatService(args: {
   const collectSubagentTranscript = async ({
     sessionId,
     agentId,
+    taskId,
     laneId,
     limit,
     offset,
   }: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     const normalizedSessionId = sessionId.trim();
     const normalizedAgentId = agentId.trim();
+    const normalizedTaskId = taskId?.trim() || null;
     if (!normalizedSessionId.length) throw new Error("sessionId is required.");
     if (!normalizedAgentId.length) throw new Error("agentId is required.");
     const managed = managedSessions.get(normalizedSessionId);
@@ -33386,16 +33958,29 @@ export function createAgentChatService(args: {
       return null;
     }
 
-    // Resolve the on-disk Claude session id and project dir the same way
-    // getClaudeSessionMessages does — works whether the chat is live or
-    // resolved purely from the persisted pointer.
-    const claudeSessionId = managed?.runtime?.kind === "claude"
-      ? (managed.runtime.sdkSessionId ?? normalizedSessionId)
-      : normalizedSessionId;
-    const pointer = sessionService.getClaudeSessionPointer(claudeSessionId);
-    const laneFallback = await resolveClaudeSessionLaneFallback(
-      laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
+    // Resolve the backing Claude session id from every durable source. The ADE
+    // chat id is not a Claude session id; falling back to it made transcript
+    // drill-in go empty as soon as the live runtime was reset or reopened.
+    const persisted = readPersistedState(normalizedSessionId);
+    const pointer = getClaudeSessionPointerForChat(normalizedSessionId);
+    const eventBoundClaudeSessionId = readClaudeSubagentProviderSessionId(
+      normalizedSessionId,
+      normalizedTaskId,
+      normalizedAgentId,
     );
+    const claudeSessionId = (
+      eventBoundClaudeSessionId
+      ?? (managed?.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null)
+      ?? persisted?.sdkSessionId
+      ?? pointer?.sessionId
+      ?? ""
+    ).trim();
+    if (!claudeSessionId) return [];
+    const laneFallback = managed?.laneWorktreePath
+      ? { dir: managed.laneWorktreePath }
+      : await resolveClaudeSessionLaneFallback(
+        laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
+      );
     const messages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
