@@ -299,10 +299,13 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
   const laneForPath = (targetPath: string, laneId?: string, rows: LaneRow[] = listLaneRows()): LaneRow | null => {
     const normalized = path.resolve(targetPath);
-    const basename = path.basename(normalized);
+    // Match ONLY by exact resolved worktree_path. A basename fallback would let
+    // an unrelated lane (e.g. an archived lane at /tmp/feature) validate a
+    // same-named managed worktree (.ade/worktrees/feature) and authorize
+    // deleting an active lane's files — a data-loss hole.
     return rows.find((row) => {
       if (laneId && row.id !== laneId) return false;
-      return path.resolve(row.worktree_path) === normalized || path.basename(row.worktree_path) === basename;
+      return path.resolve(row.worktree_path) === normalized;
     }) ?? null;
   };
 

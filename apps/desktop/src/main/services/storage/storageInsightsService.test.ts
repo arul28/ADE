@@ -204,6 +204,37 @@ describe("storageInsightsService", () => {
     });
   });
 
+  it("never authorizes a same-named archived lane to delete a different active worktree", async () => {
+    // Regression: an archived lane at /tmp/feature must not authorize cleanup
+    // of an active lane's .ade/worktrees/feature just because the basenames
+    // match — that would delete live work.
+    const activeWorktree = path.join(projectRoot, ".ade", "worktrees", "feature");
+    writeSized(path.join(activeWorktree, "work.ts"), 42);
+    const strayArchived = fs.mkdtempSync(path.join(os.tmpdir(), "storage-stray-"));
+    const strayFeature = path.join(strayArchived, "feature");
+    fs.mkdirSync(strayFeature, { recursive: true });
+    extraPaths.push(strayArchived);
+    seedLane(db, { id: "active", name: "Active feature", worktreePath: activeWorktree });
+    seedLane(db, { id: "archived", name: "Old feature", worktreePath: strayFeature, archivedAt: "2026-07-01T00:00:00.000Z" });
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    // The active worktree stays classified as protected, not archived.
+    const items = (await service.getSnapshot()).categories.find((c) => c.id === "lanes_worktrees")!.items;
+    expect(items.find((item) => item.path === activeWorktree)).toMatchObject({ laneStatus: "active", safety: "protected" });
+
+    // Attempting to remove the active worktree under the archived lane's id is
+    // blocked at preview and at cleanup (even with a forged preview).
+    const target = { kind: "archived_lane_worktree" as const, laneId: "archived", path: activeWorktree };
+    const preview = await service.cleanupPreview([target]);
+    expect(preview.items).toHaveLength(0);
+    expect(preview.blocked).toHaveLength(1);
+    const forged = { items: [{ path: activeWorktree, bytes: 42, label: "Old feature", identity: "forged" }], totalBytes: 42, blocked: [] };
+    const result = await service.cleanup([target], { preview: forged });
+    expect(result.removed).toHaveLength(0);
+    expect(result.failed).toHaveLength(1);
+    expect(fs.existsSync(activeWorktree)).toBe(true);
+  });
+
   it("never follows symlinks and blocks link and traversal cleanup targets", async () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "storage-outside-"));
     extraPaths.push(outside);
