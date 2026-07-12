@@ -56,6 +56,7 @@ import { createExternalFilesWorkspaceRegistry, createFileService, type FileServi
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
+import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -2060,6 +2061,9 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    const diskPressureMonitor = createDiskPressureMonitor({
+      roots: [projectRoot, machineAdeLayout.adeDir],
+    });
     const packagedFirstOpenStabilityMode =
       app.isPackaged
       && !hadAdeDir
@@ -2878,6 +2882,7 @@ app.whenReady().then(async () => {
           reason: "meta-updated",
         });
       },
+      diskPressureMonitor,
       loadPty,
       disposePtyBackend: ptyBackend?.dispose,
     });
@@ -2891,6 +2896,7 @@ app.whenReady().then(async () => {
       sessionService,
       ptyService,
       getLaneRuntimeEnv,
+      diskPressureMonitor,
       broadcastEvent: (ev) =>
         emitProjectEvent(projectRoot, IPC.processesEvent, ev),
     });
@@ -2998,6 +3004,7 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       processService,
+      diskPressureMonitor,
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -4154,6 +4161,7 @@ app.whenReady().then(async () => {
       autoRebaseService,
       sessionService,
       processRegistry,
+      diskPressureMonitor,
       ptyService,
       diffService,
       fileService,
@@ -4229,6 +4237,9 @@ app.whenReady().then(async () => {
       projectRoot,
     });
     usageTrackingService.start();
+    const diskPressureMonitor = createDiskPressureMonitor({
+      roots: [projectRoot, machineAdeLayout.adeDir],
+    });
 
     logger.info("project.runtime_bound", {
       projectRoot,
@@ -4245,6 +4256,7 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
+      diskPressureMonitor,
       usageTrackingService,
     };
   };
@@ -4342,6 +4354,7 @@ app.whenReady().then(async () => {
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,
+      diskPressureMonitor: null,
       ptyService: null,
       diffService: null,
       fileService: externalOnlyFileService,
@@ -6257,6 +6270,7 @@ app.whenReady().then(async () => {
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
       ? null
       : localRuntimePool,
+    projectRecoveryConnectionPool: localRuntimePool,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,

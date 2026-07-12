@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
+import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
@@ -593,6 +594,8 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { createProjectRecoveryService } from "../runtime/projectRecoveryService";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -884,6 +887,7 @@ export type AppContext = {
   sessionService: ReturnType<typeof createSessionService> | null;
   processRegistry?: ProcessRegistryService | null;
   ptyService: ReturnType<typeof createPtyService> | null;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   diffService: ReturnType<typeof createDiffService> | null;
   fileService: ReturnType<typeof createFileService> | null;
   operationService: ReturnType<typeof createOperationService> | null;
@@ -1585,6 +1589,7 @@ export function registerIpc({
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
+  projectRecoveryConnectionPool,
   createWindow,
   closeWindow,
   switchProjectFromDialog,
@@ -1603,6 +1608,7 @@ export function registerIpc({
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
+  projectRecoveryConnectionPool?: LocalRuntimeConnectionPool | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
@@ -1616,6 +1622,13 @@ export function registerIpc({
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+  const projectRecoveryService = projectRecoveryConnectionPool
+    ? createProjectRecoveryService({
+        adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
+        logger: getCtx().logger,
+        connectionPool: projectRecoveryConnectionPool,
+      })
+    : null;
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -3533,6 +3546,11 @@ export function registerIpc({
     );
   });
 
+  ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
+    const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
+    return monitor.getSnapshot({ maxAgeMs: 1_000 });
+  });
+
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
     let token: string | null = null;
     try {
@@ -3971,6 +3989,22 @@ export function registerIpc({
     } catch (error) {
       return surfaceCodedError(error);
     }
+  });
+
+  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!projectRoot) throw new Error("Project root path is required.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    return await projectRecoveryService.diagnose(projectRoot);
+  });
+
+  // Return the complete ordered step array with the final report. The current
+  // alert only needs one result, so it does not need a separate event lifecycle.
+  ipcMain.handle(IPC.recoveryRepair, async (_event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!projectRoot) throw new Error("Project root path is required.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    return await projectRecoveryService.repair(projectRoot);
   });
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {

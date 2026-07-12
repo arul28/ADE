@@ -1197,6 +1197,7 @@ describe("appStore", () => {
         code: "disk_full",
         message: "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again.",
         detail: "internal database detail",
+        rootPath: "/tmp/project",
       });
     });
 

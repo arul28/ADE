@@ -641,6 +641,8 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
 
 export {};
 
@@ -706,6 +708,9 @@ declare global {
           payload?: Record<string, unknown>,
         ) => void;
       };
+      storage: {
+        getPressure: () => Promise<DiskPressureSnapshot>;
+      };
       project: {
         openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
@@ -749,6 +754,10 @@ declare global {
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+      };
+      recovery: {
+        diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
+        repair: (projectRoot: string) => Promise<ProjectRepairReport>;
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;

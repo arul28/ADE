@@ -3,6 +3,8 @@ import { IPC } from "../shared/ipc";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -3290,6 +3292,10 @@ contextBridge.exposeInMainWorld("ade", {
       payload: Record<string, unknown> = {},
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
+  storage: {
+    getPressure: async (): Promise<DiskPressureSnapshot> =>
+      ipcRenderer.invoke(IPC.storageGetPressure),
+  },
   project: {
     openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {
       // `clearAround` runs its cleanup callback both before AND after the
@@ -3468,6 +3474,12 @@ contextBridge.exposeInMainWorld("ade", {
         removeLocal();
       };
     },
+  },
+  recovery: {
+    diagnose: (projectRoot: string): Promise<ProjectRecoveryDiagnosis> =>
+      ipcRenderer.invoke(IPC.recoveryDiagnose, { projectRoot }),
+    repair: (projectRoot: string): Promise<ProjectRepairReport> =>
+      ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
   },
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>

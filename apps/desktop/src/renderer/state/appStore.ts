@@ -749,6 +749,7 @@ export type ProjectTransitionError = {
   message: string;
   code?: string;
   detail?: string;
+  rootPath?: string;
 };
 
 export type AppState = {
@@ -1908,10 +1909,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }).catch(() => {});
       }, 750);
     } catch (error) {
+      const projectTransitionError = formatProjectTransitionError("switching", error);
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("switching", error),
+        projectTransitionError: projectTransitionError.code
+          ? { ...projectTransitionError, rootPath }
+          : projectTransitionError,
       });
       throw error;
     }
