@@ -111,19 +111,34 @@ describe("cliExecutableResolver", () => {
 
   it("returns all executable candidates in PATH then known-directory order", () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-candidates-"));
+    const homeDir = path.join(tempRoot, "home");
     const firstBin = path.join(tempRoot, "first");
     const secondBin = path.join(tempRoot, "second");
+    const knownBin = path.join(homeDir, ".local", "bin");
     makeExecutable(path.join(firstBin, "git"));
     makeExecutable(path.join(secondBin, "git"));
+    makeExecutable(path.join(knownBin, "git"));
+
+    const realStatSync = fs.statSync;
+    vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
+      const normalizedCandidate = path.normalize(String(p));
+      if (path.parse(normalizedCandidate).name === "git" && !normalizedCandidate.startsWith(tempRoot!)) {
+        const err: NodeJS.ErrnoException = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      return realStatSync(normalizedCandidate, opts);
+    }) as typeof fs.statSync);
 
     const candidates = resolveExecutableCandidatesFromKnownLocations("git", {
-      HOME: path.join(tempRoot, "home"),
+      HOME: homeDir,
       PATH: [firstBin, secondBin].join(path.delimiter),
     });
 
-    expect(candidates.slice(0, 2)).toEqual([
+    expect(candidates.slice(0, 3)).toEqual([
       { path: path.join(firstBin, "git"), source: "path" },
       { path: path.join(secondBin, "git"), source: "path" },
+      { path: path.join(knownBin, "git"), source: "known-dir" },
     ]);
   });
 
