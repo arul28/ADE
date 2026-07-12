@@ -246,7 +246,6 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const scanEntryLimit = options.scanEntryLimit ?? DEFAULT_SCAN_ENTRY_LIMIT;
   const scanBudgetMs = options.scanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
   let cachedSnapshot: { value: StorageSnapshot; createdAt: number } | null = null;
-  const previewIdentities = new Map<string, string>();
   const compressionRoots: CompressionRoots = [
     { path: layout.chatTranscriptsDir, kind: "chat_transcript" },
     // PTY transcripts are direct children. Nested process/test logs have
@@ -633,8 +632,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         blocked.push({ path: targetPath, reason: checked.reason ?? "This item cannot be removed." });
         continue;
       }
-      items.push({ path: checked.valid.path, bytes: checked.valid.bytes, label: checked.valid.label });
-      previewIdentities.set(checked.valid.path, checked.valid.identity);
+      items.push({
+        path: checked.valid.path,
+        bytes: checked.valid.bytes,
+        label: checked.valid.label,
+        identity: checked.valid.identity,
+      });
     }
     return { items, totalBytes: items.reduce((sum, item) => sum + item.bytes, 0), blocked };
   };
@@ -678,7 +681,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
         continue;
       }
-      if (previewIdentities.get(checked.valid.path) !== checked.valid.identity) {
+      if (!previewItem.identity || previewItem.identity !== checked.valid.identity) {
         failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
         continue;
       }

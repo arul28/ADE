@@ -274,7 +274,9 @@ describe("storageInsightsService", () => {
 
     const preview = await service.cleanupPreview(targets);
     expect(preview.blocked.map((item) => item.path)).toContain(fresh);
-    expect(preview.items).toEqual([{ path: stale, bytes: 31, label: "Old release staging" }]);
+    expect(preview.items).toEqual([
+      { path: stale, bytes: 31, label: "Old release staging", identity: expect.any(String) },
+    ]);
     const result = await service.cleanup([{ kind: "stale_tmp_staging", path: stale }], { preview });
     expect(result).toEqual({ removed: [{ path: stale, bytes: 31 }], failed: [], freedBytes: 31 });
     expect(fs.existsSync(stale)).toBe(false);
@@ -327,5 +329,45 @@ describe("storageInsightsService", () => {
       { path: replaced, reason: "This item changed after the preview. Preview it again before removing it." },
     ]);
     expect(result.freedBytes).toBe(9);
+  });
+
+  it("binds a confirmation to its own preview so a later preview cannot revalidate a stale confirm", async () => {
+    // Regression for the preview-identity drift found in review: identities
+    // used to live in service state keyed by path, so previewing the same
+    // path again replaced the identity an earlier confirmation depended on,
+    // letting a stale confirm delete a file generation the user never saw.
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-drift-"));
+    extraPaths.push(staging);
+    const inner = path.join(staging, "data");
+    writeSized(inner, 13);
+    const nineDaysAgo = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    fs.utimesSync(inner, nineDaysAgo, nineDaysAgo);
+    fs.utimesSync(staging, nineDaysAgo, nineDaysAgo);
+    const targets: StorageCleanupTarget[] = [{ kind: "stale_tmp_staging", path: staging }];
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const stalePreview = await service.cleanupPreview(targets);
+    expect(stalePreview.items).toHaveLength(1);
+
+    // Same byte count, different generation: the user who confirmed the
+    // first dialog never saw this content.
+    writeSized(inner, 13);
+    fs.utimesSync(inner, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(staging, eightDaysAgo, eightDaysAgo);
+    const freshPreview = await service.cleanupPreview(targets);
+    expect(freshPreview.items).toHaveLength(1);
+    expect(freshPreview.items[0]!.identity).not.toBe(stalePreview.items[0]!.identity);
+
+    const staleResult = await service.cleanup(targets, { preview: stalePreview });
+    expect(staleResult.removed).toEqual([]);
+    expect(staleResult.failed).toEqual([
+      { path: staging, reason: "This item changed after the preview. Preview it again before removing it." },
+    ]);
+    expect(fs.existsSync(staging)).toBe(true);
+
+    const freshResult = await service.cleanup(targets, { preview: freshPreview });
+    expect(freshResult.removed).toEqual([{ path: staging, bytes: 13 }]);
+    expect(fs.existsSync(staging)).toBe(false);
   });
 });

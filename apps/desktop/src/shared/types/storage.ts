@@ -77,7 +77,11 @@ export type StorageCleanupTarget =
   | { kind: "recovery_backup"; path: string };
 
 export type StorageCleanupPreview = {
-  items: Array<{ path: string; bytes: number; label: string }>;
+  // `identity` binds a confirmation to the exact file generation the user
+  // previewed (dev/ino/size/mtime fingerprint). Cleanup validates against the
+  // submitted preview's identities, never against later previews of the same
+  // path, so a stale confirm can never remove an unseen generation.
+  items: Array<{ path: string; bytes: number; label: string; identity?: string }>;
   totalBytes: number;
   blocked: Array<{ path: string; reason: string }>;
 };
