@@ -77,7 +77,12 @@ Related pages for the broader "home" experience:
   project open, and cache pruning retains Work/lane/session state for every
   open project tab root.
 - `apps/desktop/src/renderer/components/app/AppShell.tsx` — top-level
-  nav, routes `/run` to `RunPage`.
+  nav, routes `/run` to `RunPage`, and mounts project-transition errors below
+  the TopBar where long messages can wrap without displacing header controls.
+- `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` —
+  dismissible, full-width alert for failed project open / switch / close
+  operations. It hides while another project transition is active and preserves
+  the complete error text with wrapping instead of truncation.
 - `apps/desktop/src/renderer/components/app/CommandPalette.tsx` —
   keyboard-first project browser and create/clone/open flows used by the
   welcome screen and global command palette.
@@ -286,6 +291,16 @@ the cache after forget / reorder / pin writes. Local project rows open via
 `appStore.switchRemoteProject(targetId, projectId)`; disconnected remote
 rows first call `window.ade.remoteRuntime.connect(targetId)` and then bind
 the project if the connection succeeds.
+
+Project-open failures are stored in `appStore.projectTransitionError` and
+rendered by `AppShell` as a full-width, wrapping alert below the TopBar; the
+TopBar never truncates the only visible copy of an error. Opening a local
+project requires Git because ADE validates the repository root before binding
+it. On macOS, Git resolution prefers a separately installed executable over
+Apple's `/usr/bin/git`, which can be blocked by an unaccepted Xcode license.
+When Apple's Git is the only option, ADE explains that the license prompt is a
+Git dependency rather than an iOS Simulator or code-signing requirement and
+offers a separate Git installation as the alternative.
 
 ### Command Palette project flows
 

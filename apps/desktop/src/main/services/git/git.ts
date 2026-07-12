@@ -3,40 +3,67 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import type { ConflictFileType } from "../../../shared/types";
 import { terminateProcessTree } from "../shared/processExecution";
-import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import {
+  resolveExecutableCandidatesFromKnownLocations,
+  type ResolvedExecutable,
+} from "../ai/cliExecutableResolver";
 
 // Electron apps launched from Finder/Dock can have a stripped PATH that misses
 // where the user actually installed git (e.g. /opt/homebrew/bin on Apple
 // Silicon when shell PATH probe times out). Resolve git's absolute path once
 // and reuse it so spawn never throws ENOENT.
 let cachedGitExecutable: string | null = null;
+export function selectGitExecutable(
+  candidates: readonly ResolvedExecutable[],
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const selected = platform === "darwin"
+    ? candidates.find((candidate) => candidate.path !== "/usr/bin/git") ?? candidates[0]
+    : candidates[0];
+  return selected?.path ?? null;
+}
+
+export function shouldProbeLoginShellForGit(
+  selectedExecutable: string | null,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return selectedExecutable == null
+    || (platform === "darwin" && selectedExecutable === "/usr/bin/git");
+}
+
 function resolveGitExecutable(): string {
   if (cachedGitExecutable) return cachedGitExecutable;
   if (process.env.ADE_GIT_EXECUTABLE && fs.existsSync(process.env.ADE_GIT_EXECUTABLE)) {
     cachedGitExecutable = process.env.ADE_GIT_EXECUTABLE;
     return cachedGitExecutable;
   }
-  const fromKnown = resolveExecutableFromKnownLocations(process.platform === "win32" ? "git.exe" : "git");
-  if (fromKnown?.path) {
-    cachedGitExecutable = fromKnown.path;
-    return cachedGitExecutable;
-  }
-  // Last resort: ask the user's login shell. Slower, but only runs if the
-  // direct probe missed (e.g. git lives in an unusual nvm/asdf shim dir).
-  if (process.platform !== "win32") {
+  const candidates = resolveExecutableCandidatesFromKnownLocations(
+    process.platform === "win32" ? "git.exe" : "git",
+  );
+  const resolvedCandidate = selectGitExecutable(candidates);
+  // A packaged macOS app can inherit a PATH containing only /usr/bin even
+  // though the user's login shell exposes an independent Git via a custom
+  // package-manager or version-manager directory. Check that shell before
+  // accepting Apple's license-gated Git.
+  if (process.platform !== "win32" && shouldProbeLoginShellForGit(resolvedCandidate)) {
     try {
       const shell = process.env.SHELL?.trim() || "/bin/sh";
       const out = execFileSync(shell, ["-lc", "command -v git"], {
         encoding: "utf8",
         timeout: 3_000,
       }).trim();
-      if (out && fs.existsSync(out)) {
+      const isIndependentMacGit = process.platform !== "darwin" || out !== "/usr/bin/git";
+      if (out && fs.existsSync(out) && (isIndependentMacGit || !resolvedCandidate)) {
         cachedGitExecutable = out;
         return cachedGitExecutable;
       }
     } catch {
       // fall through
     }
+  }
+  if (resolvedCandidate) {
+    cachedGitExecutable = resolvedCandidate;
+    return cachedGitExecutable;
   }
   // Fall back to bare "git" — spawn will surface the original ENOENT with a
   // clearer pre-check error message wrapped around it.
@@ -285,10 +312,15 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
   const res = await runGit(args, opts);
   if (res.exitCode !== 0) {
-    const msg = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
-    throw new Error(msg);
+    const raw = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
+    throw new Error(formatGitExecutionError(raw));
   }
   return res.stdout;
+}
+
+export function formatGitExecutionError(raw: string): string {
+  if (!/not agreed to the Xcode license agreements/i.test(raw)) return raw;
+  return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }
 
 /**

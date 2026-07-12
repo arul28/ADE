@@ -12,6 +12,37 @@ export type ResolvedExecutable = {
   source: ResolutionSource;
 };
 
+function* executableCandidatesFromKnownLocations(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Generator<ResolvedExecutable> {
+  const seen = new Set<string>();
+  const nextCandidate = (
+    candidatePath: string | null,
+    source: ResolutionSource,
+  ): ResolvedExecutable | null => {
+    if (!candidatePath || seen.has(candidatePath)) return null;
+    seen.add(candidatePath);
+    return { path: candidatePath, source };
+  };
+
+  for (const dir of splitPathEntries(getPathEnvValue(env))) {
+    const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "path");
+    if (candidate) yield candidate;
+  }
+  for (const dir of getKnownBinDirs(command, env)) {
+    const candidate = nextCandidate(resolveFromDirs(command, [dir], env), "known-dir");
+    if (candidate) yield candidate;
+  }
+}
+
+export function resolveExecutableCandidatesFromKnownLocations(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedExecutable[] {
+  return [...executableCandidatesFromKnownLocations(command, env)];
+}
+
 function getHomeDir(env: NodeJS.ProcessEnv): string {
   const profile = env.USERPROFILE?.trim();
   if (process.platform === "win32") {
@@ -325,15 +356,5 @@ export function resolveExecutableFromKnownLocations(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedExecutable | null {
-  const fromPath = resolveFromDirs(command, splitPathEntries(getPathEnvValue(env)), env);
-  if (fromPath) {
-    return { path: fromPath, source: "path" };
-  }
-
-  const fromKnownDirs = resolveFromDirs(command, getKnownBinDirs(command, env), env);
-  if (fromKnownDirs) {
-    return { path: fromKnownDirs, source: "known-dir" };
-  }
-
-  return null;
+  return executableCandidatesFromKnownLocations(command, env).next().value ?? null;
 }

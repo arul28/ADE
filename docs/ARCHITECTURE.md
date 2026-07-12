@@ -820,6 +820,7 @@ Related trust-boundary docs: [Computer-use artifact broker](./features/computer-
 
 - ADE **shells out** to the system `git` binary (not isomorphic-git). Rationale: full feature parity, hook compatibility, native credential handling, performance.
 - All commands go through `runGit` / `runGitOrThrow` in `apps/desktop/src/main/services/git/git.ts` (timeout support, structured output parsing).
+- Executable discovery reuses `ai/cliExecutableResolver.ts` to inspect PATH and known installation directories. On macOS, ADE prefers an independently installed Git over Apple's `/usr/bin/git` and probes the login shell before accepting `/usr/bin/git`; this keeps project opening usable when Apple's Git is blocked by an unaccepted Xcode license. If Apple's Git is the only available option, the surfaced error explains that accepting the license is a Git prerequisite, not an iOS Simulator or code-signing requirement, and points to installing Git separately as the alternative.
 - High-level ops in `gitOperationsService.ts` — wrap every mutation in `runLaneOperation()`: resolve lane, capture pre-HEAD, record operation, execute, capture post-HEAD, finalize record, fire `onHeadChanged` if needed.
 
 ### 9.2 Worktree-per-lane isolation

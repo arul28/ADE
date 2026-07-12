@@ -68,6 +68,7 @@ function resetStore() {
     projectHydrated: false,
     showWelcome: true,
     projectTransition: null,
+    projectTransitionError: null,
     lanes: [],
     laneSnapshots: [],
     lanesLoading: false,
@@ -164,6 +165,28 @@ describe("AppShell AI provider status", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+  });
+
+  it("shows the full project error below the top bar and lets the user dismiss it", () => {
+    const message = "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted.";
+    useAppStore.setState({ projectTransitionError: message } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain(message);
+    expect(alert.querySelector(".truncate")).toBeNull();
+
+    act(() => {
+      screen.getByRole("button", { name: "Dismiss project error" }).click();
+    });
+    expect(useAppStore.getState().projectTransitionError).toBeNull();
   });
 
   it("refreshes the missing-provider banner when AI status cache is invalidated", async () => {

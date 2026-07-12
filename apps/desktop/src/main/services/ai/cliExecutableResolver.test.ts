@@ -6,6 +6,7 @@ import {
   augmentPathWithKnownCliDirs,
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
+  resolveExecutableCandidatesFromKnownLocations,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
@@ -106,6 +107,24 @@ describe("cliExecutableResolver", () => {
     const entries = nextPath.split(currentPathDelimiter());
     expect(entries).toContain("/usr/local/bin");
     expect(entries).toContain("/opt/homebrew/bin");
+  });
+
+  it("returns all executable candidates in PATH then known-directory order", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-candidates-"));
+    const firstBin = path.join(tempRoot, "first");
+    const secondBin = path.join(tempRoot, "second");
+    makeExecutable(path.join(firstBin, "git"));
+    makeExecutable(path.join(secondBin, "git"));
+
+    const candidates = resolveExecutableCandidatesFromKnownLocations("git", {
+      HOME: path.join(tempRoot, "home"),
+      PATH: [firstBin, secondBin].join(path.delimiter),
+    });
+
+    expect(candidates.slice(0, 2)).toEqual([
+      { path: path.join(firstBin, "git"), source: "path" },
+      { path: path.join(secondBin, "git"), source: "path" },
+    ]);
   });
 
   it("augments PATH with known CLI dirs on Windows", () => {

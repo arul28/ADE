@@ -993,7 +993,10 @@ function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
 ): string {
-  const raw = extractError(error).trim();
+  const raw = extractError(error)
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
   if (/timed out after 30000ms/i.test(raw)) {
     if (kind === "opening") {
       return "Opening this project took longer than 30 seconds, so ADE stopped waiting.";

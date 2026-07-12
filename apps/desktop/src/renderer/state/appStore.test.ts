@@ -1166,6 +1166,22 @@ describe("appStore", () => {
       );
     });
 
+    it("removes Electron's remote-method wrapper from project errors", async () => {
+      (window.ade.project.switchToPath as any).mockRejectedValueOnce(
+        new Error(
+          "Error invoking remote method 'ade.project.switchToPath': Error: ADE needs Git to open this project.",
+        ),
+      );
+
+      await expect(
+        useAppStore.getState().switchProjectToPath("/tmp/project"),
+      ).rejects.toThrow("Error invoking remote method");
+
+      expect(useAppStore.getState().projectTransitionError).toBe(
+        "ADE needs Git to open this project.",
+      );
+    });
+
     it("prunes banner-dismiss maps to the new project after switch settles", async () => {
       const originalWindowSetTimeout = window.setTimeout;
       vi.useFakeTimers();
