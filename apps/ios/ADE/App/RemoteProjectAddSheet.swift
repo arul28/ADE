@@ -824,7 +824,7 @@ private struct InlineProjectNotice: View {
     Text(message)
       .font(.system(.caption, design: .monospaced))
       .foregroundStyle(tone == .danger ? ADEColor.danger : ADEColor.textMuted)
-      .lineLimit(3)
+      .lineLimit(tone == .danger ? nil : 3)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(10)
       .background((tone == .danger ? ADEColor.danger : ADEColor.recessedBackground).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

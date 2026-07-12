@@ -893,10 +893,6 @@ export function TopBar({
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
-  const projectTransitionError = useAppStore((s) => s.projectTransitionError);
-  const clearProjectTransitionError = useAppStore(
-    (s) => s.clearProjectTransitionError,
-  );
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
@@ -2406,29 +2402,6 @@ export function TopBar({
           <span className="max-w-[240px] truncate">
             {projectTransitionLabel}
           </span>
-        </div>
-      ) : null}
-
-      {!projectTransitionLabel && projectTransitionError ? (
-        <div
-          className={cn(
-            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium text-red-300",
-          )}
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title={projectTransitionError}
-        >
-          <span className="max-w-[320px] truncate">
-            {projectTransitionError}
-          </span>
-          <button
-            type="button"
-            className="inline-flex h-4 w-4 items-center justify-center rounded-sm text-current opacity-80 transition-opacity hover:opacity-100"
-            onClick={clearProjectTransitionError}
-            title="Dismiss project error"
-          >
-            <X size={10} weight="regular" />
-          </button>
         </div>
       ) : null}
 

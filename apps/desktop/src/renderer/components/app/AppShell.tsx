@@ -17,6 +17,7 @@ import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
+import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import {
   getPrToastHeadline,
   getPrToastMeta,
@@ -1251,6 +1252,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onNavigate={(path, opts) => navigate(path, opts)}
         />
       </div>
+
+      <ProjectTransitionErrorAlert />
 
       {!hideSidebar && projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">

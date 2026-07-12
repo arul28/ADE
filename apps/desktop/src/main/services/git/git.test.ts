@@ -3,7 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { runGit, runGitMergeTree, runGitOrThrow } from "./git";
+import {
+  formatGitExecutionError,
+  runGit,
+  runGitMergeTree,
+  runGitOrThrow,
+  selectGitExecutable,
+  shouldProbeLoginShellForGit,
+} from "./git";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -130,5 +137,36 @@ describe("runGit", () => {
     expect(result.exitCode).not.toBe(0);
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(fs.readdirSync(gitDir).some((entry) => entry.startsWith("index.lock.stale-"))).toBe(false);
+  });
+});
+
+describe("macOS git selection", () => {
+  it("prefers an independent Git installation over Apple's license-gated executable", () => {
+    expect(selectGitExecutable([
+      { path: "/usr/bin/git", source: "path" },
+      { path: "/opt/homebrew/bin/git", source: "known-dir" },
+    ], "darwin")).toBe("/opt/homebrew/bin/git");
+  });
+
+  it("uses Apple's Git when it is the only installation available", () => {
+    expect(selectGitExecutable([
+      { path: "/usr/bin/git", source: "path" },
+    ], "darwin")).toBe("/usr/bin/git");
+  });
+
+  it("checks the login shell before accepting Apple's Git", () => {
+    expect(shouldProbeLoginShellForGit("/usr/bin/git", "darwin")).toBe(true);
+    expect(shouldProbeLoginShellForGit("/opt/homebrew/bin/git", "darwin")).toBe(false);
+    expect(shouldProbeLoginShellForGit("/usr/bin/git", "linux")).toBe(false);
+  });
+
+  it("explains that an Xcode license failure comes from Git, not iOS features", () => {
+    const message = formatGitExecutionError(
+      "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license'.",
+    );
+
+    expect(message).toContain("ADE needs Git");
+    expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
+    expect(message).toContain("sudo xcodebuild -license");
   });
 });
