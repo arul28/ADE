@@ -967,7 +967,7 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
           const previous = steerMap.get(event.steerId);
           steerMap.set(event.steerId, {
             steerId: event.steerId,
-            text: event.text,
+            text: userMessageVisibleText(event),
             attachments: event.attachments ?? previous?.attachments ?? [],
             contextAttachments: event.contextAttachments ?? previous?.contextAttachments ?? [],
           });

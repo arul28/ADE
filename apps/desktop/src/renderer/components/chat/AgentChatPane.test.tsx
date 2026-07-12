@@ -2603,12 +2603,15 @@ describe("AgentChatPane submit recovery", () => {
           type: "user_message",
           steerId: "steer-edit",
           deliveryState: "queued",
-          text: "Revise this queued instruction.",
+          text: "[injected context]\n\nRevise this queued instruction.",
+          displayText: "Revise this queued instruction.",
           attachments: [{ path: "docs/queued.md", type: "file" }],
         },
       });
     });
 
+    expect(await screen.findByText("Revise this queued instruction.")).toBeTruthy();
+    expect(screen.queryByText(/injected context/)).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Edit queued message" }));
     fireEvent.click(otherTab);
 
