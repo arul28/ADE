@@ -42,7 +42,7 @@ const PANEL_STYLE: React.CSSProperties = {
 type CompressNow = () => Promise<{ filesCompressed: number; savedBytes: number }>;
 
 function getCompressNow(): CompressNow | undefined {
-  const fn = (window.ade?.storage as { compressNow?: CompressNow } | undefined)?.compressNow;
+  const fn = window.ade?.storage?.compressNow;
   return typeof fn === "function" ? fn : undefined;
 }
 
