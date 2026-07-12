@@ -612,6 +612,101 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
   });
 
+  it("renders a brief chip for hidden cross-machine handoff messages", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Injected handoff brief with full detail.",
+          displayText: "Continue the handoff",
+          metadata: { kind: "cross_machine_handoff", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("handoff-brief-chip")).toBeTruthy();
+    });
+    expect(screen.getByText(/Previous chat summarized into this chat/i)).toBeTruthy();
+    expect(screen.getByText("Continue the handoff")).toBeTruthy();
+  });
+
+  it("does not render a brief chip for hidden messages that are not handoffs", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Some hidden system prompt.",
+          displayText: "Visible summary",
+          metadata: { kind: "system", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Visible summary")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
+  });
+
+  it("draws exactly one fork-history divider between seeded history and the first live event", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "user_message", text: "Earlier question" },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: "prev-session" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "text", text: "Earlier answer", itemId: "t0", turnId: "turn-0", messageId: "m0" },
+        provenance: { providerOrigin: "handoff_fork", sourceSessionId: "prev-session" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: { type: "user_message", text: "Live question after fork" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: { type: "text", text: "Live answer", itemId: "t1", turnId: "turn-1", messageId: "m1" },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Live question after fork")).toBeTruthy();
+    });
+    const dividers = screen.getAllByTestId("fork-history-divider");
+    expect(dividers).toHaveLength(1);
+    expect(screen.getByText(/Forked from the previous chat — full history above/i)).toBeTruthy();
+  });
+
+  it("draws no fork-history divider when no envelope carries fork provenance", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "user_message", text: "Plain question" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "text", text: "Plain answer", messageId: "m1" },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Plain question")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("fork-history-divider")).toBeNull();
+  });
+
   it("does not fall back to hidden handoff prompt text when display text is missing", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { providerDisplayName, pendingInputHeaderLabel } from "./pendingInputLabels";
+import { providerDisplayLabel, providerDisplayName, pendingInputHeaderLabel } from "./pendingInputLabels";
 
 describe("providerDisplayName", () => {
   it("maps known runtime sources to branded names", () => {
@@ -24,6 +24,16 @@ describe("providerDisplayName", () => {
     expect(providerDisplayName("")).toBe("Agent");
     expect(providerDisplayName(null)).toBe("Agent");
     expect(providerDisplayName(undefined)).toBe("Agent");
+  });
+});
+
+describe("providerDisplayLabel", () => {
+  it("uses canonical chat provider names and a caller-owned empty fallback", () => {
+    expect(["claude", "codex", "cursor", "droid", "opencode"].map((provider) =>
+      providerDisplayLabel(provider, "fallback")
+    )).toEqual(["Claude", "Codex", "Cursor", "Droid", "OpenCode"]);
+    expect(providerDisplayLabel("custom-runtime", "fallback")).toBe("Custom Runtime");
+    expect(providerDisplayLabel(null, "This chat")).toBe("This chat");
   });
 });
 

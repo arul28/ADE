@@ -1228,6 +1228,53 @@ describe("createSyncRemoteCommandService", () => {
     });
   });
 
+  it("forwards fork mode and sourceProvider through the cross-machine handoff bridge", async () => {
+    const prepareCrossMachineHandoff = vi.fn().mockResolvedValue({
+      capsule: { handoffId: "handoff-1" },
+      capsuleFingerprint: "fingerprint-1",
+      usedFallbackSummary: false,
+      sanitizedSensitiveContext: false,
+    });
+    const preflightCrossMachineDestination = vi.fn().mockResolvedValue({
+      providerAuthorized: true,
+      modelAvailable: true,
+      remoteBranchHeadSha: "a".repeat(40),
+      existingLaneId: null,
+      blockingErrors: [],
+      warnings: [],
+      forkHandoffSupport: { supported: true },
+    });
+    const { service } = createService({
+      agentChatService: { prepareCrossMachineHandoff, preflightCrossMachineDestination },
+    });
+
+    await service.execute(makePayload("chat.prepareCrossMachineHandoff", {
+      sourceSessionId: "session-1",
+      handoffId: "handoff-1",
+      targetModelId: "openai/gpt-5.5",
+      mode: "fork",
+    }));
+    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "fork" }));
+
+    await service.execute(makePayload("chat.preflightCrossMachineDestination", {
+      targetModelId: "openai/gpt-5.5",
+      sourceBranchRef: "feature/handoff",
+      sourceHeadSha: "a".repeat(40),
+      mode: "fork",
+      sourceProvider: "claude",
+    }));
+    expect(preflightCrossMachineDestination).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "fork", sourceProvider: "claude" }),
+    );
+
+    await expect(service.execute(makePayload("chat.preflightCrossMachineDestination", {
+      targetModelId: "openai/gpt-5.5",
+      sourceBranchRef: "feature/handoff",
+      sourceHeadSha: "a".repeat(40),
+      mode: "resume",
+    }))).rejects.toThrow("mode must be brief or fork");
+  });
+
   it("routes github.publishCurrentProject through the GitHub service with validated args", async () => {
     const publishCurrentProject = vi.fn().mockResolvedValue({
       state: "pushed",

@@ -644,6 +644,15 @@ function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: stri
   return `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
 }
 
+function parseHandoffMode(value: unknown, action: string): "brief" | "fork" | undefined {
+  if (value == null) return undefined;
+  const parsed = asTrimmedString(value);
+  if (parsed !== "brief" && parsed !== "fork") {
+    throw new Error(`${action} mode must be brief or fork.`);
+  }
+  return parsed;
+}
+
 function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
   const handoffNote = asTrimmedString(value.handoffNote);
   return {
@@ -657,6 +666,8 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
 function parseCrossMachineDestinationPreflightArgs(
   value: Record<string, unknown>,
 ): AgentChatCrossMachineDestinationPreflightArgs {
+  const mode = parseHandoffMode(value.mode, "chat.preflightCrossMachineDestination");
+  const sourceProvider = asTrimmedString(value.sourceProvider);
   return {
     targetModelId: requireString(
       value.targetModelId,
@@ -670,6 +681,8 @@ function parseCrossMachineDestinationPreflightArgs(
       value.sourceHeadSha,
       "chat.preflightCrossMachineDestination requires sourceHeadSha.",
     ),
+    ...(mode !== undefined ? { mode } : {}),
+    ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
   };
 }
 
@@ -734,11 +747,13 @@ function parsePrepareCrossMachineHandoffArgs(
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
+  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
       "chat.prepareCrossMachineHandoff requires sourceSessionId.",
     ),
+    ...(mode !== undefined ? { mode } : {}),
     handoffId: requireString(
       value.handoffId,
       "chat.prepareCrossMachineHandoff requires handoffId.",

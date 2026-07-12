@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
 // dynamic import() with a variable path is left unresolved in cli.cjs and fails
 // at runtime ("Cannot find module .../externalSessions/claudeSessionTransplant").
-import { transplantClaudeSession as staticTransplantClaudeSession } from "../externalSessions/claudeSessionTransplant";
+import {
+  placeClaudeForkFromTransport,
+  transplantClaudeSession as staticTransplantClaudeSession,
+} from "../externalSessions/claudeSessionTransplant";
+import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -152,6 +156,7 @@ import type {
   AgentChatCompletionReport,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
+  AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexApprovalPolicy,
@@ -264,6 +269,23 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
 } from "../../../shared/types";
+import { providerSupportsHandoffFork } from "../../../shared/types";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import {
+  CROSS_MACHINE_FORK_BRIEF_STUB,
+  CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
+  CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
+  CROSS_MACHINE_FORK_SIDEFILES_MAX_BASE64,
+  CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED,
+  CROSS_MACHINE_FORK_TRANSCRIPT_MAX_BASE64,
+  CROSS_MACHINE_FORK_TRANSCRIPT_MAX_UNCOMPRESSED,
+  crossMachineForkOversizeError,
+  enforceCrossMachineForkEncodedBudget,
+  gunzipFromBase64,
+  gzipToBase64,
+  runCliCapture,
+  validateForkTransport,
+} from "./crossMachineForkTransport";
 import {
   buildChatContextAttachmentPrompt,
   normalizeChatContextAttachments,
@@ -368,6 +390,7 @@ import {
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
+  resolveOpenCodeExecutablePath,
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
@@ -2008,6 +2031,16 @@ type ManagedChatSession = {
   claudeBackgroundResumeSessionId: string | null;
   claudeBackgroundLogText: string;
   compactionEmitterState: CompactionEmitterState;
+  /**
+   * Fork-seeded provider pointers (OpenCode session id / Droid session id).
+   * seedForkedProviderPointer writes them to disk, but a persist that runs
+   * while the new runtime is starting (runtime object present, id not yet
+   * adopted) skips the prevPersisted fallback — these in-memory mirrors keep
+   * the pointer alive through that window. Cleared implicitly by
+   * runtimeInvalidated gating, like the persisted fallback.
+   */
+  seededProviderSessionId?: string;
+  seededDroidSdkSessionId?: string;
 };
 
 type AgentChatTranscriptEntry = {
@@ -2033,11 +2066,21 @@ type CrossMachineHandoffRecord = {
   sessionId: string | null;
   updatedAt: string;
   lastError: string | null;
+  /**
+   * Set once fork materialization (provider files + thread fork + transcript
+   * seeding) completed for this handoff. A retry after a later failure (e.g.
+   * the continuation sendMessage) must skip those side effects or it would
+   * fork the provider thread and append the transported transcript twice.
+   */
+  forkMaterializedAt?: string | null;
 };
 
 const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
   "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
-
+const FORK_SAME_PROVIDER_MESSAGE =
+  "Full-history fork requires the same provider on both sides. Use a brief handoff to switch providers.";
+const DROID_FORK_NOT_PORTABLE_REASON = "Droid sessions aren't portable between machines yet";
+const DROID_FORK_NOT_PORTABLE_MESSAGE = `${DROID_FORK_NOT_PORTABLE_REASON}. Use a brief handoff instead.`;
 function sanitizePortableReferenceUrl(value: string | null | undefined): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return null;
@@ -3600,6 +3643,10 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "cursor") return "Cursor Chat";
   if (provider === "droid") return "Droid Chat";
   return "AI Chat";
+}
+
+function handoffProviderLabel(provider: AgentChatProvider): string {
+  return providerDisplayLabel(provider, String(provider));
 }
 
 const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat"]);
@@ -9634,7 +9681,9 @@ export function createAgentChatService(args: {
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
         ? { droidSdkSessionId: managed.runtime.sdkSessionId }
-        : {}),
+        : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
+          ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
+          : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
@@ -9665,7 +9714,11 @@ export function createAgentChatService(args: {
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
-        : managed.session.provider === "opencode" && prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
+        : managed.session.provider === "opencode"
+          && !managed.runtimeInvalidated
+          && (managed.seededProviderSessionId || prevPersisted?.providerSessionId)
+          ? { providerSessionId: managed.seededProviderSessionId ?? prevPersisted?.providerSessionId }
+          : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundJobShort
         ? { claudeBackgroundJobShort: managed.claudeBackgroundJobShort }
         : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundJobShort ? { claudeBackgroundJobShort: prevPersisted.claudeBackgroundJobShort } : {}),
@@ -9981,6 +10034,30 @@ export function createAgentChatService(args: {
       return hydrated;
     } catch {
       return null;
+    }
+  };
+
+  const seedForkedProviderPointer = (
+    managed: ManagedChatSession,
+    patch: { providerSessionId?: string; droidSdkSessionId?: string },
+  ): void => {
+    // Mirror in memory first: a persist that runs while the new runtime is
+    // starting cannot read prevPersisted (runtime is non-null), so the disk
+    // write alone would be clobbered in that window.
+    if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
+    if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
+    const sessionId = managed.session.id;
+    const current = readPersistedState(sessionId);
+    if (!current) return;
+    const next: PersistedChatState = { ...current, ...patch, updatedAt: nowIso() };
+    try {
+      fs.mkdirSync(path.dirname(metadataPathFor(sessionId)), { recursive: true });
+      fs.writeFileSync(metadataPathFor(sessionId), JSON.stringify(next, null, 2), "utf8");
+    } catch (error) {
+      logger.warn("agent_chat.seed_fork_pointer_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -24415,11 +24492,39 @@ export function createAgentChatService(args: {
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
     const handoffMode = args.mode ?? "brief";
-    const canForkProviderHistory =
-      (managed.session.provider === "claude" && targetProvider === "claude")
-      || (managed.session.provider === "codex" && targetProvider === "codex");
-    if (handoffMode === "fork" && !canForkProviderHistory) {
-      throw new Error("Full-history fork is only available when handing off within Claude or within Codex.");
+    const requestedTargetLaneId = typeof args.targetLaneId === "string" ? args.targetLaneId.trim() : "";
+    const sourceLaneId = managed.session.laneId;
+    let resolvedTargetLaneId = sourceLaneId;
+    if (requestedTargetLaneId && requestedTargetLaneId !== sourceLaneId) {
+      if (handoffMode === "fork") {
+        throw new Error("Fork handoff keeps the new chat in the source lane; use a brief handoff to move lanes.");
+      }
+      try {
+        resolveLaneLaunchContext({
+          laneService,
+          projectRoot,
+          laneId: requestedTargetLaneId,
+          purpose: "hand off this chat",
+        });
+      } catch {
+        throw new Error(`Unknown or unavailable lane '${requestedTargetLaneId}' for this handoff.`);
+      }
+      const targetLaneSummary = await laneService.getSummary(requestedTargetLaneId, { includeStatus: true }).catch(() => null);
+      if (targetLaneSummary?.archivedAt) {
+        throw new Error(`Lane '${requestedTargetLaneId}' is archived; pick an active lane for this handoff.`);
+      }
+      resolvedTargetLaneId = requestedTargetLaneId;
+    }
+    const targetLaneId = resolvedTargetLaneId;
+    const sourceProvider = managed.session.provider;
+    if (handoffMode === "fork") {
+      if (!providerSupportsHandoffFork(sourceProvider)) {
+        const label = handoffProviderLabel(sourceProvider);
+        throw new Error(`Full-history fork isn't available for ${label} chats. Use a brief handoff instead.`);
+      }
+      if (targetProvider !== sourceProvider) {
+        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
+      }
     }
     const sourceClaudeRuntime = handoffMode === "fork" && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
@@ -24446,6 +24551,45 @@ export function createAgentChatService(args: {
         throw new Error(`Codex thread/fork did not return a new thread id for '${sourceThreadId}'.`);
       }
       sourceCodexForkThreadId = forkedThreadId;
+    }
+    let sourceOpenCodeForkSessionId: string | null = null;
+    if (handoffMode === "fork" && sourceProvider === "opencode") {
+      if (managed.runtime?.kind !== "opencode") {
+        try {
+          await startOpenCodeSessionRuntime(managed);
+        } catch {
+          throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
+        }
+      }
+      if (managed.runtime?.kind !== "opencode") {
+        throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
+      }
+      const handle = managed.runtime.handle;
+      const forkResponse = await handle.client.session.fork({
+        path: { id: handle.sessionId },
+        query: { directory: handle.directory },
+        throwOnError: true,
+      });
+      const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
+      if (!forkedId) {
+        throw new Error(`OpenCode session fork did not return a new session id for '${handle.sessionId}'.`);
+      }
+      sourceOpenCodeForkSessionId = forkedId;
+    }
+    let sourceDroidForkSessionId: string | null = null;
+    if (handoffMode === "fork" && sourceProvider === "droid") {
+      let droidRuntime: DroidRuntime;
+      try {
+        droidRuntime = await ensureDroidRuntime(managed);
+      } catch {
+        throw new Error("Unable to start the Droid session to fork this chat. Use a brief handoff instead.");
+      }
+      const forkResult = await droidRuntime.sdk.request<{ newSessionId?: string }>("fork_session");
+      const newSessionId = typeof forkResult?.newSessionId === "string" ? forkResult.newSessionId.trim() : "";
+      if (!newSessionId) {
+        throw new Error("Droid fork did not return a new session id.");
+      }
+      sourceDroidForkSessionId = newSessionId;
     }
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
@@ -24475,7 +24619,7 @@ export function createAgentChatService(args: {
     }
 
     const created = await createSession({
-      laneId: managed.session.laneId,
+      laneId: targetLaneId,
       provider: targetProvider,
       model: targetModel,
       modelId: targetDescriptor.id,
@@ -24518,6 +24662,14 @@ export function createAgentChatService(args: {
         }
         sessionService.setResumeCommand(createdManaged.session.id, `chat:codex:${sourceCodexForkThreadId}`);
       }
+      if (createdManaged.session.provider === "opencode" && sourceOpenCodeForkSessionId) {
+        seedForkedProviderPointer(createdManaged, { providerSessionId: sourceOpenCodeForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:opencode:${created.id}`);
+      }
+      if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
+        seedForkedProviderPointer(createdManaged, { droidSdkSessionId: sourceDroidForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
+      }
     }
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
@@ -24550,6 +24702,19 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+
+    if (handoffMode === "fork") {
+      const sourceEnvelopes = readTranscriptEnvelopes(managed).map((envelope) => ({
+        ...envelope,
+        sessionId: created.id,
+        provenance: {
+          ...(envelope.provenance ?? {}),
+          providerOrigin: "handoff_fork",
+          sourceSessionId: sourceId,
+        },
+      }));
+      if (sourceEnvelopes.length) appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
     if (handoffMode === "brief" || handoffNote) {
@@ -24750,6 +24915,51 @@ export function createAgentChatService(args: {
     ) {
       throw new Error("The handoff issue references exceed their portable limits.");
     }
+
+    if (capsule.mode !== undefined && capsule.mode !== "brief" && capsule.mode !== "fork") {
+      throw new Error("The handoff capsule has an invalid handoff mode.");
+    }
+    if (capsule.forkTransport !== undefined && capsule.mode !== "fork") {
+      throw new Error("The handoff capsule includes fork history without fork mode.");
+    }
+    if (capsule.mode === "fork" && capsule.forkTransport === undefined) {
+      throw new Error("The handoff capsule is missing its fork transport.");
+    }
+    if (capsule.transcriptEnvelopes !== undefined && capsule.mode !== "fork") {
+      throw new Error("The handoff capsule includes transcript history without fork mode.");
+    }
+
+    const base64Pattern = /^[A-Za-z0-9+/]*={0,2}$/;
+    const validPositiveByteCount = (value: unknown, max: number): value is number =>
+      typeof value === "number"
+      && Number.isFinite(value)
+      && Number.isInteger(value)
+      && value > 0
+      && value <= max;
+    validateForkTransport(capsule);
+
+    if (capsule.transcriptEnvelopes !== undefined) {
+      const transcriptEnvelopes = capsule.transcriptEnvelopes;
+      if (!transcriptEnvelopes || typeof transcriptEnvelopes !== "object" || Array.isArray(transcriptEnvelopes)) {
+        throw new Error("The handoff capsule has malformed transcript history.");
+      }
+      if (
+        typeof transcriptEnvelopes.contentBase64Gzip !== "string"
+        || !base64Pattern.test(transcriptEnvelopes.contentBase64Gzip)
+        || transcriptEnvelopes.contentBase64Gzip.length > CROSS_MACHINE_FORK_TRANSCRIPT_MAX_BASE64
+      ) {
+        throw new Error("The handoff capsule has invalid transcript history content.");
+      }
+      if (!validPositiveByteCount(
+        transcriptEnvelopes.uncompressedBytes,
+        CROSS_MACHINE_FORK_TRANSCRIPT_MAX_UNCOMPRESSED,
+      )) {
+        throw new Error("The handoff capsule transcript history exceeds its portable limit.");
+      }
+      if (typeof transcriptEnvelopes.truncated !== "boolean") {
+        throw new Error("The handoff capsule has an invalid transcript history truncation flag.");
+      }
+    }
   };
 
   const persistCrossMachineHandoffRecord = (record: CrossMachineHandoffRecord): void => {
@@ -24782,6 +24992,7 @@ export function createAgentChatService(args: {
       sessionId: typeof record.sessionId === "string" ? record.sessionId : null,
       updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date(0).toISOString(),
       lastError: typeof record.lastError === "string" ? record.lastError : null,
+      forkMaterializedAt: typeof record.forkMaterializedAt === "string" ? record.forkMaterializedAt : null,
     };
   };
 
@@ -24839,11 +25050,182 @@ export function createAgentChatService(args: {
     return { lane, branchRef, headSha, rawOriginUrl, originUrl };
   };
 
+  const readCrossMachineForkMainFile = (filePath: string): Buffer => {
+    const stat = fs.statSync(filePath);
+    if (stat.size > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) {
+      throw crossMachineForkOversizeError(stat.size);
+    }
+    return fs.readFileSync(filePath);
+  };
+
+  const collectClaudeForkSideFiles = (
+    sourceSessionId: string,
+    transcriptPath: string,
+  ): AgentChatCrossMachineForkTransport["sideFiles"] => {
+    const sidecarDir = path.join(path.dirname(transcriptPath), sourceSessionId);
+    if (!fs.existsSync(sidecarDir)) return undefined;
+    const collected: Array<{ filePath: string; relPath: string; size: number }> = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const filePath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(filePath);
+        } else if (entry.isFile()) {
+          const size = fs.statSync(filePath).size;
+          if (size > 0) {
+            collected.push({
+              filePath,
+              relPath: path.relative(sidecarDir, filePath).split(path.sep).join("/"),
+              size,
+            });
+          }
+        }
+      }
+    };
+    walk(sidecarDir);
+    const sidecarBytes = collected.reduce((total, file) => total + file.size, 0);
+    if (sidecarBytes > CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED || collected.length > 1_000) {
+      logger.warn("agent_chat.cross_machine_fork_claude_sidecars_dropped", {
+        sessionId: sourceSessionId,
+        sidecarBytes,
+      });
+      return undefined;
+    }
+    const sideFiles = collected.map((file) => ({
+      relPath: file.relPath,
+      ...gzipToBase64(fs.readFileSync(file.filePath)),
+    }));
+    const encodedBytes = sideFiles.reduce((total, file) => total + file.contentBase64Gzip.length, 0);
+    if (encodedBytes > CROSS_MACHINE_FORK_SIDEFILES_MAX_BASE64) {
+      logger.warn("agent_chat.cross_machine_fork_claude_sidecars_dropped", {
+        sessionId: sourceSessionId,
+        sidecarBytes,
+      });
+      return undefined;
+    }
+    return sideFiles.length ? sideFiles : undefined;
+  };
+
+  const packageCrossMachineForkTransport = async (
+    managed: ManagedChatSession,
+    laneWorktreePath: string,
+  ): Promise<AgentChatCrossMachineForkTransport> => {
+    const provider = managed.session.provider;
+    if (provider === "droid") {
+      throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
+    }
+    if (provider === "claude") {
+      const sdkSessionId = ensureClaudeSessionRuntime(managed).sdkSessionId?.trim() ?? "";
+      if (!sdkSessionId) {
+        throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try again.");
+      }
+      const source = findClaudeSessionTranscript(sdkSessionId, laneWorktreePath);
+      if (!source) throw new Error("ADE could not find the Claude transcript to fork.");
+      const mainContent = readCrossMachineForkMainFile(source.transcriptPath);
+      const sideFiles = collectClaudeForkSideFiles(sdkSessionId, source.transcriptPath);
+      return {
+        provider,
+        nativeSessionId: sdkSessionId,
+        kind: "claude-jsonl",
+        mainFile: {
+          name: `${sdkSessionId}.jsonl`,
+          ...gzipToBase64(mainContent),
+        },
+        ...(sideFiles ? { sideFiles } : {}),
+      };
+    }
+    if (provider === "codex") {
+      const threadId = managed.session.threadId?.trim()
+        || readPersistedState(managed.session.id)?.threadId?.trim()
+        || "";
+      if (!threadId) {
+        throw new Error("Full-history fork requires a Codex thread id. Send a Codex message first, then try again.");
+      }
+      // NOT discoverCodexSessions: that is the external-import surface and
+      // filters out ADE-originated rollouts, which are exactly the ones this
+      // path packages. Resolve by filename suffix like codex itself does.
+      const sourcePath = findCodexRolloutPathBySessionId(threadId, { logger });
+      if (!sourcePath) throw new Error("ADE could not find the Codex rollout to fork.");
+      if (sourcePath.endsWith(".zst")) {
+        throw new Error("This Codex chat is stored compressed and can't be forked across machines yet. Use a brief instead.");
+      }
+      const mainContent = readCrossMachineForkMainFile(sourcePath);
+      return {
+        provider,
+        nativeSessionId: threadId,
+        kind: "codex-rollout",
+        mainFile: {
+          name: path.basename(sourcePath),
+          ...gzipToBase64(mainContent),
+        },
+      };
+    }
+    if (provider === "opencode") {
+      const sessionId = (managed.runtime?.kind === "opencode" ? managed.runtime.handle.sessionId.trim() : "")
+        || readPersistedState(managed.session.id)?.providerSessionId?.trim()
+        || "";
+      if (!sessionId) {
+        throw new Error("Full-history fork requires an OpenCode session id. Send an OpenCode message first, then try again.");
+      }
+      const bin = resolveOpenCodeExecutablePath();
+      if (!bin) throw new Error("The OpenCode CLI is required to fork this chat.");
+      const exported = await runCliCapture(bin, ["export", sessionId, "--sanitize"], {
+        cwd: laneWorktreePath,
+        timeoutMs: 60_000,
+      });
+      if (exported.exitCode !== 0) {
+        throw new Error(`OpenCode export failed: ${exported.stderr.trim() || `exit code ${exported.exitCode}`}`);
+      }
+      if (!exported.stdout.length) throw new Error("OpenCode export returned no session data.");
+      try {
+        JSON.parse(exported.stdout.toString("utf8"));
+      } catch {
+        throw new Error("OpenCode export returned invalid JSON.");
+      }
+      if (exported.stdout.length > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) {
+        throw crossMachineForkOversizeError(exported.stdout.length);
+      }
+      return {
+        provider,
+        nativeSessionId: sessionId,
+        kind: "opencode-export",
+        mainFile: {
+          name: `${sessionId}.json`,
+          ...gzipToBase64(exported.stdout),
+        },
+      };
+    }
+    throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
+  };
+
+  const packageCrossMachineTranscriptEnvelopes = (
+    managed: ManagedChatSession,
+  ): AgentChatCrossMachineHandoffCapsule["transcriptEnvelopes"] => {
+    const lines = readTranscriptEnvelopes(managed).map((envelope) =>
+      Buffer.from(`${JSON.stringify(envelope)}\n`, "utf8"),
+    );
+    if (!lines.length) return undefined;
+    const retained: Buffer[] = [];
+    let retainedBytes = 0;
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!;
+      if (retainedBytes + line.length > CROSS_MACHINE_FORK_TRANSCRIPT_MAX_UNCOMPRESSED) break;
+      retained.unshift(line);
+      retainedBytes += line.length;
+    }
+    if (!retained.length) return undefined;
+    return {
+      ...gzipToBase64(Buffer.concat(retained)),
+      truncated: retained.length < lines.length,
+    };
+  };
+
   const prepareCrossMachineHandoff = async (
     args: AgentChatPrepareCrossMachineHandoffArgs,
   ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
     const handoffId = requireCrossMachineHandoffId(args.handoffId);
     const sourceSessionId = args.sourceSessionId?.trim();
+    const mode = args.mode === "fork" ? "fork" : "brief";
     if (!sourceSessionId) throw new Error("A source chat is required for this handoff.");
 
     const managed = ensureManagedSession(sourceSessionId);
@@ -24858,6 +25240,18 @@ export function createAgentChatService(args: {
     const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
     if (!targetDescriptor || targetDescriptor.deprecated) {
       throw new Error("Select an available destination model before sending this chat.");
+    }
+    const targetProvider = resolveProviderGroupForModel(targetDescriptor);
+    if (mode === "fork") {
+      if (!providerSupportsHandoffFork(managed.session.provider)) {
+        throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
+      }
+      if (targetProvider !== managed.session.provider) {
+        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
+      }
+      if (managed.session.provider === "droid") {
+        throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
+      }
     }
     const portableText = (value: string): string => {
       let next = redactSecrets(value);
@@ -24886,13 +25280,27 @@ export function createAgentChatService(args: {
       commands: rawArtifacts.commands.map(portableText),
       errors: rawArtifacts.errors.map(portableText),
     };
-    const generatedBrief = await generateHandoffBrief({
-      managed,
-      sourceSession,
-      targetDescriptor,
-      transcript,
-      artifacts,
-    });
+    const generatedBrief = mode === "brief"
+      ? await generateHandoffBrief({
+          managed,
+          sourceSession,
+          targetDescriptor,
+          transcript,
+          artifacts,
+        })
+      : { brief: CROSS_MACHINE_FORK_BRIEF_STUB, usedFallbackSummary: false };
+    const forkTransport = mode === "fork"
+      ? await packageCrossMachineForkTransport(managed, lane.worktreePath)
+      : undefined;
+    const transcriptEnvelopes = mode === "fork"
+      ? packageCrossMachineTranscriptEnvelopes(managed)
+      : undefined;
+    if (forkTransport && enforceCrossMachineForkEncodedBudget(forkTransport, transcriptEnvelopes)) {
+      logger.warn("agent_chat.cross_machine_fork_sidefiles_dropped_for_transport_budget", {
+        sessionId: sourceSessionId,
+        budgetBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
+      });
+    }
     const rawContinuationPrompt = typeof args.continuationPrompt === "string"
       ? args.continuationPrompt.trim()
       : "";
@@ -24956,8 +25364,16 @@ export function createAgentChatService(args: {
       },
       linearIssues,
       continuationPrompt: continuationPrompt || CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
+      ...(mode === "fork"
+        ? {
+            mode: "fork" as const,
+            forkTransport: forkTransport!,
+            ...(transcriptEnvelopes ? { transcriptEnvelopes } : {}),
+          }
+        : {}),
     };
-    const sanitizedSensitiveContext = capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000)
+    const sanitizedSensitiveContext = (mode === "brief"
+      && capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000))
       || continuationPrompt !== rawContinuationPrompt
       || originUrl !== rawOriginUrl
       || sourceMachineName !== (os.hostname().trim() || "source machine")
@@ -24976,7 +25392,7 @@ export function createAgentChatService(args: {
     return {
       capsule,
       capsuleFingerprint: capsuleFingerprint(capsule),
-      usedFallbackSummary: generatedBrief.usedFallbackSummary,
+      usedFallbackSummary: mode === "brief" ? generatedBrief.usedFallbackSummary : false,
       sanitizedSensitiveContext,
     };
   };
@@ -25107,6 +25523,49 @@ export function createAgentChatService(args: {
       }
     }
 
+    const sourceProvider = typeof args.sourceProvider === "string" ? args.sourceProvider.trim() : "";
+    let forkHandoffSupport: AgentChatCrossMachineDestinationPreflightResult["forkHandoffSupport"];
+    if (sourceProvider) {
+      if (!providerSupportsHandoffFork(sourceProvider)) {
+        forkHandoffSupport = {
+          supported: false,
+          reason: sourceProvider === "cursor"
+            ? "Cursor chats can't fork history."
+            : "This chat's provider can't fork history.",
+        };
+      } else if (sourceProvider === "droid") {
+        forkHandoffSupport = {
+          supported: false,
+          reason: DROID_FORK_NOT_PORTABLE_REASON,
+        };
+      } else {
+        const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : null;
+        let providerUsable = targetProvider === sourceProvider ? providerAuthorized : false;
+        if (targetProvider !== sourceProvider) {
+          try {
+            providerUsable = (await getAvailableModels({
+              provider: sourceProvider,
+              activateRuntime: sourceProvider === "opencode",
+            })).length > 0;
+          } catch {
+            providerUsable = false;
+          }
+        }
+        const openCodeExecutable = sourceProvider === "opencode"
+          ? resolveOpenCodeExecutablePath()
+          : "not-required";
+        const supported = providerUsable && openCodeExecutable != null;
+        forkHandoffSupport = supported
+          ? { supported: true }
+          : {
+              supported: false,
+              reason: sourceProvider === "opencode" && openCodeExecutable == null
+                ? "Install the OpenCode CLI on this machine to accept a fork."
+                : `Sign in to ${sourceProvider} on this machine to accept a fork.`,
+            };
+      }
+    }
+
     return {
       providerAuthorized,
       modelAvailable,
@@ -25114,6 +25573,7 @@ export function createAgentChatService(args: {
       existingLaneId,
       blockingErrors: Array.from(new Set(blockingErrors)),
       warnings: Array.from(new Set(warnings)),
+      ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
     };
   };
 
@@ -25140,6 +25600,192 @@ export function createAgentChatService(args: {
     capsuleFingerprint: string;
     promise: Promise<AgentChatAcceptCrossMachineHandoffResult>;
   }>();
+
+  const decodeCrossMachineForkFile = (
+    file: { contentBase64Gzip: string; uncompressedBytes: number },
+    maxBytes: number,
+    label: string,
+  ): Buffer => {
+    let content: Buffer;
+    try {
+      content = gunzipFromBase64(file.contentBase64Gzip, maxBytes);
+    } catch {
+      throw new Error(`The handoff capsule ${label} could not be decompressed.`);
+    }
+    if (content.length === 0 || content.length > maxBytes || content.length !== file.uncompressedBytes) {
+      throw new Error(`The handoff capsule ${label} size does not match its transport metadata.`);
+    }
+    return content;
+  };
+
+  const parseCrossMachineTranscriptEnvelopes = (
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    destinationSessionId: string,
+  ): AgentChatEventEnvelope[] => {
+    if (!capsule.transcriptEnvelopes) return [];
+    const content = decodeCrossMachineForkFile(
+      capsule.transcriptEnvelopes,
+      CROSS_MACHINE_FORK_TRANSCRIPT_MAX_UNCOMPRESSED,
+      "transcript history",
+    );
+    try {
+      return content.toString("utf8").split(/\r?\n/).filter((line) => line.trim().length > 0).map((line) => {
+        const envelope = JSON.parse(line) as AgentChatEventEnvelope;
+        if (!envelope || typeof envelope !== "object" || !envelope.event || typeof envelope.event !== "object") {
+          throw new Error("invalid envelope");
+        }
+        return {
+          ...envelope,
+          sessionId: destinationSessionId,
+          provenance: {
+            ...(envelope.provenance ?? {}),
+            providerOrigin: "handoff_fork",
+            sourceSessionId: capsule.source.sessionId,
+          },
+        };
+      });
+    } catch {
+      throw new Error("The handoff capsule transcript history is not valid JSONL.");
+    }
+  };
+
+  const materializeCrossMachineFork = async (args: {
+    capsule: AgentChatCrossMachineHandoffCapsule;
+    handoffId: string;
+    destinationLanePath: string;
+    managed: ManagedChatSession;
+  }): Promise<void> => {
+    const transport = args.capsule.forkTransport;
+    if (!transport) throw new Error("The handoff capsule is missing its fork transport.");
+    const mainContent = decodeCrossMachineForkFile(
+      transport.mainFile,
+      CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
+      "fork main file",
+    );
+
+    if (transport.provider === "claude" && transport.kind === "claude-jsonl") {
+      const sideFiles = (transport.sideFiles ?? []).map((sideFile) => ({
+        relPath: sideFile.relPath,
+        content: decodeCrossMachineForkFile(
+          sideFile,
+          CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED,
+          `fork side file '${sideFile.relPath}'`,
+        ),
+      }));
+      const placed = await placeClaudeForkFromTransport({
+        mainContent,
+        mainSessionIdHint: transport.nativeSessionId,
+        sideFiles,
+        targetCwd: args.destinationLanePath,
+        configDir: claudeConfigDir(),
+      });
+      if (args.managed.runtime?.kind === "claude") {
+        resetClaudeQuerySession(args.managed, args.managed.runtime, "session_reset", { clearSdkSessionId: true });
+        args.managed.runtime.sdkSessionId = placed.newSessionId;
+        args.managed.runtime.forkFromSdkSessionId = null;
+        args.managed.runtimeInvalidated = false;
+      }
+      args.managed.claudeBackgroundResumeSessionId = placed.newSessionId;
+      mirrorClaudeSessionPointer(args.managed, placed.newSessionId);
+      repairClaudeResumeTranscript(placed.newSessionId, args.managed.laneWorktreePath);
+      persistChatState(args.managed);
+      return;
+    }
+
+    if (transport.provider === "codex" && transport.kind === "codex-rollout") {
+      const today = new Date();
+      const codexHome = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+      const destinationDir = path.join(
+        codexHome,
+        "sessions",
+        String(today.getFullYear()).padStart(4, "0"),
+        String(today.getMonth() + 1).padStart(2, "0"),
+        String(today.getDate()).padStart(2, "0"),
+      );
+      fs.mkdirSync(destinationDir, { recursive: true });
+      const destinationPath = path.join(destinationDir, transport.mainFile.name);
+      try {
+        fs.writeFileSync(destinationPath, mainContent, { flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const runtime = await ensureCodexSessionRuntime(args.managed);
+      const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+        threadId: transport.nativeSessionId,
+        excludeTurns: true,
+      });
+      const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
+      if (!forkedThreadId) throw new Error("Codex thread/fork did not return a new thread id.");
+      args.managed.session.threadId = forkedThreadId;
+      if (runtime.kind === "codex") {
+        runtime.threadResumed = false;
+        runtime.canAttachResumedTurnStart = false;
+      }
+      sessionService.setResumeCommand(args.managed.session.id, `chat:codex:${forkedThreadId}`);
+      persistChatState(args.managed);
+      return;
+    }
+
+    if (transport.provider === "opencode" && transport.kind === "opencode-export") {
+      const bin = resolveOpenCodeExecutablePath();
+      if (!bin) throw new Error("The OpenCode CLI is required to accept this fork.");
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-import-"));
+      const tempPath = path.join(tempDir, "session.json");
+      let importedId = "";
+      try {
+        fs.writeFileSync(tempPath, mainContent);
+        const imported = await runCliCapture(bin, ["import", tempPath], {
+          cwd: args.destinationLanePath,
+          timeoutMs: 60_000,
+        });
+        if (imported.exitCode !== 0) {
+          throw new Error(`OpenCode import failed: ${imported.stderr.trim() || `exit code ${imported.exitCode}`}`);
+        }
+        const stdout = imported.stdout.toString("utf8");
+        try {
+          const parsed = JSON.parse(stdout) as Record<string, any>;
+          const candidate = parsed.sessionID ?? parsed.id ?? parsed.session?.id ?? parsed.data?.id;
+          importedId = typeof candidate === "string" ? candidate.trim() : "";
+        } catch {
+          // Current OpenCode releases print a human-readable import result.
+        }
+        if (!importedId) {
+          importedId = stdout.match(/\bses_[A-Za-z0-9]+\b/)?.[0]
+            ?? imported.stderr.match(/\bses_[A-Za-z0-9]+\b/)?.[0]
+            ?? "";
+        }
+      } finally {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch {
+          // Best-effort cleanup.
+        }
+      }
+      if (!importedId) throw new Error("OpenCode import did not return a session id.");
+      seedForkedProviderPointer(args.managed, { providerSessionId: importedId });
+      if (args.managed.runtime?.kind !== "opencode") {
+        await startOpenCodeSessionRuntime(args.managed);
+      }
+      if (args.managed.runtime?.kind !== "opencode") {
+        throw new Error("Unable to start the OpenCode runtime for the imported fork.");
+      }
+      const handle = args.managed.runtime.handle;
+      const forkResponse = await handle.client.session.fork({
+        path: { id: importedId },
+        query: { directory: handle.directory },
+        throwOnError: true,
+      });
+      const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
+      if (!forkedId) throw new Error("OpenCode session fork did not return a new session id.");
+      handle.sessionId = forkedId;
+      seedForkedProviderPointer(args.managed, { providerSessionId: forkedId });
+      sessionService.setResumeCommand(args.managed.session.id, `chat:opencode:${args.managed.session.id}`);
+      persistChatState(args.managed);
+      return;
+    }
+
+    throw new Error("The handoff capsule fork transport does not match its provider.");
+  };
 
   const acceptCrossMachineHandoffCore = async (
     args: AgentChatAcceptCrossMachineHandoffArgs,
@@ -25178,6 +25824,7 @@ export function createAgentChatService(args: {
         reusedSession: true,
       };
     }
+    const alreadyDispatched = priorRecord?.state === "dispatched" || priorRecord?.state === "complete";
 
     const origin = await requireGitOutputForHandoff(
       ["remote", "get-url", "origin"],
@@ -25192,7 +25839,15 @@ export function createAgentChatService(args: {
       targetModelId: capsule.target.targetModelId,
       sourceBranchRef: branchRef,
       sourceHeadSha: capsule.source.headSha,
+      ...(capsule.mode === "fork"
+        ? { mode: "fork" as const, sourceProvider: capsule.source.provider }
+        : {}),
     });
+    if (capsule.mode === "fork" && destinationPreflight.forkHandoffSupport?.supported === false) {
+      throw new Error(
+        destinationPreflight.forkHandoffSupport.reason || "This machine can't accept a fork handoff.",
+      );
+    }
     if (destinationPreflight.blockingErrors.length) {
       throw new Error(destinationPreflight.blockingErrors.join(" "));
     }
@@ -25261,6 +25916,10 @@ export function createAgentChatService(args: {
       }
       const targetProvider = resolveProviderGroupForModel(targetDescriptor);
       const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
+      const isFork = capsule.mode === "fork" && !!capsule.forkTransport;
+      if (isFork && targetProvider !== capsule.source.provider) {
+        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
+      }
       const deterministicSessionId = deterministicChatSessionId(`cross-machine-handoff:${handoffId}`);
       const reusedSession = Boolean(sessionService.get(deterministicSessionId));
       const session = await createSessionInternal({
@@ -25288,36 +25947,85 @@ export function createAgentChatService(args: {
       persistCrossMachineHandoffRecord(record);
 
       const destinationManaged = ensureManagedSession(session.id);
-      await sendMessage({
-        sessionId: session.id,
-        text: buildCrossMachineHandoffPrompt(capsule),
-        displayText: [
-          `Chat handed off from ${capsule.source.machineName}`,
-          capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
-            ? `Continuation note: ${capsule.continuationPrompt}`
-            : "Continue from the handoff brief.",
-        ].join("\n\n"),
-        metadata: {
-          kind: "cross_machine_handoff",
-          crossMachineHandoffId: handoffId,
-          hideFullPrompt: true,
-        },
-        reasoningEffort: destinationManaged.session.reasoningEffort,
-        executionMode: destinationManaged.session.executionMode ?? null,
-        interactionMode: destinationManaged.session.interactionMode ?? null,
-      }, {
-        awaitBackendDispatch: true,
-        onBackendDispatched: () => {
-          const dispatchedRecord: CrossMachineHandoffRecord = {
-            ...record,
-            state: "dispatched",
-            updatedAt: nowIso(),
-            lastError: null,
-          };
-          persistCrossMachineHandoffRecord(dispatchedRecord);
-          record = dispatchedRecord;
-        },
-      });
+      const markDispatched = (): void => {
+        const dispatchedRecord: CrossMachineHandoffRecord = {
+          ...record,
+          state: "dispatched",
+          updatedAt: nowIso(),
+          lastError: null,
+        };
+        persistCrossMachineHandoffRecord(dispatchedRecord);
+        record = dispatchedRecord;
+      };
+      if (isFork) {
+        if (!alreadyDispatched) {
+          // Re-materialize when the fork side effects never completed OR the
+          // destination chat had to be recreated (deterministic id, prior one
+          // deleted) — a fresh session must be seeded even if a prior attempt
+          // materialized into the now-gone chat.
+          if (!record.forkMaterializedAt || !reusedSession) {
+            await materializeCrossMachineFork({
+              capsule,
+              handoffId,
+              destinationLanePath: destinationLane.worktreePath,
+              managed: destinationManaged,
+            });
+            const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
+            if (importedEnvelopes.length) appendImportedChatEvents(destinationManaged, importedEnvelopes);
+            persistChatState(destinationManaged);
+            record = { ...record, forkMaterializedAt: nowIso(), updatedAt: nowIso() };
+            persistCrossMachineHandoffRecord(record);
+          }
+
+          const continuationPrompt = capsule.continuationPrompt.trim();
+          if (
+            continuationPrompt
+            && capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+          ) {
+            await sendMessage({
+              sessionId: session.id,
+              text: capsule.continuationPrompt,
+              displayText: capsule.continuationPrompt,
+              metadata: {
+                kind: "cross_machine_handoff",
+                crossMachineHandoffId: handoffId,
+              },
+              reasoningEffort: destinationManaged.session.reasoningEffort,
+              executionMode: destinationManaged.session.executionMode ?? null,
+              interactionMode: destinationManaged.session.interactionMode ?? null,
+            }, {
+              awaitBackendDispatch: true,
+              onBackendDispatched: markDispatched,
+            });
+          } else {
+            markDispatched();
+          }
+        } else {
+          markDispatched();
+        }
+      } else {
+        await sendMessage({
+          sessionId: session.id,
+          text: buildCrossMachineHandoffPrompt(capsule),
+          displayText: [
+            `Chat handed off from ${capsule.source.machineName}`,
+            capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+              ? `Continuation note: ${capsule.continuationPrompt}`
+              : "Continue from the handoff brief.",
+          ].join("\n\n"),
+          metadata: {
+            kind: "cross_machine_handoff",
+            crossMachineHandoffId: handoffId,
+            hideFullPrompt: true,
+          },
+          reasoningEffort: destinationManaged.session.reasoningEffort,
+          executionMode: destinationManaged.session.executionMode ?? null,
+          interactionMode: destinationManaged.session.interactionMode ?? null,
+        }, {
+          awaitBackendDispatch: true,
+          onBackendDispatched: markDispatched,
+        });
+      }
 
       record = { ...record, state: "complete", updatedAt: nowIso(), lastError: null };
       persistCrossMachineHandoffRecord(record);
