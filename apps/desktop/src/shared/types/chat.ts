@@ -1791,12 +1791,49 @@ export type AgentChatCrossMachineHandoffCapsule = {
     url: string | null;
   }>;
   continuationPrompt: string;
+  /**
+   * Absent = brief (v1 capsules). Fork capsules carry the provider-native
+   * session history in `forkTransport` and the ADE transcript in
+   * `transcriptEnvelopes`. Fork is only sent to destinations whose preflight
+   * advertised `forkHandoffSupport.supported`, so older ADE builds never
+   * silently downgrade a fork to a brief.
+   */
+  mode?: "brief" | "fork";
+  forkTransport?: AgentChatCrossMachineForkTransport;
+  transcriptEnvelopes?: {
+    /** Gzipped JSONL of AgentChatEventEnvelope lines, base64-encoded. */
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+    /** True when older events were dropped to fit the transport cap. */
+    truncated: boolean;
+  };
+};
+
+/** Provider-native session files shipped inside a fork-mode capsule. */
+export type AgentChatCrossMachineForkTransport = {
+  provider: AgentChatProvider;
+  /** Source provider session/thread id the destination forks from. */
+  nativeSessionId: string;
+  kind: "claude-jsonl" | "codex-rollout" | "opencode-export" | "droid-jsonl";
+  mainFile: {
+    name: string;
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+  };
+  /** Claude subagent/tool-result sidecars, Droid settings sidecar, etc. */
+  sideFiles?: Array<{
+    relPath: string;
+    contentBase64Gzip: string;
+    uncompressedBytes: number;
+  }>;
 };
 
 export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
   sourceSessionId: string;
   handoffId: string;
   continuationPrompt?: string | null;
+  /** Absent = brief. */
+  mode?: "brief" | "fork";
 };
 
 export type AgentChatPrepareCrossMachineHandoffResult = {
@@ -1816,6 +1853,10 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
   targetModelId: ModelId;
   sourceBranchRef: string;
   sourceHeadSha: string;
+  /** Absent = brief (older sources). */
+  mode?: "brief" | "fork";
+  /** Source chat provider, required for fork-support evaluation. */
+  sourceProvider?: AgentChatProvider;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -1825,6 +1866,14 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
   existingLaneId: string | null;
   blockingErrors: string[];
   warnings: string[];
+  /**
+   * Absent on older ADE destinations — the source must treat that as
+   * fork-unsupported ("that machine needs an ADE update").
+   */
+  forkHandoffSupport?: {
+    supported: boolean;
+    reason?: string;
+  };
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {
