@@ -3,15 +3,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { createInterface } from "node:readline";
 import type { SqlValue } from "../../state/kvDb";
 import { isRecord, safeJsonParse } from "../../shared/utils";
 
 const LOCAL_COST_SCAN_MAX_FILES = 5_000;
 const LOCAL_COST_SCAN_MAX_FILE_BYTES = 768 * 1024 * 1024;
+const LOCAL_JSONL_MAX_LINE_BYTES = 16 * 1024 * 1024;
 const LOCAL_COST_SCAN_MAX_ENTRIES = 1_000_000;
 const LOCAL_COST_SCAN_ALL_DAYS = 3650;
+const CODEX_COST_SCAN_MAX_FILE_BYTES = 256 * 1024 * 1024;
+const CODEX_COST_SCAN_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+const CODEX_COST_SCAN_MAX_ENTRIES = 250_000;
 const LOCAL_SQLITE_SCAN_MAX_ROWS = 250_000;
+const LOCAL_SQLITE_LOOKUP_BATCH_SIZE = 500;
 const LOCAL_CURSOR_SQLITE_RECENT_ROWS = 250_000;
 const CURSOR_CHARS_PER_TOKEN = 4;
 
@@ -28,6 +32,12 @@ type RecentFileCandidate = { path: string; mtimeMs: number };
 
 const requireForUsageSqlite = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 let usageSqliteConstructor: UsageSqliteConstructor | null | undefined;
+let codexLogScanInFlight: Promise<TokenEntry[]> | null = null;
+
+type CodexLogScanOptions = {
+  maxJsonlLineBytes?: number;
+  maxEntries?: number;
+};
 
 function toFiniteNumber(value: unknown): number {
   const numberValue = Number(value ?? 0);
@@ -46,6 +56,8 @@ function normalizeUsageLabel(value: unknown, fallback: string): string {
 export interface TokenEntry {
   messageId: string;
   model: string;
+  /** Aggregate usage that belongs only in the all-time headline, without fabricated day attribution. */
+  lifetimeOnly?: boolean;
   originator?: string;
   projectPath?: string;
   projectKey?: string;
@@ -362,20 +374,58 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
   return entries;
 }
 
-export async function scanCodexLogs(): Promise<TokenEntry[]> {
+export function scanCodexLogs(
+  options: CodexLogScanOptions = {},
+): Promise<TokenEntry[]> {
+  // Production callers share one machine-history pass. Without this guard,
+  // two project runtimes opening Stats together can each retain a full Codex
+  // entry set and multiply both CPU and peak memory. Test-only custom limits
+  // bypass the shared promise so fixtures remain isolated.
+  if (options.maxJsonlLineBytes !== undefined || options.maxEntries !== undefined) {
+    return scanCodexLogsOnce(options);
+  }
+  if (codexLogScanInFlight) return codexLogScanInFlight;
+
+  let current!: Promise<TokenEntry[]>;
+  current = scanCodexLogsOnce(options).finally(() => {
+    if (codexLogScanInFlight === current) codexLogScanInFlight = null;
+  });
+  codexLogScanInFlight = current;
+  return current;
+}
+
+async function scanCodexLogsOnce(
+  options: CodexLogScanOptions,
+): Promise<TokenEntry[]> {
   const entries: TokenEntry[] = [];
   const seen = new Set<string>();
   const seenForkReplayKeys = new Set<string>();
+  const maxEntries = options.maxEntries !== undefined && Number.isFinite(options.maxEntries)
+    ? Math.max(1, Math.floor(options.maxEntries))
+    : CODEX_COST_SCAN_MAX_ENTRIES;
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  // Leave one slot for an authoritative SQLite lifetime remainder. JSONL is
+  // the detailed view, but the Codex thread index owns the lifetime headline.
+  const maxJsonlEntries = newestCodexStateDatabase(codexHome)
+    ? Math.max(0, maxEntries - 1)
+    : maxEntries;
+  if (maxJsonlEntries === 0) {
+    return reconcileCodexStateTotals(entries, codexHome, maxEntries);
+  }
   const sessionsDir = path.join(codexHome, "sessions");
   const archivedSessionsDir = path.join(codexHome, "archived_sessions");
   const sessionRoots = [sessionsDir, archivedSessionsDir].filter((root) => fs.existsSync(root));
+  const maxBytesPerRoot = Math.max(
+    1,
+    Math.floor(CODEX_COST_SCAN_MAX_TOTAL_BYTES / Math.max(1, sessionRoots.length)),
+  );
   const jsonlFiles = (await Promise.all(sessionRoots.map((root) => findJsonlFiles(
     root,
     LOCAL_COST_SCAN_ALL_DAYS,
     {
       maxFiles: LOCAL_COST_SCAN_MAX_FILES,
-      maxFileBytes: LOCAL_COST_SCAN_MAX_FILE_BYTES,
+      maxFileBytes: CODEX_COST_SCAN_MAX_FILE_BYTES,
+      maxTotalBytes: maxBytesPerRoot,
     },
   )))).flat();
 
@@ -388,7 +438,7 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
       let forkedFromId = "";
       let previousTotals: { input: number; cached: number; output: number; reasoning: number; total: number } | null = null;
 
-      for await (const line of readJsonlLines(filePath)) {
+      for await (const line of readJsonlLines(filePath, options.maxJsonlLineBytes)) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         const mayContainUsage =
@@ -508,8 +558,8 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
             cacheWriteTokens: 0,
             timestamp,
           });
-          if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) {
-            return reconcileCodexStateTotals(entries, codexHome);
+          if (entries.length >= maxJsonlEntries) {
+            return reconcileCodexStateTotals(entries, codexHome, maxEntries);
           }
           continue;
         }
@@ -561,8 +611,8 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
           timestamp: typeof record.timestamp === "number" ? record.timestamp :
                      typeof record.timestamp === "string" ? new Date(record.timestamp).getTime() : Date.now(),
         });
-        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) {
-          return reconcileCodexStateTotals(entries, codexHome);
+        if (entries.length >= maxJsonlEntries) {
+          return reconcileCodexStateTotals(entries, codexHome, maxEntries);
         }
       }
     } catch {
@@ -570,7 +620,7 @@ export async function scanCodexLogs(): Promise<TokenEntry[]> {
     }
   }
 
-  return reconcileCodexStateTotals(entries, codexHome);
+  return reconcileCodexStateTotals(entries, codexHome, maxEntries);
 }
 
 type CodexStateThreadRow = {
@@ -583,6 +633,17 @@ type CodexStateThreadRow = {
   created_at?: unknown;
   updated_at?: unknown;
 };
+
+type CodexStateAggregateRow = {
+  total_tokens?: unknown;
+};
+
+function tokenEntryTotal(entry: TokenEntry): number {
+  return toNonNegativeInt(entry.inputTokens)
+    + toNonNegativeInt(entry.outputTokens)
+    + toNonNegativeInt(entry.cachedTokens)
+    + toNonNegativeInt(entry.cacheWriteTokens);
+}
 
 function newestCodexStateDatabase(codexHome: string): string | null {
   try {
@@ -602,37 +663,21 @@ function newestCodexStateDatabase(codexHome: string): string | null {
 /**
  * Codex Desktop's thread index owns the lifetime total shown in its profile.
  * JSONL reconstruction keeps the detailed model/day/cost split, but can miss
- * cumulative context retained by the thread index. Add only the positive
- * per-thread remainder, distributed across the observed token mix and priced
- * at zero so the exact lifetime count does not fabricate cost.
+ * cumulative context retained by the thread index. Add bounded per-thread
+ * remainders where possible, then preserve the authoritative lifetime headline
+ * with one unattributed all-time remainder. Reconciliation is priced at zero so
+ * exact token totals never fabricate cost or recent-day activity.
  */
-function reconcileCodexStateTotals(entries: TokenEntry[], codexHome: string): TokenEntry[] {
+function reconcileCodexStateTotals(
+  entries: TokenEntry[],
+  codexHome: string,
+  maxEntries: number,
+): TokenEntry[] {
+  const remainingCapacity = Math.max(0, maxEntries - entries.length);
   const dbPath = newestCodexStateDatabase(codexHome);
-  if (!dbPath) return entries;
+  if (!dbPath || remainingCapacity === 0) return entries;
   const db = openReadonlyUsageDatabase(dbPath);
   if (!db) return entries;
-
-  let rows: CodexStateThreadRow[] = [];
-  try {
-    rows = usageSqliteAll<CodexStateThreadRow>(db, `
-      select id, tokens_used, model, cwd, source, thread_source, created_at, updated_at
-        from threads
-       where tokens_used > 0
-    `);
-  } catch {
-    try {
-      rows = usageSqliteAll<CodexStateThreadRow>(db, `
-        select id, tokens_used, created_at, updated_at
-          from threads
-         where tokens_used > 0
-      `);
-    } catch {
-      rows = [];
-    }
-  } finally {
-    db.close();
-  }
-  if (rows.length === 0) return entries;
 
   const observedByThread = new Map<string, { input: number; output: number; cached: number; cacheWrite: number }>();
   for (const entry of entries) {
@@ -647,6 +692,75 @@ function reconcileCodexStateTotals(entries: TokenEntry[], codexHome: string): To
     observedByThread.set(threadId, observed);
   }
 
+  let rows: CodexStateThreadRow[] = [];
+  let stateLifetimeTotal = 0;
+  let observedStateOverlap = 0;
+  try {
+    const aggregate = usageSqliteAll<CodexStateAggregateRow>(db, `
+      select coalesce(sum(tokens_used), 0) as total_tokens
+        from threads
+       where tokens_used > 0
+    `)[0];
+    stateLifetimeTotal = toNonNegativeInt(aggregate?.total_tokens);
+
+    // JSONL can contain archived threads no longer present in the state index.
+    // Look up only the bounded set of observed IDs, in batches, so the final
+    // summary represents JSONL UNION state rather than max(JSONL, state).
+    const observedThreadIds = Array.from(observedByThread.keys());
+    for (let offset = 0; offset < observedThreadIds.length; offset += LOCAL_SQLITE_LOOKUP_BATCH_SIZE) {
+      const batch = observedThreadIds.slice(offset, offset + LOCAL_SQLITE_LOOKUP_BATCH_SIZE);
+      const placeholders = batch.map(() => "?").join(", ");
+      const stateRows = usageSqliteAll<CodexStateThreadRow>(db, `
+        select id, tokens_used
+          from threads
+         where id in (${placeholders})
+      `, batch);
+      for (const stateRow of stateRows) {
+        const threadId = typeof stateRow.id === "string" ? stateRow.id : "";
+        const observed = observedByThread.get(threadId);
+        if (!observed) continue;
+        const observedTotal = observed.input + observed.output + observed.cached + observed.cacheWrite;
+        observedStateOverlap += Math.min(toNonNegativeInt(stateRow.tokens_used), observedTotal);
+      }
+    }
+  } catch {
+    stateLifetimeTotal = 0;
+    observedStateOverlap = 0;
+  }
+
+  const observedLifetimeTotal = entries.reduce((total, entry) => total + tokenEntryTotal(entry), 0);
+  const targetLifetimeTotal = observedLifetimeTotal
+    + Math.max(0, stateLifetimeTotal - observedStateOverlap);
+  const reserveLifetimeSummary = targetLifetimeTotal > observedLifetimeTotal ? 1 : 0;
+  const detailCapacity = Math.max(0, remainingCapacity - reserveLifetimeSummary);
+  const rowLimit = Math.min(LOCAL_SQLITE_SCAN_MAX_ROWS, detailCapacity);
+  try {
+    if (rowLimit > 0) {
+      rows = usageSqliteAll<CodexStateThreadRow>(db, `
+        select id, tokens_used, model, cwd, source, thread_source, created_at, updated_at
+          from threads
+         where tokens_used > 0
+         order by coalesce(updated_at, created_at, 0) desc
+         limit ?
+      `, [rowLimit]);
+    }
+  } catch {
+    try {
+      if (rowLimit > 0) {
+        rows = usageSqliteAll<CodexStateThreadRow>(db, `
+          select id, tokens_used, created_at, updated_at
+            from threads
+           where tokens_used > 0
+           order by coalesce(updated_at, created_at, 0) desc
+           limit ?
+        `, [rowLimit]);
+      }
+    } catch {
+      rows = [];
+    }
+  } finally {
+    db.close();
+  }
   for (const row of rows) {
     const threadId = typeof row.id === "string" ? row.id.trim() : "";
     const stateTotal = toNonNegativeInt(row.tokens_used);
@@ -682,6 +796,28 @@ function reconcileCodexStateTotals(entries: TokenEntry[], codexHome: string): To
       cacheWriteTokens: 0,
       costOverrideUsd: 0,
       timestamp: timestampMsFromUnixish(row.updated_at ?? row.created_at),
+    });
+    if (entries.length >= maxEntries - reserveLifetimeSummary) break;
+  }
+
+  const reconciledLifetimeTotal = entries.reduce((total, entry) => total + tokenEntryTotal(entry), 0);
+  const lifetimeRemainder = Math.max(0, targetLifetimeTotal - reconciledLifetimeTotal);
+  if (lifetimeRemainder > 0 && entries.length < maxEntries) {
+    entries.push({
+      messageId: "codex-state:lifetime-total-remainder",
+      model: "codex",
+      lifetimeOnly: true,
+      originator: "Codex Desktop",
+      estimation: "distribution",
+      inputTokens: lifetimeRemainder,
+      billableInputTokens: 0,
+      outputTokens: 0,
+      billableOutputTokens: 0,
+      cachedTokens: 0,
+      billableCachedTokens: 0,
+      cacheWriteTokens: 0,
+      costOverrideUsd: 0,
+      timestamp: 0,
     });
   }
 
@@ -1499,12 +1635,15 @@ export async function findRecentFiles(
   dir: string,
   maxAgeDays: number,
   suffixes: string[],
-  options: { maxFiles?: number; maxFileBytes?: number } = {},
+  options: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number } = {},
 ): Promise<string[]> {
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? LOCAL_COST_SCAN_MAX_FILES));
   const maxFileBytes = Math.max(1, Math.floor(options.maxFileBytes ?? LOCAL_COST_SCAN_MAX_FILE_BYTES));
-  const files: Array<{ path: string; mtimeMs: number }> = [];
+  const maxTotalBytes = options.maxTotalBytes !== undefined && Number.isFinite(options.maxTotalBytes)
+    ? Math.max(1, Math.floor(options.maxTotalBytes))
+    : Number.POSITIVE_INFINITY;
+  const files: Array<{ path: string; mtimeMs: number; size: number }> = [];
 
   async function walk(current: string, depth: number) {
     if (depth > 6) return; // Prevent deep traversal
@@ -1520,7 +1659,7 @@ export async function findRecentFiles(
           fileStatPromises.push(
             fs.promises.stat(fullPath).then((stat) => {
               if (stat.mtimeMs >= cutoff && stat.size <= maxFileBytes) {
-                files.push({ path: fullPath, mtimeMs: stat.mtimeMs });
+                files.push({ path: fullPath, mtimeMs: stat.mtimeMs, size: stat.size });
               }
             }).catch(() => {
               // Skip files we can't stat
@@ -1535,16 +1674,21 @@ export async function findRecentFiles(
   }
 
   await walk(dir, 0);
-  return files
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, maxFiles)
-    .map((file) => file.path);
+  const selected: string[] = [];
+  let selectedBytes = 0;
+  for (const file of files.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+    if (selected.length >= maxFiles) break;
+    if (selectedBytes + file.size > maxTotalBytes) continue;
+    selected.push(file.path);
+    selectedBytes += file.size;
+  }
+  return selected;
 }
 
 export async function findJsonlFiles(
   dir: string,
   maxAgeDays: number,
-  options: { maxFiles?: number; maxFileBytes?: number } = {},
+  options: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number } = {},
 ): Promise<string[]> {
   return findRecentFiles(dir, maxAgeDays, [".jsonl"], options);
 }
@@ -1619,15 +1763,56 @@ async function findClaudeJsonlFilesInProjectDirs(projectDirs: string[], maxAgeDa
   return newestCandidatePaths(Array.from(files.values()));
 }
 
-async function* readJsonlLines(filePath: string): AsyncGenerator<string> {
-  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+async function* readJsonlLines(
+  filePath: string,
+  maxLineBytes = LOCAL_JSONL_MAX_LINE_BYTES,
+): AsyncGenerator<string> {
+  const normalizedMaxLineBytes = Number.isFinite(maxLineBytes)
+    ? Math.max(1, Math.floor(maxLineBytes))
+    : LOCAL_JSONL_MAX_LINE_BYTES;
+  const stream = fs.createReadStream(filePath);
+  let lineChunks: Buffer[] = [];
+  let lineBytes = 0;
+  let discardingOversizedLine = false;
+
+  const takeLine = (): string => {
+    const line = lineChunks.length === 1
+      ? lineChunks[0]!
+      : Buffer.concat(lineChunks, lineBytes);
+    const content = line[line.length - 1] === 0x0d ? line.subarray(0, -1) : line;
+    return content.toString("utf8");
+  };
+
   try {
-    for await (const line of lines) {
-      yield line;
+    for await (const chunk of stream) {
+      let start = 0;
+      while (start < chunk.length) {
+        const newline = chunk.indexOf(0x0a, start);
+        const end = newline >= 0 ? newline : chunk.length;
+
+        if (!discardingOversizedLine) {
+          const segment = chunk.subarray(start, end);
+          if (lineBytes + segment.length <= normalizedMaxLineBytes) {
+            lineChunks.push(segment);
+            lineBytes += segment.length;
+          } else {
+            lineChunks = [];
+            lineBytes = 0;
+            discardingOversizedLine = true;
+          }
+        }
+
+        if (newline < 0) break;
+        if (!discardingOversizedLine) yield takeLine();
+        lineChunks = [];
+        lineBytes = 0;
+        discardingOversizedLine = false;
+        start = newline + 1;
+      }
     }
+
+    if (!discardingOversizedLine && lineBytes > 0) yield takeLine();
   } finally {
-    lines.close();
     stream.destroy();
   }
 }

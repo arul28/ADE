@@ -41,6 +41,7 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
   aggregateCosts,
+  bucketDaily7d,
   localDayKey,
   makeDailySkeleton,
   dateIntersectsRange,
@@ -72,6 +73,7 @@ const {
   scanDroidLogs,
   scanCopilotLogs,
   scanGeminiLogs,
+  findRecentFiles,
 } = _testing;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -324,6 +326,53 @@ describe("aggregateCosts", () => {
     const result = aggregateCosts(entries, "claude");
     expect(result.last30dCostUsd).toBe(0);
     expect(result.todayCostUsd).toBe(0);
+  });
+
+  it("keeps lifetime-only reconciliation out of recent and daily buckets", () => {
+    const now = Date.now();
+    const result = aggregateCosts([
+      {
+        messageId: "current:1",
+        model: "gpt-5.5",
+        inputTokens: 10,
+        outputTokens: 0,
+        cachedTokens: 0,
+        timestamp: now,
+      },
+      {
+        messageId: "codex-state:lifetime-total-remainder",
+        model: "codex",
+        lifetimeOnly: true as const,
+        inputTokens: 50,
+        outputTokens: 0,
+        cachedTokens: 0,
+        timestamp: 0,
+        costOverrideUsd: 0,
+      },
+    ], "codex");
+
+    expect(result.tokenBreakdownByPreset?.all?.codex?.input).toBe(50);
+    expect(result.tokenBreakdownByPreset?.today?.codex).toBeUndefined();
+    expect(Object.values(result.dailyTokensByPreset?.all ?? {}).reduce((sum, value) => sum + value, 0)).toBe(10);
+    expect(bucketDaily7d([
+      {
+        messageId: "current:1",
+        model: "gpt-5.5",
+        inputTokens: 10,
+        outputTokens: 0,
+        cachedTokens: 0,
+        timestamp: now,
+      },
+      {
+        messageId: "codex-state:lifetime-total-remainder",
+        model: "codex",
+        lifetimeOnly: true,
+        inputTokens: 50,
+        outputTokens: 0,
+        cachedTokens: 0,
+        timestamp: 0,
+      },
+    ], now).reduce((sum, value) => sum + value, 0)).toBe(10);
   });
 
   it("separates today cost from 30d cost", () => {
@@ -2440,6 +2489,129 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
 });
 
 describe("scanCodexLogs", () => {
+  it("skips an oversized record and processes the following token record", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "07", "12");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionDir, "rollout-test.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "session-1", originator: "codex_cli_rs", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:01.000Z",
+            type: "response_item",
+            payload: { type: "function_call_output", output: "x".repeat(2_048) },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:02.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+                last_token_usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const entries = await scanCodexLogs({ maxJsonlLineBytes: 1_024 });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        messageId: "session-1:2026-07-12T12:00:02.000Z:15",
+        model: "gpt-5.5",
+        inputTokens: 12,
+        outputTokens: 3,
+      });
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("coalesces concurrent production history scans", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "07", "12");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionDir, "rollout-test.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "session-coalesced", originator: "codex_cli_rs", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:01.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+                last_token_usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const first = scanCodexLogs();
+      const second = scanCodexLogs();
+
+      expect(second).toBe(first);
+      const [firstEntries, secondEntries] = await Promise.all([first, second]);
+      expect(secondEntries).toBe(firstEntries);
+      expect(firstEntries).toHaveLength(1);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("selects newest ledger files within per-file and aggregate byte budgets", async () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const writeCandidate = (name: string, bytes: number, ageSeconds: number) => {
+        const filePath = path.join(tmpDir, name);
+        fs.writeFileSync(filePath, Buffer.alloc(bytes, 0x78));
+        const modifiedAt = new Date(Date.now() - ageSeconds * 1_000);
+        fs.utimesSync(filePath, modifiedAt, modifiedAt);
+        return filePath;
+      };
+      writeCandidate("old.jsonl", 700, 30);
+      const middle = writeCandidate("middle.jsonl", 700, 20);
+      const newest = writeCandidate("newest.jsonl", 700, 10);
+      writeCandidate("too-large.jsonl", 1_500, 1);
+
+      const selected = await findRecentFiles(tmpDir, 3650, [".jsonl"], {
+        maxFiles: 10,
+        maxFileBytes: 1_000,
+        maxTotalBytes: 1_400,
+      });
+
+      expect(selected).toEqual([newest, middle]);
+      expect(selected).not.toContain(path.join(tmpDir, "old.jsonl"));
+      expect(selected).not.toContain(path.join(tmpDir, "too-large.jsonl"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
   it("parses modern token_count events from Codex session logs", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
@@ -2575,6 +2747,118 @@ describe("scanCodexLogs", () => {
         estimation: "distribution",
         costOverrideUsd: 0,
       }));
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the exact Codex lifetime total within the remaining entry budget", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
+      db.exec(`
+        create table threads (
+          id text primary key,
+          tokens_used integer not null,
+          model text,
+          cwd text,
+          source text,
+          thread_source text,
+          created_at integer,
+          updated_at integer
+        );
+        insert into threads values
+          ('oldest', 10, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 100, 100),
+          ('middle', 20, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 200, 200),
+          ('newest', 30, 'gpt-5.5', '/repo', 'Codex Desktop', 'Codex Desktop', 300, 300);
+      `);
+      db.close();
+
+      const entries = await scanCodexLogs({ maxEntries: 2 });
+
+      expect(entries).toHaveLength(2);
+      expect(entries.map((entry) => entry.messageId)).toEqual([
+        "newest:state-total-remainder",
+        "codex-state:lifetime-total-remainder",
+      ]);
+      expect(entries.reduce(
+        (total, entry) => total + entry.inputTokens + entry.outputTokens + entry.cachedTokens,
+        0,
+      )).toBe(60);
+      expect(entries[1]).toMatchObject({ lifetimeOnly: true, inputTokens: 30, costOverrideUsd: 0 });
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("unions disjoint JSONL and SQLite threads within the bounded lifetime summary", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "07", "12");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionDir, "json-only.jsonl"),
+        [
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "json-only", originator: "codex_cli_rs", model: "gpt-5.5" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-12T12:00:01.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: { input_tokens: 80, output_tokens: 0, total_tokens: 80 },
+                last_token_usage: { input_tokens: 80, output_tokens: 0, total_tokens: 80 },
+              },
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+      const db = new DatabaseSync(path.join(tmpDir, "state_5.sqlite"));
+      db.exec(`
+        create table threads (
+          id text primary key,
+          tokens_used integer not null,
+          model text,
+          cwd text,
+          source text,
+          thread_source text,
+          created_at integer,
+          updated_at integer
+        );
+        insert into threads values (
+          'state-only', 100, 'gpt-5.5', '/repo', 'Codex Desktop',
+          'Codex Desktop', 100, 100
+        );
+      `);
+      db.close();
+
+      const entries = await scanCodexLogs({ maxEntries: 2 });
+      const total = entries.reduce((sum, entry) => (
+        sum + entry.inputTokens + entry.outputTokens + entry.cachedTokens + (entry.cacheWriteTokens ?? 0)
+      ), 0);
+
+      expect(entries).toHaveLength(2);
+      expect(entries.map((entry) => entry.messageId)).toEqual([
+        "json-only:2026-07-12T12:00:01.000Z:80",
+        "codex-state:lifetime-total-remainder",
+      ]);
+      expect(total).toBe(180);
+      expect(entries[1]).toMatchObject({ lifetimeOnly: true, inputTokens: 100, costOverrideUsd: 0 });
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;

@@ -325,6 +325,38 @@ Persisted-history consumers see the stored preview on replay.
   socket path, OpenCode runtime ids) is rehydrated so the next turn
   can use the same session instead of creating a new one.
 
+### Claude restart and Stop recovery
+
+Every parent turn must finish with both a terminal `status` and a matching
+`done` event. A process crash can occur after the user message or
+`status: "started"` has been persisted but before that pair is written. When a
+Claude runtime is created, `agentChatService` therefore checks the latest
+non-steer parent turn even when the previous process never persisted an SDK
+session id. It fills in only the missing member of the terminal pair, preserves
+an already-written terminal status, marks the session idle, and persists the
+repair. A newer complete parent turn makes an older incomplete turn irrelevant;
+restart recovery never rewrites historical turns.
+
+Restart reconciliation first closes orphaned background and subagent rows, then
+appends the parent terminal pair last. This ordering is deliberate: renderer
+turn state is derived in event order, so a cleanup row must not make a repaired
+turn look active again. Pressing Stop on an already-idle Claude runtime runs the
+same parent-turn repair, which lets a stale red Stop state settle without
+requiring a live Claude process. Repeated reconciliation and repeated Stop calls
+are idempotent because an already-complete `status` + `done` pair is no longer an
+unsettled turn.
+
+Live Claude control calls are bounded independently of the desktop action
+timeout. Provider `interrupt()` gets 2.5 seconds; active `stopTask()` calls get
+2 seconds each and run concurrently. During ordinary Stop, a hung SDK control
+channel is logged and local interruption cleanup continues rather than holding
+the action bridge until its 30-second request timeout; an interrupt-and-replace
+request that requires provider acknowledgement fails within the control-call
+bound instead of sending the replacement ambiguously. Likewise, a steer sent to
+an idle or stale Claude session waits only for input-dispatch acceptance; the
+provider turn keeps streaming asynchronously instead of making the steer action
+wait for the full answer.
+
 Codex adapters deduplicate repeated lifecycle notifications before
 converting them to envelope events. Terminal app-server failures use a
 bounded semantic key (turn id + message + detail + error identity) shared by
@@ -349,5 +381,6 @@ regain duplicate visible failures after restart.
 - **Turn diff emission depends on lane context.** If a session is
   disassociated from a lane, `turn_diff_summary` will not emit. Do not
   rely on it for non-lane surfaces.
-</content>
-</invoke>
+- **Claude parent terminal events are an ordered pair.** Restart and idle-Stop
+  repair must leave the parent `status` + `done` pair after any orphan cleanup.
+  Emitting later lifecycle rows can resurrect a stopped renderer state.

@@ -119,6 +119,7 @@ import type { createProcessService } from "../processes/processService";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { withTimeout } from "../ai/utils";
 import {
   fileSizeOrZero,
   hasNullByte,
@@ -2196,6 +2197,7 @@ const MAX_INJECTED_PROJECT_COMMANDS = 20;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
+const CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
@@ -7427,6 +7429,16 @@ export function createAgentChatService(args: {
     };
   };
 
+  const awaitClaudeControlCall = async <T>(
+    label: string,
+    timeoutMs: number,
+    operation: () => T | PromiseLike<T>,
+  ): Promise<T> => withTimeout(
+    Promise.resolve().then(operation),
+    timeoutMs,
+    `${label} timed out after ${timeoutMs}ms`,
+  );
+
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
     try {
       return readTranscriptEnvelopes(managed)
@@ -8155,6 +8167,52 @@ export function createAgentChatService(args: {
       }
     }
     return turnActive;
+  };
+
+  type UnsettledParentTurn = {
+    turnId: string;
+    terminalStatus: "completed" | "interrupted" | "failed" | null;
+    doneStatus: "completed" | "interrupted" | "failed" | null;
+  };
+
+  const findLatestUnsettledParentTurn = (
+    entries: AgentChatEventEnvelope[],
+  ): UnsettledParentTurn | null => {
+    let latest: UnsettledParentTurn | null = null;
+    for (const entry of entries) {
+      if (isCodexSubagentTranscriptEnvelope(entry)) continue;
+      const event = entry.event;
+
+      if (event.type === "user_message" && !event.steerId) {
+        const turnId = event.turnId?.trim();
+        if (turnId) {
+          latest = { turnId, terminalStatus: null, doneStatus: null };
+        }
+        continue;
+      }
+
+      if (event.type === "status" && event.turnStatus === "started") {
+        const turnId = event.turnId?.trim();
+        if (!turnId) continue;
+        if (latest?.turnId !== turnId) {
+          latest = { turnId, terminalStatus: null, doneStatus: null };
+        }
+        continue;
+      }
+
+      if (!latest || (event.type !== "status" && event.type !== "done")) continue;
+      if (event.turnId?.trim() !== latest.turnId) continue;
+      if (event.type === "status") {
+        if (event.turnStatus === "started") continue;
+        latest.terminalStatus = event.turnStatus;
+      } else {
+        latest.doneStatus = event.status;
+      }
+    }
+
+    return latest && (latest.terminalStatus == null || latest.doneStatus == null)
+      ? latest
+      : null;
   };
 
   const normalizeEventStatus = (status: string | undefined): string => {
@@ -19344,14 +19402,14 @@ export function createAgentChatService(args: {
     if (activeSubagents.length === 0) return;
 
     const control = getClaudeQueryControl(runtime.query);
-    for (const subagent of activeSubagents) {
-      if (!runtime.activeSubagents.has(subagent.taskId)) continue;
+    await Promise.all(activeSubagents.map(async (subagent) => {
+      if (!runtime.activeSubagents.has(subagent.taskId)) return;
       // Ambient (skip_transcript) and non-agent task runs never surfaced as
       // subagent rows, so they must not emit a stopped subagent_result here —
       // just drop the tracking entry.
       if (subagent.skipTranscript || subagent.nonAgentTaskRun) {
         runtime.activeSubagents.delete(subagent.taskId);
-        continue;
+        return;
       }
       // A background shell entry with no real subagent agentType must not emit a
       // subagent_result — closeOpenClaudeBackgroundTasks already settled it.
@@ -19362,33 +19420,22 @@ export function createAgentChatService(args: {
         description: subagent.description,
       })) {
         runtime.activeSubagents.delete(subagent.taskId);
-        continue;
+        return;
       }
       runtime.activeSubagents.delete(subagent.taskId);
       if (typeof control.stopTask === "function") {
-        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
         try {
-          const stopTaskPromise = Promise.resolve(control.stopTask(subagent.taskId));
-          stopTaskPromise.catch(() => {
-            // The awaited race below handles timely rejections. This catch only
-            // prevents an unhandled rejection if the SDK rejects after our timeout.
-          });
-          await Promise.race([
-            stopTaskPromise,
-            new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(() => {
-                reject(new Error(`Timed out stopping Claude task after ${CLAUDE_STOP_TASK_TIMEOUT_MS}ms`));
-              }, CLAUDE_STOP_TASK_TIMEOUT_MS);
-            }),
-          ]);
+          await awaitClaudeControlCall(
+            `Stopping Claude task '${subagent.taskId}'`,
+            CLAUDE_STOP_TASK_TIMEOUT_MS,
+            () => control.stopTask!(subagent.taskId),
+          );
         } catch (error) {
           logger.warn("agent_chat.claude_stop_task_failed", {
             sessionId: managed.session.id,
             taskId: subagent.taskId,
             error: error instanceof Error ? error.message : String(error),
           });
-        } finally {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
         }
       }
       emitClaudeSubagentResult(managed, runtime, {
@@ -19401,7 +19448,7 @@ export function createAgentChatService(args: {
         finalSummary: summary,
         turnId,
       });
-    }
+    }));
   };
 
   type CodexCollabAgentState = {
@@ -23590,6 +23637,49 @@ export function createAgentChatService(args: {
   // process — background_task rows stuck "running", subagent snapshots still
   // open. Nothing will ever settle them, so sweep them to a terminal state and
   // announce it once. Pure event replay; safe to run before the first turn.
+  const findUnsettledClaudeParentTurn = (
+    managed: ManagedChatSession,
+    transcriptEvents = readFullTranscriptEnvelopesForSessionId(managed.session.id),
+  ): UnsettledParentTurn | null => {
+    const recentEvents = eventHistoryBySession.get(managed.session.id) ?? [];
+    return findLatestUnsettledParentTurn(mergeEnvelopeStreams(transcriptEvents, recentEvents));
+  };
+
+  const terminalizeUnsettledClaudeParentTurn = (
+    managed: ManagedChatSession,
+    reason: "restart" | "idle_interrupt",
+    candidate?: UnsettledParentTurn | null,
+  ): string | null => {
+    const unsettled = candidate === undefined ? findUnsettledClaudeParentTurn(managed) : candidate;
+    if (!unsettled) return null;
+
+    const status = unsettled.terminalStatus ?? unsettled.doneStatus ?? "interrupted";
+    if (!unsettled.terminalStatus) {
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: status,
+        turnId: unsettled.turnId,
+      });
+    }
+    if (!unsettled.doneStatus) {
+      emitChatEvent(managed, {
+        type: "done",
+        turnId: unsettled.turnId,
+        status,
+        ...resolveClaudeTurnModelPayload(managed.session, []),
+      });
+    }
+    markSessionIdleWithFreshCache(managed);
+    persistChatState(managed);
+    logger.info("agent_chat.claude_orphan_turn_terminalized", {
+      sessionId: managed.session.id,
+      turnId: unsettled.turnId,
+      status,
+      reason,
+    });
+    return unsettled.turnId;
+  };
+
   const reconcileClaudeSessionAfterRestart = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -23597,6 +23687,8 @@ export function createAgentChatService(args: {
     try {
       const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
       if (envelopes.length === 0) return;
+
+      const orphanParentTurn = findUnsettledClaudeParentTurn(managed, envelopes);
 
       const orphanBackground = deriveBackgroundItems(envelopes).filter(
         (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
@@ -23607,7 +23699,7 @@ export function createAgentChatService(args: {
           && snapshot.background !== true,
       );
 
-      if (orphanBackground.length === 0 && orphanSubagents.length === 0) return;
+      if (orphanBackground.length === 0 && orphanSubagents.length === 0 && !orphanParentTurn) return;
 
       const restartTurnId = `claude-restart-reconcile-${randomUUID()}`;
 
@@ -23650,8 +23742,13 @@ export function createAgentChatService(args: {
         });
       }
 
+      // Keep the parent terminal pair last. Renderer turn state is derived in
+      // event order, so no later reconciliation row may revive the stopped turn.
+      const orphanTurnId = terminalizeUnsettledClaudeParentTurn(managed, "restart", orphanParentTurn);
+
       logger.info("agent_chat.claude_restart_reconciled", {
         sessionId: managed.session.id,
+        orphanTurnId,
         backgroundTasksStopped: orphanBackground.length,
         subagentsStopped: orphanSubagents.length,
       });
@@ -23730,13 +23827,11 @@ export function createAgentChatService(args: {
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
 
-    // This runtime re-binds a persisted SDK session (host restart / attach) when
-    // an sdkSessionId was recovered from persisted state. In that case any
-    // non-terminal background/subagent rows in the transcript are orphans from
-    // the previous process — reconcile them to a terminal state once.
-    if (sdkSessionId) {
-      reconcileClaudeSessionAfterRestart(managed, runtime);
-    }
+    // A newly created runtime may be rebinding after a host restart even when
+    // the prior process crashed before it persisted an SDK session id. Sweep
+    // any non-terminal parent/background/subagent transcript rows once; a brand
+    // new chat has no rows, so this is a no-op there.
+    reconcileClaudeSessionAfterRestart(managed, runtime);
 
     return runtime;
   };
@@ -30546,7 +30641,17 @@ export function createAgentChatService(args: {
           ? { steerId, queued: true }
           : { steerId, queued: false, reason: "queue_full" };
       }
-      await executePreparedSendMessage(preparedSteer);
+      await sendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: displayText ?? trimmed,
+        attachments,
+        contextAttachments,
+        metadata,
+        reasoningEffort,
+        executionMode,
+        interactionMode,
+      }, { awaitDispatch: true });
       return { steerId, queued: false };
     }
     await executePreparedSendMessage(preparedSteer);
@@ -31048,6 +31153,9 @@ export function createAgentChatService(args: {
     const runtime = ensureClaudeSessionRuntime(managed);
     // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
     if (runtime.interrupted) return;
+    if (!runtime.busy && !runtime.activeTurnId) {
+      terminalizeUnsettledClaudeParentTurn(managed, "idle_interrupt");
+    }
     logger.info("agent_chat.turn_interrupt_requested", {
       sessionId,
       provider: "claude",
@@ -31060,7 +31168,11 @@ export function createAgentChatService(args: {
       if (!claudeControl.interrupt) {
         throw new Error("Claude interrupt is unavailable; the replacement was not sent.");
       }
-      await claudeControl.interrupt();
+      await awaitClaudeControlCall(
+        "Claude interrupt",
+        CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
+        () => claudeControl.interrupt!(),
+      );
     }
     // Set interrupted before touching the runtime so the streaming loop can
     // break cleanly while the underlying SDK stream is aborted below.
@@ -31083,7 +31195,20 @@ export function createAgentChatService(args: {
     runtime.queryGeneration += 1;
     runtime.queryStartPromise = null;
     if (!internalOptions.requireClaudeProviderInterrupt) {
-      try { await claudeControl.interrupt?.(); } catch { /* ignore */ }
+      try {
+        if (claudeControl.interrupt) {
+          await awaitClaudeControlCall(
+            "Claude interrupt",
+            CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
+            () => claudeControl.interrupt!(),
+          );
+        }
+      } catch (error) {
+        logger.warn("agent_chat.claude_interrupt_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     try { runtime.query?.close(); } catch { /* ignore */ }
     // close() only ends stream iteration — it does not guarantee the SDK

@@ -302,6 +302,14 @@ Renderer — settings:
   awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
   and coalesces stale provider/GitHub revalidation in the background
   (`refreshStatsInBackground`, single-flight per range + source).
+- `apps/desktop/src/main/services/usage/ledgers/localUsageLedgers.ts` —
+  read-only provider-history adapters. The Codex path selects recent JSONL
+  files within per-file and aggregate byte budgets, discards oversized physical
+  records with a bounded byte-stream reader, caps detailed entries, and shares
+  one production scan across callers. It reconciles the available JSONL history
+  with the newest Codex `state_*.sqlite` thread index under bounded row and
+  lookup budgets; a zero-cost all-time-only remainder preserves the exact union
+  token headline without fabricating day, project, or cost attribution.
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is
