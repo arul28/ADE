@@ -197,11 +197,15 @@ describe("ProjectRecoveryScreen", () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
     globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
     setError();
+    const clear = useAppStore.getState().clearProjectTransitionError as ReturnType<typeof vi.fn>;
 
     render(<ProjectRecoveryScreen />);
     await screen.findByText("This project's index needs a repair");
     fireEvent.click(screen.getByRole("button", { name: "Review storage" }));
 
+    // The takeover must exit (clear the error) before navigating, or
+    // ProjectTabHost keeps rendering this screen and Settings never shows.
+    expect(clear).toHaveBeenCalled();
     expect(navigateMock).toHaveBeenCalledWith("/settings?tab=storage");
   });
 

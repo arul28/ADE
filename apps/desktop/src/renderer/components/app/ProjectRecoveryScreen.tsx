@@ -347,7 +347,14 @@ export function ProjectRecoveryScreen() {
             ) : null}
             <button
               type="button"
-              onClick={() => navigate("/settings?tab=storage")}
+              onClick={() => {
+                // Clearing the error first exits the recovery takeover; while
+                // projectTransitionError is set, ProjectTabHost keeps rendering
+                // this screen and the route change alone would never reveal
+                // Settings.
+                clearProjectTransitionError();
+                navigate("/settings?tab=storage");
+              }}
               className="inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07]"
             >
               Review storage

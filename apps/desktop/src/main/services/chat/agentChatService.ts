@@ -22898,9 +22898,18 @@ export function createAgentChatService(args: {
     const persistedThreadId = readPersistedState(managed.session.id)?.threadId?.trim() || null;
     const existingThreadId = managed.session.threadId?.trim() || persistedThreadId;
     const replacementToken = options.allowReplacePointer;
+    // A crash mid-recover-from-history can leave threadId pointing at the
+    // half-built reconstruction thread while continuityRecovery still records
+    // the true original; a retry must still be allowed to replace it, so the
+    // token matches against the recovery's recorded original too, not only the
+    // current (possibly drifted) pointer.
+    const recoveryOriginalThreadId = managed.session.continuityRecovery?.originalThreadId?.trim() || null;
+    const tokenAuthorizesReplace = Boolean(replacementToken)
+      && (replacementToken!.originalThreadId === existingThreadId
+        || (recoveryOriginalThreadId !== null && replacementToken!.originalThreadId === recoveryOriginalThreadId));
     if (
       (managed.session.continuityRecovery?.state === "required" && !replacementToken)
-      || (existingThreadId && (!replacementToken || replacementToken.originalThreadId !== existingThreadId))
+      || (existingThreadId && !tokenAuthorizesReplace)
     ) {
       logger.warn("agent_chat.fresh_thread_blocked", {
         sessionId: managed.session.id,
