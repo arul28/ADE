@@ -1112,6 +1112,7 @@ function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
     bucketByDay.set(localDayKey(day), index);
   }
   for (const entry of entries) {
+    if (entry.lifetimeOnly) continue;
     if (entry.timestamp > nowMs) continue;
     const bucketIndex = bucketByDay.get(localDayKey(entry.timestamp));
     if (bucketIndex == null) continue;
@@ -1217,6 +1218,12 @@ function aggregateCosts(
 
   for (const entry of entries) {
     const cost = calculateTokenEntryCost(entry);
+    if (entry.lifetimeOnly) {
+      const allTime = accumulators.all;
+      allTime.costUsd += cost;
+      addTokenBreakdownEntry(allTime.tokenBreakdown, entry);
+      continue;
+    }
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;

@@ -10134,11 +10134,15 @@ describe("createAgentChatService", () => {
       // process. deriveBackgroundItems / subagentSnapshotsFromEvents read these.
       const orphanTail: AgentChatEventEnvelope[] = [
         { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 1, event: {
+          type: "user_message", text: "Work interrupted by restart", turnId: "turn-old",
+          messageId: "idle-steer-parent-message", steerId: "idle-steer-before-restart", deliveryState: "delivered",
+        } as any },
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 2, event: {
           type: "scheduled_work_update", id: "background:bg-restart", kind: "background_task",
           status: "running", origin: "background_task", title: "npm run serve", summary: "shell",
           sourceTaskId: "bg-restart", turnId: "turn-old",
         } as any },
-        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 2, event: {
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 3, event: {
           type: "subagent_started", taskId: "sub-restart", agentId: "sub-restart",
           agentType: "Explore", parentToolUseId: "toolu_sub_r", description: "look", turnId: "turn-old",
         } as any },
@@ -10176,6 +10180,151 @@ describe("createAgentChatService", () => {
         && (e.event as any).message.startsWith("Reconciled after restart:"));
       expect(notices).toHaveLength(1);
       expect((notices[0]!.event as any).message).toBe("Reconciled after restart: 1 background task stopped");
+
+      expect(events2.filter((e) =>
+        e.event.type === "status"
+        && e.event.turnId === "turn-old"
+        && e.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      expect(events2.filter((e) =>
+        e.event.type === "done"
+        && e.event.turnId === "turn-old"
+        && e.event.status === "interrupted"
+      )).toHaveLength(1);
+      const turnScopedEvents = events2.filter((event) => event.event.turnId);
+      expect(turnScopedEvents.at(-1)?.event).toMatchObject({
+        type: "done",
+        turnId: "turn-old",
+        status: "interrupted",
+      });
+
+      await service2.interrupt({ sessionId: session.id });
+      expect(events2.filter((e) =>
+        e.event.type === "status"
+        && e.event.turnId === "turn-old"
+        && e.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      expect(events2.filter((e) =>
+        e.event.type === "done"
+        && e.event.turnId === "turn-old"
+        && e.event.status === "interrupted"
+      )).toHaveLength(1);
+    });
+
+    it("reconciles before an SDK id exists and emits only a missing terminal half", async () => {
+      const sessionId = "claude-restart-before-sdk-init";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      sessionService.create({
+        sessionId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Restart before SDK init",
+        startedAt: "2026-07-12T12:00:00.000Z",
+      });
+      writePersistedChatState(sessionId, {
+        version: 2,
+        sessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        updatedAt: "2026-07-12T12:00:00.000Z",
+      });
+      const chatTranscriptDir = path.join(tmpRoot, ".ade", "transcripts", "chat");
+      fs.mkdirSync(chatTranscriptDir, { recursive: true });
+      fs.writeFileSync(path.join(chatTranscriptDir, `${sessionId}.jsonl`), "{}\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        {
+          sessionId,
+          timestamp: "2026-07-12T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "status", turnStatus: "started", turnId: "partial-terminal-turn" },
+        },
+        {
+          sessionId,
+          timestamp: "2026-07-12T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "status", turnStatus: "interrupted", turnId: "partial-terminal-turn" },
+        },
+      ] as AgentChatEventEnvelope[]);
+
+      await service.resumeSession({ sessionId });
+
+      expect(events.filter((event) =>
+        event.event.type === "status"
+        && event.event.turnId === "partial-terminal-turn"
+      )).toHaveLength(0);
+      expect(events.filter((event) =>
+        event.event.type === "done"
+        && event.event.turnId === "partial-terminal-turn"
+        && event.event.status === "interrupted"
+      )).toHaveLength(1);
+      expect(events.at(-1)?.event).toMatchObject({
+        type: "done",
+        turnId: "partial-terminal-turn",
+        status: "interrupted",
+      });
+    });
+
+    it("does not reconcile an ancient incomplete turn when the latest parent turn completed", async () => {
+      const sessionId = "claude-restart-latest-complete";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      sessionService.create({
+        sessionId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Latest turn complete",
+        startedAt: "2026-07-12T12:00:00.000Z",
+      });
+      writePersistedChatState(sessionId, {
+        version: 2,
+        sessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        updatedAt: "2026-07-12T12:00:00.000Z",
+      });
+      const chatTranscriptDir = path.join(tmpRoot, ".ade", "transcripts", "chat");
+      fs.mkdirSync(chatTranscriptDir, { recursive: true });
+      fs.writeFileSync(path.join(chatTranscriptDir, `${sessionId}.jsonl`), "{}\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        { sessionId, timestamp: "2026-07-12T12:00:00.000Z", sequence: 1, event: {
+          type: "user_message", text: "Old turn", turnId: "old-open-turn",
+        } },
+        { sessionId, timestamp: "2026-07-12T12:00:00.100Z", sequence: 2, event: {
+          type: "status", turnStatus: "started", turnId: "old-open-turn",
+        } },
+        { sessionId, timestamp: "2026-07-12T12:01:00.000Z", sequence: 3, event: {
+          type: "user_message", text: "Latest turn", turnId: "latest-complete-turn",
+        } },
+        { sessionId, timestamp: "2026-07-12T12:01:00.100Z", sequence: 4, event: {
+          type: "status", turnStatus: "started", turnId: "latest-complete-turn",
+        } },
+        { sessionId, timestamp: "2026-07-12T12:01:01.000Z", sequence: 5, event: {
+          type: "status", turnStatus: "completed", turnId: "latest-complete-turn",
+        } },
+        { sessionId, timestamp: "2026-07-12T12:01:01.100Z", sequence: 6, event: {
+          type: "done", status: "completed", turnId: "latest-complete-turn",
+        } },
+      ] as AgentChatEventEnvelope[]);
+
+      await service.resumeSession({ sessionId });
+
+      expect(events.filter((event) =>
+        event.event.type === "status" && event.event.turnId === "old-open-turn"
+      )).toHaveLength(0);
+      expect(events.filter((event) =>
+        event.event.type === "done" && event.event.turnId === "old-open-turn"
+      )).toHaveLength(0);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message.startsWith("Reconciled after restart:")
+      )).toBe(false);
     });
   });
 
@@ -25167,6 +25316,128 @@ describe("createAgentChatService", () => {
       )).toHaveLength(1);
     });
 
+    it("bounds hung Claude interrupt and subagent stop calls below the desktop action timeout", async () => {
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let warmupComplete = false;
+        let releaseTurn!: () => void;
+        const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+        const neverSettles = new Promise<void>(() => {});
+        const stopTask = vi.fn(() => neverSettles);
+        const queryInterrupt = vi.fn(() => neverSettles);
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-bounded-interrupt", slash_commands: [] };
+            warmupComplete = true;
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          yield { type: "system", subtype: "task_started", task_id: "hung-task-1", description: "Hung task one" };
+          yield { type: "system", subtype: "task_started", task_id: "hung-task-2", description: "Hung task two" };
+          await turnGate;
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn().mockResolvedValue(undefined),
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-bounded-interrupt",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+          stopTask,
+          interrupt: queryInterrupt,
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+        const sendPromise = service.sendMessage({ sessionId: session.id, text: "Start hung subagents" });
+        await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_started" && event.event.taskId === "hung-task-2");
+
+        vi.useFakeTimers();
+        let interruptSettled = false;
+        const interruptPromise = service.interrupt({ sessionId: session.id }).then(() => {
+          interruptSettled = true;
+        });
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(interruptSettled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(stopTask).toHaveBeenCalledTimes(2);
+        expect(queryInterrupt).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(2_499);
+        expect(interruptSettled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(interruptPromise).resolves.toBeUndefined();
+
+        expect(events.filter((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted"
+        )).toHaveLength(1);
+        expect(events.filter((event) =>
+          event.event.type === "done" && event.event.status === "interrupted"
+        )).toHaveLength(1);
+        expect(events.filter((event) =>
+          event.event.type === "subagent_result" && event.event.status === "stopped"
+        )).toHaveLength(2);
+
+        releaseTurn();
+        await expect(sendPromise).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("terminalizes an orphaned Claude transcript turn when Stop sees an idle runtime", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let warmupComplete = false;
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-idle-stop", slash_commands: [] };
+        warmupComplete = true;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-stop",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([{
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        sequence: 1,
+        event: { type: "user_message", text: "Crash before started status", turnId: "orphaned-after-restart" },
+      } as AgentChatEventEnvelope]);
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events.filter((event) =>
+        event.event.type === "status"
+        && event.event.turnId === "orphaned-after-restart"
+        && event.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      expect(events.filter((event) =>
+        event.event.type === "done"
+        && event.event.turnId === "orphaned-after-restart"
+        && event.event.status === "interrupted"
+      )).toHaveLength(1);
+      expect(events.at(-1)?.event).toMatchObject({
+        type: "done",
+        turnId: "orphaned-after-restart",
+        status: "interrupted",
+      });
+    });
+
     it("resumes through a fresh SDK session after interrupt so stale stream text is not replayed", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let primaryStreamCall = 0;
@@ -25959,6 +26230,223 @@ describe("createAgentChatService", () => {
       // Cleanup
       await service.interrupt({ sessionId: session.id });
       await activeTurn;
+    });
+
+    it("returns an idle Claude steer after dispatch acceptance while the provider turn keeps running", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let finishTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-idle-steer", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Working after acceptance" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await turnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      const result = await service.steer({
+        sessionId: session.id,
+        text: "Treat this stale steer as a normal turn",
+        dispatchMode: "inline",
+        reasoningEffort: "high",
+        executionMode: "subagents",
+        interactionMode: "plan",
+      });
+      expect(result).toMatchObject({ queued: false, steerId: expect.any(String) });
+
+      const delivered = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.text === "Treat this stale steer as a normal turn"
+      );
+      expect(delivered?.event).toMatchObject({
+        type: "user_message",
+        steerId: result.steerId,
+        deliveryState: "delivered",
+        turnId: expect.any(String),
+      });
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        reasoningEffort: "high",
+        executionMode: "subagents",
+        interactionMode: "plan",
+      });
+      expect(events.some((event) => event.event.type === "done")).toBe(false);
+
+      finishTurn();
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.event.status === "completed");
+    });
+
+    it("emits one interrupted terminal pair when a Claude model switches mid-turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let oldStreamFinished = false;
+      let releaseActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { releaseActiveTurn = resolve; });
+      let releaseReplacementTurn!: () => void;
+      const replacementTurnGate = new Promise<void>((resolve) => { releaseReplacementTurn = resolve; });
+      let replacementTurnStreaming = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-switch", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Switch me while I am running" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          oldStreamFinished = true;
+          return;
+        }
+        if (streamCall === 3) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-switch-next", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        replacementTurnStreaming = true;
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Replacement turn is active" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await replacementTurnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const mockSession = {
+        send,
+        stream,
+        close,
+        sessionId: "sdk-model-switch",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(mockSession as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep working while I switch models",
+      }, { awaitDispatch: true });
+      const started = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started");
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.turnId === started.event.turnId);
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Do this after the old model finishes",
+      });
+      expect(queued).toMatchObject({ queued: true, steerId: expect.any(String) });
+
+      // Force the restart reconciler's view of the transcript to lag behind the
+      // live stream, matching the race where model-switch teardown creates the
+      // replacement runtime before the old stream emits its terminal pair.
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        {
+          sessionId: session.id,
+          timestamp: new Date().toISOString(),
+          sequence: 1,
+          event: { type: "user_message", text: "Keep working while I switch models", turnId: started.event.turnId } as any,
+        },
+        {
+          sessionId: session.id,
+          timestamp: new Date().toISOString(),
+          sequence: 2,
+          event: { type: "status", turnStatus: "started", turnId: started.event.turnId } as any,
+        },
+      ]);
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const interruptedDone = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done"
+        && event.event.turnId === started.event.turnId
+        && event.event.status === "interrupted");
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "system_notice"
+        && event.event.steerId === queued.steerId
+        && event.event.message.includes("cancelled"));
+
+      await vi.waitFor(() => { expect(streamCall).toBeGreaterThanOrEqual(3); });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Replacement turn after model switch",
+      }, { awaitDispatch: true });
+      const replacementStarted = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status"
+        && event.event.turnStatus === "started"
+        && event.event.turnId !== started.event.turnId);
+      await vi.waitFor(() => { expect(replacementTurnStreaming).toBe(true); });
+
+      releaseActiveTurn();
+      await vi.waitFor(() => { expect(oldStreamFinished).toBe(true); });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(events.filter((event) =>
+        event.event.type === "status"
+        && event.event.turnId === started.event.turnId
+        && event.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      const doneEvents = events.filter((event) =>
+        event.event.type === "done"
+        && event.event.turnId === started.event.turnId
+        && event.event.status === "interrupted"
+      );
+      expect(doneEvents).toHaveLength(1);
+      expect(interruptedDone.event).toMatchObject({
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({ status: "active" });
+      expect(close).toHaveBeenCalled();
+      expect(events.filter((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === queued.steerId
+        && event.event.deliveryState === "delivered"
+      )).toHaveLength(0);
+
+      releaseReplacementTurn();
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done"
+        && event.event.turnId === replacementStarted.event.turnId
+        && event.event.status === "completed");
     });
 
     it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {

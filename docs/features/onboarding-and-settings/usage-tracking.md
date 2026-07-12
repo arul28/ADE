@@ -41,6 +41,48 @@ quota HTTP, CLI fallback, and history phases, including provider, trigger,
 duration, outcome, and error kind. These entries identify network/auth latency
 without logging credentials or quota payloads.
 
+## Bounded local ledger scanning
+
+Activity reads provider-owned history in place. ADE does not copy, rewrite, or
+delete Codex session JSONL under `~/.codex`; Codex remains the owner of chat
+history and retention. A single JSONL record can nevertheless be enormous when
+it contains embedded command or tool output. That is valid JSONL, but treating
+the whole physical line as one JavaScript string can exhaust the runtime before
+the parser has a chance to ignore the irrelevant payload.
+
+The Codex history reader is therefore a bounded byte-stream pipeline:
+
+- candidate session and archived-session files are considered newest first,
+  with at most 5,000 files per root, 256 MiB per file, and 2 GiB distributed
+  across both roots;
+- physical JSONL lines are accumulated only up to 16 MiB. An oversized record
+  is discarded incrementally until its newline, then scanning resumes at the
+  next record instead of retaining or parsing the giant line;
+- detailed history stops at 250,000 token entries; and
+- concurrent production callers share one in-flight Codex scan, so two open
+  projects cannot duplicate the same CPU work and retained entry set.
+
+These limits bound ADE's work; they do not truncate the source files. The
+tradeoff is intentionally visible in the data model: an extreme old record or
+history beyond the detail budget may be absent from per-day, per-model,
+per-project, and estimated-cost attribution.
+
+The all-time token headline has a separate reconciliation path. ADE opens the
+newest Codex `state_*.sqlite` read-only, computes the state index's authoritative
+thread total, point-looks up the bounded set of JSONL thread ids to avoid double
+counting, and treats the result as the union of JSONL history and the current
+state index. Per-thread remainders are added newest first within the remaining
+entry budget. If detail capacity is exhausted, one zero-cost `lifetimeOnly`
+remainder preserves the exact union total without inventing a timestamp,
+project, ADE-originated share, or recent-day activity. Daily charts skip that
+entry, while the all-time token breakdown includes it.
+
+SQLite reconciliation is bounded too: observed-thread lookups use batches of
+500, detailed state rows are capped at 250,000 and by remaining entry capacity,
+and the production scanner remains single-flight. This keeps Activity useful on
+large Codex histories without putting live Limits refreshes or the ADE runtime
+behind an unbounded disk/memory pass.
+
 ## Claude credential hygiene (refresh storms)
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits

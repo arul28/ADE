@@ -135,7 +135,7 @@ import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoIt
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
-import { findUserMessageForTurn, resolveTurnActive } from "./chatTurnState";
+import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
@@ -6820,7 +6820,12 @@ export function AgentChatPane({
     if (!failedTurnId) {
       for (let index = events.length - 1; index >= 0; index -= 1) {
         const evt = events[index]?.event;
-        if (evt?.type === "user_message" && !evt.steerId && typeof evt.text === "string" && evt.text.trim().length > 0) {
+        if (
+          evt != null
+          && isParentUserMessage(evt)
+          && typeof evt.text === "string"
+          && evt.text.trim().length > 0
+        ) {
           userEvent = evt;
           break;
         }
