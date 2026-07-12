@@ -51,6 +51,7 @@ import { createRebaseSuggestionService } from "../../desktop/src/main/services/l
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
@@ -236,6 +237,7 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
@@ -1381,6 +1383,12 @@ export async function createAdeRuntime(args: {
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
     projectRoot,
   });
+  const storageInsightsService = createStorageInsightsService({
+    projectRoot,
+    adeHome: resolveMachineAdeLayout().adeDir,
+    db,
+    logger,
+  });
   const budgetCapService = createBudgetCapService({
     db,
     logger,
@@ -1618,6 +1626,7 @@ export async function createAdeRuntime(args: {
     processService,
     feedbackReporterService,
     usageTrackingService,
+    storageInsightsService,
     budgetCapService,
     automationService,
     automationIngressService,

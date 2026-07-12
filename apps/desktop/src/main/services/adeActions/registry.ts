@@ -100,6 +100,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "github",
   "feedback",
   "usage",
+  "storage",
   "budget",
   "update",
   "file",
@@ -155,6 +156,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
+  storage: ["cleanup"],
   search: ["rebuildIndex"],
 };
 
@@ -603,6 +605,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "start",
     "stop",
   ],
+  storage: ["cleanup", "cleanupPreview", "getSnapshot"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -3014,6 +3017,22 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
   } as OpaqueService;
 }
 
+function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const storageInsightsService = runtime.storageInsightsService;
+  if (!storageInsightsService) return null;
+  return {
+    getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
+    cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
+      storageInsightsService.cleanupPreview(args?.targets ?? []),
+    cleanup: (args?: {
+      targets?: Parameters<typeof storageInsightsService.cleanup>[0];
+      preview?: Parameters<typeof storageInsightsService.cleanup>[1]["preview"];
+    }) => storageInsightsService.cleanup(args?.targets ?? [], {
+      preview: args?.preview ?? { items: [], totalBytes: 0, blocked: [] },
+    }),
+  };
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -3043,6 +3062,7 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
+    storage: toService(buildStorageDomainService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),

@@ -6,6 +6,12 @@ import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageSnapshot,
+} from "../shared/types/storage";
+import type {
   AdeCleanupResult,
   AdeProjectEvent,
   AdeProjectSnapshot,
@@ -3295,6 +3301,21 @@ contextBridge.exposeInMainWorld("ade", {
   storage: {
     getPressure: async (): Promise<DiskPressureSnapshot> =>
       ipcRenderer.invoke(IPC.storageGetPressure),
+    getSnapshot: async (args: { forceRefresh?: boolean } = {}): Promise<StorageSnapshot> =>
+      callProjectRuntimeActionOr("storage", "getSnapshot", { args }, () =>
+        ipcRenderer.invoke(IPC.storageGetSnapshot, args),
+      ),
+    cleanupPreview: async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> =>
+      callProjectRuntimeActionOr("storage", "cleanupPreview", { args: { targets } }, () =>
+        ipcRenderer.invoke(IPC.storageCleanupPreview, targets),
+      ),
+    cleanup: async (
+      targets: StorageCleanupTarget[],
+      opts: { preview: StorageCleanupPreview },
+    ): Promise<StorageCleanupResult> =>
+      callProjectRuntimeActionOr("storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
+        ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
   },
   project: {
     openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {

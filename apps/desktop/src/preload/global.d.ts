@@ -642,6 +642,12 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
+import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageSnapshot,
+} from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
 
 export {};
@@ -710,6 +716,12 @@ declare global {
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
+        getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
+        cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
+        cleanup: (
+          targets: StorageCleanupTarget[],
+          opts: { preview: StorageCleanupPreview },
+        ) => Promise<StorageCleanupResult>;
       };
       project: {
         openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;

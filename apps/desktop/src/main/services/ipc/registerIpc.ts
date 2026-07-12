@@ -599,6 +599,13 @@ import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../sha
 import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
+import type { createStorageInsightsService } from "../storage/storageInsightsService";
+import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageSnapshot,
+} from "../../../shared/types/storage";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
@@ -926,6 +933,7 @@ export type AppContext = {
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
@@ -3549,6 +3557,30 @@ export function registerIpc({
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
+  });
+
+  ipcMain.handle(IPC.storageGetSnapshot, async (
+    _event,
+    args: { forceRefresh?: boolean } | undefined,
+  ): Promise<StorageSnapshot> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.storageCleanupPreview, async (
+    _event,
+    targets: StorageCleanupTarget[],
+  ): Promise<StorageCleanupPreview> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.cleanupPreview(targets);
+  });
+
+  ipcMain.handle(IPC.storageCleanup, async (
+    _event,
+    args: { targets: StorageCleanupTarget[]; preview: StorageCleanupPreview },
+  ): Promise<StorageCleanupResult> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.cleanup(args.targets, { preview: args.preview });
   });
 
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {

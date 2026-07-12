@@ -57,6 +57,7 @@ import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
+import { createStorageInsightsService } from "./services/storage/storageInsightsService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -3505,6 +3506,12 @@ app.whenReady().then(async () => {
       },
       projectRoot,
     });
+    const storageInsightsService = createStorageInsightsService({
+      projectRoot,
+      adeHome: machineAdeLayout.adeDir,
+      db,
+      logger,
+    });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -3935,6 +3942,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       feedbackReporterService,
       usageTrackingService,
+      storageInsightsService,
       budgetCapService,
       sessionDeltaService,
       autoUpdateService,
@@ -4129,6 +4137,7 @@ app.whenReady().then(async () => {
         onboardingService,
         feedbackReporterService,
         usageTrackingService,
+        storageInsightsService,
         budgetCapService,
         autoUpdateService,
         isPackaged: app.isPackaged,
@@ -4190,6 +4199,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       githubPollingService,
       usageTrackingService,
+      storageInsightsService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
@@ -4236,6 +4246,12 @@ app.whenReady().then(async () => {
       },
       projectRoot,
     });
+    const storageInsightsService = createStorageInsightsService({
+      projectRoot,
+      adeHome: machineAdeLayout.adeDir,
+      db,
+      logger,
+    });
     usageTrackingService.start();
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
@@ -4258,6 +4274,7 @@ app.whenReady().then(async () => {
       builtInBrowserService,
       diskPressureMonitor,
       usageTrackingService,
+      storageInsightsService,
     };
   };
 
