@@ -287,14 +287,25 @@ describe("Claude query lifecycle", () => {
   });
 
   it("emits an orphan notice when reset stops an open background task", async () => {
-    const { service, events, reaper, session } = await createDrivenSession([{
-      type: "system",
-      subtype: "task_started",
-      task_id: "background-task-1",
-      task_type: "local_bash",
-      description: "Run the verification suite",
-      command: "npm test",
-    }]);
+    const { service, events, reaper, session } = await createDrivenSession([
+      {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{
+          task_id: "background-task-1",
+          task_type: "local_bash",
+          description: "Run the verification suite",
+        }],
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "background-task-1",
+        task_type: "local_bash",
+        description: "Run the verification suite",
+        command: "npm test",
+      },
+    ]);
 
     await resetReasoningEffort(service, session.id);
 

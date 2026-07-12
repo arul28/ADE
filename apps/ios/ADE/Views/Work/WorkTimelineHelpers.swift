@@ -520,9 +520,9 @@ func workChatIsStreaming(
 
 /// Mirrors desktop `chatSubagents.ts` `isBackgroundShellCommand` exactly: a
 /// background task type plus an absent or literal background agent type. The
-/// Claude Agent SDK tags a `Bash` run_in_background shell with task_type
-/// "local_bash" (older builds said "background"); either one belongs in the
-/// background pane, never the subagent roster.
+/// service only preserves `local_bash` on historical/background-shell lifecycle
+/// rows after the SDK background level proved membership; ordinary foreground
+/// Bash never enters this lifecycle projection.
 func isBackgroundShellCommand(taskType: String?, agentType: String?) -> Bool {
   let normalizedTaskType = nonEmptyWorkTimelineText(taskType)?.lowercased()
   let normalizedAgentType = nonEmptyWorkTimelineText(agentType)?.lowercased()
@@ -974,6 +974,37 @@ private func workBackgroundCommandExitLabel(
   }
 }
 
+private func workSubagentLifecycleIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  var ids: Set<String> = []
+  for envelope in transcript {
+    let taskId: String
+    let agentId: String?
+    let agentType: String?
+    switch envelope.event {
+    case .subagentStarted(let value, let agent, let type, _, _, _, _, _, _, _):
+      taskId = value
+      agentId = agent
+      agentType = type
+    case .subagentProgress(let value, let agent, let type, _, _, _, _, _, _, _, _):
+      taskId = value
+      agentId = agent
+      agentType = type
+    case .subagentResult(let value, let agent, let type, _, _, _, _, _, _, _):
+      taskId = value
+      agentId = agent
+      agentType = type
+    default:
+      continue
+    }
+    if !isRealSubagentTimelineRow(taskType: envelope.subagentTaskType, agentType: agentType) {
+      continue
+    }
+    if let task = normalizedWorkSubagentAgentId(taskId) { ids.insert(task) }
+    if let agent = normalizedWorkSubagentAgentId(agentId) { ids.insert(agent) }
+  }
+  return ids
+}
+
 func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkScheduledWorkSnapshot] {
   struct Entry {
     var snapshot: WorkScheduledWorkSnapshot
@@ -982,25 +1013,9 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
 
   var entries: [String: Entry] = [:]
   var nextOrder = 0
-  var terminalTurnEventIndex: [String: Int] = [:]
-  var lastNonTerminalUpdateIndex: [String: Int] = [:]
+  let subagentIds = workSubagentLifecycleIds(from: transcript)
 
-  for (eventIndex, envelope) in transcript.enumerated() {
-    switch envelope.event {
-    case .done(_, _, _, let turnId, _, _):
-      if let key = normalizedWorkTurnId(turnId) {
-        terminalTurnEventIndex[key] = eventIndex
-      }
-    case .status(let turnStatus, _, let turnId):
-      let normalized = turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      if ["completed", "failed", "interrupted", "cancelled", "canceled", "ended"].contains(normalized),
-         let key = normalizedWorkTurnId(turnId) {
-        terminalTurnEventIndex[key] = eventIndex
-      }
-    default:
-      break
-    }
-
+  for envelope in transcript {
     guard case .scheduledWorkUpdate(
       let id,
       let kind,
@@ -1027,6 +1042,12 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
 
     let key = id.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else { continue }
+    let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if normalizedKind == "background_task",
+       let sourceId = normalizedWorkSubagentAgentId(sourceTaskId),
+       subagentIds.contains(sourceId) {
+      continue
+    }
     let existing = entries[key]
     let displayTitle = nonEmptyWorkTimelineText(title)
       ?? existing?.snapshot.title
@@ -1061,27 +1082,6 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
     if existing == nil {
       nextOrder += 1
     }
-    let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if normalizedStatus == "scheduled" || normalizedStatus == "running" {
-      lastNonTerminalUpdateIndex[key] = eventIndex
-    }
-  }
-
-  // Mirrors desktop `chatScheduledWork.ts`: a background process whose parent
-  // turn ended after its last running update must not remain live forever.
-  for (id, var entry) in entries {
-    let snapshot = entry.snapshot
-    let normalizedKind = snapshot.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let normalizedStatus = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard normalizedKind == "background_task",
-          normalizedStatus == "scheduled" || normalizedStatus == "running",
-          let turnId = normalizedWorkTurnId(snapshot.turnId),
-          let finishedAt = terminalTurnEventIndex[turnId],
-          let lastNonTerminalAt = lastNonTerminalUpdateIndex[id],
-          finishedAt > lastNonTerminalAt
-    else { continue }
-    entry.snapshot.status = "stopped"
-    entries[id] = entry
   }
 
   return entries.values

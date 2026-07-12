@@ -245,17 +245,23 @@ by the desktop and TUI ModelPickers and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
 `chat.dispatchSteer` (Claude SDK only) takes
-`{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds
-a queued steer into the active turn or interrupts the active turn so
-the queued message runs next; it returns `{ ok, dispatchedAt }`.
-`interrupt` mode acknowledges only after the SDK accepts the replacement
-turn — it prepares the send, interrupts the live turn, dispatches the
-replacement, and re-queues the message (returning `dispatchedAt: null`)
-if the provider interrupt fails.
-`chat.cancelDispatchedSteer` rescinds an inline dispatch before the
-model reads it, returning `{ ok, cancelled }`. The iOS companion uses
+`{ sessionId, steerId, mode: "inline" | "interrupt" }` and pushes the staged
+message through Claude's live input stream with `priority: "next" | "now"`
+and `shouldQuery: true`; it returns `{ ok, dispatchedAt }`. Interrupt mode
+redirects the current model request without closing the query or stopping its
+background work. The queued row is removed only after the input pump accepts
+the message.
+`chat.cancelDispatchedSteer` returns `{ ok, cancelled }`; the current public
+SDK cannot cancel an already pushed priority message, so `cancelled` is false.
+The iOS companion uses
 both via `SyncService.dispatchChatSteer` /
 `cancelDispatchedChatSteer`.
+
+`chat.cancelSteer` accepts optional `requireQueued: true`. That guarded form
+rejects if delivery already claimed the message instead of merely clearing a
+stale client row; desktop Edit uses it before restoring queued text and
+attachments to the composer. The field is optional so older clients retain the
+original idempotent cancel behavior.
 
 **Personal chat** (`personalChats.*`)
 - `list`, `create`, `getSummary`, `read`, `send`

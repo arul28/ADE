@@ -225,26 +225,34 @@ describe("AgentChatComposer", () => {
     expect(props.onInterrupt).not.toHaveBeenCalled();
   });
 
-  it("edits a queued steer message", () => {
+  it("moves a queued steer message back to the composer for editing", () => {
     const onEditSteer = vi.fn();
+    const attachments = [{ path: "docs/queued.md", type: "file" as const }];
     renderComposer({
-      pendingSteers: [{ steerId: "steer-1", text: "Queued one" }],
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments,
+        contextAttachments: [],
+      }],
       onEditSteer,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit queued message" }));
-    fireEvent.change(screen.getByDisplayValue("Queued one"), {
-      target: { value: "Queued one, revised" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
-    expect(onEditSteer).toHaveBeenCalledWith("steer-1", "Queued one, revised");
+    expect(onEditSteer).toHaveBeenCalledWith("steer-1", "Queued one", attachments, []);
+    expect(screen.queryByDisplayValue("Queued one")).toBeNull();
   });
 
   it("removes a queued steer message", () => {
     const onCancelSteer = vi.fn();
     renderComposer({
-      pendingSteers: [{ steerId: "steer-1", text: "Queued one" }],
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments: [],
+        contextAttachments: [],
+      }],
       onCancelSteer,
     });
 
@@ -267,12 +275,12 @@ describe("AgentChatComposer", () => {
       onSendSteerInterrupt: vi.fn(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
 
     expect(onSendSteerNow).toHaveBeenCalledTimes(1);
   });
 
-  it("split-button menu queues after the turn or interrupts and replaces it", () => {
+  it("split-button menu selects what the primary send action will do", () => {
     const onSubmit = vi.fn();
     const onSendSteerInterrupt = vi.fn();
     renderComposer({
@@ -283,11 +291,16 @@ describe("AgentChatComposer", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "More send options" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Queue for after turn/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Send after turn/ }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSendSteerInterrupt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Send after turn" }));
     expect(onSubmit).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "More send options" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Interrupt & replace/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Interrupt & send/ }));
+    expect(onSendSteerInterrupt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt & send" }));
     expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
   });
 
@@ -300,14 +313,15 @@ describe("AgentChatComposer", () => {
       onSendSteerInterrupt: vi.fn(),
     });
 
-    const sendNow = screen.getByRole("button", { name: "Send now" }) as HTMLButtonElement;
+    const sendNow = screen.getByRole("button", { name: "Send during turn" }) as HTMLButtonElement;
     expect(sendNow.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "More send options" }) as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(sendNow);
     expect(onSendSteerNow).not.toHaveBeenCalled();
   });
 
-  it("routes Enter to Send now during an active Claude turn", () => {
+  it("routes Enter to the selected active-turn send mode", () => {
     const onSendSteerNow = vi.fn();
     const onSubmit = vi.fn();
     renderComposer({
@@ -317,10 +331,12 @@ describe("AgentChatComposer", () => {
       onSubmit,
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Send after turn/ }));
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
-    expect(onSendSteerNow).toHaveBeenCalledTimes(1);
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSendSteerNow).not.toHaveBeenCalled();
   });
 
   it("accepts the prompt suggestion with Tab", () => {

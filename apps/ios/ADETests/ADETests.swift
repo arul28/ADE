@@ -10378,7 +10378,7 @@ final class ADETests: XCTestCase {
     )
   }
 
-  // MARK: - Scheduled work partitioning + stopped coercion
+  // MARK: - Scheduled work partitioning + background lifecycle
 
   func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
     let raw = """
@@ -10409,16 +10409,27 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(scheduledCards.isEmpty)
   }
 
-  func testScheduledWorkBackgroundTaskCoercedToStoppedWhenTurnEnded() {
-    // A background_task left "running", whose parent turn later ends, must not
-    // stay live forever — coerce to stopped (mirrors chatScheduledWork.ts).
+  func testScheduledWorkFiltersHistoricalAgentAsBackgroundDuplicate() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"agent-1","agentId":"agent-1","agentType":"Explore","description":"Explore","background":true,"turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"background:agent-1","kind":"background_task","status":"running","title":"Explore","sourceTaskId":"agent-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"background:shell-1","kind":"background_task","status":"running","title":"npm run watch","sourceTaskId":"shell-1","turnId":"turn-1"}}
+    """
+
+    let snapshots = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(workChatInfoBackgroundItems(snapshots).map(\.id), ["background:shell-1"])
+  }
+
+  func testScheduledWorkBackgroundTaskStaysRunningWhenTurnEnded() {
+    // Background shell work survives its parent turn. Only an explicit terminal
+    // scheduled-work update may move it out of the running state.
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"long build","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"done","status":"completed","summary":"done","turnId":"turn-1"}}
     """
 
     let snapshots = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
-    XCTAssertEqual(snapshots.first { $0.id == "bg-1" }?.status, "stopped")
+    XCTAssertEqual(snapshots.first { $0.id == "bg-1" }?.status, "running")
   }
 
   func testScheduledWorkBackgroundTaskStaysRunningWhenTurnStillActive() {

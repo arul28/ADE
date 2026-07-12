@@ -940,6 +940,8 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
 export type PendingSteerEntry = {
   steerId: string;
   text: string;
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
 };
 
 export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
@@ -962,7 +964,13 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     } else if (event.type === "user_message" && event.steerId) {
       if (event.deliveryState === "queued") {
         if (!resolvedSteerIds.has(event.steerId)) {
-          steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+          const previous = steerMap.get(event.steerId);
+          steerMap.set(event.steerId, {
+            steerId: event.steerId,
+            text: event.text,
+            attachments: event.attachments ?? previous?.attachments ?? [],
+            contextAttachments: event.contextAttachments ?? previous?.contextAttachments ?? [],
+          });
         }
       } else {
         // "inline" / "delivered" / "failed" — the steer left the queue, so
@@ -3549,7 +3557,40 @@ export function AgentChatPane({
     const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
-    const displayEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
+    const settledSteerIds = new Set(baseEvents.flatMap((envelope) => {
+      const event = envelope.event;
+      if (
+        event.type === "user_message"
+        && event.steerId
+        && event.deliveryState !== "queued"
+      ) {
+        return [event.steerId];
+      }
+      if (
+        event.type === "system_notice"
+        && event.steerId
+        && /\b(?:cancelled|delivering)\b/i.test(event.message)
+      ) {
+        return [event.steerId];
+      }
+      return [];
+    }));
+    const displayEvents = baseEvents.filter((envelope) => {
+      const event = envelope.event;
+      if (event.type.startsWith("subagent.")) return false;
+      // Historical immediate sends were first persisted as queued and then
+      // resolved under the same steer id. Once resolved, hide the obsolete
+      // queue notice so the transcript cannot contradict the delivered bubble.
+      if (
+        event.type === "system_notice"
+        && event.steerId
+        && settledSteerIds.has(event.steerId)
+        && /^Message queued\b/i.test(event.message)
+      ) {
+        return false;
+      }
+      return true;
+    });
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
     if (!promotedTurnId || !cloudAgentId) return displayEvents;
@@ -8275,7 +8316,7 @@ export function AgentChatPane({
     }
   }, [refreshSessions, selectedSessionId, touchSession]);
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) {
       if (submitInFlightRef.current) {
         setError("Still sending the previous message. Wait a moment and try again.");
@@ -8675,9 +8716,9 @@ export function AgentChatPane({
     const isCodexGoalSlashCommand = sessionProvider === "codex" && isCodexGoalSlashInput(text);
     const suppressOptimisticOutgoing = isCodexGoalSlashCommand;
     const deferComposerClear = selectedSessionId == null;
-    // Populated only when the draft is submitted as a steer; returned to the
-    // caller so the active-turn "Send now" / "Interrupt & replace" actions can
-    // dispatch the exact steer id the backend minted.
+    // Populated only when the draft is submitted as a steer. Immediate Claude
+    // delivery is already atomic inside steer({ dispatchMode }); queued sends
+    // return the id used by the staged-message controls.
     let steerResult: AgentChatSteerResult | null = null;
 
     submitInFlightRef.current = true;
@@ -8813,8 +8854,10 @@ export function AgentChatPane({
         return await window.ade.agentChat.steer({
           sessionId,
           text: finalText,
+          displayText: finalDisplayText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
+          ...(sessionProvider === "claude" && activeTurnDispatchMode ? { dispatchMode: activeTurnDispatchMode } : {}),
         });
       };
 
@@ -8980,15 +9023,8 @@ export function AgentChatPane({
     orchestratorEnabled,
   ]);
 
-  // Active-turn "Send now" / "Interrupt & replace": submit the draft as a steer,
-  // then dispatch the exact steer id the backend minted. submit() returns the
-  // steer result only when the draft was queued; we dispatch that id inline or
-  // as an interrupt so the message folds into the live turn (Claude Code parity).
-  // A queue-full or already-delivered submit returns no dispatchable steer, so
-  // nothing is dispatched.
-  // Steer dispatch/edit are fire-and-forget IPC. Surface a rejection (e.g. a
-  // non-Claude session or a pending-input block) instead of silently swallowing
-  // it, so the user learns their Send now / Interrupt / edit did not land.
+  // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
+  // are atomic through steer({ dispatchMode }) and never enter the staged queue.
   const dispatchSteerSafely = useCallback(
     (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
       void window.ade.agentChat.dispatchSteer(args).catch((error: unknown) => {
@@ -8997,16 +9033,6 @@ export function AgentChatPane({
       });
     },
     [],
-  );
-
-  const armAndSubmitSteerDispatch = useCallback(
-    async (mode: AgentChatDispatchSteerMode) => {
-      const sid = selectedSessionId;
-      const result = await submit();
-      if (!sid || !result || !result.queued) return;
-      dispatchSteerSafely({ sessionId: sid, steerId: result.steerId, mode });
-    },
-    [selectedSessionId, submit, dispatchSteerSafely],
   );
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
@@ -10419,12 +10445,63 @@ export function AgentChatPane({
                 void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId });
               }
             }}
-            onEditSteer={(steerId, text) => {
-              if (selectedSessionId) {
-                void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text }).catch((error: unknown) => {
-                  setError(`Couldn't update the queued message: ${error instanceof Error ? error.message : String(error)}`);
+            onEditSteer={(steerId, text, queuedAttachments, queuedContextAttachments) => {
+              const sessionId = selectedSessionId;
+              const draftKey = companionStateKey;
+              const draftStorageKey = composerDraftStorageKeyValue;
+              if (!sessionId) return;
+              const draftSnapshot: ComposerDraftStorageSnapshot = {
+                version: 1,
+                text: draft,
+                modelId,
+                reasoningEffort,
+                fastMode,
+                executionMode,
+                controls: {
+                  ...currentNativeControls,
+                  cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
+                },
+                attachments: [...attachments],
+                contextAttachments: [...contextAttachments],
+                iosContextItems: [...iosElementContextItems],
+                appControlContextItems: [...appControlContextItems],
+                builtInBrowserContextItems: [...builtInBrowserContextItems],
+                draftLaunchTargetId,
+                updatedAt: new Date().toISOString(),
+              };
+              void window.ade.agentChat.cancelSteer({ sessionId, steerId, requireQueued: true }).then(() => {
+                setPendingSteersBySession((current) => ({
+                  ...current,
+                  [sessionId]: (current[sessionId] ?? []).filter((entry) => entry.steerId !== steerId),
+                }));
+                const restoredText = draftSnapshot.text.trim().length
+                  ? `${draftSnapshot.text.trimEnd()}\n\n${text}`
+                  : text;
+                const restoredAttachments = mergeAttachments(draftSnapshot.attachments, queuedAttachments);
+                const restoredContextAttachments = mergeChatContextAttachments(
+                  draftSnapshot.contextAttachments,
+                  queuedContextAttachments,
+                );
+                draftsPerSessionRef.current.set(draftKey, restoredText);
+                writeComposerDraftSnapshot(draftStorageKey, {
+                  ...draftSnapshot,
+                  text: restoredText,
+                  attachments: restoredAttachments,
+                  contextAttachments: restoredContextAttachments,
+                  updatedAt: new Date().toISOString(),
                 });
-              }
+                clearPromptSuggestionForSession(sessionId);
+                if (selectedSessionIdRef.current !== sessionId) return;
+                setDraft((current) => {
+                  const next = current.trim().length ? `${current.trimEnd()}\n\n${text}` : text;
+                  draftsPerSessionRef.current.set(draftKey, next);
+                  return next;
+                });
+                setAttachments((current) => mergeAttachments(current, queuedAttachments));
+                setContextAttachments((current) => mergeChatContextAttachments(current, queuedContextAttachments));
+              }).catch((error: unknown) => {
+                setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
+              });
             }}
             onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
               if (selectedSessionId) {
@@ -10436,8 +10513,12 @@ export function AgentChatPane({
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
               }
             } : undefined}
-            onSendSteerNow={selectedSession?.provider === "claude" ? () => armAndSubmitSteerDispatch("inline") : undefined}
-            onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => armAndSubmitSteerDispatch("interrupt") : undefined}
+            onSendSteerNow={selectedSession?.provider === "claude" ? () => {
+              void submit("inline");
+            } : undefined}
+            onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => {
+              void submit("interrupt");
+            } : undefined}
             sessionId={selectedSessionId}
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && workDraftKind === "chat" && !lockSessionId && !initialSessionId && selectedSessionId == null,

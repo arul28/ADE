@@ -653,6 +653,8 @@ export type AgentChatEvent =
       type: "subagent_started";
       taskId: string;
       agentId?: string;
+      /** Claude SDK parent session that owns this native child transcript. */
+      providerSessionId?: string;
       parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1895,6 +1897,8 @@ export type AgentChatSendArgs = {
   cloudOverrides?: AgentChatCloudOverrides;
 };
 
+export type AgentChatDispatchSteerMode = "inline" | "interrupt";
+
 export type AgentChatSteerArgs = {
   sessionId: string;
   text: string;
@@ -1905,6 +1909,12 @@ export type AgentChatSteerArgs = {
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
+  /**
+   * Claude-only atomic active-turn delivery. Omit to stage the message for the
+   * next turn; "inline" maps to SDK priority "next" and "interrupt" maps to
+   * SDK priority "now".
+   */
+  dispatchMode?: AgentChatDispatchSteerMode;
 };
 
 export type AgentChatSteerResult = {
@@ -1953,6 +1963,8 @@ export type AgentChatSetScheduledWorkPausedResult = {
 export type AgentChatCancelSteerArgs = {
   sessionId: string;
   steerId: string;
+  /** Reject when the steer already left the queue instead of only clearing stale UI. */
+  requireQueued?: boolean;
 };
 
 export type AgentChatEditSteerArgs = {
@@ -1960,8 +1972,6 @@ export type AgentChatEditSteerArgs = {
   steerId: string;
   text: string;
 };
-
-export type AgentChatDispatchSteerMode = "inline" | "interrupt";
 
 export type AgentChatDispatchSteerArgs = {
   sessionId: string;

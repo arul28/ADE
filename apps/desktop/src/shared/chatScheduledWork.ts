@@ -4,6 +4,7 @@ import type {
   AgentChatScheduledWorkOrigin,
   AgentChatScheduledWorkStatus,
 } from "./types";
+import { isRealSubagent, normalizeSubagentLifecycleEvent } from "./chatSubagents";
 
 export type ChatScheduledWorkSnapshot = {
   id: string;
@@ -50,17 +51,8 @@ function compareIsoDesc(left: string, right: string): number {
 
 export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
   const snapshots = new Map<string, ChatScheduledWorkSnapshot>();
-  const terminalTurnEventIndex = new Map<string, number>();
-  const lastNonTerminalUpdateIndex = new Map<string, number>();
-  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
-    const envelope = events[eventIndex]!;
+  for (const envelope of events) {
     const event = envelope.event;
-    if (
-      (event.type === "done" || (event.type === "status" && event.turnStatus !== "started"))
-      && event.turnId
-    ) {
-      terminalTurnEventIndex.set(event.turnId, eventIndex);
-    }
     if (event.type !== "scheduled_work_update") continue;
     const existing = snapshots.get(event.id);
     snapshots.set(event.id, {
@@ -86,24 +78,6 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
       createdAt: existing?.createdAt ?? envelope.timestamp,
       updatedAt: envelope.timestamp,
     });
-    if (event.status === "scheduled" || event.status === "running") {
-      lastNonTerminalUpdateIndex.set(event.id, eventIndex);
-    }
-  }
-
-  for (const [id, snapshot] of snapshots) {
-    if (
-      snapshot.kind !== "background_task"
-      || (snapshot.status !== "scheduled" && snapshot.status !== "running")
-      || !snapshot.turnId
-    ) {
-      continue;
-    }
-    const finishedAt = terminalTurnEventIndex.get(snapshot.turnId);
-    const lastNonTerminalAt = lastNonTerminalUpdateIndex.get(id);
-    if (finishedAt != null && lastNonTerminalAt != null && finishedAt > lastNonTerminalAt) {
-      snapshots.set(id, { ...snapshot, status: "stopped" });
-    }
   }
   return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.updatedAt, right.updatedAt));
 }
@@ -153,7 +127,19 @@ export function deriveActiveScheduleItems(events: AgentChatEventEnvelope[]): Cha
 }
 
 export function deriveBackgroundItems(events: AgentChatEventEnvelope[]): ChatScheduledWorkSnapshot[] {
-  return deriveScheduledWorkSnapshots(events).filter((snapshot) => snapshot.kind === "background_task");
+  const subagentIds = new Set<string>();
+  for (const envelope of events) {
+    const event = normalizeSubagentLifecycleEvent(envelope.event);
+    if (!event) continue;
+    if (!isRealSubagent({ taskType: event.taskType, agentType: event.agentType })) continue;
+    if (event.taskId.trim()) subagentIds.add(event.taskId.trim());
+    if (event.agentId?.trim()) subagentIds.add(event.agentId.trim());
+  }
+
+  return deriveScheduledWorkSnapshots(events).filter((snapshot) =>
+    snapshot.kind === "background_task"
+      && (!snapshot.sourceTaskId || !subagentIds.has(snapshot.sourceTaskId.trim())),
+  );
 }
 
 function firstMeaningfulLine(value: string): string {

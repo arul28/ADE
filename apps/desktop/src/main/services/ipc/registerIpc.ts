@@ -5629,7 +5629,14 @@ export function registerIpc({
     if (typeof record.steerId !== "string" || !record.steerId.trim()) {
       throw new Error("Agent chat cancel steer steerId must be a non-empty string");
     }
-    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
+    if (record.requireQueued !== undefined && typeof record.requireQueued !== "boolean") {
+      throw new Error("Agent chat cancel steer requireQueued must be a boolean");
+    }
+    return {
+      sessionId: record.sessionId.trim(),
+      steerId: record.steerId.trim(),
+      ...(record.requireQueued === true ? { requireQueued: true } : {}),
+    };
   };
 
   const parseAgentChatEditSteerArgs = (

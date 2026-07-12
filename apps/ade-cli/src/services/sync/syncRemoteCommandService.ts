@@ -2060,17 +2060,26 @@ function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendAr
 
 function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteerArgs {
   const attachments = parseAgentChatFileRefs(value.attachments);
+  const dispatchMode = value.dispatchMode;
+  if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
+    throw new Error("chat.steer dispatchMode must be 'inline' or 'interrupt'.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
     text: requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
+    ...(dispatchMode ? { dispatchMode } : {}),
   };
 }
 
 function parseAgentChatCancelSteerArgs(value: Record<string, unknown>): AgentChatCancelSteerArgs {
+  if (value.requireQueued !== undefined && typeof value.requireQueued !== "boolean") {
+    throw new Error("chat.cancelSteer requireQueued must be a boolean.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.cancelSteer requires sessionId."),
     steerId: requireString(value.steerId, "chat.cancelSteer requires steerId."),
+    ...(value.requireQueued === true ? { requireQueued: true } : {}),
   };
 }
 

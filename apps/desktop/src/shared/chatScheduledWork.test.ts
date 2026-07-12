@@ -64,6 +64,36 @@ describe("chatScheduledWork helpers", () => {
     expect(deriveBackgroundItems(events).map((item) => item.kind)).toEqual(["background_task"]);
   });
 
+  it("filters historical Agent-as-Background duplicates by lifecycle identity", () => {
+    const events = [
+      envelope({
+        type: "subagent_started",
+        taskId: "agent-1",
+        agentId: "agent-1",
+        agentType: "Explore",
+        taskType: "subagent",
+        description: "Review code",
+        background: true,
+      }, 0),
+      envelope({
+        type: "scheduled_work_update",
+        id: "background:agent-1",
+        kind: "background_task",
+        status: "running",
+        sourceTaskId: "agent-1",
+      }, 1),
+      envelope({
+        type: "scheduled_work_update",
+        id: "background:shell-1",
+        kind: "background_task",
+        status: "running",
+        sourceTaskId: "shell-1",
+      }, 2),
+    ];
+
+    expect(deriveBackgroundItems(events).map((item) => item.id)).toEqual(["background:shell-1"]);
+  });
+
   it("keeps recurring fired wakeups active and moves fired one-shots to history", () => {
     const events = [
       envelope({
@@ -117,7 +147,7 @@ describe("chatScheduledWork helpers", () => {
     expect(backgroundCommandCwd("cd /x")).toBeNull();
   });
 
-  it("stops stale background work when its turn finishes without changing schedules", () => {
+  it("keeps background work running when its parent turn finishes", () => {
     const events: AgentChatEventEnvelope[] = [
       envelope({
         type: "scheduled_work_update",
@@ -137,7 +167,7 @@ describe("chatScheduledWork helpers", () => {
     ];
 
     const snapshots = deriveScheduledWorkSnapshots(events);
-    expect(snapshots.find((item) => item.id === "background-1")?.status).toBe("stopped");
+    expect(snapshots.find((item) => item.id === "background-1")?.status).toBe("running");
     expect(snapshots.find((item) => item.id === "cron-1")?.status).toBe("running");
   });
 
