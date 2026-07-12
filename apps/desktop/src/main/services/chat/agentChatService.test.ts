@@ -8831,6 +8831,27 @@ describe("createAgentChatService", () => {
         };
         yield {
           type: "system",
+          subtype: "task_started",
+          task_id: "promoted-background-bash",
+          description: "Promote this Bash task",
+          command: "sleep 5",
+          task_type: "local_bash",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          task_id: "promoted-background-bash",
+          patch: { status: "running", is_backgrounded: true },
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "promoted-background-bash",
+          status: "completed",
+          summary: "Process exited",
+        };
+        yield {
+          type: "system",
           subtype: "background_tasks_changed",
           tasks: [{
             task_id: "bgo5i8f6y",
@@ -8877,6 +8898,10 @@ describe("createAgentChatService", () => {
         e.event.type === "scheduled_work_update"
         && (e.event as any).id === "background:foreground-bash",
       )).toBe(false);
+      expect(events.filter((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:promoted-background-bash",
+      ).map((e) => (e.event as any).status)).toEqual(["running", "completed"]);
 
       // No subagent_* events for a background shell (this is the background:false
       // spawn-flag pollution the classifier now prevents).
@@ -11538,6 +11563,22 @@ describe("createAgentChatService", () => {
           type: "system",
           subtype: "task_started",
           session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          task_type: "local_bash",
+          description: "Idle promoted Bash",
+          command: "sleep 10",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          patch: { status: "running", is_backgrounded: true },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-queued-steer",
           task_id: "cron-task-queued-steer",
           task_type: "cron",
           description: "Check queued steer",
@@ -11553,6 +11594,14 @@ describe("createAgentChatService", () => {
         };
 
         await finishBackgroundPromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "idle-promoted-bash",
+          status: "completed",
+          summary: "Process exited",
+        };
         yield {
           type: "system",
           subtype: "task_updated",
@@ -11616,7 +11665,15 @@ describe("createAgentChatService", () => {
         (event): event is AgentChatEventEnvelope =>
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
+          && event.event.id === "background:idle-promoted-bash"
           && event.event.status === "running",
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "text"
+          && event.event.text.includes("background check is still running"),
       );
 
       const steerResult = await service.steer({

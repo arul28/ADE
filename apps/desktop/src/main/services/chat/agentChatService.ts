@@ -10880,6 +10880,24 @@ export function createAgentChatService(args: {
     };
   };
 
+  const promoteClaudeBackgroundedNonAgentTask = (
+    runtime: ClaudeRuntime,
+    taskId: string,
+    existing: ClaudeActiveSubagent | undefined,
+    patch: Record<string, unknown>,
+  ): ClaudeActiveSubagent | undefined => {
+    if (!existing?.nonAgentTaskRun || patch.is_backgrounded !== true) return existing;
+    const promoted: ClaudeActiveSubagent = {
+      ...existing,
+      description: compactString(patch.description) ?? existing.description,
+      background: true,
+      taskType: "background",
+      nonAgentTaskRun: false,
+    };
+    runtime.activeSubagents.set(taskId, promoted);
+    return promoted;
+  };
+
   // The SubagentStop hook keys `finalSummary` by `agent_id`, but the task_*
   // system messages key `activeSubagents` by `task_id` — two different id
   // spaces. Look the entry up under whichever id is present so the notification
@@ -13817,7 +13835,9 @@ export function createAgentChatService(args: {
     const taskId = compactString(msg.task_id);
     if (!taskId) return true;
     const notificationAgentId = compactString(msg.agent_id);
-    const existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
+    const taskPatch = subtype === "task_updated" ? asRecord(msg.patch) ?? {} : {};
+    let existing = resolveClaudeActiveSubagent(runtime, taskId, notificationAgentId);
+    existing = promoteClaudeBackgroundedNonAgentTask(runtime, taskId, existing, taskPatch);
     // Ambient (skip_transcript) tasks and non-agent task runs are both tracked
     // but never surfaced — swallow every follow-up subtype, deleting on the
     // terminal one so the entry does not leak.
@@ -13899,8 +13919,18 @@ export function createAgentChatService(args: {
         return true;
       }
       // task_updated: emit a terminal background row only on completion.
-      const patch = asRecord(msg.patch) ?? {};
+      const patch = taskPatch;
       const status = compactString(patch.status);
+      if (patch.is_backgrounded === true && status !== "completed" && status !== "failed" && status !== "killed") {
+        emitClaudeBackgroundTaskUpdate(managed, runtime, {
+          taskId,
+          status: "running",
+          title: existing?.description ?? description,
+          command,
+          turnId,
+        });
+        return true;
+      }
       if (status === "completed" || status === "failed" || status === "killed") {
         runtime.activeSubagents.delete(taskId);
         if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
@@ -15730,9 +15760,10 @@ export function createAgentChatService(args: {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
-          const existing = runtime.activeSubagents.get(taskId);
-          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           const patch = asRecord(taskMsg.patch) ?? {};
+          let existing = runtime.activeSubagents.get(taskId);
+          existing = promoteClaudeBackgroundedNonAgentTask(runtime, taskId, existing, patch);
+          if (existing?.skipTranscript || existing?.nonAgentTaskRun) continue;
           const status = compactString(patch.status);
           const description = compactString(patch.description) ?? existing?.description ?? "Task update";
           const parentToolUseId = existing?.parentToolUseId ?? null;
@@ -15756,7 +15787,15 @@ export function createAgentChatService(args: {
           // rows, not subagents. Emit a terminal background row on completion,
           // and nothing for interim updates.
           if (classification.backgroundShell) {
-            if (status === "completed" || status === "failed" || status === "killed") {
+            if (patch.is_backgrounded === true && status !== "completed" && status !== "failed" && status !== "killed") {
+              emitClaudeBackgroundTaskUpdate(managed, runtime, {
+                taskId,
+                status: "running",
+                title: existing?.description ?? description,
+                command: existing?.command,
+                ...(turnId ? { turnId } : {}),
+              });
+            } else if (status === "completed" || status === "failed" || status === "killed") {
               runtime.activeSubagents.delete(taskId);
               if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
               emitClaudeBackgroundTaskUpdate(managed, runtime, {
