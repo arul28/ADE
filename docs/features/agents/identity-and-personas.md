@@ -62,8 +62,8 @@ These fields drive prompt adjustments for detail level, initiative, and when to 
 - Selected personality overlay (+ `customPersonality` for the `custom` preset).
 - `CTO_CONTINUITY_OPERATING_MODEL` — how ADE re-grounds the CTO across compaction and resumes.
 - `CTO_MEMORY_SYSTEM_GUIDANCE` — teaches the CTO that it has durable, model-agnostic memory and how to use the memory tools.
-- Environment knowledge — ADE surfaces, tools, task-routing rules, and the live model registry.
-- `CTO_CAPABILITY_MANIFEST` — the available operator tools, injected verbatim.
+- Environment knowledge — ADE surfaces, tools, task-routing rules, the live model registry, and instructions to discover installed-version capabilities through bundled `ade-*` skills plus `ade actions list --text` / `ade actions run`.
+- `CTO_CAPABILITY_MANIFEST` — the available CTO operator tools, generated from `createCtoOperatorTools()` and injected verbatim.
 
 `previewSystemPrompt()` returns exactly these sections, which the settings and onboarding UI render.
 
@@ -124,7 +124,7 @@ The CTO maintains an append-only session log with hash chaining. Each entry incl
 - **Custom personality text size.** `customPersonality` is injected as-is; very long values consume prompt budget.
 - **Deterministic flush is the guarantee.** The LLM summary upgrade is best-effort — never make the durable memory write depend on it.
 - **Injected memory is authoritative.** The prompt tells the CTO not to claim memory it does not have injected; injection caps/order in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
-- **Capability manifest is hand-synced.** `buildCtoCapabilityManifest()` must stay aligned with `ctoOperatorTools.ts` registrations.
+- **Capability knowledge is generated and runtime-aware.** `buildCtoCapabilityManifest()` derives its curated operator-tool inventory from `createCtoOperatorTools()`. Service actions outside that set must be discovered from the installed runtime's `ade actions list --text` catalog and bundled `ade-*` skills rather than copied into a second static list.
 - **Daily log permission.** Files under `.ade/cto/daily/` are written with the default umask. Keep `.ade/` out of shared paths.
 
 ## Related docs

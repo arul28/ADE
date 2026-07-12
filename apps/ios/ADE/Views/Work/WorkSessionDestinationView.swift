@@ -335,6 +335,9 @@ struct WorkSessionDestinationView: View {
   /// composer as Work while routing every chat operation through
   /// `personalChats.*` and hiding project-only chrome.
   var personalChat = false
+  /// CTO uses the Work transcript pipeline with a single-line voice/send
+  /// composer. Model, reasoning, fast mode, and identity live in CTO settings.
+  var compactComposer = false
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
   var isCrossProject: Bool { crossProjectContext != nil }
@@ -1153,6 +1156,7 @@ struct WorkSessionDestinationView: View {
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,
+      compactComposer: compactComposer,
       isPersonalChat: personalChat,
       personalAttachmentsAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.saveTempAttachment"),

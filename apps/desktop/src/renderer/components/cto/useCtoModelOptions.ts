@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getModelById, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
+import { getModelById, modelSupportsFastMode, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 
 export type CtoModelSelection = {
@@ -8,6 +8,7 @@ export type CtoModelSelection = {
   model: string;
   modelId: string;
   reasoningEffort: string | null;
+  supportsFastMode: boolean;
 };
 
 /** Reasoning tier the model supports closest to the caller's preference. */
@@ -36,13 +37,14 @@ export function resolveModelSelection(
     model: descriptor.shortId ?? descriptor.id.split("/").pop() ?? descriptor.id,
     modelId: descriptor.id,
     reasoningEffort: pickReasoningEffort(descriptor.id, preferredReasoning),
+    supportsFastMode: modelSupportsFastMode(descriptor),
   };
 }
 
 /**
  * Loads the models the user has configured (API keys / signed-in CLIs) so the
- * CTO model badge and Settings model row draw from the same catalog the composer
- * does. Also exposes a jump to the provider settings for the empty-catalog case.
+ * CTO Settings draws from the same configured catalog as the chat composer.
+ * Also exposes a jump to provider settings for the empty-catalog case.
  */
 export function useCtoModelOptions(): {
   availableModelIds: string[];

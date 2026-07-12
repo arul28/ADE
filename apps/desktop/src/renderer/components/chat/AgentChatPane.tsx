@@ -2779,6 +2779,7 @@ export function AgentChatPane({
   lockSessionId,
   hideSessionTabs = false,
   hideNativeControls = false,
+  hideModelControls = false,
   hideWorkspaceChrome = false,
   hideSurfaceHeader = false,
   hideLaneToolDrawers = false,
@@ -2824,6 +2825,8 @@ export function AgentChatPane({
   lockSessionId?: string | null;
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
+  /** Hide model/reasoning/fast controls when the embedding surface owns them. */
+  hideModelControls?: boolean;
   hideWorkspaceChrome?: boolean;
   /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
   hideSurfaceHeader?: boolean;
@@ -10258,6 +10261,7 @@ export function AgentChatPane({
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
+            hideModelControls={hideModelControls}
             messagePlaceholder={effectiveMessagePlaceholder}
             inputLockMessage={subagentView
               ? `Viewing ${subagentMetadata?.label

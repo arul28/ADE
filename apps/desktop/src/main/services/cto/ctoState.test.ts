@@ -272,6 +272,8 @@ describe("ctoStateService", () => {
     expect(preview.sections[4]?.content).toContain("spawnChat");
     expect(preview.sections[4]?.content).toContain("createTerminal");
     expect(preview.sections[4]?.content).toContain("Model Selection");
+    expect(preview.sections[4]?.content).toContain("ade actions run <domain.action>");
+    expect(preview.sections[4]?.content).toContain("bundled `ade-*` skills");
     // Capabilities section: organized tool reference with descriptions
     expect(preview.sections[5]?.content).toContain("ADE Operator Tools");
     expect(preview.sections[5]?.content).toContain("listLanes");

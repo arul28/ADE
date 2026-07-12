@@ -470,9 +470,10 @@ struct WorkComposerTextView: UIViewRepresentable {
   let placeholder: String
   @Binding var measuredHeight: CGFloat
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  var maxLines = 6
 
   private var maxHeight: CGFloat {
-    ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * 6) + 8
+    ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * CGFloat(max(1, maxLines))) + 8
   }
 
   func makeCoordinator() -> Coordinator {

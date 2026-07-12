@@ -11,10 +11,8 @@ import type {
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { CtoOnboardingCard } from "./CtoOnboardingCard";
-import { getCtoPersonalityPreset } from "./identityPresets";
 import { getPersonalityTheme } from "./personalityTheme";
 import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
@@ -56,7 +54,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
   const personality = ctoIdentity?.personality ?? "strategic";
   const theme = getPersonalityTheme(personality);
-  const personalityLabel = getCtoPersonalityPreset(personality).label;
 
   const currentModelId = session?.modelId
     ?? ctoIdentity?.modelPreferences.modelId
@@ -64,6 +61,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const currentReasoningEffort = session?.reasoningEffort
     ?? ctoIdentity?.modelPreferences.reasoningEffort
     ?? null;
+  const currentFastMode = session?.fastMode === true;
 
   /* ── Data loading ── */
 
@@ -159,10 +157,10 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     await refreshSession();
   }, [refreshSession]);
 
-  // One switch path for both the header badge and the Settings model row. With a
-  // live session it moves the running thread via updateSession (the composer's
-  // path, which also persists the choice into identity prefs). Before the session
-  // exists it writes identity prefs so ensureSession reconciles the model in.
+  // Settings owns model selection for the CTO. With a live session it moves the
+  // running thread via updateSession, which also persists the choice into
+  // identity prefs. Before the session exists it writes identity prefs so
+  // ensureSession reconciles the model in.
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
     if (!window.ade?.cto || switchingModel) return;
     const selection = resolveModelSelection(modelId, reasoningEffort);
@@ -175,6 +173,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           sessionId: session.id,
           modelId: selection.modelId,
           reasoningEffort: selection.reasoningEffort,
+          fastMode: selection.supportsFastMode && currentFastMode,
         });
         ctoPrimarySession = updated;
         setSession(updated);
@@ -195,6 +194,26 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       setCtoIdentity(snap.identity);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't switch the model.");
+    } finally {
+      setSwitchingModel(false);
+    }
+  }, [currentFastMode, refreshSession, session, switchingModel]);
+
+  const handleFastModeChange = useCallback(async (enabled: boolean) => {
+    if (!window.ade?.cto || switchingModel) return;
+    setSwitchingModel(true);
+    setError(null);
+    try {
+      const targetSession = session ?? await refreshSession();
+      if (!targetSession) throw new Error("The CTO chat is still waking up.");
+      const updated = await window.ade.agentChat.updateSession({
+        sessionId: targetSession.id,
+        fastMode: enabled,
+      });
+      ctoPrimarySession = updated;
+      setSession(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't update Fast mode.");
     } finally {
       setSwitchingModel(false);
     }
@@ -242,6 +261,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       title: null,
       goal: null,
       reasoningEffort: session.reasoningEffort ?? null,
+      fastMode: session.fastMode === true,
       executionMode: session.executionMode ?? null,
       identityKey: session.identityKey,
       capabilityMode: session.capabilityMode,
@@ -300,29 +320,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             {avatarInitial}
           </div>
           <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
-          <span
-            className="hidden shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium sm:inline"
-            style={{ background: `rgba(${theme.rgb}, 0.12)`, color: theme.hex }}
-          >
-            {personalityLabel}
-          </span>
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {currentModelId ? (
-            <ModelPicker
-              value={currentModelId}
-              availableModelIds={availableModelIds}
-              surfaceKey="cto-header"
-              compact
-              disabled={switchingModel}
-              onChange={(modelId) => {
-                const selection = resolveModelSelection(modelId, currentReasoningEffort);
-                void handleModelChange(modelId, selection?.reasoningEffort ?? null);
-              }}
-              onOpenSignIn={openProviderSettings}
-            />
-          ) : null}
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -350,6 +350,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             initialSessionSummary={lockedSessionSummary}
             hideSessionTabs
             hideNativeControls
+            hideModelControls
             hideWorkspaceChrome
             hideSurfaceHeader
             presentation={presentation}
@@ -396,11 +397,13 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               sessionLogs={sessionLogs}
               currentModelId={currentModelId}
               currentReasoningEffort={currentReasoningEffort}
+              currentFastMode={currentFastMode}
               availableModelIds={availableModelIds}
               loadingModels={loadingModels}
               switchingModel={switchingModel}
               onSaveIdentity={handleSaveIdentity}
               onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
+              onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
               onOpenProviderSettings={openProviderSettings}
               onResetOnboarding={handleResetOnboarding}
             />

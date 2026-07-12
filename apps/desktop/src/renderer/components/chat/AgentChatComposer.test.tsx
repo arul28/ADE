@@ -855,6 +855,20 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
 
+  it("hides model, reasoning, and fast controls when the host surface owns them", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.5",
+      availableModelIds: ["openai/gpt-5.5"],
+      fastMode: true,
+      hideModelControls: true,
+    });
+
+    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
+  });
+
   it("renders Droid autonomy controls without OpenCode permission labels", () => {
     const onDroidPermissionModeChange = vi.fn();
     renderComposer({

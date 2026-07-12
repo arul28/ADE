@@ -1174,6 +1174,7 @@ export function AgentChatComposer({
   onModelPickerOpenRequestHandled,
   permissionModeLocked = false,
   hideNativeControls = false,
+  hideModelControls = false,
   orchestrationRole = null,
   messagePlaceholder,
   inputLockMessage,
@@ -1310,6 +1311,8 @@ export function AgentChatComposer({
   onModelPickerOpenRequestHandled?: () => void;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
+  /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
+  hideModelControls?: boolean;
   /**
    * Orchestration role lock (see `goal.md` §10.10).
    *   - `"lead"`: hide permission picker AND model picker once the lead
@@ -4024,7 +4027,7 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!parallelChatMode && (orchestrationRole !== "lead" || !sessionId) ? (
+            {!hideModelControls && !parallelChatMode && (orchestrationRole !== "lead" || !sessionId) ? (
               <>
                 <ModelPicker
                   value={modelId}
