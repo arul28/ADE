@@ -869,6 +869,24 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
 
+  it("hides parallel slot model, reasoning, and fast controls when the host surface owns them", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      availableModelIds: ["openai/gpt-5.5", "anthropic/claude-sonnet-5"],
+      hideModelControls: true,
+      parallelChatMode: true,
+      parallelConfiguringIndex: 0,
+      parallelModelSlots: [
+        { modelId: "openai/gpt-5.5", reasoningEffort: "high", fastMode: true },
+        { modelId: "anthropic/claude-sonnet-5", reasoningEffort: "medium" },
+      ],
+    });
+
+    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
+  });
+
   it("renders Droid autonomy controls without OpenCode permission labels", () => {
     const onDroidPermissionModeChange = vi.fn();
     renderComposer({

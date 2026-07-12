@@ -3995,7 +3995,7 @@ export function AgentChatComposer({
                 })}
               </div>
             ) : null}
-            {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
+            {!hideModelControls && parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
               <>
                 <ModelPicker
                   value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
