@@ -45,6 +45,7 @@ import {
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { findUserMessageForTurn, isParentUserMessage } from "./chatTurnState";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -7379,6 +7380,48 @@ describe("AgentChatPane submit recovery", () => {
 // ---------------------------------------------------------------------------
 // Pure function unit tests (consolidated from AgentChatPane.test.ts)
 // ---------------------------------------------------------------------------
+
+describe("correlated parent turn messages", () => {
+  it("keeps a fresh idle-steer parent retryable without promoting child steers", () => {
+    const parent = {
+      type: "user_message" as const,
+      text: "Retry this parent turn",
+      steerId: "idle-steer-correlation",
+      messageId: "durable-parent-message",
+      deliveryState: "delivered" as const,
+      turnId: "turn-parent",
+    };
+    const childSteer = {
+      type: "user_message" as const,
+      text: "Adjust the active turn",
+      steerId: "active-steer-correlation",
+      deliveryState: "delivered" as const,
+      turnId: "turn-parent",
+    };
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-parent",
+        timestamp: "2026-07-12T12:00:00.000Z",
+        sequence: 1,
+        event: parent,
+      },
+      {
+        sessionId: "session-parent",
+        timestamp: "2026-07-12T12:00:01.000Z",
+        sequence: 2,
+        event: childSteer,
+      },
+    ];
+
+    expect(isParentUserMessage(parent)).toBe(true);
+    expect(isParentUserMessage(childSteer)).toBe(false);
+    expect(findUserMessageForTurn(events, "turn-parent")).toMatchObject({
+      text: "Retry this parent turn",
+      steerId: "idle-steer-correlation",
+      messageId: "durable-parent-message",
+    });
+  });
+});
 
 describe("resolveNextSelectedSessionId", () => {
   function buildMinimalSession(sessionId: string): AgentChatSessionSummary {

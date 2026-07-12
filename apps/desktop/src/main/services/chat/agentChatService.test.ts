@@ -10135,16 +10135,14 @@ describe("createAgentChatService", () => {
       const orphanTail: AgentChatEventEnvelope[] = [
         { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 1, event: {
           type: "user_message", text: "Work interrupted by restart", turnId: "turn-old",
+          messageId: "idle-steer-parent-message", steerId: "idle-steer-before-restart", deliveryState: "delivered",
         } as any },
         { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 2, event: {
-          type: "status", turnStatus: "started", turnId: "turn-old",
-        } as any },
-        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 3, event: {
           type: "scheduled_work_update", id: "background:bg-restart", kind: "background_task",
           status: "running", origin: "background_task", title: "npm run serve", summary: "shell",
           sourceTaskId: "bg-restart", turnId: "turn-old",
         } as any },
-        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 4, event: {
+        { sessionId: session.id, timestamp: new Date().toISOString(), sequence: 3, event: {
           type: "subagent_started", taskId: "sub-restart", agentId: "sub-restart",
           agentType: "Explore", parentToolUseId: "toolu_sub_r", description: "look", turnId: "turn-old",
         } as any },
@@ -26268,21 +26266,187 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
 
-      await expect(service.steer({
+      const result = await service.steer({
         sessionId: session.id,
         text: "Treat this stale steer as a normal turn",
         dispatchMode: "inline",
-      })).resolves.toMatchObject({ queued: false, steerId: expect.any(String) });
+        reasoningEffort: "high",
+        executionMode: "subagents",
+        interactionMode: "plan",
+      });
+      expect(result).toMatchObject({ queued: false, steerId: expect.any(String) });
 
-      expect(events.some((event) =>
+      const delivered = events.find((event) =>
         event.event.type === "user_message"
         && event.event.text === "Treat this stale steer as a normal turn"
-      )).toBe(true);
+      );
+      expect(delivered?.event).toMatchObject({
+        type: "user_message",
+        steerId: result.steerId,
+        deliveryState: "delivered",
+        turnId: expect.any(String),
+      });
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        reasoningEffort: "high",
+        executionMode: "subagents",
+        interactionMode: "plan",
+      });
       expect(events.some((event) => event.event.type === "done")).toBe(false);
 
       finishTurn();
       await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
         event.event.type === "done" && event.event.status === "completed");
+    });
+
+    it("emits one interrupted terminal pair when a Claude model switches mid-turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let oldStreamFinished = false;
+      let releaseActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { releaseActiveTurn = resolve; });
+      let releaseReplacementTurn!: () => void;
+      const replacementTurnGate = new Promise<void>((resolve) => { releaseReplacementTurn = resolve; });
+      let replacementTurnStreaming = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-switch", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Switch me while I am running" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          oldStreamFinished = true;
+          return;
+        }
+        if (streamCall === 3) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-switch-next", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        replacementTurnStreaming = true;
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Replacement turn is active" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await replacementTurnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const mockSession = {
+        send,
+        stream,
+        close,
+        sessionId: "sdk-model-switch",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(mockSession as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep working while I switch models",
+      }, { awaitDispatch: true });
+      const started = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started");
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.turnId === started.event.turnId);
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Do this after the old model finishes",
+      });
+      expect(queued).toMatchObject({ queued: true, steerId: expect.any(String) });
+
+      // Force the restart reconciler's view of the transcript to lag behind the
+      // live stream, matching the race where model-switch teardown creates the
+      // replacement runtime before the old stream emits its terminal pair.
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        {
+          sessionId: session.id,
+          timestamp: new Date().toISOString(),
+          sequence: 1,
+          event: { type: "user_message", text: "Keep working while I switch models", turnId: started.event.turnId } as any,
+        },
+        {
+          sessionId: session.id,
+          timestamp: new Date().toISOString(),
+          sequence: 2,
+          event: { type: "status", turnStatus: "started", turnId: started.event.turnId } as any,
+        },
+      ]);
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const interruptedDone = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done"
+        && event.event.turnId === started.event.turnId
+        && event.event.status === "interrupted");
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "system_notice"
+        && event.event.steerId === queued.steerId
+        && event.event.message.includes("cancelled"));
+
+      await vi.waitFor(() => { expect(streamCall).toBeGreaterThanOrEqual(3); });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Replacement turn after model switch",
+      }, { awaitDispatch: true });
+      const replacementStarted = await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status"
+        && event.event.turnStatus === "started"
+        && event.event.turnId !== started.event.turnId);
+      await vi.waitFor(() => { expect(replacementTurnStreaming).toBe(true); });
+
+      releaseActiveTurn();
+      await vi.waitFor(() => { expect(oldStreamFinished).toBe(true); });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(events.filter((event) =>
+        event.event.type === "status"
+        && event.event.turnId === started.event.turnId
+        && event.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      const doneEvents = events.filter((event) =>
+        event.event.type === "done"
+        && event.event.turnId === started.event.turnId
+        && event.event.status === "interrupted"
+      );
+      expect(doneEvents).toHaveLength(1);
+      expect(interruptedDone.event).toMatchObject({
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({ status: "active" });
+      expect(close).toHaveBeenCalled();
+      expect(events.filter((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === queued.steerId
+        && event.event.deliveryState === "delivered"
+      )).toHaveLength(0);
+
+      releaseReplacementTurn();
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done"
+        && event.event.turnId === replacementStarted.event.turnId
+        && event.event.status === "completed");
     });
 
     it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {

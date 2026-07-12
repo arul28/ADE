@@ -2164,6 +2164,7 @@ type PreparedSendMessage = {
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
   onBackendDispatched?: () => void;
+  steerId?: string;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
   optimisticDroidTurnStart?: boolean;
@@ -8183,7 +8184,14 @@ export function createAgentChatService(args: {
       if (isCodexSubagentTranscriptEnvelope(entry)) continue;
       const event = entry.event;
 
-      if (event.type === "user_message" && !event.steerId) {
+      // Active/queued steers have no messageId and belong to an already-running
+      // parent turn, so they must not replace its anchor. A fresh idle-steer
+      // turn receives runClaudeTurn's durable messageId and remains recoverable
+      // even though it also carries the caller-facing steerId.
+      if (
+        event.type === "user_message"
+        && (!event.steerId || Boolean(event.messageId?.trim()))
+      ) {
         const turnId = event.turnId?.trim();
         if (turnId) {
           latest = { turnId, terminalStatus: null, doneStatus: null };
@@ -12534,39 +12542,69 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
+      const runtime = managed.runtime;
+      const modelSwitchTurnId = openCodeReason === "model_switch" && runtime.busy
+        ? runtime.activeTurnId
+        : null;
+      if (modelSwitchTurnId && !runtime.interruptEventsEmitted) {
+        // A replacement runtime may start before this abandoned stream
+        // unwinds. Own the old turn's terminal pair synchronously so restart
+        // reconciliation and detached finalization cannot both emit it.
+        runtime.interruptEventsEmitted = true;
+        emitChatEvent(managed, {
+          type: "status",
+          turnStatus: "interrupted",
+          turnId: modelSwitchTurnId,
+        });
+        void emitTurnDiffSummaryIfChanged(managed, modelSwitchTurnId);
+        emitChatEvent(managed, {
+          type: "done",
+          turnId: modelSwitchTurnId,
+          status: "interrupted",
+          ...resolveClaudeTurnModelPayload(managed.session, []),
+        });
+        markSessionIdleWithFreshCache(managed);
+      }
+      if (openCodeReason === "model_switch") {
+        // The old runtime owns these staged rows. A model switch cannot safely
+        // deliver them through the replacement query, so settle their UI state
+        // before discarding the queue.
+        cancelQueuedSteers(managed, runtime, "interrupted");
+        persistChatState(managed);
+      }
       // Mark interrupted so the streaming catch block takes the graceful path
-      managed.runtime.interrupted = true;
+      runtime.interrupted = true;
       if (preserveProviderResumeState) persistChatState(managed);
-      cancelClaudeWarmup(managed, managed.runtime, "teardown");
-      try { managed.runtime.query?.close(); } catch { /* ignore */ }
+      cancelClaudeWarmup(managed, runtime, "teardown");
+      try { runtime.query?.close(); } catch { /* ignore */ }
       // Every teardown abandons this query's control channel. Enforce process
       // ownership even for idle eviction so an ended iterator cannot leave a
       // detached Claude worker (or its children) behind.
       claudeSubprocessReaper.reapForSession(managed.session.id, openCodeReason);
-      managed.runtime.inputPump?.close();
-      try { managed.runtime.warmQuery?.close(); } catch { /* ignore */ }
-      settleClaudeInitialInputDispatch(managed.runtime, new Error("Claude runtime was closed before the turn input was dispatched."));
-      resetClaudeProcessBackgroundLevel(managed.runtime);
-      managed.runtime.query = null;
-      managed.runtime.inputPump = null;
-      managed.runtime.warmQuery = null;
-      managed.runtime.warmupDone = null;
+      runtime.inputPump?.close();
+      try { runtime.warmQuery?.close(); } catch { /* ignore */ }
+      settleClaudeInitialInputDispatch(runtime, new Error("Claude runtime was closed before the turn input was dispatched."));
+      resetClaudeProcessBackgroundLevel(runtime);
+      runtime.query = null;
+      runtime.inputPump = null;
+      runtime.warmQuery = null;
+      runtime.warmupDone = null;
       // Query is already null, so settle every visible background/native task
       // without trying provider stopTask on the dead control channel.
       void stopActiveClaudeSubagents(
         managed,
-        managed.runtime,
-        managed.runtime.activeTurnId ?? undefined,
+        runtime,
+        runtime.activeTurnId ?? undefined,
         "The Claude session ended before this task reported completion.",
       );
-      managed.runtime.emittedSubagentStartIds.clear();
-      managed.runtime.taskToolInputByToolUseId.clear();
-      managed.runtime.workflowAgentsByTask.clear();
-      managed.runtime.dispatchingSteerIds.clear();
-      for (const pending of managed.runtime.approvals.values()) {
+      runtime.emittedSubagentStartIds.clear();
+      runtime.taskToolInputByToolUseId.clear();
+      runtime.workflowAgentsByTask.clear();
+      runtime.dispatchingSteerIds.clear();
+      for (const pending of runtime.approvals.values()) {
         pending.resolve({ decision: "cancel" });
       }
-      managed.runtime.approvals.clear();
+      runtime.approvals.clear();
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "opencode") {
@@ -12989,6 +13027,7 @@ export function createAgentChatService(args: {
       metadata?: AgentChatEventMetadata | null | undefined;
       turnId?: string;
       messageId?: string;
+      steerId?: string;
       laneDirectiveKey?: string | null;
       onDispatched?: () => void;
     },
@@ -13004,6 +13043,7 @@ export function createAgentChatService(args: {
       ...(args.metadata ? { metadata: args.metadata } : {}),
       ...(args.turnId ? { turnId: args.turnId } : {}),
       ...(args.messageId ? { messageId: args.messageId } : {}),
+      ...(args.steerId ? { steerId: args.steerId, deliveryState: "delivered" as const } : {}),
     });
     args.onDispatched?.();
   };
@@ -14891,6 +14931,7 @@ export function createAgentChatService(args: {
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
+      steerId?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
@@ -14948,6 +14989,7 @@ export function createAgentChatService(args: {
       metadata: args.metadata,
       turnId,
       messageId: userMessageId,
+      steerId: args.steerId,
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
@@ -16864,13 +16906,16 @@ export function createAgentChatService(args: {
       flushOpenClaudeToolUses(runtime.interrupted ? "interrupted" : "completed");
       flushClaudeStructuredActivities(runtime.interrupted ? "interrupted" : "completed");
       // Note: query is NOT closed here — it stays alive for the next turn.
+      const runtimeStillCurrent = managed.runtime === runtime;
       runtime.busy = false;
       runtime.activeTurnId = null;
-      markSessionIdleWithFreshCache(managed);
-      reportProviderRuntimeReady("claude");
+      if (runtimeStillCurrent) {
+        markSessionIdleWithFreshCache(managed);
+        reportProviderRuntimeReady("claude");
+      }
 
       // Flush deferred session reset from mid-turn reasoning effort change
-      if (runtime.pendingSessionReset) {
+      if (runtimeStillCurrent && runtime.pendingSessionReset) {
         const clearSdkSessionId = runtime.pendingSessionResetClearSdkSessionId === true;
         runtime.pendingSessionReset = false;
         runtime.pendingSessionResetClearSdkSessionId = false;
@@ -16906,7 +16951,7 @@ export function createAgentChatService(args: {
 
       // Adopt the SDK-generated session title (once) when the turn settles and
       // the chat still carries the provider-default name. Fire-and-forget.
-      maybeAdoptClaudeSdkSessionTitle(managed, runtime);
+      if (runtimeStillCurrent) maybeAdoptClaudeSdkSessionTitle(managed, runtime);
 
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
@@ -16916,11 +16961,13 @@ export function createAgentChatService(args: {
       persistChatState(managed);
 
       // Process queued steers (skip if session was disposed during execution)
-      if (runtime.pendingSteers.length) {
-        const delivered = await deliverNextQueuedSteer(managed, runtime);
-        if (!delivered) startClaudeIdleReader(managed, runtime, "turn_completed");
-      } else {
-        startClaudeIdleReader(managed, runtime, "turn_completed");
+      if (managed.runtime === runtime) {
+        if (runtime.pendingSteers.length) {
+          const delivered = await deliverNextQueuedSteer(managed, runtime);
+          if (!delivered) startClaudeIdleReader(managed, runtime, "turn_completed");
+        } else {
+          startClaudeIdleReader(managed, runtime, "turn_completed");
+        }
       }
     } catch (error) {
       const failedBeforeBackendDispatch = Boolean(onBackendDispatched);
@@ -16970,7 +17017,7 @@ export function createAgentChatService(args: {
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
-        markSessionIdleWithFreshCache(managed);
+        if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
         if (!runtime.interruptEventsEmitted) {
           emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
           emitChatEvent(managed, {
@@ -17001,7 +17048,7 @@ export function createAgentChatService(args: {
       } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
-        markSessionIdleWithFreshCache(managed);
+        if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
         if (!runtime.interruptEventsEmitted) {
           emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
           emitChatEvent(managed, {
@@ -17012,7 +17059,7 @@ export function createAgentChatService(args: {
           });
         }
       } else {
-        markSessionIdleWithFreshCache(managed);
+        if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
         const isAuthFailure = isClaudeRuntimeAuthError(effectiveError);
         let errorMessage = isAuthFailure
           ? CLAUDE_RUNTIME_AUTH_ERROR
@@ -29655,6 +29702,7 @@ export function createAgentChatService(args: {
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
+      steerId,
       onDispatched,
       onBackendDispatched,
       turnId,
@@ -29959,6 +30007,7 @@ export function createAgentChatService(args: {
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
+      steerId,
       onDispatched,
       onBackendDispatched,
     });
@@ -30044,6 +30093,7 @@ export function createAgentChatService(args: {
       attachments: prepared.attachments,
       ...(prepared.contextAttachments.length ? { contextAttachments: prepared.contextAttachments } : {}),
       ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
+      ...(prepared.steerId ? { steerId: prepared.steerId, deliveryState: "delivered" as const } : {}),
       turnId,
     });
     markSessionIdleWithFreshCache(managed);
@@ -30083,6 +30133,7 @@ export function createAgentChatService(args: {
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
+      preparedMessage?: PreparedSendMessage;
       routeActiveToSteer: true;
     },
   ): Promise<void | AgentChatSteerResult>;
@@ -30092,6 +30143,7 @@ export function createAgentChatService(args: {
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
+      preparedMessage?: PreparedSendMessage;
       routeActiveToSteer?: false;
     },
   ): Promise<void>;
@@ -30101,6 +30153,7 @@ export function createAgentChatService(args: {
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
+      preparedMessage?: PreparedSendMessage;
       routeActiveToSteer?: boolean;
     },
   ): Promise<void | AgentChatSteerResult> {
@@ -30125,7 +30178,7 @@ export function createAgentChatService(args: {
         interactionMode: args.interactionMode,
       });
     }
-    const prepared = prepareSendMessage(args);
+    const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
@@ -30602,6 +30655,9 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       metadata,
+      reasoningEffort,
+      executionMode,
+      interactionMode,
     });
     if (!preparedSteer) {
       return { steerId, queued: false };
@@ -30641,6 +30697,7 @@ export function createAgentChatService(args: {
           ? { steerId, queued: true }
           : { steerId, queued: false, reason: "queue_full" };
       }
+      preparedSteer.steerId = steerId;
       await sendMessage({
         sessionId,
         text: trimmed,
@@ -30651,7 +30708,10 @@ export function createAgentChatService(args: {
         reasoningEffort,
         executionMode,
         interactionMode,
-      }, { awaitDispatch: true });
+      }, {
+        awaitDispatch: true,
+        preparedMessage: preparedSteer,
+      });
       return { steerId, queued: false };
     }
     await executePreparedSendMessage(preparedSteer);
