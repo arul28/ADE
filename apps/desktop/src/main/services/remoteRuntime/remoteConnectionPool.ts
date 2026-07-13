@@ -112,9 +112,9 @@ function assertRequiredActionRoute(
   );
 }
 
-function isRemoteRuntimeConnectionError(error: unknown): boolean {
+export function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
+  return /remote (?:runtime|ADE service) connection (?:closed|failed)|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
     message,
   );
 }

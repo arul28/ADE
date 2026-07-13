@@ -509,27 +509,12 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
   } catch {}
 }
 
-function isRuntimeActionCallTimeout(error: Error): boolean {
-  return /timed out waiting for method ade\/actions\/call/i.test(error.message);
-}
-
 // The RPC client surfaces a dropped/closed daemon socket with these sentinel
 // messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
 // daemon restarts or is recycled — e.g. when a desktop rebuild changes the
 // expected build hash and the running daemon is deemed incompatible.
 export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return /Remote ADE service connection (closed|failed)/i.test(error.message);
-}
-
-// A per-call RPC timeout now tears down the whole connection
-// (RuntimeRpcClient.failConnection rejects EVERY pending request with this
-// message), so a single slow action can collaterally fail concurrent in-flight
-// idempotent reads on the shared client. Mirror remoteConnectionPool's
-// isRemoteRuntimeConnectionError — which was updated to treat the timeout
-// teardown as a transient connection error — so the next connect() reconnects
-// and the read is retried once instead of surfacing a raw timeout.
-export function isLocalRuntimeMethodTimeout(error: Error): boolean {
-  return /timed out waiting for method/i.test(error.message);
 }
 
 // Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
@@ -666,7 +651,6 @@ export class LocalRuntimeConnectionPool {
   private activeClient: RuntimeRpcClient | null = null;
   private activeRuntimePid: number | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
-  private preserveOwnedRuntimeChildOnNextConnect = false;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
   private lastIsolatedServiceRepairMs = 0;
@@ -1186,15 +1170,7 @@ export class LocalRuntimeConnectionPool {
             attempt,
           });
         }
-        if (callError && isRuntimeActionCallTimeout(callError)) {
-          this.logger.warn("local_runtime.action_timeout_drop_client", {
-            domain: request.domain,
-            action: request.action,
-            socketPath: entry.socketPath,
-            totalMs,
-          });
-          this.resetConnectionAfterActionTimeout(entry);
-        } else if (callError && isLocalRuntimeConnectionDropped(callError)) {
+        if (callError && isLocalRuntimeConnectionDropped(callError)) {
           this.logger.warn("local_runtime.action_connection_dropped", {
             domain: request.domain,
             action: request.action,
@@ -1209,7 +1185,7 @@ export class LocalRuntimeConnectionPool {
 
       if (callError) {
         if (
-          (isLocalRuntimeConnectionDropped(callError) || isLocalRuntimeMethodTimeout(callError)) &&
+          isLocalRuntimeConnectionDropped(callError) &&
           attempt < maxAttempts
         ) {
           lastError = callError;
@@ -1349,7 +1325,6 @@ export class LocalRuntimeConnectionPool {
     this.activeClient = null;
     this.activeRuntimePid = null;
     this.ownedRuntimeChild = null;
-    this.preserveOwnedRuntimeChildOnNextConnect = false;
     this.projectsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
@@ -1484,20 +1459,11 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
-    this.clearConnectionIfCurrent(entry);
-    this.preserveOwnedRuntimeChildOnNextConnect = entry.child != null && this.ownedRuntimeChild === entry.child;
-    // An action timeout proves that this client request waited too long; it
-    // does not prove the runtime process is dead. Killing the owned runtime
-    // here tears down every project-scoped PTY and agent chat hosted by it.
-    closeRuntimeClient(entry.client);
-  }
-
   // Drop a stale/closed cached connection so the next connect() reconnects.
-  // Unlike the timeout reset, this does NOT dispose the owned child or unlink
-  // the socket: a dropped connection is often a daemon that has already been
-  // replaced (e.g. build-hash recycle), and a fresh daemon may have rebound the
-  // same socket — tearing it down would kill the healthy replacement.
+  // This does not dispose the owned child or unlink the socket: a dropped
+  // connection is often a daemon that has already been replaced (e.g.
+  // build-hash recycle), and a fresh daemon may have rebound the same socket —
+  // tearing it down would kill the healthy replacement.
   private resetActiveConnection(entry: LocalRuntimeConnection): void {
     this.clearConnectionIfCurrent(entry);
     closeRuntimeClient(entry.client);
@@ -1583,16 +1549,10 @@ export class LocalRuntimeConnectionPool {
   }
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
-    const shouldPreserveOwnedChild = this.preserveOwnedRuntimeChildOnNextConnect;
-    this.preserveOwnedRuntimeChildOnNextConnect = false;
     try {
       const client = await this.connectClient(socketPath);
-      const child = shouldPreserveOwnedChild ? this.ownedRuntimeChild : null;
-      if (!child) this.ownedRuntimeChild = null;
-      // If we deliberately kept an app-owned runtime alive after a timed-out
-      // action, reconnecting to its socket must not drop ownership; shutdown
-      // still needs to dispose that child.
-      return { client, child, socketPath };
+      this.ownedRuntimeChild = null;
+      return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
         this.noteCompatibilityError(error);

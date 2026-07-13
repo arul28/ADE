@@ -72,10 +72,14 @@ describe("RuntimeRpcClient", () => {
     const transport = new MockTransport();
     const client = new RuntimeRpcClient(transport);
 
-    const pending = client.call("projects.list", {});
+    const first = client.call("projects.list", {});
+    const second = client.call("runtime/info", {});
+    const firstAssertion = expect(first).rejects.toThrow("Remote ADE service connection closed.");
+    const secondAssertion = expect(second).rejects.toThrow("Remote ADE service connection closed.");
     transport.emitClose();
 
-    await expect(pending).rejects.toThrow("Remote ADE service connection closed.");
+    await firstAssertion;
+    await secondAssertion;
     await expect(client.call("projects.list", {})).rejects.toThrow("Remote ADE service connection closed.");
   });
 
@@ -124,30 +128,96 @@ describe("RuntimeRpcClient", () => {
     await expect(client.call("projects.list", {})).rejects.toThrow("broken pipe");
   });
 
-  it("treats per-call timeouts as terminal connection failures", async () => {
+  it("expires only one request while pending calls, event subscriptions, and later calls stay live", async () => {
     vi.useFakeTimers();
     try {
       const transport = new MockTransport();
       const client = new RuntimeRpcClient(transport, 60_000);
       const onDisconnect = vi.fn();
+      const onRuntimeEvent = vi.fn();
       client.onDisconnect(onDisconnect);
+      client.onNotification("runtime/event", onRuntimeEvent);
 
-      const pending = client.call("projects.list", {}, { timeoutMs: 25 });
-      const assertion = expect(pending).rejects.toThrow(
-        "Remote ADE service timed out waiting for method projects.list (25ms).",
+      const subscribe = client.call("runtimeEvents.subscribe", { projectId: "project-1" });
+      transport.emitData({
+        jsonrpc: "2.0",
+        id: requestId(transport.writes[0]!),
+        result: { subscriptionId: "runtime-events-1" },
+      });
+      await expect(subscribe).resolves.toEqual({ subscriptionId: "runtime-events-1" });
+
+      const timedOutMutation = client.call(
+        "ade/actions/call",
+        { name: "run_ade_action" },
+        { timeoutMs: 25 },
+      );
+      const unrelated = client.call("projects.list", {});
+      let unrelatedSettled = false;
+      void unrelated.then(
+        () => { unrelatedSettled = true; },
+        () => { unrelatedSettled = true; },
+      );
+      const timedOutId = requestId(transport.writes[1]!);
+      const unrelatedId = requestId(transport.writes[2]!);
+      const timeoutAssertion = expect(timedOutMutation).rejects.toThrow(
+        "Remote ADE service timed out waiting for method ade/actions/call (25ms).",
       );
       await vi.advanceTimersByTimeAsync(25);
 
-      await assertion;
-      expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
-        message: "Remote ADE service timed out waiting for method projects.list (25ms).",
-      }));
-      await expect(client.call("projects.list", {})).rejects.toThrow(
-        "Remote ADE service timed out waiting for method projects.list (25ms).",
-      );
+      await timeoutAssertion;
+      expect(client.isClosed()).toBe(false);
+      expect(onDisconnect).not.toHaveBeenCalled();
+      expect(transport.closed).toBe(false);
+
+      transport.emitData({
+        jsonrpc: "2.0",
+        method: "runtime/event",
+        params: { subscriptionId: "runtime-events-1", event: { id: 1 } },
+      });
+      expect(onRuntimeEvent).toHaveBeenCalledWith({
+        subscriptionId: "runtime-events-1",
+        event: { id: 1 },
+      });
+
+      // A late completion for the expired mutation is ignored and cannot
+      // resolve another caller.
+      transport.emitData({ jsonrpc: "2.0", id: timedOutId, result: { ok: true } });
+      await Promise.resolve();
+      expect(unrelatedSettled).toBe(false);
+
+      transport.emitData({ jsonrpc: "2.0", id: unrelatedId, result: ["project"] });
+      await expect(unrelated).resolves.toEqual(["project"]);
+
+      const subsequent = client.call("runtime/info", {});
+      transport.emitData({
+        jsonrpc: "2.0",
+        id: requestId(transport.writes[3]!),
+        result: { version: "1.0.0" },
+      });
+      await expect(subsequent).resolves.toEqual({ version: "1.0.0" });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("treats malformed JSON framing as connection-fatal and rejects every pending call", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+    const onDisconnect = vi.fn();
+    client.onDisconnect(onDisconnect);
+
+    const first = client.call("projects.list", {});
+    const second = client.call("runtime/info", {});
+    const firstAssertion = expect(first).rejects.toThrow("Failed to parse remote ADE service response");
+    const secondAssertion = expect(second).rejects.toThrow("Failed to parse remote ADE service response");
+
+    transport.emitData('{"jsonrpc":"2.0",invalid}\n');
+
+    await firstAssertion;
+    await secondAssertion;
+    expect(client.isClosed()).toBe(true);
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+    await expect(client.call("ping", {})).rejects.toThrow("Failed to parse remote ADE service response");
   });
 
   it("rejects invalid per-call timeout overrides before writing requests", async () => {
