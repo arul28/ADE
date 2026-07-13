@@ -5154,6 +5154,86 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
   });
 });
 
+describe("laneService attach", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("emits a lane-created lifecycle event after attaching a worktree", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-attach-event-"));
+    const attachedPath = path.join(repoRoot, "attached");
+    fs.mkdirSync(attachedPath);
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      const now = "2026-07-13T12:00:00.000Z";
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-attach", repoRoot, "demo", "main", now, now],
+      );
+      const commonDir = path.join(repoRoot, ".git");
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        if (args.includes("--show-toplevel")) return path.resolve(opts?.cwd ?? attachedPath);
+        if (args.includes("--git-common-dir")) return commonDir;
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args.includes("--show-toplevel")) {
+          return { exitCode: 0, stdout: `${attachedPath}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "feat-attached\n", stderr: "" };
+        }
+        if (args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "no upstream" };
+        }
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-list") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        if (args.includes("--git-dir")) {
+          return {
+            exitCode: 0,
+            stdout: `${path.join(commonDir, "worktrees", "attached")}\n`,
+            stderr: "",
+          };
+        }
+        if (args[0] === "push") return { exitCode: 0, stdout: "", stderr: "" };
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const onLifecycleEvent = vi.fn();
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-attach",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        onLifecycleEvent,
+        logger: createLogger(),
+      });
+
+      const summary = await service.attach({
+        name: "Attached feature",
+        attachedPath,
+      });
+
+      expect(onLifecycleEvent).toHaveBeenCalledTimes(1);
+      expect(onLifecycleEvent).toHaveBeenCalledWith({
+        type: "lane-created",
+        laneId: summary.id,
+        laneName: summary.name,
+        color: summary.color,
+        lane: summary,
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("laneService rename", () => {
   const RENAME_NOW = "2026-06-29T12:00:00.000Z";
 

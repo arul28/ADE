@@ -19,6 +19,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectPathInspection,
   ProjectIcon,
   ProjectSecretDeleteArgs,
   ProjectSecretGetArgs,
@@ -3360,6 +3361,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.projectBrowseDirectories, args),
     getDetail: async (rootPath: string): Promise<ProjectDetail> =>
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
+    inspectPath: async (path: string): Promise<ProjectPathInspection> =>
+      ipcRenderer.invoke(IPC.projectInspectPath, { path }),
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
       projectIconCache.get(rootPath),
     chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>

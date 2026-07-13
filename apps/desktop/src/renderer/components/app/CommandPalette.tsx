@@ -16,6 +16,7 @@ import {
   FolderOpen,
   MagnifyingGlass,
   Stack,
+  TreeStructure,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -31,6 +32,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
+  WorktreeParentRef,
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
@@ -99,6 +101,7 @@ type BrowseRow = {
   path: string;
   kind: "parent" | "directory";
   isGitRepo: boolean;
+  worktreeOf?: WorktreeParentRef | null;
 };
 
 type ProjectLocation =
@@ -837,6 +840,7 @@ export function CommandPalette({
         path: withTrailingSeparator(entry.fullPath),
         kind: "directory",
         isGitRepo: entry.isGitRepo,
+        worktreeOf: entry.worktreeOf ?? null,
       });
     }
     return rows;
@@ -1991,8 +1995,29 @@ export function CommandPalette({
                                           </span>
                                         )}
                                         <div className="min-w-0">
-                                          <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                            {row.title}
+                                          <div className="flex min-w-0 items-center gap-1.5">
+                                            <span className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                              {row.title}
+                                            </span>
+                                            {row.worktreeOf ? (
+                                              <span
+                                                title={`Worktree of ${row.worktreeOf.displayName}`}
+                                                className="inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                                                style={{
+                                                  background:
+                                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                                                  borderColor:
+                                                    "color-mix(in srgb, var(--color-accent) 30%, transparent)",
+                                                  color: "var(--color-accent)",
+                                                }}
+                                              >
+                                                <TreeStructure
+                                                  size={9}
+                                                  weight="bold"
+                                                />
+                                                worktree
+                                              </span>
+                                            ) : null}
                                           </div>
                                           <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                                             {row.hint}
@@ -2505,6 +2530,12 @@ function BrowsePreview({
           <div className="truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
             {highlightedPath}
           </div>
+          {showingDetailForPath?.worktreeOf ? (
+            <div className="text-[11px] leading-relaxed text-[var(--color-muted-fg)]">
+              Opening will offer to add it as a lane in{" "}
+              {showingDetailForPath.worktreeOf.displayName}.
+            </div>
+          ) : null}
         </div>
 
         {isLoading ? (
@@ -2544,6 +2575,11 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
+        {detail.worktreeOf && (
+          <StatusChip icon={<TreeStructure size={11} weight="bold" />} tone="accent">
+            worktree of {detail.worktreeOf.displayName}
+          </StatusChip>
+        )}
         {detail.branchName && (
           <StatusChip
             icon={<BranchIcon size={11} weight="bold" />}

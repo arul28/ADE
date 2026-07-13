@@ -5588,13 +5588,21 @@ export function createLaneService({
       const parentStatus = parentRow
         ? await computeLaneStatus(parentRow.worktree_path, parentRow.base_ref, parentRow.branch_ref)
         : null;
-      return toLaneSummary({
+      const summary = toLaneSummary({
         row,
         status,
         parentStatus,
         childCount: 0,
         stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
       });
+      broadcastLifecycleEvent({
+        type: "lane-created",
+        laneId: summary.id,
+        laneName: summary.name,
+        color: summary.color,
+        lane: summary,
+      });
+      return summary;
     },
 
     async adoptAttached(args: AdoptAttachedLaneArgs): Promise<LaneSummary> {

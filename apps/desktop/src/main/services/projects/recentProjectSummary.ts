@@ -5,8 +5,12 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { RecentProjectSummary } from "../../../shared/types";
 import type { RecentProjectRemote } from "../state/globalState";
+import { resolveGitMetadataDirectory, resolveWorktreeParentRef } from "./worktreeParent";
 
-type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+type DatabaseSyncConstructor = new (
+  dbPath: string,
+  options?: { allowExtension?: boolean; readOnly?: boolean },
+) => DatabaseSyncType;
 
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
@@ -71,7 +75,7 @@ function inspectAdeProject(projectRoot: string): AdeProjectInspection {
 
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath);
+    db = new DatabaseSync(dbPath, { readOnly: true });
     db.exec("PRAGMA busy_timeout = 5000");
     const hasProjectsTable = hasTable(db, "projects");
     const hasLanesTable = hasTable(db, "lanes");
@@ -126,20 +130,8 @@ function inspectAdeProject(projectRoot: string): AdeProjectInspection {
 
 function readGitLaneCount(projectRoot: string): number | undefined {
   try {
-    const gitPath = path.join(projectRoot, ".git");
-    const gitStat = fs.existsSync(gitPath) ? fs.statSync(gitPath) : null;
-    if (!gitStat) return undefined;
-
-    let actualGitDir = gitPath;
-    if (gitStat.isFile()) {
-      // .git file in a worktree checkout — read the gitdir pointer
-      const content = fs.readFileSync(gitPath, "utf-8").trim();
-      const match = content.match(/^gitdir:\s*(.+)$/);
-      if (!match) return 1;
-      actualGitDir = path.resolve(projectRoot, match[1]);
-    } else if (!gitStat.isDirectory()) {
-      return 1;
-    }
+    const actualGitDir = resolveGitMetadataDirectory(projectRoot);
+    if (!actualGitDir) return undefined;
 
     let laneCount = 1;
     const worktreesPath = path.join(actualGitDir, "worktrees");
@@ -180,6 +172,7 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
   const exists = fs.existsSync(entry.rootPath);
   const adeProject = exists ? inspectAdeProject(entry.rootPath) : EMPTY_ADE_PROJECT;
   const laneCount = exists ? (adeProject.laneCount ?? readGitLaneCount(entry.rootPath)) : undefined;
+  const worktreeOf = exists ? resolveWorktreeParentRef(entry.rootPath) : null;
 
   return {
     summary: {
@@ -187,6 +180,7 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
       displayName: entry.displayName,
       lastOpenedAt: entry.lastOpenedAt,
       exists,
+      ...(worktreeOf ? { worktreeOf } : {}),
       laneCount,
       kind: "local",
       ...(entry.pinned ? { pinned: true } : {}),
@@ -200,11 +194,14 @@ export function toShallowRecentProjectSummary(entry: RecentProjectEntry): Recent
   if (entry.remote) {
     return remoteRecentSummary(entry);
   }
+  const exists = fs.existsSync(entry.rootPath);
+  const worktreeOf = exists ? resolveWorktreeParentRef(entry.rootPath) : null;
   return {
     rootPath: entry.rootPath,
     displayName: entry.displayName,
     lastOpenedAt: entry.lastOpenedAt,
-    exists: fs.existsSync(entry.rootPath),
+    exists,
+    ...(worktreeOf ? { worktreeOf } : {}),
     kind: "local",
     ...(entry.pinned ? { pinned: true } : {}),
   };

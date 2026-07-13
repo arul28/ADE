@@ -12,6 +12,7 @@ import type {
 import { runGit } from "../git/git";
 import { readGlobalState } from "../state/globalState";
 import { toRecentProjectSummary } from "./recentProjectSummary";
+import { resolveWorktreeParentRef } from "./worktreeParent";
 
 const README_CANDIDATES = ["README.md", "readme.md", "Readme.md", "README", "readme"];
 const README_EXCERPT_CHARS = 1600;
@@ -350,10 +351,12 @@ export async function getProjectDetail(rootPath: string, options: GetProjectDeta
     countFilesByLanguage(scanRoot),
     readGitMetadata(scanRoot),
   ]);
+  const worktreeOf = resolveWorktreeParentRef(scanRoot);
 
   return {
     rootPath: requestedRoot,
     isGitRepo: gitRepo,
+    ...(worktreeOf ? { worktreeOf } : {}),
     branchName: gitMeta.branchName,
     dirtyCount: gitMeta.dirtyCount,
     dirtyBreakdown: gitMeta.dirtyBreakdown,

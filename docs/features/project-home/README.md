@@ -285,7 +285,38 @@ a prior session. Shows:
 
 `registerIpc.ts` caches converted recent summaries for 5 seconds keyed by
 root/display/last-opened plus remote identity and pinned state, and clears
-the cache after forget / reorder / pin writes. Local project rows open via
+the cache after forget / reorder / pin writes.
+
+### Worktree-as-project consolidation
+
+Opening a directory that is an external linked git worktree (created with
+`git worktree add` outside ADE) no longer silently creates a standalone
+project. `appStore.switchProjectToPath(rootPath, opts?)` gates at the top of
+the funnel: for paths not already open as a project tab it calls
+`window.ade.project.inspectPath(path)` (IPC `ade.project.inspectPath`,
+backed by `projectPathInspector.ts` with a 10 s promise cache in
+`registerIpc.ts`). When the inspection reports `kind: "linked-worktree"`
+with a resolvable non-bare parent working tree, the store sets
+`worktreeOpenPrompt` and returns without opening;
+`WorktreeOpenDialog` (mounted in `AppShell`) then offers the recommended
+action — open the existing lane in the owning project, attach the worktree
+as a lane there (via `lanes.attach`, which now emits a `lane-created`
+lifecycle event), or add the parent repo as the project first — plus a
+quiet "Open as a separate project instead" escape hatch
+(`switchProjectToPath(path, { skipWorktreeGate: true })`). Bare or
+unresolvable parents skip the prompt and open standalone. The inspection
+carries `parent.existingLane` (read from the owning project's `.ade/ade.db`
+with the shared read-only `DatabaseSync` pattern) and `standaloneState`
+counts used by `MergeWorktreeProjectDialog`, which merges a legacy
+worktree-opened-as-project recents row into the owning project (attach +
+`forgetRecent`, chats stay under the retired project). `worktreeOf`
+(`WorktreeParentRef`, derived from the `.git` file's `gitdir:` pointer in
+`worktreeParent.ts`) is populated on `ProjectDetail`,
+`RecentProjectSummary`, and `ProjectBrowseEntry`; the welcome recents rows,
+palette browse rows, and `BrowsePreview` render it as a "worktree of X"
+badge, and badge rows in recents expose the merge affordance. Known v1
+bypasses: the OS "Open repository" dialog and inbound deeplinks reach
+`switchProjectFromDialog` directly and do not show the prompt. Local project rows open via
 `appStore.switchProjectToPath(path)` and the normal project open flow
 (`adeProjectService.openProject`). Connected remote rows open via
 `appStore.switchRemoteProject(targetId, projectId)`; disconnected remote

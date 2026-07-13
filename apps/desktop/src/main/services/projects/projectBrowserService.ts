@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProjectBrowseEntry, ProjectBrowseInput, ProjectBrowseResult } from "../../../shared/types";
 import { findAdeManagedWorktreeRoot } from "../../../../../ade-cli/src/services/projects/projectRoots";
+import { resolveWorktreeParentRef } from "./worktreeParent";
 
 function expandHomePath(input: string): string {
   if (input === "~") return os.homedir();
@@ -129,10 +130,17 @@ export async function browseProjectDirectories(args: ProjectBrowseInput = {}): P
         fullPath: path.join(directoryPath, dirent.name),
       }));
     const gitFlags = await mapWithConcurrency(candidates, 16, (candidate) => isGitRepoAt(candidate.fullPath));
-    entries = candidates.map((candidate, index) => ({
-      ...candidate,
-      isGitRepo: gitFlags[index] ?? false,
-    }));
+    entries = candidates.map((candidate, index) => {
+      const isGitRepo = gitFlags[index] ?? false;
+      // Only git entries can be worktrees; resolveWorktreeParentRef is a cheap
+      // disk read of the `.git` gitdir pointer (no git shell-out).
+      const worktreeOf = isGitRepo ? resolveWorktreeParentRef(candidate.fullPath) : null;
+      return {
+        ...candidate,
+        isGitRepo,
+        ...(worktreeOf ? { worktreeOf } : {}),
+      };
+    });
   } catch (error) {
     const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
     if (code !== "ENOENT" && code !== "ENOTDIR") {

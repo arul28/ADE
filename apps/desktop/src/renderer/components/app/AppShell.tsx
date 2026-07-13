@@ -71,6 +71,7 @@ import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 import { ToastStack } from "./toast/ToastStack";
+import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 
@@ -1872,6 +1873,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <WorktreeOpenDialog />
     </div>
   );
 }

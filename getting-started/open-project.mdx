@@ -27,6 +27,8 @@ This holds local runtime state, lane worktrees, transcripts, proof, and credenti
 
 Your repository root becomes the **primary lane** — it always exists and is edit-protected. Every other lane you add is a separate worktree under `.ade/worktrees/`, so agent work never touches your main checkout until you choose to merge it.
 
+If the folder you pick is itself a Git worktree of another repository, ADE recognizes that and offers to open it as a lane in the owning project instead of creating a duplicate project. See [Repos and worktrees](/lanes/repos-and-worktrees).
+
 <Warning>
 Do not commit `.ade/` wholesale. It contains machine-local paths and state. If your project needs shared ADE defaults later, use the project configuration flow rather than committing local secrets or runtime files.
 </Warning>

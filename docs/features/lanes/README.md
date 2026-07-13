@@ -366,7 +366,11 @@ a lane parented to primary would always show zero behind.
    `git.getUserIdentity`. PR fetch is fail-soft: when the GitHub call
    errors the picker still works, just without PR pills.
 5. **Attach** — `attach` links an external worktree path (pre-existing
-   outside ADE). `lane_type = 'attached'`.
+   outside ADE). `lane_type = 'attached'`. Attach now emits a
+   `lane-created` lifecycle event like create/import, so the global toast
+   (with its View deep-link) fires when a worktree is attached — including
+   from the project-open worktree interstitial (`WorktreeOpenDialog`, see
+   the project-home feature doc).
 6. **Rename / update appearance / reparent** — `rename`, `updateAppearance`,
    `reparent` edit the lane row. `rename` trims the name, rejects empty
    values, blocks primary-lane renames, and rejects duplicate display
