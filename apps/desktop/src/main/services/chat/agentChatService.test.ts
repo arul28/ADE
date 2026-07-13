@@ -27662,6 +27662,16 @@ describe("createAgentChatService", () => {
     });
 
     releaseStream();
+    const done = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.event.turnId === started.event.turnId,
+    );
+    expect(done.event).toMatchObject({
+      status: "completed",
+      turnId: started.event.turnId,
+    });
     await sendPromise;
   });
 
