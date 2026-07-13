@@ -331,6 +331,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
         data-ade-resource-pressure-pty-processes={usage?.ptyProcessCount ?? 0}
         data-ade-resource-pressure-pty-cpu={usage?.ptyCpuPercent ?? ""}
         data-ade-resource-pressure-pty-memory-mb={usage?.ptyMemoryMB ?? ""}
+        data-ade-resource-pressure-sample-status={usage?.processSample?.status ?? ""}
         className={cn(
           "ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md",
           "border transition-[background-color,color,border-color,box-shadow] duration-150",

@@ -45,7 +45,7 @@ describe("resourcePressure", () => {
     expect(pressureLevelForThresholds(null, [30, 50, 70, 90])).toBe(0);
   });
 
-  it("describes runtime pressure by agent processes as well as ADE runtime count", () => {
+  it("describes legacy snapshots without role data using honest terminal labels", () => {
     const usage = makeUsage({
       activePtyCount: 4,
       ptyProcessCount: 9,
@@ -54,9 +54,49 @@ describe("resourcePressure", () => {
     });
 
     const description = resourcePressureDescription(usage);
-    expect(description).toContain("4 live ADE runtimes");
-    expect(description).toContain("9 agent processes");
+    expect(description).toContain("4 live terminals");
+    expect(description).toContain("9 terminal processes");
     expect(description).toContain("71% CPU");
     expect(description).toContain("1.5 GB");
+    expect(description).not.toContain("agent process");
+  });
+
+  it("distinguishes ADE infrastructure from provider and shell load when roles are present", () => {
+    const usage = makeUsage({
+      activePtyCount: 3,
+      ptyProcessCount: 7,
+      ptyCpuPercent: 80,
+      ptyMemoryMB: 2048,
+      processSample: { status: "ok", reason: null, sampledAt: "2026-04-06T12:00:00.000Z", durationMs: 42 },
+      roleUsage: [
+        { role: "electron-main", processCount: 1, cpuPercent: 8, memoryMB: 400 },
+        { role: "electron-renderer", processCount: 2, cpuPercent: 4, memoryMB: 600 },
+        { role: "electron-helper", processCount: 3, cpuPercent: 1, memoryMB: 200 },
+        { role: "ade-runtime", processCount: 1, cpuPercent: 3, memoryMB: 300 },
+        { role: "ade-pty-host", processCount: 0, cpuPercent: null, memoryMB: null },
+        { role: "provider-agent", processCount: 4, cpuPercent: 62, memoryMB: 1400 },
+        { role: "shell", processCount: 2, cpuPercent: 2, memoryMB: 90 },
+        { role: "unknown", processCount: 1, cpuPercent: 13, memoryMB: 210 },
+      ],
+    });
+
+    const description = resourcePressureDescription(usage);
+    expect(description).toContain("ADE app 16% CPU · 1.5 GB resident");
+    expect(description).toContain("4 agent processes 62% CPU · 1.4 GB resident");
+    expect(description).toContain("other terminal processes 15% CPU · 300 MB resident");
+    expect(description).not.toContain("temporarily unavailable");
+  });
+
+  it("notes staleness when the process sample is unavailable", () => {
+    const usage = makeUsage({
+      activePtyCount: 2,
+      ptyProcessCount: 0,
+      ptyCpuPercent: null,
+      ptyMemoryMB: null,
+      processSample: { status: "unavailable", reason: "timeout", sampledAt: "2026-04-06T12:00:00.000Z", durationMs: 1000 },
+    });
+
+    const description = resourcePressureDescription(usage);
+    expect(description).toContain("Terminal process metrics are temporarily unavailable.");
   });
 });
