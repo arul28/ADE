@@ -16150,7 +16150,7 @@ describe("createAgentChatService", () => {
       ]);
     });
 
-    it("marks active Codex subagents stopped on interrupt and ignores late child updates", async () => {
+    it("interrupts active Codex subagents and ignores updates after child abort", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -16194,18 +16194,50 @@ describe("createAgentChatService", () => {
       await service.interrupt({ sessionId: session.id });
 
       expect(
-        mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt"),
+        mockState.codexRequestPayloads.some((payload) =>
+          payload.method === "turn/interrupt"
+          && (payload.params as Record<string, unknown>).threadId === "thread-1"
+          && (payload.params as Record<string, unknown>).turnId === "turn-1"
+        ),
       ).toBe(true);
-
-      const stoppedResults = events.filter((event) =>
-        event.event.type === "subagent_result"
-        && event.event.taskId === "agent-thread-1"
-        && event.event.status === "stopped",
-      );
-      expect(stoppedResults).toHaveLength(1);
       expect(
         service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
-      ).toBe("stopped");
+      ).toBe("running");
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "late-agent-turn", status: "inProgress" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            method: "turn/interrupt",
+            params: {
+              threadId: "agent-thread-1",
+              turnId: "late-agent-turn",
+            },
+          }),
+        ]));
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: {
+          threadId: "agent-thread-1",
+          turnId: "late-agent-turn",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-1"
+          && event.event.status === "stopped",
+      );
 
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
@@ -16239,7 +16271,7 @@ describe("createAgentChatService", () => {
         method: "turn/started",
         params: {
           threadId: "agent-thread-1",
-          turn: { id: "late-agent-turn", status: "inProgress" },
+          turn: { id: "later-agent-turn", status: "inProgress" },
         },
       });
 
@@ -17394,6 +17426,121 @@ describe("createAgentChatService", () => {
           },
         }),
       ]));
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: {
+          threadId: "agent-thread-1",
+          turnId: "agent-turn-1",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-1"
+          && event.event.status === "stopped",
+      );
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("interrupts an older Codex child when stopping a newer parent turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "agent-turn-1", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start the next parent task.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-2",
+      );
+
+      mockState.codexRequestPayloads = [];
+      await service.interrupt({ sessionId: session.id });
+
+      const interruptRequests = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/interrupt")
+        .map((payload) => payload.params);
+      expect(interruptRequests).toEqual([
+        { threadId: "thread-1", turnId: "turn-2" },
+        { threadId: "agent-thread-1", turnId: "agent-turn-1" },
+      ]);
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({ taskId: "agent-thread-1", status: "running" }),
+      ]);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: { turnId: "turn-2" },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done"
+          && event.event.turnId === "turn-2"
+          && event.event.status === "interrupted",
+      );
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({ taskId: "agent-thread-1", status: "running" }),
+      ]);
 
       mockState.emitCodexPayload({
         jsonrpc: "2.0",

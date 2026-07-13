@@ -22512,7 +22512,6 @@ export function createAgentChatService(args: {
       }
       runtime.approvals.clear();
       markSessionIdleWithFreshCache(managed);
-      stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
       emitChatEvent(managed, {
         type: "status",
         turnStatus: "interrupted",
@@ -32073,7 +32072,7 @@ export function createAgentChatService(args: {
           return;
         }
       }
-      stopActiveCodexSubagents(managed, runtime, interruptedTurnId, "Interrupted by user");
+      await interruptActiveCodexSubagentTurns(managed, runtime);
       return;
     }
 
