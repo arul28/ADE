@@ -46,14 +46,17 @@ export function CsvViewer(props: ViewerProps) {
   // ranges when the first chunk is partial) then parse off the main thread
   // via papaparse's worker. A clean model is deliberately ignored: external
   // edits reload `content`, not the parked model, so a clean model may be
-  // stale.
+  // stale. `liveText` is computed per render and included in the effect deps
+  // so a table view reparses when the same tab's Source buffer changes in a
+  // split editor group (dirty-change notifications re-render the workbench).
+  const liveText = registry.isDirty(tab.id) ? registry.getValue(tab.id) : null;
   useEffect(() => {
     if (mode !== "table") return;
     let cancelled = false;
     setParsing(true);
     setTruncated(false);
     (async () => {
-      const live = registry.isDirty(tab.id) ? registry.getValue(tab.id) : null;
+      const live = liveText;
       let text = live ?? content.content;
       let next: number | null = live == null && content.isPartial ? content.nextOffset ?? null : null;
       let guard = 0;
@@ -86,7 +89,7 @@ export function CsvViewer(props: ViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, mode, registry]);
+  }, [workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, liveText, mode, registry]);
 
   const header = rows[0] ?? [];
   const bodyRows = useMemo(() => rows.slice(1), [rows]);

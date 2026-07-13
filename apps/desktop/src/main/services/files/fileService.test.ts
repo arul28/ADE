@@ -695,9 +695,9 @@ describe("fileService", () => {
 
       // Honest failure: an unwritable directory surfaces the filesystem error
       // instead of claiming success. Permission bits do not constrain root
-      // (CAP_DAC_OVERRIDE in containerized CI), so this branch only runs for
-      // unprivileged users.
-      if (process.getuid?.() !== 0) {
+      // (CAP_DAC_OVERRIDE in containerized CI) and chmod is a no-op on
+      // Windows, so this branch only runs for unprivileged POSIX users.
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
         const locked = path.join(rootPath, "locked");
         fs.mkdirSync(locked, { recursive: true });
         fs.writeFileSync(path.join(locked, "file.txt"), "x", "utf8");

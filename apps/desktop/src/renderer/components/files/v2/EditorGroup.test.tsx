@@ -10,7 +10,6 @@ import { EditorGroup, type EditorGroupProps } from "./EditorGroup";
 vi.mock("./useFileContent", () => ({
   updateCachedFileContentText: vi.fn(),
 }));
-// eslint-disable-next-line import/first
 import { updateCachedFileContentText } from "./useFileContent";
 
 vi.mock("./ViewerHost", () => {
