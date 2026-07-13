@@ -237,17 +237,6 @@ struct WorkUsageActivityCarousel: View {
     return daily.contains { workUsageDayActivityScore($0) > 0 }
   }
 
-  private var footerChip: (system: String, label: String)? {
-    guard let summary else { return nil }
-    if range == .all, let totalTokens = summary.totalTokens, totalTokens > 0 {
-      return ("trophy.fill", "\(workUsageCompact(totalTokens)) lifetime tokens")
-    }
-    if let streak = summary.currentStreakDays, streak >= 3 {
-      return ("flame.fill", "\(streak)-day streak")
-    }
-    return nil
-  }
-
   var body: some View {
     VStack(spacing: 10) {
       header
@@ -294,32 +283,42 @@ struct WorkUsageActivityCarousel: View {
 
   private var header: some View {
     HStack(spacing: 8) {
-      tabRow
+      tabControl
       Spacer(minLength: 6)
       if tab != .limits { rangeControl }
     }
   }
 
-  private var tabRow: some View {
-    HStack(spacing: 2) {
+  /// A menu keeps the full chart switcher available without forcing five labels
+  /// to share a narrow phone-width header.
+  private var tabControl: some View {
+    Menu {
       ForEach(WorkUsageTab.allCases) { option in
-        Button(option.title) {
+        Button {
           withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { tabRaw = option.rawValue }
+        } label: {
+          if tab == option {
+            Label(option.title, systemImage: "checkmark")
+          } else {
+            Text(option.title)
+          }
         }
-        .font(.caption.weight(tab == option ? .semibold : .medium))
-        .foregroundStyle(tab == option ? ADEColor.textPrimary : ADEColor.textMuted)
-        .padding(.horizontal, 8)
-        .frame(minHeight: 34)
-        .background(
-          tab == option ? ADEColor.recessedBackground.opacity(0.9) : .clear,
-          in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-        )
-        .contentShape(Rectangle())
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(option.title) chart")
-        .accessibilityAddTraits(tab == option ? .isSelected : [])
       }
+    } label: {
+      HStack(spacing: 5) {
+        Text(tab.title)
+          .lineLimit(1)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 10)
+      .frame(minHeight: 32)
+      .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .fixedSize(horizontal: true, vertical: false)
     }
+    .accessibilityLabel("Activity chart, \(tab.title)")
   }
 
   private var rangeControl: some View {
@@ -332,14 +331,16 @@ struct WorkUsageActivityCarousel: View {
     } label: {
       HStack(spacing: 4) {
         Text(range.title)
+          .lineLimit(1)
           .font(.caption.weight(.medium))
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .semibold))
       }
       .foregroundStyle(ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .frame(minHeight: 34)
+      .padding(.horizontal, 9)
+      .frame(minHeight: 32)
       .background(ADEColor.recessedBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .fixedSize(horizontal: true, vertical: false)
     }
     .accessibilityLabel("Time range, \(range.title)")
   }
@@ -398,18 +399,6 @@ struct WorkUsageActivityCarousel: View {
       .lineLimit(1)
 
       Spacer(minLength: 0)
-
-      if tab != .limits, let chip = footerChip {
-        Label(chip.label, systemImage: chip.system)
-          .labelStyle(.titleAndIcon)
-          .font(.caption2.weight(.medium))
-          .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 3)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
-          .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6))
-          .accessibilityLabel(chip.label)
-      }
     }
     .overlay(alignment: .top) { Divider().opacity(0.12) }
     .padding(.top, 2)
