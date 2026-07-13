@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.24] - 2026-07-13
+
+### Added
+
+- Settings → Storage dashboard showing ADE-owned data by category, including leftover data from archived and deleted lanes, with preview-and-confirm cleanup.
+- A quiet top-bar storage indicator that warns before storage gets tight and pauses new agent work only at critical capacity.
+- A full-screen, plain-language project-open recovery flow with one-click repair.
+- Lossless background compression of old, inactive chat and terminal history (still searchable and openable).
+
+### Changed
+
+- Redesigned chat handoff with a two-card menu, per-runtime forking, and cross-machine fork transport.
+- Polished the CTO experience across desktop and iOS.
+
+### Fixed
+
+- A full disk during a database save can no longer leave a project that refuses to open; migrations are crash-safe and self-heal on the next launch.
+- Chat metadata and provider thread pointers are written atomically, so an interrupted save can no longer lose a chat's history.
+- A provider session that cannot be resumed no longer silently starts a blank thread; the chat keeps its transcript and offers explicit recovery actions.
+- Made chat recovery steadier and bounded Codex usage scans so they no longer spike memory.
+
 ## [1.2.23] - 2026-07-12
 
 ### Changed
@@ -719,7 +740,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.23...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.24...HEAD
+[1.2.24]: https://github.com/arul28/ADE/compare/v1.2.23...v1.2.24
 [1.2.23]: https://github.com/arul28/ADE/compare/v1.2.22...v1.2.23
 [1.2.22]: https://github.com/arul28/ADE/compare/v1.2.21...v1.2.22
 [1.2.21]: https://github.com/arul28/ADE/compare/v1.2.20...v1.2.21

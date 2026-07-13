@@ -177,9 +177,10 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
-        "changelog",
-        "changelog/v1.2.23",
-        "changelog/v1.2.22",
+              "changelog",
+              "changelog/v1.2.24",
+              "changelog/v1.2.23",
+              "changelog/v1.2.22",
               "changelog/v1.2.21",
               "changelog/v1.2.20",
               "changelog/v1.2.19",

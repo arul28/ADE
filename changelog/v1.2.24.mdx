@@ -1,0 +1,26 @@
+---
+title: "v1.2.24"
+description: "Release notes for ADE v1.2.24 - July 13, 2026"
+---
+
+v1.2.24 makes a full disk an ordinary operating condition: ADE protects your work, recovers safely, and explains the next step in plain language. It also redesigns chat handoff, hardens chat recovery, and polishes the CTO experience.
+
+---
+
+## Desktop and CLI
+
+- **A full disk no longer breaks ADE.** When your Mac runs out of storage while ADE is saving, your chats and project data stay safe. Database repairs are now crash-safe, so a full disk mid-save can never leave a project that refuses to open — and if a repair is needed, ADE finishes it for you.
+- **Your chats keep their history.** A provider session that can't be resumed no longer silently starts a blank thread. The chat keeps its transcript and offers to retry the original thread, rebuild from ADE's saved history, or start a fresh chat — your choice.
+- **Guided recovery instead of dead-ends.** If a project can't open, ADE shows a plain-language recovery screen with a one-click repair and clear next steps, instead of a raw internal error.
+- **See and manage ADE's storage.** A new Settings → Storage page shows what ADE keeps on your Mac by clear category, including leftover data from archived and deleted lanes, and lets you clean up safely with a preview and confirmation. A quiet top-bar indicator warns before storage gets tight and pauses new agent work only at genuinely critical capacity.
+- **Old history takes less space.** ADE losslessly compresses old, inactive chat and terminal history in the background — still searchable and openable — and never touches active work.
+- **Redesigned chat handoff.** Handing a chat to another runtime or machine now uses a clear two-card menu with per-runtime forking and cross-machine fork transport.
+- **Steadier chat recovery.** Chat recovery is more reliable, and Codex usage scans are bounded so they no longer spike memory.
+- **CTO polish.** The CTO experience is cleaner and more consistent across desktop.
+
+---
+
+## iOS
+
+- **CTO on mobile.** The CTO screens, identity editor, and session destinations are polished for a smoother mobile experience.
+- **Work chat refinements.** Continued improvements to the Work chat and composer on iOS.
