@@ -1,0 +1,15 @@
+---
+title: "v1.2.25"
+description: "Release notes for ADE v1.2.25 - July 13, 2026"
+---
+
+v1.2.25 is a performance release: chat typing stays smooth in long threads, background chats and terminals use less idle CPU, and the resource meter no longer briefly freezes the app.
+
+---
+
+## Desktop and CLI
+
+- **Snappier typing in chat.** Typing in the composer no longer re-renders the conversation behind it, so input stays smooth even in long or busy threads.
+- **Lighter background work.** In the Work grid, only the focused tile takes keyboard input while every visible tile keeps streaming, and expired cache badges stop their per-second timers — noticeably less idle CPU with many chats and terminals open.
+- **A resource meter that doesn't stutter.** The top-bar CPU and memory indicator now samples in the background instead of briefly freezing the app, and its tooltip more accurately separates ADE's own load from your agents and terminals.
+- **Steadier runtime connections.** A slow or unresponsive runtime connection no longer holds up unrelated requests.

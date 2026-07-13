@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.25] - 2026-07-13
+
+### Changed
+
+- Typing in the chat composer no longer re-renders the conversation transcript behind it, keeping input smooth in long or busy threads.
+- The Work grid now marks only the focused tile active for keyboard input while every visible tile keeps streaming, reducing idle CPU with many chats and terminals open.
+- Expired Claude cache-TTL badges now clear their one-second timers instead of running them indefinitely.
+- The top-bar resource-pressure meter samples CPU and memory asynchronously instead of synchronously blocking the main process, and attributes process load to disjoint roles (ADE app, provider agents, shells/terminals) in its tooltip.
+
+### Fixed
+
+- Runtime RPC request timeouts are isolated so a slow or unresponsive runtime connection no longer stalls unrelated requests.
+
 ## [1.2.24] - 2026-07-13
 
 ### Added
@@ -740,7 +753,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.24...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.25...HEAD
+[1.2.25]: https://github.com/arul28/ADE/compare/v1.2.24...v1.2.25
 [1.2.24]: https://github.com/arul28/ADE/compare/v1.2.23...v1.2.24
 [1.2.23]: https://github.com/arul28/ADE/compare/v1.2.22...v1.2.23
 [1.2.22]: https://github.com/arul28/ADE/compare/v1.2.21...v1.2.22
