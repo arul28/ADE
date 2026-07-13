@@ -28,10 +28,13 @@ export function stripElectronErrorWrapper(message: string): string {
 
 export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
   const directCode = (error as { code?: unknown } | null)?.code;
-  const withRoot = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error ?? ""));
-  const delimiterIndex = withRoot.indexOf(ROOT_PATH_DELIMITER);
-  const raw = delimiterIndex >= 0 ? withRoot.slice(0, delimiterIndex) : withRoot;
-  const rootPath = delimiterIndex >= 0 ? withRoot.slice(delimiterIndex + 1).trim() : "";
+  const rawMessage = error instanceof Error ? error.message : String(error ?? "");
+  // Split rootPath off FIRST, before the wrapper strip trims the string —
+  // otherwise a valid path with trailing whitespace would lose it. rootPath is
+  // an opaque filesystem path and is preserved byte-for-byte.
+  const delimiterIndex = rawMessage.indexOf(ROOT_PATH_DELIMITER);
+  const rootPath = delimiterIndex >= 0 ? rawMessage.slice(delimiterIndex + 1) : "";
+  const raw = stripElectronErrorWrapper(delimiterIndex >= 0 ? rawMessage.slice(0, delimiterIndex) : rawMessage);
   const match = raw.match(/^([a-z][a-z0-9_]*)\s*:\s*/i);
   const code = typeof directCode === "string" && directCode.length > 0
     ? directCode

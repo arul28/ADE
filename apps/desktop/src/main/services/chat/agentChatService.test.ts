@@ -30529,8 +30529,16 @@ describe("explicit provider-thread continuity recovery", () => {
   // ~/.codex tree: an empty CODEX_HOME gives a deterministic completed
   // probe (definitive absence); tests that want "local history exists"
   // write a rollout fixture with writeCodexRolloutFixture.
+  let codexHomeDir: string | null = null;
   beforeEach(() => {
-    process.env.CODEX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-home-"));
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-home-"));
+    process.env.CODEX_HOME = codexHomeDir;
+  });
+  afterEach(() => {
+    if (codexHomeDir) {
+      fs.rmSync(codexHomeDir, { recursive: true, force: true });
+      codexHomeDir = null;
+    }
   });
 
   function writeCodexRolloutFixture(threadId: string): string {

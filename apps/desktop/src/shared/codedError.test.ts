@@ -33,6 +33,12 @@ describe("codedError wire format", () => {
     expect(parsed.message).not.toContain(rootPath);
   });
 
+  it("preserves a rootPath with leading and trailing whitespace exactly", () => {
+    const rootPath = "  /Users/dev/Projects/ Spaced App  ";
+    const wire = encodeCodedErrorMessage("disk_full", "Free up space.", { rootPath });
+    expect(parseCodedErrorMessage(new Error(wire)).rootPath).toBe(rootPath);
+  });
+
   it("omits rootPath when none was encoded and preserves messages containing spaces and colons", () => {
     const wire = encodeCodedErrorMessage("db_integrity", "Ratio 3:1 exceeded; contact support.");
     const parsed = parseCodedErrorMessage(new Error(wire));

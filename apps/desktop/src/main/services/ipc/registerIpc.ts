@@ -9,7 +9,7 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
-import { encodeCodedErrorMessage } from "../../../shared/codedError";
+import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -1746,9 +1746,16 @@ export function registerIpc({
   const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
-      if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
-        const wrapped = new Error(encodeCodedErrorMessage(code, error.message, meta));
-        throw wrapped;
+      if (typeof code === "string" && code.length > 0) {
+        const parsed = parseCodedErrorMessage(error);
+        const rootPath = meta?.rootPath ?? parsed.rootPath;
+        // Re-encode when the message isn't yet prefixed, OR when we have a
+        // rootPath to attach that the message doesn't already carry — an
+        // already-`${code}:`-prefixed rethrow must not drop meta.rootPath.
+        const needsWrap = !error.message.startsWith(`${code}:`) || Boolean(rootPath && !parsed.rootPath);
+        if (needsWrap) {
+          throw new Error(encodeCodedErrorMessage(code, parsed.message, rootPath ? { rootPath } : undefined));
+        }
       }
     }
     throw error;
