@@ -54,18 +54,6 @@ export function isMissingWorkspaceRootError(message: string): boolean {
   return /(?:ENOENT|no such file or directory|worktree is missing|workspace is missing)/i.test(message);
 }
 
-export function fileTreeNodeByPath(nodes: FileTreeNode[]): Map<string, FileTreeNode> {
-  const out = new Map<string, FileTreeNode>();
-  const walk = (items: FileTreeNode[]) => {
-    for (const item of items) {
-      out.set(item.path, item);
-      if (item.children?.length) walk(item.children);
-    }
-  };
-  walk(nodes);
-  return out;
-}
-
 function findFileTreeNodeByPath(nodes: FileTreeNode[], nodePath: string): FileTreeNode | undefined {
   for (const node of nodes) {
     if (node.path === nodePath) return node;

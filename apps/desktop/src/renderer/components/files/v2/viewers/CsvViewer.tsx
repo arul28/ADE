@@ -5,6 +5,7 @@ import { CaretDown, CaretUp, Code, MagnifyingGlass, Table } from "@phosphor-icon
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { CodeViewer } from "./CodeViewer";
 import type { ViewerProps } from "./types";
+import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 
 const ROW_HEIGHT = 26;
@@ -22,11 +23,15 @@ type Mode = "table" | "source";
  */
 export function CsvViewer(props: ViewerProps) {
   const { workspaceId, tab, content, registry, readOnly } = props;
-  const [mode, setModeState] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "table"));
+  const [storedMode, setModeState] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "table"));
   const setMode = (next: Mode) => {
     rememberViewerMode(tab.id, next);
     setModeState(next);
   };
+  // A remembered Source mode must not survive a payload that can no longer be
+  // edited (e.g. the file grew past the inline limit): normalize to the table
+  // so the parse effect and the render agree on one mode.
+  const mode: Mode = readOnly ? "table" : storedMode;
   const [rows, setRows] = useState<string[][]>([]);
   const [parsing, setParsing] = useState(true);
   const [truncated, setTruncated] = useState(false);
@@ -36,16 +41,19 @@ export function CsvViewer(props: ViewerProps) {
 
   const delimiter = tab.path.toLowerCase().endsWith(".tsv") ? "\t" : ",";
 
-  // Assemble the full text (live Monaco buffer when Source mode created one,
-  // else the readFile payload plus streamed ranges when the first chunk is
-  // partial) then parse off the main thread via papaparse's worker.
+  // Assemble the full text (the dirty Monaco buffer when Source mode holds
+  // unsaved edits, else the authoritative readFile payload plus streamed
+  // ranges when the first chunk is partial) then parse off the main thread
+  // via papaparse's worker. A clean model is deliberately ignored: external
+  // edits reload `content`, not the parked model, so a clean model may be
+  // stale.
   useEffect(() => {
     if (mode !== "table") return;
     let cancelled = false;
     setParsing(true);
     setTruncated(false);
     (async () => {
-      const live = registry.getValue(tab.id);
+      const live = registry.isDirty(tab.id) ? registry.getValue(tab.id) : null;
       let text = live ?? content.content;
       let next: number | null = live == null && content.isPartial ? content.nextOffset ?? null : null;
       let guard = 0;
@@ -122,12 +130,12 @@ export function CsvViewer(props: ViewerProps) {
 
   const modeToggle = !readOnly ? (
     <div className="flex items-center gap-1">
-      <ModeButton active={mode === "table"} onClick={() => setMode("table")} icon={<Table size={14} />} label="Table" />
-      <ModeButton active={mode === "source"} onClick={() => setMode("source")} icon={<Code size={14} />} label="Source" />
+      <ViewerModeToggleButton active={mode === "table"} onClick={() => setMode("table")} icon={<Table size={14} />} label="Table" />
+      <ViewerModeToggleButton active={mode === "source"} onClick={() => setMode("source")} icon={<Code size={14} />} label="Source" />
     </div>
   ) : null;
 
-  if (mode === "source" && !readOnly) {
+  if (mode === "source") {
     return (
       <div className="flex h-full min-h-0 min-w-0 flex-col">
         <div className="flex shrink-0 items-center gap-1 border-b px-2 py-1" style={{ borderColor: COLORS.border }}>
@@ -211,21 +219,5 @@ export function CsvViewer(props: ViewerProps) {
         </div>
       </div>
     </div>
-  );
-}
-
-function ModeButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
-      style={{
-        color: active ? COLORS.textPrimary : COLORS.textMuted,
-        background: active ? "rgba(255,255,255,0.07)" : "transparent",
-      }}
-    >
-      {icon} {label}
-    </button>
   );
 }

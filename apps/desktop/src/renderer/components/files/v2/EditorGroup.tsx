@@ -130,6 +130,11 @@ export function EditorGroup(props: EditorGroupProps) {
       return;
     }
     if (!viewerIsEditable(activeTab.viewerKind)) return;
+    // Without a mounted editor API this fallback only has the retained Monaco
+    // model to save. A clean model may be stale (external edits reload the tab
+    // content, not the parked model), so only unsaved edits are written —
+    // saving a clean tab must never revert an external change.
+    if (!registry.isDirty(activeTab.id)) return;
     const text = registry.getValue(activeTab.id);
     if (text == null) return;
     void window.ade.files

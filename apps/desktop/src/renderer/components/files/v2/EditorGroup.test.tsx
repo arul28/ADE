@@ -20,10 +20,12 @@ vi.mock("./ViewerHost", () => {
 
 const writeText = vi.fn();
 const markSaved = vi.fn();
+const isDirty = vi.fn(() => true);
 
 const registry = {
   getValue: vi.fn(() => "saved text"),
   markSaved,
+  isDirty,
 } as unknown as MonacoModelRegistry;
 
 const tabId = editorTabId("workspace-1", "src/file.ts");
@@ -84,6 +86,8 @@ beforeEach(() => {
   writeText.mockReset();
   writeText.mockResolvedValue(undefined);
   markSaved.mockClear();
+  isDirty.mockReset();
+  isDirty.mockReturnValue(true);
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -211,6 +215,20 @@ describe("EditorGroup", () => {
     await waitFor(() => {
       expect(onError).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
     });
+    expect(markSaved).not.toHaveBeenCalled();
+  });
+
+  it("never writes a clean retained model over external changes (stale-buffer guard)", async () => {
+    // A markdown/csv tab whose Source mode created a model, then went back to
+    // Preview/Table: the parked model can be stale after an external reload.
+    // The toolbar/Cmd+S fallback must refuse to save a clean model.
+    const props = tabOfKind("markdown", "docs/notes.md");
+    isDirty.mockReturnValue(false);
+    render(<EditorGroup {...props} />);
+
+    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writeText).not.toHaveBeenCalled();
     expect(markSaved).not.toHaveBeenCalled();
   });
 
