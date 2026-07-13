@@ -530,6 +530,8 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
+const COMPOSER_COMPACT_MENU_WIDTH = 240;
+
 type PermissionModeTone = "green" | "amber" | "blue" | "purple" | "red" | "slate";
 type PermissionModeIconKind = "manual" | "auto" | "edit" | "plan" | "full" | "config" | "agent" | "agi";
 
@@ -715,7 +717,7 @@ function PermissionModePicker<Value extends string>({
       {open && ref.current ? createPortal(
         (() => {
           const rect = ref.current.getBoundingClientRect();
-          const width = 284;
+          const width = COMPOSER_COMPACT_MENU_WIDTH;
           const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
           return (
             <div
@@ -729,20 +731,7 @@ function PermissionModePicker<Value extends string>({
                 width,
               }}
             >
-              <div className="flex items-center gap-2 border-b border-white/[0.05] px-3 py-2">
-                <span className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", selectedTone.iconSurface)} aria-hidden>
-                  <PermissionModeGlyph icon={selectedOption.icon} size={12} />
-                </span>
-                <div className="min-w-0">
-                  <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
-                    Mode
-                  </div>
-                  <div className="truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
-                    {selectedOption.label}
-                  </div>
-                </div>
-              </div>
-              <ul className="py-1">
+              <ul className="py-0.5">
                 {options.map((option) => {
                   const active = option.value === selectedValue;
                   const tone = PERMISSION_MODE_TONE_STYLES[option.tone];
@@ -758,16 +747,16 @@ function PermissionModePicker<Value extends string>({
                           setOpen(false);
                         }}
                         className={cn(
-                          "flex w-full items-center gap-2.5 px-3 py-2 text-left font-sans transition-colors",
+                          "flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-sans transition-colors",
                           active ? tone.rowActive : "text-fg/72",
                           tone.rowHover,
                         )}
                         title={option.detail}
                       >
-                        <span className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border", tone.iconSurface)} aria-hidden>
-                          <PermissionModeGlyph icon={option.icon} size={12} />
+                        <span className={cn("inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border", tone.iconSurface)} aria-hidden>
+                          <PermissionModeGlyph icon={option.icon} size={10} />
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*11/14)] font-semibold leading-4">
+                        <span className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] font-semibold leading-4">
                           {option.label}
                         </span>
                         {active ? <Check size={12} weight="bold" className="shrink-0 opacity-80" /> : null}
@@ -952,15 +941,15 @@ type ActiveTurnSendMode = "inline" | "queue" | "interrupt";
 const ACTIVE_TURN_SEND_COPY: Record<ActiveTurnSendMode, { label: string; description: string }> = {
   inline: {
     label: "Send during turn",
-    description: "Claude picks this up after the current tool step, before continuing.",
+    description: "After the current tool step.",
   },
   queue: {
     label: "Send after turn",
-    description: "Stage this message until the current turn is fully finished.",
+    description: "When this turn finishes.",
   },
   interrupt: {
     label: "Interrupt & send",
-    description: "Stop Claude's current model step and redirect it to this message now.",
+    description: "Stop and redirect Claude now.",
   },
 };
 
@@ -1062,7 +1051,7 @@ function ActiveTurnSendButton({
         ? createPortal(
             (() => {
               const rect = caretRef.current.getBoundingClientRect();
-              const width = 244;
+              const width = COMPOSER_COMPACT_MENU_WIDTH;
               const left = Math.min(
                 Math.max(8, rect.right - width),
                 Math.max(8, window.innerWidth - width - 8),
@@ -1093,7 +1082,7 @@ function ActiveTurnSendButton({
                           setMenuOpen(false);
                         }}
                         className={cn(
-                          "flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05]",
+                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
                           index > 0 && "border-t border-white/[0.05]",
                           option === "interrupt" && "hover:bg-amber-500/[0.08]",
                         )}
@@ -1105,10 +1094,10 @@ function ActiveTurnSendButton({
                           <ActiveTurnSendIcon mode={option} size={13} />
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/85">
+                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
                             {copy.label}
                           </span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*9.5/14)] leading-[1.35] text-fg/40">
+                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
                             {copy.description}
                           </span>
                         </span>

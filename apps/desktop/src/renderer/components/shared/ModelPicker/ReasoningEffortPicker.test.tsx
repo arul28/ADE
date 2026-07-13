@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -72,6 +73,35 @@ afterEach(() => {
 });
 
 describe("ReasoningEffortPicker", () => {
+  it("rolls the effort label in the change direction", async () => {
+    const user = userEvent.setup();
+    function ControlledPicker() {
+      const [effort, setEffort] = useState<string | null>("medium");
+      return (
+        <ReasoningEffortPicker
+          modelId={ANTHROPIC_MODEL_ID}
+          reasoningEffort={effort}
+          onChange={setEffort}
+        />
+      );
+    }
+
+    const { container } = render(<ControlledPicker />);
+    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
+    await user.click(trigger);
+
+    const effortLabel = () => container.ownerDocument.querySelector<HTMLElement>(".ade-reasoning-effort-word");
+    expect(effortLabel()?.getAttribute("data-direction")).toBe("idle");
+
+    await user.click(screen.getByRole("radio", { name: "High" }));
+    expect(effortLabel()?.textContent).toBe("High");
+    expect(effortLabel()?.getAttribute("data-direction")).toBe("up");
+
+    await user.click(screen.getByRole("radio", { name: "Low" }));
+    expect(effortLabel()?.textContent).toBe("Low");
+    expect(effortLabel()?.getAttribute("data-direction")).toBe("down");
+  });
+
   it("renders nothing when the model has no reasoning tiers", () => {
     const { container } = render(
       <ReasoningEffortPicker

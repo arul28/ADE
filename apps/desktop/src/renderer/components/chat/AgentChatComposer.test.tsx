@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, type RenderResult } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import type { NormalizedLinearIssue } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
@@ -315,6 +315,22 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByRole("menuitemradio", { name: /Interrupt & send/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Send during turn" }));
     expect(onSendSteerNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Claude steering options compact and concise", () => {
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSendSteerNow: vi.fn(),
+      onSendSteerInterrupt: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+
+    const menu = screen.getByRole("menu", { name: "Send options" });
+    expect(menu.style.width).toBe("240px");
+    expect(menu.textContent).toContain("After the current tool step.");
+    expect(menu.textContent).toContain("When this turn finishes.");
+    expect(menu.textContent).toContain("Stop and redirect Claude now.");
   });
 
   it("disables the active-turn send actions when the draft is whitespace-only", () => {
@@ -675,6 +691,20 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Bypass/ })).toBeTruthy();
+  });
+
+  it("uses a compact permission menu without a selected-mode header", () => {
+    renderComposer({
+      sessionProvider: "claude",
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+
+    const listbox = screen.getByRole("listbox", { name: "Claude permission mode" });
+    expect(listbox.style.width).toBe("240px");
+    expect(within(listbox).queryByText("Mode", { exact: true })).toBeNull();
   });
 
   it.each(CAPTION_FREE_PERMISSION_CASES)(

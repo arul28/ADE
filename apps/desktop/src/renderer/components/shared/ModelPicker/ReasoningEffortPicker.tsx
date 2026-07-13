@@ -1,6 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { CaretDown, Question } from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react";
 import type { ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
@@ -222,6 +222,15 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   }, [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
+  const previousActiveIndexRef = useRef(activeIndex);
+  const effortTransitionDirection = activeIndex > previousActiveIndexRef.current
+    ? "up"
+    : activeIndex < previousActiveIndexRef.current
+      ? "down"
+      : "idle";
+  useEffect(() => {
+    previousActiveIndexRef.current = activeIndex;
+  }, [activeIndex]);
   const activeTone = REASONING_TONE_STYLES[reasoningToneKeyForIndex(activeIndex, tiers.length)];
   const activeLabel = activeIndex >= 0 ? tierLabel(tiers[activeIndex]!, useCodex56Labels) : "Auto";
   const thumbPercent = activeIndex < 0 ? 0 : tierPercent(activeIndex, tiers.length);
@@ -450,12 +459,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                 <span
                   key={displayedEffort ?? "auto"}
                   className="ade-reasoning-effort-word font-semibold"
+                  data-direction={effortTransitionDirection}
                   style={{ color: activeTone.color }}
                 >
                   {activeLabel}
                 </span>
               </div>
-              <Question size={13} weight="bold" className="shrink-0 text-muted-fg/45" aria-hidden />
             </div>
             <div className="mt-4 flex items-center justify-between font-sans text-[11px] leading-none text-muted-fg/62">
               <span>Faster</span>
