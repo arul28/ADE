@@ -10,6 +10,7 @@ import type { TabWorkspaceContext } from "./EditorGroups";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import type { FilesTabScope } from "./filesTabScope";
 import { filterTabsForScope, isLaneGroupBoundary, orderTabsByLane } from "./tabDisplayOrder";
+import { updateCachedFileContentText } from "./useFileContent";
 import { viewerIsEditable } from "./viewerRegistry";
 import { ViewerHost } from "./ViewerHost";
 import { DiffViewer } from "./viewers/DiffViewer";
@@ -141,6 +142,10 @@ export function EditorGroup(props: EditorGroupProps) {
       .writeText({ workspaceId: activeContext.workspaceId, path: activeTab.path, text })
       .then(() => {
         registry.markSaved(activeTab.id);
+        // Keep the cached payload in step with the write so clean-model
+        // consumers (markdown preview, CSV table) render the saved text
+        // immediately instead of waiting for the watcher echo.
+        updateCachedFileContentText(activeContext.workspaceId, activeTab.path, text);
         onDirtyChange(activeTab.id, false);
       })
       .catch((err) => {

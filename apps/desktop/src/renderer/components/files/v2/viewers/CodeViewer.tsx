@@ -3,6 +3,7 @@ import type * as Monaco from "monaco-editor";
 import { resolveLanguageId } from "../../filePresentation";
 import { loadMonaco } from "../monacoLoader";
 import { takePendingReveal } from "../pendingReveals";
+import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
 
 /**
@@ -48,6 +49,9 @@ export function CodeViewer({
     const text = reg.getValue(t.id) ?? editor.getValue();
     await window.ade.files.writeText({ workspaceId: ws, path: t.path, text });
     reg.markSaved(t.id);
+    // Sync the cached payload so clean-model consumers (markdown preview,
+    // CSV table) show the saved text before the watcher echoes the write.
+    updateCachedFileContentText(ws, t.path, text);
     onDirty?.(t.id, false);
   }).current;
 

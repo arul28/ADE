@@ -24,6 +24,20 @@ export function primeFileContent(workspaceId: string, path: string, content: Fil
   }
 }
 
+/**
+ * Sync the cached payload with text the editor just wrote to disk. Keeps
+ * clean-model reads (markdown preview, CSV table, fallback saves) consistent
+ * with the last save during the gap before the watcher echoes the write back;
+ * the watcher-driven reload remains the authoritative refresh.
+ */
+export function updateCachedFileContentText(workspaceId: string, path: string, text: string): void {
+  const key = cacheKey(workspaceId, path);
+  const existing = cache.get(key);
+  if (!existing || existing.isBinary || existing.encoding === "base64" || existing.isPartial) return;
+  cache.delete(key);
+  cache.set(key, { ...existing, content: text });
+}
+
 export type FileContentState =
   | { status: "loading" }
   | { status: "ready"; content: FileContent }

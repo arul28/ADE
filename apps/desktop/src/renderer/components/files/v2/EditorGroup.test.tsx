@@ -7,6 +7,12 @@ import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import { editorTabId } from "./editorGroupsStore";
 import { EditorGroup, type EditorGroupProps } from "./EditorGroup";
 
+vi.mock("./useFileContent", () => ({
+  updateCachedFileContentText: vi.fn(),
+}));
+// eslint-disable-next-line import/first
+import { updateCachedFileContentText } from "./useFileContent";
+
 vi.mock("./ViewerHost", () => {
   return {
     ViewerHost: () => (
@@ -190,6 +196,10 @@ describe("EditorGroup", () => {
       expect(markSaved).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"));
       expect(onDirtyChange).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"), false);
     });
+    // The cached payload is synced with the write so clean-model consumers
+    // (markdown preview, CSV table) render the saved text before the watcher
+    // echoes the change back.
+    expect(updateCachedFileContentText).toHaveBeenCalledWith("workspace-1", "docs/notes.md", "saved text");
   });
 
   it("saves a csv tab through the toolbar Save button", async () => {
