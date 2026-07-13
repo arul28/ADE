@@ -118,6 +118,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -639,6 +641,15 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
+import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageCompressionResult,
+  StorageSnapshot,
+} from "../shared/types/storage";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
 
 export {};
 
@@ -704,6 +715,16 @@ declare global {
           payload?: Record<string, unknown>,
         ) => void;
       };
+      storage: {
+        getPressure: () => Promise<DiskPressureSnapshot>;
+        getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
+        compressNow: () => Promise<StorageCompressionResult>;
+        cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
+        cleanup: (
+          targets: StorageCleanupTarget[],
+          opts: { preview: StorageCleanupPreview },
+        ) => Promise<StorageCleanupResult>;
+      };
       project: {
         openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
@@ -747,6 +768,10 @@ declare global {
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+      };
+      recovery: {
+        diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
+        repair: (projectRoot: string) => Promise<ProjectRepairReport>;
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
@@ -1358,6 +1383,9 @@ declare global {
         recoverCodexTurn: (
           args: AgentChatRecoverCodexTurnArgs,
         ) => Promise<AgentChatRecoverCodexTurnResult>;
+        recoverContinuity: (
+          args: AgentChatRecoverContinuityArgs,
+        ) => Promise<AgentChatContinuityRecoveryResult>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;

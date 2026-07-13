@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { gzipSync } from "node:zlib";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
@@ -22,6 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -77,6 +79,51 @@ describe("clampHistoryPageBytes", () => {
 });
 
 describe("readTranscriptHistoryPage", () => {
+  it("returns identical events from a compressed transcript", () => {
+    const { size } = writeTranscript([
+      envelopeLine({ text: "compressed first", sequence: 1 }),
+      envelopeLine({ text: "compressed second", sequence: 2 }),
+    ]);
+    const compressedPath = `${transcriptPath}.gz`;
+    fs.writeFileSync(compressedPath, gzipSync(fs.readFileSync(transcriptPath)));
+    fs.unlinkSync(transcriptPath);
+
+    const page = readTranscriptHistoryPage({
+      transcriptPath: compressedPath,
+      sessionId: SESSION_ID,
+      beforeOffset: size,
+    });
+
+    expect(page.envelopes.map(eventText)).toEqual(["compressed first", "compressed second"]);
+  });
+
+  it("reuses a valid compressed snapshot across pages", () => {
+    const { size } = writeTranscript([
+      envelopeLine({ text: "compressed first", sequence: 1, exactLineBytes: 40_000 }),
+      envelopeLine({ text: "compressed second", sequence: 2, exactLineBytes: 40_000 }),
+      envelopeLine({ text: "compressed third", sequence: 3, exactLineBytes: 40_000 }),
+    ]);
+    const compressedPath = `${transcriptPath}.gz`;
+    fs.writeFileSync(compressedPath, gzipSync(fs.readFileSync(transcriptPath)));
+    fs.unlinkSync(transcriptPath);
+    const readFile = vi.spyOn(fs, "readFileSync");
+
+    const first = readTranscriptHistoryPage({
+      transcriptPath: compressedPath,
+      sessionId: SESSION_ID,
+      beforeOffset: size,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+    });
+    readTranscriptHistoryPage({
+      transcriptPath: compressedPath,
+      sessionId: SESSION_ID,
+      beforeOffset: first.startOffset,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+    });
+
+    expect(readFile.mock.calls.filter(([filePath]) => filePath === compressedPath)).toHaveLength(1);
+  });
+
   it("returns an empty head-reached page for beforeOffset <= 0", () => {
     writeTranscript([envelopeLine({ text: "a" })]);
     for (const beforeOffset of [0, -1, Number.NaN]) {

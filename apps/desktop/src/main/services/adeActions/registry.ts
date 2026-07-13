@@ -100,6 +100,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "github",
   "feedback",
   "usage",
+  "storage",
   "budget",
   "update",
   "file",
@@ -155,6 +156,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
+  storage: ["cleanup"],
   search: ["rebuildIndex"],
 };
 
@@ -452,6 +454,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getParallelLaunchState",
     "interrupt",
     "recoverCodexTurn",
+    "recoverContinuity",
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
@@ -602,6 +605,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "start",
     "stop",
   ],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -790,6 +794,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",
       input: "object { sessionId: string, turnId: string, action: \"wait\" | \"steer\" | \"interrupt_retry_same_thread\" | \"restart_resume_thread\" }",
       example: "ade actions run chat.recoverCodexTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"wait\"}'",
+    },
+    recoverContinuity: {
+      description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
+      input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
+      example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
     },
   },
   "external-sessions": {
@@ -3008,6 +3017,23 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
   } as OpaqueService;
 }
 
+function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const storageInsightsService = runtime.storageInsightsService;
+  if (!storageInsightsService) return null;
+  return {
+    getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
+    compressNow: () => storageInsightsService.compressNow(),
+    cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
+      storageInsightsService.cleanupPreview(args?.targets ?? []),
+    cleanup: (args?: {
+      targets?: Parameters<typeof storageInsightsService.cleanup>[0];
+      preview?: Parameters<typeof storageInsightsService.cleanup>[1]["preview"];
+    }) => storageInsightsService.cleanup(args?.targets ?? [], {
+      preview: args?.preview ?? { items: [], totalBytes: 0, blocked: [] },
+    }),
+  };
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -3037,6 +3063,7 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
+    storage: toService(buildStorageDomainService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),

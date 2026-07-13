@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
@@ -65,6 +66,19 @@ afterEach(async () => {
 });
 
 describe("sessionService resume metadata", () => {
+  it("reads terminal scrollback transparently from a compressed log", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-gzip-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const transcriptPath = path.join(projectRoot, "terminal.log");
+    fs.writeFileSync(`${transcriptPath}.gz`, gzipSync("old terminal output\nlatest line\n"));
+
+    await expect(service.readTranscriptTail(transcriptPath, 1_024, { raw: true }))
+      .resolves.toBe("old terminal output\nlatest line\n");
+  });
+
   it("stores a create-time goal on the terminal session row", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

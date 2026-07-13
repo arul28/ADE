@@ -11,6 +11,7 @@ import type {
   ListMyGitHubReposResult,
   MyGitHubRepoSummary,
 } from "../../../shared/types/core";
+import { codedError } from "../../../shared/codedError";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
@@ -68,10 +69,6 @@ function isGitIdentityError(stderr: string): boolean {
     text.includes("user.email") ||
     text.includes("author identity")
   );
-}
-
-function codedError(message: string, code: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code });
 }
 
 function hashToken(token: string): string {

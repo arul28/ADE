@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation, useNavigate } from "react-router-dom";
-import { Brain, ChartLineUp, GearSix, Key, Stack, Palette, Robot } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, GearSix, HardDrives, Key, Stack, Palette, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -8,6 +8,7 @@ import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
+import { StorageSection } from "../settings/StorageSection";
 import { SecretsSection } from "../settings/SecretsSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -19,6 +20,7 @@ const SECTIONS = [
   { id: "secrets", label: "Secrets", icon: Key },
   { id: "background-jobs", label: "Background Jobs", icon: Robot },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
+  { id: "storage", label: "Storage", icon: HardDrives },
   { id: "ade-usage", label: "Stats", icon: ChartLineUp },
 ] as const;
 
@@ -44,6 +46,8 @@ const TAB_ALIASES: Record<string, SectionId> = {
   usage: "ade-usage",
   stats: "ade-usage",
   "ade-usage": "ade-usage",
+  storage: "storage",
+  disk: "storage",
   secret: "secrets",
   secrets: "secrets",
 };
@@ -222,6 +226,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "secrets" && <SecretsSection />}
         {section === "background-jobs" && <AiFeaturesSection />}
         {section === "ade-usage" && <AdeUsageSection />}
+        {section === "storage" && <StorageSection />}
         {section === "lane-templates" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             <LaneTemplatesSection />

@@ -5,9 +5,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
+import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -288,6 +290,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
@@ -591,9 +595,19 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { createProjectRecoveryService } from "../runtime/projectRecoveryService";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
+import type { createStorageInsightsService } from "../storage/storageInsightsService";
+import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageCompressionResult,
+  StorageSnapshot,
+} from "../../../shared/types/storage";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
@@ -882,6 +896,7 @@ export type AppContext = {
   sessionService: ReturnType<typeof createSessionService> | null;
   processRegistry?: ProcessRegistryService | null;
   ptyService: ReturnType<typeof createPtyService> | null;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   diffService: ReturnType<typeof createDiffService> | null;
   fileService: ReturnType<typeof createFileService> | null;
   operationService: ReturnType<typeof createOperationService> | null;
@@ -920,6 +935,7 @@ export type AppContext = {
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
@@ -1583,6 +1599,7 @@ export function registerIpc({
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
+  projectRecoveryConnectionPool,
   createWindow,
   closeWindow,
   switchProjectFromDialog,
@@ -1601,6 +1618,7 @@ export function registerIpc({
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
+  projectRecoveryConnectionPool?: LocalRuntimeConnectionPool | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
@@ -1614,6 +1632,13 @@ export function registerIpc({
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+  const projectRecoveryService = projectRecoveryConnectionPool
+    ? createProjectRecoveryService({
+        adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
+        logger: getCtx().logger,
+        connectionPool: projectRecoveryConnectionPool,
+      })
+    : null;
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -1718,12 +1743,19 @@ export function registerIpc({
   // "github_not_connected", "remote_already_exists"). Electron IPC strips
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
-  const surfaceCodedError = (error: unknown): never => {
+  const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
-      if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
-        const wrapped = new Error(`${code}: ${error.message}`);
-        throw wrapped;
+      if (typeof code === "string" && code.length > 0) {
+        const parsed = parseCodedErrorMessage(error);
+        const rootPath = meta?.rootPath ?? parsed.rootPath;
+        // Re-encode when the message isn't yet prefixed, OR when we have a
+        // rootPath to attach that the message doesn't already carry — an
+        // already-`${code}:`-prefixed rethrow must not drop meta.rootPath.
+        const needsWrap = !error.message.startsWith(`${code}:`) || Boolean(rootPath && !parsed.rootPath);
+        if (needsWrap) {
+          throw new Error(encodeCodedErrorMessage(code, parsed.message, rootPath ? { rootPath } : undefined));
+        }
       }
     }
     throw error;
@@ -3531,6 +3563,40 @@ export function registerIpc({
     );
   });
 
+  ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
+    const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
+    return monitor.getSnapshot({ maxAgeMs: 1_000 });
+  });
+
+  ipcMain.handle(IPC.storageGetSnapshot, async (
+    _event,
+    args: { forceRefresh?: boolean } | undefined,
+  ): Promise<StorageSnapshot> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.compressNow();
+  });
+
+  ipcMain.handle(IPC.storageCleanupPreview, async (
+    _event,
+    targets: StorageCleanupTarget[],
+  ): Promise<StorageCleanupPreview> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.cleanupPreview(targets);
+  });
+
+  ipcMain.handle(IPC.storageCleanup, async (
+    _event,
+    args: { targets: StorageCleanupTarget[]; preview: StorageCleanupPreview },
+  ): Promise<StorageCleanupResult> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.cleanup(args.targets, { preview: args.preview });
+  });
+
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
     let token: string | null = null;
     try {
@@ -3551,21 +3617,32 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
-    const requestedRoot = args.rootPath?.trim();
-    if (requestedRoot) {
-      return await switchProjectFromDialog(requestedRoot);
+    // The chosen root is only known in the main process (the OS dialog picks
+    // it), so a coded open failure must carry it back to the renderer for the
+    // recovery screen — otherwise a disk-full/db-repair failure from the Open
+    // Repository flow falls back to the generic banner with no Repair action.
+    let chosenRoot: string | undefined;
+    try {
+      const requestedRoot = args.rootPath?.trim();
+      if (requestedRoot) {
+        chosenRoot = requestedRoot;
+        return await switchProjectFromDialog(requestedRoot);
+      }
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Open repository",
+        properties: ["openDirectory"]
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      const selected = result.filePaths[0]!;
+      chosenRoot = selected;
+      return await switchProjectFromDialog(selected);
+    } catch (error) {
+      return surfaceCodedError(error, chosenRoot ? { rootPath: chosenRoot } : undefined);
     }
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const options: Electron.OpenDialogOptions = {
-      title: "Open repository",
-      properties: ["openDirectory"]
-    };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-    const selected = result.filePaths[0]!;
-    return await switchProjectFromDialog(selected);
   });
 
   ipcMain.handle(
@@ -3956,11 +4033,31 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
-    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-    if (!rootPath) return getCtx().project;
-    const ctx = getCtx();
-    if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
-    return await switchProjectFromDialog(rootPath);
+    try {
+      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) return getCtx().project;
+      const ctx = getCtx();
+      if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
+      return await switchProjectFromDialog(rootPath);
+    } catch (error) {
+      return surfaceCodedError(error);
+    }
+  });
+
+  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!projectRoot) throw new Error("Project root path is required.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    return await projectRecoveryService.diagnose(projectRoot);
+  });
+
+  // Return the complete ordered step array with the final report. The current
+  // alert only needs one result, so it does not need a separate event lifecycle.
+  ipcMain.handle(IPC.recoveryRepair, async (_event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!projectRoot) throw new Error("Project root path is required.");
+    if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
+    return await projectRecoveryService.repair(projectRoot);
   });
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
@@ -6367,6 +6464,14 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(arg);
   });
+
+  ipcMain.handle(
+    IPC.agentChatRecoverContinuity,
+    async (_event, arg: AgentChatRecoverContinuityArgs): Promise<AgentChatContinuityRecoveryResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.recoverContinuity(arg);
+    },
+  );
 
   ipcMain.handle(
     IPC.agentChatSetScheduledWorkPaused,

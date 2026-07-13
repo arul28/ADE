@@ -42,6 +42,7 @@ const appStoreState = vi.hoisted(() => ({
     projectId?: string;
   },
   projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
+  projectTransitionError: null as { code?: string; message: string; rootPath?: string } | null,
   theme: "dark",
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
@@ -139,6 +140,10 @@ vi.mock("./AppShell", async () => {
     },
   };
 });
+
+vi.mock("./ProjectRecoveryScreen", () => ({
+  ProjectRecoveryScreen: () => <div data-testid="project-recovery-screen" />,
+}));
 
 vi.mock("../onboarding/OnboardingBootstrap", () => ({
   OnboardingBootstrap: () => null,
@@ -258,6 +263,7 @@ describe("App Work route keep-alive", () => {
       displayName: "project",
     };
     appStoreState.projectTransition = null;
+    appStoreState.projectTransitionError = null;
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
@@ -315,6 +321,19 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
+
+  it("does not show the recovery takeover for a coded error without a project root", async () => {
+    appStoreState.projectTransitionError = {
+      code: "disk_full",
+      message: "Your Mac ran out of storage.",
+    };
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    expect(screen.queryByTestId("project-recovery-screen")).toBeNull();
   }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("parks the project surface while projectless chats are open inside a project", async () => {

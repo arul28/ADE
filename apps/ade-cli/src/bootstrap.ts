@@ -5,7 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
-import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import {
+  clearLastFailure,
+  recordLastFailure,
+} from "../../desktop/src/main/services/runtime/lastFailureStore";
+import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
 import { reseedAdeSkills } from "../../desktop/src/main/services/skills/skillReseedService";
 import {
@@ -45,6 +50,8 @@ import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
@@ -230,6 +237,7 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
@@ -454,7 +462,27 @@ export async function createAdeRuntime(args: {
   const paths = ensureAdePaths(projectRoot);
   initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
-  const db = await openKvDb(paths.dbPath, logger);
+  const diskPressureMonitor = createDiskPressureMonitor({
+    roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+  });
+  let db: AdeDb;
+  try {
+    db = await openKvDb(paths.dbPath, logger);
+  } catch (error) {
+    const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
+    const detail = error instanceof Error ? error.message : String(error);
+    const failure = {
+      code,
+      message: "ADE could not open the project data store.",
+      detail,
+      projectRoot,
+      component: "project_db_open" as const,
+    };
+    recordLastFailure({ kind: "project", projectRoot }, failure);
+    recordLastFailure({ kind: "machine" }, failure);
+    throw error;
+  }
+  clearLastFailure({ kind: "project", projectRoot });
 
   const project = toProjectInfo(projectRoot, baseRef);
   const { projectId } = upsertProjectRow({
@@ -793,6 +821,7 @@ export async function createAdeRuntime(args: {
         runtimeState: signal.runtimeState,
       });
     },
+    diskPressureMonitor,
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
         logger.warn("runtime.session_delta_compute_failed", {
@@ -843,6 +872,7 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     sessionService,
     ptyService,
+    diskPressureMonitor,
     getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
   });
@@ -1009,6 +1039,7 @@ export async function createAdeRuntime(args: {
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
       processService,
+      diskPressureMonitor,
       getTestService: () => testService,
       ptyService,
       getAutomationService: () => automationServiceRef,
@@ -1352,6 +1383,16 @@ export async function createAdeRuntime(args: {
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
     projectRoot,
   });
+  const storageInsightsService = createStorageInsightsService({
+    projectRoot,
+    adeHome: resolveMachineAdeLayout().adeDir,
+    db,
+    logger,
+    diskPressure: diskPressureMonitor,
+    isPathActive: (filePath) =>
+      Boolean(agentChatService?.isTranscriptPathActive(filePath))
+      || ptyService.isTranscriptPathActive(filePath),
+  });
   const budgetCapService = createBudgetCapService({
     db,
     logger,
@@ -1589,6 +1630,7 @@ export async function createAdeRuntime(args: {
     processService,
     feedbackReporterService,
     usageTrackingService,
+    storageInsightsService,
     budgetCapService,
     automationService,
     automationIngressService,
@@ -1616,6 +1658,7 @@ export async function createAdeRuntime(args: {
       swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
+      swallow(() => storageInsightsService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => runtimeDiagnosticsService.dispose());

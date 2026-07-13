@@ -4,7 +4,8 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
 import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
-import { extractError } from "../lib/format";
+import { parseCodedErrorMessage } from "../lib/codedError";
+import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -745,6 +746,13 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
 /** Session-scoped banner dismissals keyed by project root. Not persisted — "dismiss for this session" only. */
 export type SessionDismissMap = Record<string, true>;
 
+export type ProjectTransitionError = {
+  message: string;
+  code?: string;
+  detail?: string;
+  rootPath?: string;
+};
+
 export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
@@ -760,7 +768,7 @@ export type AppState = {
         startedAtMs: number;
       }
     | null;
-  projectTransitionError: string | null;
+  projectTransitionError: ProjectTransitionError | null;
   isNewTabOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
@@ -992,21 +1000,44 @@ function withPreservedLaneStatus(
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
-): string {
-  const raw = extractError(error)
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
+): ProjectTransitionError {
+  const parsed = parseCodedErrorMessage(error);
+  const raw = parsed.message;
   if (/timed out after 30000ms/i.test(raw)) {
     if (kind === "opening") {
-      return "Opening this project took longer than 30 seconds, so ADE stopped waiting.";
+      return { message: "Opening this project took longer than 30 seconds, so ADE stopped waiting." };
     }
     if (kind === "switching") {
-      return "Switching projects took longer than 30 seconds, so ADE kept the current project active.";
+      return { message: "Switching projects took longer than 30 seconds, so ADE kept the current project active." };
     }
-    return "Closing the current project took longer than 30 seconds.";
+    return { message: "Closing the current project took longer than 30 seconds." };
   }
-  return raw.length > 0 ? raw : "Project action failed.";
+  const code = toAdeRecoveryErrorCode(parsed.code);
+  const recoveryMessage = code === "disk_full"
+    ? "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again."
+    : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"
+      ? "ADE's background service needs a repair before this project can open."
+      : code && [
+          "insufficient_headroom",
+          "db_integrity",
+          "brain_not_installed",
+          "socket_stale_no_owner",
+          "socket_owned_by_other",
+        ].includes(code)
+        ? "ADE's background service could not open this project."
+        : code
+          ? "ADE ran into a problem with this project."
+          : null;
+  const fallback = raw.length > 0 ? raw : "Project action failed.";
+  return {
+    message: recoveryMessage ?? fallback,
+    ...(code ? { code } : {}),
+    ...(recoveryMessage && raw ? { detail: raw } : {}),
+    // A rootPath encoded into the coded error (open-repo dialog failures pick
+    // the path in the main process, so the renderer never saw it) lets the
+    // recovery screen offer Repair instead of the generic banner.
+    ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+  };
 }
 
 const createAppState: StateCreator<AppState> = (set, get) => {
@@ -1885,10 +1916,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }).catch(() => {});
       }, 750);
     } catch (error) {
+      const projectTransitionError = formatProjectTransitionError("switching", error);
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("switching", error),
+        projectTransitionError: projectTransitionError.code
+          ? { ...projectTransitionError, rootPath }
+          : projectTransitionError,
       });
       throw error;
     }
@@ -2018,10 +2052,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         dismissedGithubBannerRoots: {},
       });
     } catch (error) {
+      const projectTransitionError = formatProjectTransitionError("closing", error);
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("closing", error),
+        projectTransitionError: projectTransitionError.code && closingProjectRoot
+          ? { ...projectTransitionError, rootPath: closingProjectRoot }
+          : projectTransitionError,
       });
       throw error;
     }

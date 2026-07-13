@@ -290,6 +290,16 @@ describe("TopBar", () => {
         closeWindow: vi.fn(async () => ({ closed: true })),
         getResourceUsage: resourceUsageMock,
       },
+      storage: {
+        getPressure: vi.fn(async () => ({
+          state: "normal",
+          freeBytes: 100 * 1024 ** 3,
+          totalBytes: 500 * 1024 ** 3,
+          freeFraction: 0.2,
+          perRoot: [],
+          sampledAt: "2026-04-22T00:00:00.000Z",
+        })),
+      },
       project: {
         listRecent: vi.fn(async () => [
           {

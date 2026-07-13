@@ -3,6 +3,15 @@ import { IPC } from "../shared/ipc";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
+import type {
+  StorageCleanupPreview,
+  StorageCleanupResult,
+  StorageCleanupTarget,
+  StorageCompressionResult,
+  StorageSnapshot,
+} from "../shared/types/storage";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -294,6 +303,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -1204,6 +1215,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "approveToolUse",
   "interrupt",
   "recoverCodexTurn",
+  "recoverContinuity",
   "steer",
   "cancelSteer",
   "editSteer",
@@ -3287,6 +3299,29 @@ contextBridge.exposeInMainWorld("ade", {
       payload: Record<string, unknown> = {},
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
+  storage: {
+    getPressure: async (): Promise<DiskPressureSnapshot> =>
+      ipcRenderer.invoke(IPC.storageGetPressure),
+    getSnapshot: async (args: { forceRefresh?: boolean } = {}): Promise<StorageSnapshot> =>
+      callProjectRuntimeActionOr("storage", "getSnapshot", { args }, () =>
+        ipcRenderer.invoke(IPC.storageGetSnapshot, args),
+      ),
+    compressNow: async (): Promise<StorageCompressionResult> =>
+      callProjectRuntimeActionOr("storage", "compressNow", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.storageCompressNow),
+      ),
+    cleanupPreview: async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> =>
+      callProjectRuntimeActionOr("storage", "cleanupPreview", { args: { targets } }, () =>
+        ipcRenderer.invoke(IPC.storageCleanupPreview, targets),
+      ),
+    cleanup: async (
+      targets: StorageCleanupTarget[],
+      opts: { preview: StorageCleanupPreview },
+    ): Promise<StorageCleanupResult> =>
+      callProjectRuntimeActionOr("storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
+        ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
+  },
   project: {
     openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {
       // `clearAround` runs its cleanup callback both before AND after the
@@ -3465,6 +3500,12 @@ contextBridge.exposeInMainWorld("ade", {
         removeLocal();
       };
     },
+  },
+  recovery: {
+    diagnose: (projectRoot: string): Promise<ProjectRecoveryDiagnosis> =>
+      ipcRenderer.invoke(IPC.recoveryDiagnose, { projectRoot }),
+    repair: (projectRoot: string): Promise<ProjectRepairReport> =>
+      ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
   },
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>
@@ -5297,6 +5338,19 @@ contextBridge.exposeInMainWorld("ade", {
         "recoverCodexTurn",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatRecoverCodexTurn, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    recoverContinuity: async (
+      args: AgentChatRecoverContinuityArgs,
+    ): Promise<AgentChatContinuityRecoveryResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+        "chat",
+        "recoverContinuity",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRecoverContinuity, args),
       );
       agentChatSummaryCache.clear();
       return result;

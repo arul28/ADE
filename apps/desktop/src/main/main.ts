@@ -56,6 +56,8 @@ import { createExternalFilesWorkspaceRegistry, createFileService, type FileServi
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
+import { createDiskPressureMonitor } from "./services/storage/diskPressure";
+import { createStorageInsightsService } from "./services/storage/storageInsightsService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -2060,6 +2062,10 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    const diskPressureMonitor = createDiskPressureMonitor({
+      roots: [projectRoot, machineAdeLayout.adeDir],
+      logger,
+    });
     const packagedFirstOpenStabilityMode =
       app.isPackaged
       && !hadAdeDir
@@ -2878,6 +2884,7 @@ app.whenReady().then(async () => {
           reason: "meta-updated",
         });
       },
+      diskPressureMonitor,
       loadPty,
       disposePtyBackend: ptyBackend?.dispose,
     });
@@ -2891,6 +2898,7 @@ app.whenReady().then(async () => {
       sessionService,
       ptyService,
       getLaneRuntimeEnv,
+      diskPressureMonitor,
       broadcastEvent: (ev) =>
         emitProjectEvent(projectRoot, IPC.processesEvent, ev),
     });
@@ -2998,6 +3006,7 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       processService,
+      diskPressureMonitor,
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -3498,6 +3507,16 @@ app.whenReady().then(async () => {
       },
       projectRoot,
     });
+    const storageInsightsService = createStorageInsightsService({
+      projectRoot,
+      adeHome: machineAdeLayout.adeDir,
+      db,
+      logger,
+      diskPressure: diskPressureMonitor,
+      isPathActive: (filePath) =>
+        agentChatService.isTranscriptPathActive(filePath)
+        || ptyService.isTranscriptPathActive(filePath),
+    });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
@@ -3928,6 +3947,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       feedbackReporterService,
       usageTrackingService,
+      storageInsightsService,
       budgetCapService,
       sessionDeltaService,
       autoUpdateService,
@@ -4122,6 +4142,7 @@ app.whenReady().then(async () => {
         onboardingService,
         feedbackReporterService,
         usageTrackingService,
+        storageInsightsService,
         budgetCapService,
         autoUpdateService,
         isPackaged: app.isPackaged,
@@ -4154,6 +4175,7 @@ app.whenReady().then(async () => {
       autoRebaseService,
       sessionService,
       processRegistry,
+      diskPressureMonitor,
       ptyService,
       diffService,
       fileService,
@@ -4182,6 +4204,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       githubPollingService,
       usageTrackingService,
+      storageInsightsService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
@@ -4228,7 +4251,21 @@ app.whenReady().then(async () => {
       },
       projectRoot,
     });
+    const storageInsightsService = createStorageInsightsService({
+      projectRoot,
+      adeHome: machineAdeLayout.adeDir,
+      db,
+      logger,
+      // Daemon-backed mode: the brain owns activity tracking and runs the real compression sweep
+      // (see apps/ade-cli/src/bootstrap.ts); this fallback instance deliberately refuses to compress
+      // because activity cannot be known here.
+      isPathActive: () => true,
+    });
     usageTrackingService.start();
+    const diskPressureMonitor = createDiskPressureMonitor({
+      roots: [projectRoot, machineAdeLayout.adeDir],
+      logger,
+    });
 
     logger.info("project.runtime_bound", {
       projectRoot,
@@ -4245,7 +4282,9 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
+      diskPressureMonitor,
       usageTrackingService,
+      storageInsightsService,
     };
   };
 
@@ -4342,6 +4381,7 @@ app.whenReady().then(async () => {
       rebaseSuggestionService: null,
       autoRebaseService: null,
       sessionService: null,
+      diskPressureMonitor: null,
       ptyService: null,
       diffService: null,
       fileService: externalOnlyFileService,
@@ -4430,6 +4470,11 @@ app.whenReady().then(async () => {
       ctx.rpcSocketServer?.close();
     } catch {
       // ignore
+    }
+    try {
+      ctx.storageInsightsService?.dispose();
+    } catch {
+      // Scheduled maintenance teardown is best effort.
     }
     try {
       if (ctx.rpcSocketPath && !isAdeRuntimeNamedPipePath(ctx.rpcSocketPath)) {
@@ -6257,6 +6302,7 @@ app.whenReady().then(async () => {
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
       ? null
       : localRuntimePool,
+    projectRecoveryConnectionPool: localRuntimePool,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,

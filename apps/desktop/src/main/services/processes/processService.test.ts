@@ -1226,4 +1226,89 @@ describe("processService PTY-backed run commands", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("refuses single, stack, and restart launches when exhausted", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-disk-pressure-"));
+    const db = await openKvDb(path.join(tmpDir, "kv.sqlite"), createLogger());
+    const projectId = "proj-disk-pressure";
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+    let exhausted = false;
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-pressure", projectId, "Lane Pressure", null, "worktree", "main", "feature/pressure", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+    const config = makeMinimalConfig([
+      { id: "web", command: ["npm", "run", "dev"] },
+      { id: "worker", command: ["npm", "run", "worker"] },
+    ], {
+      stackButtons: [{ id: "worker-stack", name: "Worker", processIds: ["worker"], startOrder: "parallel" }],
+    });
+    const service = createProcessService({
+      db,
+      projectId,
+      logger: createLogger(),
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-pressure")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      diskPressureMonitor: {
+        canPerform: vi.fn(() => exhausted
+          ? {
+              allowed: false,
+              state: "exhausted",
+              code: "disk_full",
+              message: "Your Mac is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
+            }
+          : { allowed: true, state: "normal" }),
+      } as any,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const running = await service.start({ laneId: "lane-pressure", processId: "web" });
+      exhausted = true;
+
+      expect(service.listRuntime("lane-pressure")).toEqual([
+        expect.objectContaining({ runId: running.runId, status: "running" }),
+      ]);
+      await expect(service.start({ laneId: "lane-pressure", processId: "web" })).rejects.toMatchObject({
+        code: "disk_full",
+        message: expect.stringContaining("almost out of storage"),
+      });
+      await expect(service.startStack({ laneId: "lane-pressure", stackId: "worker-stack" })).rejects.toMatchObject({
+        code: "disk_full",
+        message: expect.stringContaining("almost out of storage"),
+      });
+      await expect(service.restart({ laneId: "lane-pressure", processId: "web" })).rejects.toMatchObject({
+        code: "disk_full",
+        message: expect.stringContaining("almost out of storage"),
+      });
+      expect(ptyService.create).toHaveBeenCalledTimes(1);
+      // Restart refuses before stopping, so the healthy process is left
+      // running rather than killed-then-unrestartable.
+      expect(service.listRuntime("lane-pressure")).toEqual([
+        expect.objectContaining({ runId: running.runId, status: "running" }),
+      ]);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

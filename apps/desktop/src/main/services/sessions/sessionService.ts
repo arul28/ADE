@@ -14,6 +14,7 @@ import type {
   UpdateSessionMetaArgs
 } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
+import { readHistoryFileSync } from "../storage/historyCompression";
 import {
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
@@ -1140,9 +1141,31 @@ export function createSessionService({ db }: { db: AdeDb }) {
       options?: { raw?: boolean; alignToLineBoundary?: boolean }
     ): Promise<string> {
       if (!transcriptPath) return "";
+      const readablePath = fs.existsSync(transcriptPath)
+        ? transcriptPath
+        : fs.existsSync(`${transcriptPath}.gz`)
+          ? `${transcriptPath}.gz`
+          : transcriptPath;
+      if (readablePath.endsWith(".gz")) {
+        try {
+          const full = readHistoryFileSync(readablePath);
+          const start = Math.max(0, full.length - maxBytes);
+          let slice = full.subarray(start);
+          if (options?.alignToLineBoundary === true && start > 0 && slice.length > 0) {
+            const nextNewline = slice.indexOf(0x0a);
+            if (nextNewline >= 0 && nextNewline + 1 < slice.length) {
+              slice = slice.subarray(nextNewline + 1);
+            }
+          }
+          const text = slice.toString("utf8");
+          return options?.raw ? text : stripAnsi(text);
+        } catch {
+          return "";
+        }
+      }
       let fh: fs.promises.FileHandle | null = null;
       try {
-        fh = await fs.promises.open(transcriptPath, "r");
+        fh = await fs.promises.open(readablePath, "r");
         const stat = await fh.stat();
         const size = stat.size;
         const start = Math.max(0, size - maxBytes);

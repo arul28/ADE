@@ -23,6 +23,8 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { DiskPressureMonitor } from "../storage/diskPressure";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { nowIso, resolvePathWithinRoot } from "../shared/utils";
 
@@ -148,6 +150,7 @@ export function createProcessService({
   ptyService,
   getLaneRuntimeEnv,
   broadcastEvent,
+  diskPressureMonitor,
 }: {
   db: AdeDb;
   projectId: string;
@@ -158,6 +161,7 @@ export function createProcessService({
   ptyService: Pick<ReturnType<typeof createPtyService>, "create" | "dispose" | "onData" | "onExit">;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   broadcastEvent: (ev: ProcessEvent) => void;
+  diskPressureMonitor?: DiskPressureMonitor | null;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
   const sessionToRunId = new Map<string, string>();
@@ -589,11 +593,25 @@ export function createProcessService({
     });
   };
 
+  // Every NEW process launch path (start, restart, stack, group, start-all)
+  // funnels through startByDefinition / startById / runStartSet; the pressure
+  // gate must be their first act so a refusal happens before any config or
+  // trust work.
+  const assertProcessStartAllowed = (): void => {
+    const decision = diskPressureMonitor?.canPerform("process_start");
+    if (decision && !decision.allowed) {
+      throw Object.assign(new Error(decision.message), {
+        code: decision.code satisfies AdeRecoveryErrorCode,
+      });
+    }
+  };
+
   const startByDefinition = async (
     laneId: string,
     definition: ProcessDefinition,
     opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {},
   ): Promise<ProcessRuntime> => {
+    assertProcessStartAllowed();
     if (!opts.skipTrust) projectConfigService.getExecutableConfig();
 
     if (!definition.command.length || !definition.command[0]?.trim()) {
@@ -690,6 +708,7 @@ export function createProcessService({
   };
 
   const startById = async (laneId: string, processId: string, opts: { skipTrust?: boolean } = {}) => {
+    assertProcessStartAllowed();
     const config = opts.skipTrust ? projectConfigService.getEffective() : projectConfigService.getExecutableConfig();
     const overlay = await getLaneOverlay(laneId, config);
     const allowedIds = applyProcessFilter(config.processes.map((proc) => proc.id), overlay);
@@ -728,6 +747,7 @@ export function createProcessService({
   };
 
   const runStartSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
+    assertProcessStartAllowed();
     const config = projectConfigService.getExecutableConfig();
     const overlay = await getLaneOverlay(laneId, config);
     const byId = new Map(config.processes.map((proc) => [proc.id, proc] as const));
@@ -877,6 +897,10 @@ export function createProcessService({
     },
 
     async restart(arg: ProcessActionArgs): Promise<ProcessRuntime> {
+      // Refuse before stopping: otherwise exhausted storage would kill a
+      // healthy process and then refuse to launch its replacement, leaving
+      // the user worse off than if Restart had done nothing.
+      assertProcessStartAllowed();
       const targets = selectEntriesForAction(arg);
       const stopped = waitForEntriesStopped(targets);
       await stopEntries(targets, "stopped");
@@ -901,6 +925,7 @@ export function createProcessService({
     },
 
     async restartStack(arg: ProcessStackArgs): Promise<void> {
+      assertProcessStartAllowed();
       const config = projectConfigService.getExecutableConfig();
       const stack = stackById(config, arg.stackId);
       const targets = stack.processIds.flatMap((processId) => listActiveEntriesForLaneProcess(arg.laneId, processId));
@@ -925,6 +950,7 @@ export function createProcessService({
     },
 
     async restartGroup(arg: ProcessGroupArgs): Promise<void> {
+      assertProcessStartAllowed();
       const effective = projectConfigService.get().effective;
       const processIds = groupProcessIds(effective, arg.groupId);
       if (processIds.length === 0) return;

@@ -31,6 +31,8 @@ import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
+import { readLastFailure } from "../runtime/lastFailureStore";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 
 type LocalRuntimeConnection = {
   client: RuntimeRpcClient;
@@ -66,6 +68,7 @@ type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
+const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
@@ -113,6 +116,28 @@ function primaryRuntimeSpawnBlockedMessage(socketPath: string): string {
     `ADE runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
     "on a primary channel socket. Start or repair the ADE background service instead."
   );
+}
+
+function codedRecoveryError(message: string, code: AdeRecoveryErrorCode): Error & { code: AdeRecoveryErrorCode } {
+  return Object.assign(new Error(message), { code });
+}
+
+function probeSocketHasOwner(socketPath: string, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    const finish = (owned: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(owned);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
 }
 
 function stableActionValue(value: unknown): unknown {
@@ -755,6 +780,77 @@ export class LocalRuntimeConnectionPool {
     });
     this.serviceInstallPromise = install;
     return install;
+  }
+
+  /**
+   * Stop and remove the per-user service login item by spawning
+   * `serve --uninstall-service` — the same child-process boundary the
+   * installer uses; desktop never imports ade-cli service-manager code
+   * directly. Throws when the uninstall reports failure so the repair flow
+   * does not proceed to exclusive database work with a brain still running.
+   */
+  async uninstallServiceBestEffort(): Promise<void> {
+    const cliPath = resolveCliScriptPath();
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, "serve", "--uninstall-service"], {
+        env: buildLocalRuntimeNodeEnv(this.appVersion),
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      // A hung `serve --uninstall-service` (e.g. a stuck login-item removal)
+      // must not leave the repair flow waiting forever; time it out, kill the
+      // child, and reject so the caller reports a repair failure instead of
+      // silently proceeding to exclusive database work.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { child.kill("SIGKILL"); } catch { /* child may already be gone */ }
+        const message = "ADE service login item removal timed out.";
+        this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, reason: "timeout", message });
+        reject(new Error(message));
+      }, LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS);
+      timer.unref?.();
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.logger.warn("local_runtime.service_uninstall_failed", { error: error.message });
+        reject(error);
+      });
+      child.once("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const output = stdout.trim();
+        const parsed = parseRuntimeServiceManagerOutput(output);
+        const failed = code !== 0 || parsed?.ok === false;
+        if (failed) {
+          const message = parsed?.message || stderr.trim() || output || "ADE service login item removal failed.";
+          this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, exitCode: code, message });
+          reject(new Error(message));
+          return;
+        }
+        this.serviceInstallStatus = {
+          state: "not_attempted",
+          attempted: false,
+          path: parsed?.path ?? cliPath,
+          message: parsed?.message || output || "ADE service login item was removed.",
+          exitCode: code,
+          updatedAt: new Date().toISOString(),
+        };
+        this.logger.info("local_runtime.service_uninstall_succeeded", { cliPath, exitCode: code });
+        resolve();
+      });
+    });
   }
 
   private async runServiceInstallBestEffort(): Promise<void> {
@@ -1441,7 +1537,38 @@ export class LocalRuntimeConnectionPool {
         serviceMessage: this.serviceInstallStatus.message,
         preferServiceRepair: this.options.preferServiceRepair === true,
       });
-      throw new Error(message);
+      const lastFailure = readLastFailure({ kind: "machine" });
+      this.refreshServiceHealthIfStale(0);
+      const recordedDbCodes = new Set<AdeRecoveryErrorCode>([
+        "disk_full",
+        "insufficient_headroom",
+        "db_integrity",
+        "migration_incomplete",
+        "migration_unknown_state",
+      ]);
+      let recoveryCode: AdeRecoveryErrorCode;
+      if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
+        recoveryCode = lastFailure.code;
+      } else if (
+        this.serviceInstallStatus.state === "failed"
+        || this.serviceHealthStatus.state === "not_installed"
+      ) {
+        recoveryCode = "brain_not_installed";
+      } else {
+        recoveryCode = await probeSocketHasOwner(socketPath)
+          ? "socket_owned_by_other"
+          : "socket_stale_no_owner";
+      }
+      const crashLoopDetail = lastFailure && lastFailure.count >= 3
+        ? ` Secondary recovery code: brain_crash_looping (${lastFailure.count} consecutive failures since ${lastFailure.firstAt}).`
+        : "";
+      const reportDetail = lastFailure?.detail
+        ? ` Last recorded failure: ${lastFailure.detail}`
+        : "";
+      throw codedRecoveryError(
+        `ADE's background service could not open this project. Technical details: ${message}${crashLoopDetail}${reportDetail}`,
+        recoveryCode,
+      );
     }
 
     const child = this.spawnRuntime(socketPath);

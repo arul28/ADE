@@ -5,6 +5,7 @@ import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { expectNoJargon } from "../../../test/jargonGuard";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -278,6 +279,9 @@ function createHarness(overrides: {
     isPidLive: ReturnType<typeof vi.fn>;
     isProcessIdentityLive?: ReturnType<typeof vi.fn>;
   } | null;
+  diskPressureMonitor?: {
+    canPerform: ReturnType<typeof vi.fn>;
+  } | null;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -372,6 +376,7 @@ function createHarness(overrides: {
     sessionService: sessionService as any,
     ...(overrides.processRegistry !== undefined ? { processRegistry: overrides.processRegistry as any } : {}),
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
+    ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -865,6 +870,63 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
+    });
+
+    it("refuses only new tracked CLI launches when storage is exhausted", async () => {
+      let exhausted = false;
+      const canPerform = vi.fn(() => exhausted
+        ? {
+            allowed: false,
+            state: "exhausted",
+            code: "disk_full",
+            message: "Your Mac is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
+          }
+        : { allowed: true, state: "normal" });
+      const { service, loadPty } = createHarness({ diskPressureMonitor: { canPerform } });
+
+      const existing = await service.create({
+        laneId: "lane-1",
+        title: "Existing Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      });
+      exhausted = true;
+
+      await expect(service.create({
+        laneId: "lane-1",
+        title: "New Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      })).rejects.toMatchObject({
+        code: "disk_full",
+        message: "Your Mac is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
+      });
+      await expect(service.create({
+        laneId: "lane-1",
+        sessionId: existing.sessionId,
+        title: "Existing Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      })).resolves.toMatchObject({ sessionId: existing.sessionId });
+      await expect(service.create({
+        laneId: "lane-1",
+        title: "Plain shell",
+        cols: 80,
+        rows: 24,
+        toolType: "shell",
+      })).resolves.toBeTruthy();
+
+      expect(canPerform).toHaveBeenCalledTimes(2);
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn).toHaveBeenCalled();
+      const refusal = canPerform.mock.results.find((result) => result.value.allowed === false)?.value.message;
+      expectNoJargon(refusal);
     });
 
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {

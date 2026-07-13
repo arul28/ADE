@@ -1,6 +1,11 @@
 import fs from "node:fs";
+import path from "node:path";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import {
+  MAX_TRANSPARENT_HISTORY_BYTES,
+  readHistoryFileSync,
+} from "../storage/historyCompression";
 
 /**
  * Byte-window pager for chat transcript JSONL files.
@@ -41,6 +46,45 @@ export type TranscriptHistoryPageRead = {
 };
 
 const EMPTY_PAGE: TranscriptHistoryPageRead = { envelopes: [], startOffset: 0, hasMore: false };
+const GZIP_SNAPSHOT_CACHE_MAX_ENTRIES = 4;
+const gzipSnapshotCache = new Map<string, {
+  mtimeMs: number;
+  size: number;
+  snapshot: Buffer;
+}>();
+let gzipSnapshotCacheBytes = 0;
+
+function readGzipSnapshot(transcriptPath: string): Buffer {
+  const cacheKey = path.resolve(transcriptPath);
+  const stat = fs.statSync(cacheKey);
+  const cached = gzipSnapshotCache.get(cacheKey);
+  if (cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    gzipSnapshotCache.delete(cacheKey);
+    gzipSnapshotCache.set(cacheKey, cached);
+    return cached.snapshot;
+  }
+  if (cached) {
+    gzipSnapshotCache.delete(cacheKey);
+    gzipSnapshotCacheBytes -= cached.snapshot.length;
+  }
+
+  const snapshot = readHistoryFileSync(cacheKey);
+  if (snapshot.length <= MAX_TRANSPARENT_HISTORY_BYTES) {
+    gzipSnapshotCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, snapshot });
+    gzipSnapshotCacheBytes += snapshot.length;
+    while (
+      gzipSnapshotCache.size > GZIP_SNAPSHOT_CACHE_MAX_ENTRIES
+      || gzipSnapshotCacheBytes > MAX_TRANSPARENT_HISTORY_BYTES
+    ) {
+      const oldestKey = gzipSnapshotCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      const oldest = gzipSnapshotCache.get(oldestKey);
+      gzipSnapshotCache.delete(oldestKey);
+      gzipSnapshotCacheBytes -= oldest?.snapshot.length ?? 0;
+    }
+  }
+  return snapshot;
+}
 
 /**
  * Read one page of transcript history ending (exclusively) at `beforeOffset`.
@@ -67,6 +111,27 @@ export function readTranscriptHistoryPage(args: {
   if (beforeOffset <= 0) return { ...EMPTY_PAGE };
 
   const pageBytes = clampHistoryPageBytes(args.maxBytes);
+  if (transcriptPath.endsWith(".gz")) {
+    const full = readGzipSnapshot(transcriptPath);
+    const end = Math.min(beforeOffset, full.length);
+    if (end <= 0) return { ...EMPTY_PAGE };
+    const start = Math.max(0, end - pageBytes);
+    const readStart = Math.max(0, start - 1);
+    let slice = full.subarray(readStart, end);
+    let startOffset = readStart;
+    if (readStart > 0) {
+      const firstNewline = slice.indexOf(0x0a);
+      const lineStart = firstNewline >= 0 ? readStart + firstNewline + 1 : -1;
+      if (lineStart < 0 || lineStart >= end) {
+        return { envelopes: [], startOffset: start, hasMore: start > 0 };
+      }
+      startOffset = lineStart;
+      slice = slice.subarray(firstNewline + 1);
+    }
+    const envelopes = parseAgentChatTranscript(slice.toString("utf8"))
+      .filter((entry) => entry.sessionId === sessionId);
+    return { envelopes, startOffset, hasMore: startOffset > 0 };
+  }
   const stat = fs.statSync(transcriptPath);
   const end = Math.min(beforeOffset, stat.size);
   if (end <= 0) return { ...EMPTY_PAGE };

@@ -18,6 +18,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { PublishProjectResult } from "../../../shared/types";
+import { extractCodeFromMessage } from "../../lib/codedError";
 import { extractError } from "../../lib/format";
 import { fadeScale } from "../../lib/motion";
 import {
@@ -64,14 +65,6 @@ function validateOwner(rawOwner: string): OwnerValidation {
     return { ok: false, reason: "Use a GitHub user or org slug" };
   }
   return { ok: true };
-}
-
-function extractCodeFromMessage(err: unknown): string | null {
-  const direct = (err as { code?: unknown } | null)?.code;
-  if (typeof direct === "string" && direct.length > 0) return direct;
-  const message = err instanceof Error ? err.message : String(err ?? "");
-  const match = message.match(/^([a-z][a-z0-9_]*)\s*:\s*/i);
-  return match?.[1] ?? null;
 }
 
 function detectTokenType(token: string): "classic" | "fine-grained" | "unknown" {

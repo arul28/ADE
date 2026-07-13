@@ -2,6 +2,7 @@ import {
   isSameChannelSyncHostOwner,
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
+import { createFailureLogDeduper } from "../runtime/failureLogDeduper";
 
 export type SyncHostStartupLoopDeps = {
   startSyncHost: () => Promise<unknown>;
@@ -86,19 +87,20 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   const slowRetryDelayMs = deps.slowRetryDelayMs ?? 30_000;
   const fastRetryCount = deps.fastRetryCount ?? 5;
   let attempt = 0;
-  let lastLoggedMessage = "";
+  let lastFailureSignature = "";
+  const failureLogs = createFailureLogDeduper({ log: deps.log });
   while (!deps.isDone()) {
     try {
       await deps.startSyncHost();
+      if (lastFailureSignature) failureLogs.clear(lastFailureSignature);
       if (attempt > 0) deps.log("ADE brain mobile sync host recovered.");
       return;
     } catch (error) {
       attempt += 1;
       const message = error instanceof Error ? error.message : String(error);
-      if (message !== lastLoggedMessage) {
-        deps.log(`ADE brain sync host failed: ${message}`);
-        lastLoggedMessage = message;
-      }
+      const signature = error instanceof Error ? error.name : typeof error;
+      failureLogs.note(signature, `ADE brain sync host failed: ${message}`);
+      lastFailureSignature = signature;
       if (error instanceof SyncHostSingletonConflictError) {
         const owner = error.conflict.owner;
         const sameChannelOwner = isSameChannelSyncHostOwner(owner, deps.env);

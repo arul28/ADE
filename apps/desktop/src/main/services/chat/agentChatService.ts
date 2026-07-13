@@ -83,6 +83,11 @@ import {
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import {
+  classifyCodexResumeFailure,
+  type ResumeFailureClassification,
+} from "./providerResumeClassifier";
+import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
+import {
   mcpElicitationAllowsAlways,
   mcpElicitationContent,
   mcpElicitationQuestions,
@@ -114,8 +119,24 @@ import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneL
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
+import {
+  cleanupAbandonedTempFiles,
+  readJsonWithRecovery,
+  writeFileAtomic,
+  writeJsonWithPrevious,
+} from "../state/durableFile";
+import {
+  readThreadPointerLedger,
+  recordThreadPointerChange,
+  type ThreadPointerLedgerEntry,
+} from "./threadPointerLedger";
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
+import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
+import {
+  readHistoryFileSync,
+  reinflateHistoryFileSync,
+} from "../storage/historyCompression";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -155,6 +176,8 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
+  AgentChatContinuityRecovery,
+  AgentChatContinuityRecoveryResult,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineForkTransport,
@@ -171,6 +194,7 @@ import type {
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
+  AgentChatRecoverContinuityArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
@@ -498,6 +522,15 @@ const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.api": CLAUDE_AGENT_SDK_API,
 } as const;
 
+type CodexResumeFailureError = Error & {
+  code: "provider_thread_resume_failed";
+  resumeFailureClassification: ResumeFailureClassification;
+};
+
+function isCodexResumeFailureError(error: unknown): error is CodexResumeFailureError {
+  return error instanceof Error && "resumeFailureClassification" in error;
+}
+
 function partitionClaudeResultErrors(value: unknown): {
   all: string[];
   internalDiagnostics: string[];
@@ -578,6 +611,8 @@ type PersistedChatState = {
   codexGoal?: CodexThreadGoal | null;
   codexTokenUsage?: CodexThreadTokenUsage | null;
   threadId?: string;
+  continuityRecovery?: AgentChatContinuityRecovery;
+  recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
@@ -624,6 +659,81 @@ type PersistedChatState = {
   orchestrationBundlePath?: string;
   updatedAt: string;
 };
+
+function normalizeContinuityRecovery(value: unknown): AgentChatContinuityRecovery | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const state = record.state === "required" || record.state === "reconstructed" ? record.state : null;
+  const reason = record.reason === "thread_missing"
+    || record.reason === "provider_environment"
+    || record.reason === "transient"
+    || record.reason === "unknown"
+    ? record.reason
+    : null;
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  const at = typeof record.at === "string" ? record.at.trim() : "";
+  const originalThreadId = typeof record.originalThreadId === "string"
+    ? record.originalThreadId.trim() || null
+    : record.originalThreadId === null
+      ? null
+      : undefined;
+  if (!state || !reason || !provider || !at || originalThreadId === undefined) return undefined;
+  return {
+    state,
+    reason,
+    provider,
+    originalThreadId,
+    at,
+    ...(typeof record.detail === "string" && record.detail.trim() ? { detail: record.detail.trim().slice(0, 2_000) } : {}),
+    ...(typeof record.reconstructedThreadId === "string" && record.reconstructedThreadId.trim()
+      ? { reconstructedThreadId: record.reconstructedThreadId.trim() }
+      : {}),
+    ...(typeof record.supersededBySessionId === "string" && record.supersededBySessionId.trim()
+      ? { supersededBySessionId: record.supersededBySessionId.trim() }
+      : {}),
+  };
+}
+
+function isPersistedChatStateShape(value: unknown): value is PersistedChatState {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<PersistedChatState>;
+  return (record.version === 1 || record.version === 2)
+    && typeof record.sessionId === "string"
+    && record.sessionId.trim().length > 0;
+}
+
+function normalizedPersistedPointer(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length ? value.trim() : null;
+}
+
+function persistedPointerState(state: Pick<PersistedChatState,
+  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "cursorSdkAgentId" | "cursorCloudAgentId"
+>): { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null } {
+  switch (state.provider) {
+    case "codex":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.threadId) };
+    case "claude":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.sdkSessionId) };
+    case "opencode":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.providerSessionId) };
+    case "unified":
+      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
+    case "droid":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
+    case "cursor":
+      return {
+        provider: state.provider,
+        pointer: normalizedPersistedPointer(state.cursorSdkAgentId)
+          ?? normalizedPersistedPointer(state.cursorCloudAgentId),
+      };
+    default:
+      return { provider: "opencode", pointer: normalizedPersistedPointer(state.providerSessionId) };
+  }
+}
+
+function pointerFingerprint(state: { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null }): string {
+  return JSON.stringify([state.provider, state.pointer]);
+}
 
 type PersistedPendingSteer = {
   steerId: string;
@@ -2253,9 +2363,11 @@ const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 type PendingTranscriptWrite = {
   chunks: Buffer[];
   timer: NodeJS.Timeout | null;
+  onTailHealed?: (details: { path: string; priorSize: number }) => void;
 };
 
 const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
+const checkedTranscriptTails = new Set<string>();
 
 function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
@@ -2273,7 +2385,41 @@ function flushQueuedTranscriptWrite(filePath: string): void {
   if (!pending.chunks.length) return;
   try {
     fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
-    fs.appendFileSync(normalizedPath, Buffer.concat(pending.chunks));
+    reinflateHistoryFileSync(normalizedPath, (targetPath, data) => {
+      writeFileAtomic(targetPath, data, { fsync: true });
+    });
+    let chunk = Buffer.concat(pending.chunks);
+    const needsTailCheck = !checkedTranscriptTails.has(normalizedPath);
+    if (needsTailCheck) {
+      try {
+        const stat = fs.statSync(normalizedPath);
+        if (stat.size > 0) {
+          const fd = fs.openSync(normalizedPath, "r");
+          try {
+            const lastByte = Buffer.allocUnsafe(1);
+            fs.readSync(fd, lastByte, 0, 1, stat.size - 1);
+            if (lastByte[0] !== 0x0a) {
+              chunk = Buffer.concat([Buffer.from("\n", "utf8"), chunk]);
+              try {
+                pending.onTailHealed?.({ path: normalizedPath, priorSize: stat.size });
+              } catch {
+                // Logging must not block transcript persistence.
+              }
+            }
+          } finally {
+            fs.closeSync(fd);
+          }
+        }
+      } catch {
+        // A missing or unreadable prior file needs no healing.
+      }
+    }
+    fs.appendFileSync(normalizedPath, chunk);
+    // Only mark the tail verified once the append actually landed. A partial
+    // append that threw (e.g. ENOSPC) can leave the file without a trailing
+    // newline, so the next flush must re-check and heal it rather than skip
+    // validation forever and corrupt the following event.
+    checkedTranscriptTails.add(normalizedPath);
   } catch {
     // Transcript persistence is best effort; callers still receive live events.
   }
@@ -2285,13 +2431,19 @@ function flushAllQueuedTranscriptWrites(): void {
   }
 }
 
-function queueTranscriptWrite(filePath: string, chunk: Buffer | string): void {
+function queueTranscriptWrite(
+  filePath: string,
+  chunk: Buffer | string,
+  onTailHealed?: (details: { path: string; priorSize: number }) => void,
+): void {
   if (!filePath.trim().length) return;
   const normalizedPath = normalizeTranscriptWritePath(filePath);
   let pending = pendingTranscriptWrites.get(normalizedPath);
   if (!pending) {
-    pending = { chunks: [], timer: null };
+    pending = { chunks: [], timer: null, onTailHealed };
     pendingTranscriptWrites.set(normalizedPath, pending);
+  } else if (!pending.onTailHealed && onTailHealed) {
+    pending.onTailHealed = onTailHealed;
   }
   pending.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
   if (pending.timer) return;
@@ -4335,9 +4487,7 @@ export function writeSessionLinearIssueContextFile(args: {
     })),
   };
   fs.mkdirSync(sessionContextDir, { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`);
-  fs.renameSync(tempPath, filePath);
+  writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return {
     filePath,
     issueIds: args.links.map((link) => link.issue.id).join(","),
@@ -5850,6 +6000,7 @@ export function createAgentChatService(args: {
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
@@ -5895,6 +6046,7 @@ export function createAgentChatService(args: {
     linearCredentials: linearCredentialsRef,
     prService,
     processService,
+    diskPressureMonitor,
     getTestService,
     ptyService,
     getAutomationService,
@@ -6452,6 +6604,13 @@ export function createAgentChatService(args: {
   const chatSessionsDir = layout.chatSessionsDir;
   const chatTranscriptsDir = layout.chatTranscriptsDir;
   fs.mkdirSync(chatSessionsDir, { recursive: true });
+  const abandonedTempCount = cleanupAbandonedTempFiles(chatSessionsDir);
+  if (abandonedTempCount > 0) {
+    logger.info("agent_chat.abandoned_temp_files_cleaned", {
+      dir: chatSessionsDir,
+      count: abandonedTempCount,
+    });
+  }
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -6518,7 +6677,9 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
+  const continuityRecoveryInFlight = new Set<string>();
 
   const recordLinearIssueContextForLane = (
     managed: ManagedChatSession,
@@ -7681,7 +7842,7 @@ export function createAgentChatService(args: {
     try {
       const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
       if (!transcriptPath) return [];
-      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
       return [];
@@ -7692,6 +7853,27 @@ export function createAgentChatService(args: {
     transcriptPath: string,
     stat: fs.Stats,
   ): { raw: string; truncated: boolean; startOffset: number } => {
+    if (transcriptPath.endsWith(".gz")) {
+      const full = readHistoryFileSync(transcriptPath);
+      const size = full.length;
+      const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
+      let slice = full.subarray(start);
+      let startOffset = start;
+      if (start > 0 && slice.length > 0) {
+        const nextNewline = slice.indexOf(0x0a);
+        if (nextNewline >= 0 && start + nextNewline + 1 < size) {
+          slice = slice.subarray(nextNewline + 1);
+          startOffset = start + nextNewline + 1;
+        } else {
+          slice = Buffer.alloc(0);
+        }
+      }
+      return {
+        raw: slice.toString("utf8"),
+        truncated: start > 0,
+        startOffset: start > 0 ? startOffset : 0,
+      };
+    }
     const size = stat.size;
     const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
     // Read one extra byte before the window (when possible) so a window
@@ -7800,14 +7982,21 @@ export function createAgentChatService(args: {
     };
     for (const candidatePath of transcriptPathCandidatesForSessionId(sessionId, managed)) {
       try {
-        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+        const plainPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        const gzipPath = resolveReadableChatPath(`${candidatePath}.gz`, "agent_chat.transcript_read_skipped_path_outside_ade");
+        const plainExists = Boolean(plainPath && fs.existsSync(plainPath));
+        const gzipExists = Boolean(gzipPath && fs.existsSync(gzipPath));
+        if (plainExists && gzipExists) {
+          logger.warn("agent_chat.transcript_plain_preferred", { path: plainPath, compressedPath: gzipPath });
+        }
+        const transcriptPath = plainExists ? plainPath : gzipExists ? gzipPath : null;
+        if (!transcriptPath) continue;
         const stat = fs.statSync(transcriptPath);
         if (!stat.isFile()) continue;
         const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath);
         const candidate: Candidate = {
           path: transcriptPath,
-          size: stat.size,
+          size: transcriptPath.endsWith(".gz") ? readHistoryFileSync(transcriptPath).length : stat.size,
           mtimeMs: stat.mtimeMs,
           envelopeCount: parsed.envelopes.length,
           hasCapNotice: parsed.hasCapNotice,
@@ -7854,7 +8043,7 @@ export function createAgentChatService(args: {
     const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
     if (!transcriptPath) return [];
     try {
-      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
         .filter((entry) => entry.sessionId === sessionId);
     } catch {
       return [];
@@ -7877,7 +8066,7 @@ export function createAgentChatService(args: {
       }
 
       const map = new Map<string, AgentChatSubagentSnapshot>();
-      const raw = fs.readFileSync(transcriptPath, "utf8");
+      const raw = readHistoryFileSync(transcriptPath).toString("utf8");
       for (const line of raw.split(/\r?\n/)) {
         if (!line.includes("subagent_")) continue;
         let envelope: AgentChatEventEnvelope | null = null;
@@ -9741,6 +9930,8 @@ export function createAgentChatService(args: {
       ...(managed.session.codexGoal ? { codexGoal: normalizeAdeCodexGoal(managed.session.codexGoal) } : {}),
       ...(managed.session.codexTokenUsage ? { codexTokenUsage: managed.session.codexTokenUsage } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.session.continuityRecovery ? { continuityRecovery: managed.session.continuityRecovery } : {}),
+      ...(managed.session.recoveredFromSessionId ? { recoveredFromSessionId: managed.session.recoveredFromSessionId } : {}),
       ...(managed.session.importedFrom
         ? { importedFrom: managed.session.importedFrom }
         : prevPersisted?.importedFrom ? { importedFrom: prevPersisted.importedFrom } : {}),
@@ -9847,14 +10038,65 @@ export function createAgentChatService(args: {
       updatedAt: nowIso()
     };
 
+    const currentPointerState = persistedPointerState(payload);
+    const currentPointerFingerprint = pointerFingerprint(currentPointerState);
+    let previousPointerFingerprint = lastPersistedPointerFingerprints.get(managed.session.id);
+    let previousPointerState: { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null };
+    if (previousPointerFingerprint === undefined) {
+      previousPointerState = prevPersisted
+        ? persistedPointerState(prevPersisted)
+        : { provider: currentPointerState.provider, pointer: null };
+      previousPointerFingerprint = pointerFingerprint(previousPointerState);
+      lastPersistedPointerFingerprints.set(managed.session.id, previousPointerFingerprint);
+    } else {
+      try {
+        const [provider, pointer] = JSON.parse(previousPointerFingerprint) as [ThreadPointerLedgerEntry["provider"], string | null];
+        previousPointerState = { provider, pointer };
+      } catch {
+        previousPointerState = { provider: currentPointerState.provider, pointer: null };
+      }
+    }
+    const pointerChanged = currentPointerFingerprint !== previousPointerFingerprint;
+    let lkgUpdated = false;
     try {
       fs.mkdirSync(path.dirname(managed.metadataPath), { recursive: true });
-      fs.writeFileSync(managed.metadataPath, JSON.stringify(payload, null, 2), "utf8");
+      lkgUpdated = writeJsonWithPrevious(managed.metadataPath, payload, {
+        validate: isPersistedChatStateShape,
+        fsync: pointerChanged,
+      });
+      if (pointerChanged) {
+        lastPersistedPointerFingerprints.set(managed.session.id, currentPointerFingerprint);
+        try {
+          recordThreadPointerChange(chatSessionsDir, {
+            sessionId: managed.session.id,
+            provider: currentPointerState.provider,
+            pointer: currentPointerState.pointer,
+            prevPointer: previousPointerState.pointer,
+            reason: "persist_change",
+            at: payload.updatedAt,
+          });
+        } catch (error) {
+          logger.warn("agent_chat.thread_pointer_ledger_write_failed", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     } catch (error) {
+      try {
+        lkgUpdated = fs.readFileSync(managed.metadataPath).equals(fs.readFileSync(`${managed.metadataPath}.lkg`));
+      } catch {
+        // Leave the last known copy outcome unchanged when either file is unavailable.
+      }
       logger.warn("agent_chat.persist_failed", {
         sessionId: managed.session.id,
+        lkgUpdated,
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+    if (pointerChanged) {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     }
 
     mirrorClaudeSessionPointer(managed, payload.sdkSessionId);
@@ -9862,12 +10104,13 @@ export function createAgentChatService(args: {
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    if (!fs.existsSync(filePath)) return null;
+    const recovered = readJsonWithRecovery(filePath, isPersistedChatStateShape);
+    if (recovered.value === null) return null;
+    if (recovered.source === "previous") {
+      logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
+    }
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-      if (!parsed || typeof parsed !== "object") return null;
-      const record = parsed as Partial<PersistedChatState>;
-      if (record.version !== 1 && record.version !== 2) return null;
+      const record = recovered.value as Partial<PersistedChatState>;
       let provider = record.provider;
       if (provider === "unified") provider = "opencode";
       if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid") {
@@ -9918,6 +10161,7 @@ export function createAgentChatService(args: {
       const codexTokenUsageRecord = asRecord(record.codexTokenUsage);
       const codexTokenUsage = codexTokenUsageRecord ? normalizeCodexThreadTokenUsage(codexTokenUsageRecord) : null;
       const importedFrom = normalizeImportedFrom(record.importedFrom);
+      const continuityRecovery = normalizeContinuityRecovery(record.continuityRecovery);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
@@ -10043,6 +10287,10 @@ export function createAgentChatService(args: {
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
+        ...(continuityRecovery ? { continuityRecovery } : {}),
+        ...(typeof record.recoveredFromSessionId === "string" && record.recoveredFromSessionId.trim().length
+          ? { recoveredFromSessionId: record.recoveredFromSessionId.trim() }
+          : {}),
         ...(droidSdkSessionId ? { droidSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
@@ -10103,6 +10351,163 @@ export function createAgentChatService(args: {
     }
   };
 
+  type ReconciledPointerCandidate = {
+    provider: Exclude<AgentChatProvider, "unified">;
+    pointer: string;
+    source: "ledger" | "resume_command" | "transcript";
+    at: string;
+  };
+
+  const parseResumeCommandPointer = (resumeCommand: string | null | undefined): Omit<ReconciledPointerCandidate, "source" | "at"> | null => {
+    const command = resumeCommand?.trim() ?? "";
+    const chatMatch = command.match(/^chat:(codex|opencode|droid|cursor):(.+)$/u);
+    if (chatMatch?.[1] && chatMatch[2]?.trim()) {
+      return { provider: chatMatch[1] as ReconciledPointerCandidate["provider"], pointer: chatMatch[2].trim() };
+    }
+    const claudeMatch = command.match(/(?:^|\s)claude(?:\s+[^\s]+)*\s+--resume\s+([^\s]+)/u);
+    return claudeMatch?.[1]
+      ? { provider: "claude", pointer: claudeMatch[1].trim() }
+      : null;
+  };
+
+  const pointerFromTranscriptTail = (
+    sessionId: string,
+    provider: Exclude<AgentChatProvider, "unified">,
+  ): ReconciledPointerCandidate | null => {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return null;
+    try {
+      const { envelopes } = parseTranscriptHistoryTail(sessionId, transcriptPath);
+      for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+        const envelope = envelopes[index]!;
+        const event = envelope.event as AgentChatEvent & Record<string, unknown>;
+        const usage = event.type === "codex_token_usage" && event.usage && typeof event.usage === "object"
+          ? event.usage as Record<string, unknown>
+          : null;
+        const pointer = typeof usage?.threadId === "string"
+          ? usage.threadId.trim()
+          : typeof event.threadId === "string"
+            ? event.threadId.trim()
+            : typeof envelope.provenance?.threadId === "string"
+              ? envelope.provenance.threadId.trim()
+              : "";
+        if (pointer) return { provider, pointer, source: "transcript", at: envelope.timestamp };
+      }
+    } catch {
+      // A missing or malformed transcript simply removes this redundant source.
+    }
+    return null;
+  };
+
+  const pointerStatePatch = (
+    candidate: ReconciledPointerCandidate,
+  ): Partial<PersistedChatState> => {
+    switch (candidate.provider) {
+      case "codex": return { threadId: candidate.pointer };
+      case "claude": return { sdkSessionId: candidate.pointer };
+      case "droid": return { droidSdkSessionId: candidate.pointer };
+      case "cursor": return { cursorSdkAgentId: candidate.pointer };
+      case "opencode": return { providerSessionId: candidate.pointer };
+      default: return {};
+    }
+  };
+
+  const reconcileThreadPointerFromRedundantSources = (sessionId: string): PersistedChatState | null => {
+    const row = sessionService.get(sessionId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    const fallbackProvider = providerFromToolType(row.toolType);
+    const provider = fallbackProvider === "unified" ? "opencode" : fallbackProvider;
+    const candidates: ReconciledPointerCandidate[] = [];
+    const ledgerEntry = readThreadPointerLedger(chatSessionsDir).get(sessionId);
+    if (ledgerEntry?.pointer) {
+      candidates.push({
+        provider: ledgerEntry.provider,
+        pointer: ledgerEntry.pointer,
+        source: "ledger",
+        at: ledgerEntry.at,
+      });
+    }
+    const resumePointer = parseResumeCommandPointer(row.resumeCommand);
+    if (resumePointer) {
+      candidates.push({
+        ...resumePointer,
+        source: "resume_command",
+        at: row.lastActivityAt ?? row.endedAt ?? row.startedAt,
+      });
+    }
+    const transcriptPointer = pointerFromTranscriptTail(sessionId, provider);
+    if (transcriptPointer) candidates.push(transcriptPointer);
+
+    let winner = candidates[0] ?? null;
+    if (winner?.provider === "codex" && probeCodexRolloutFile(winner.pointer) === false) {
+      const winnerAt = Date.parse(winner.at);
+      const olderWithRollout = candidates.slice(1).find((candidate) => {
+        if (candidate.provider !== "codex" || probeCodexRolloutFile(candidate.pointer) !== true) return false;
+        const candidateAt = Date.parse(candidate.at);
+        return Number.isFinite(winnerAt) && Number.isFinite(candidateAt)
+          ? Math.abs(winnerAt - candidateAt) <= 24 * 60 * 60 * 1_000
+          : false;
+      });
+      if (olderWithRollout) winner = olderWithRollout;
+    }
+
+    const updatedAt = nowIso();
+    const recovered: PersistedChatState = {
+      version: 2,
+      sessionId,
+      laneId: row.laneId,
+      provider: winner?.provider ?? provider,
+      model: fallbackModelForProvider(winner?.provider ?? provider),
+      ...(winner
+        ? pointerStatePatch(winner)
+        : {
+            continuityRecovery: {
+              state: "required",
+              reason: "unknown",
+              provider,
+              originalThreadId: null,
+              at: updatedAt,
+              detail: "ADE could not reconstruct the original provider thread pointer from durable sources.",
+            },
+          }),
+      updatedAt,
+    };
+    try {
+      writeJsonWithPrevious(metadataPathFor(sessionId), recovered, {
+        validate: isPersistedChatStateShape,
+        fsync: Boolean(winner),
+      });
+      if (winner) {
+        if (winner.provider === "codex") {
+          sessionService.setResumeCommand(sessionId, `chat:codex:${winner.pointer}`);
+        }
+        if (winner.source !== "ledger") {
+          recordThreadPointerChange(chatSessionsDir, {
+            sessionId,
+            provider: winner.provider,
+            pointer: winner.pointer,
+            prevPointer: null,
+            reason: `reconcile_${winner.source}`,
+            at: updatedAt,
+          });
+        }
+      }
+      logger.warn("agent_chat.thread_pointer_reconciled", {
+        sessionId,
+        source: winner?.source ?? "none",
+        provider: winner?.provider ?? provider,
+        pointerFound: Boolean(winner),
+      });
+      return recovered;
+    } catch (error) {
+      logger.warn("agent_chat.thread_pointer_reconcile_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return recovered;
+    }
+  };
+
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
     patch: { providerSessionId?: string; droidSdkSessionId?: string },
@@ -10118,7 +10523,10 @@ export function createAgentChatService(args: {
     const next: PersistedChatState = { ...current, ...patch, updatedAt: nowIso() };
     try {
       fs.mkdirSync(path.dirname(metadataPathFor(sessionId)), { recursive: true });
-      fs.writeFileSync(metadataPathFor(sessionId), JSON.stringify(next, null, 2), "utf8");
+      writeJsonWithPrevious(metadataPathFor(sessionId), next, {
+        validate: isPersistedChatStateShape,
+        fsync: true,
+      });
     } catch (error) {
       logger.warn("agent_chat.seed_fork_pointer_failed", {
         sessionId,
@@ -10135,12 +10543,16 @@ export function createAgentChatService(args: {
     if (managed.transcriptLimitReached) return;
     try {
       fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
+      const warnTailHealed = (details: { path: string; priorSize: number }) => {
+        logger.warn("agent_chat.transcript_tail_healed", details);
+      };
       const rawLine = `${JSON.stringify(envelope)}\n`;
       const chunk = Buffer.from(rawLine, "utf8");
       const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
       if (remaining <= 0) {
         managed.transcriptLimitReached = true;
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
+        if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
         return;
       }
       let toWrite = chunk;
@@ -10149,10 +10561,11 @@ export function createAgentChatService(args: {
         managed.transcriptLimitReached = true;
       }
       managed.transcriptBytesWritten += toWrite.length;
-      queueTranscriptWrite(managed.transcriptPath, toWrite);
+      queueTranscriptWrite(managed.transcriptPath, toWrite, warnTailHealed);
       if (managed.transcriptLimitReached) {
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
       }
+      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
     } catch {
       // ignore transcript write failures
     }
@@ -10162,7 +10575,10 @@ export function createAgentChatService(args: {
     try {
       const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const line = `${JSON.stringify(envelope)}\n`;
-      queueTranscriptWrite(transcriptFile, line);
+      queueTranscriptWrite(transcriptFile, line, (details) => {
+        logger.warn("agent_chat.transcript_tail_healed", details);
+      });
+      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(transcriptFile);
     } catch {
       // ignore chat transcript write failures
     }
@@ -12893,8 +13309,12 @@ export function createAgentChatService(args: {
       throw new Error(`Session '${sessionId}' is not an agent chat session.`);
     }
 
-    const persisted = readPersistedState(sessionId);
+    const persisted = readPersistedState(sessionId) ?? reconcileThreadPointerFromRedundantSources(sessionId);
     const provider = persisted?.provider ?? providerFromToolType(row.toolType);
+    lastPersistedPointerFingerprints.set(
+      sessionId,
+      pointerFingerprint(persisted ? persistedPointerState(persisted) : persistedPointerState({ provider })),
+    );
     const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
@@ -12946,6 +13366,8 @@ export function createAgentChatService(args: {
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
+        ...(persisted?.continuityRecovery ? { continuityRecovery: persisted.continuityRecovery } : {}),
+        ...(persisted?.recoveredFromSessionId ? { recoveredFromSessionId: persisted.recoveredFromSessionId } : {}),
         ...(persisted?.runtimeMode ? { runtimeMode: persisted.runtimeMode } : {}),
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
@@ -17116,17 +17538,27 @@ export function createAgentChatService(args: {
             || msg.includes("session expired");
         };
         if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
+          const staleSdkSessionId = runtime.sdkSessionId;
           logger.warn("agent_chat.claude_sdk_session_error", {
             sessionId: managed.session.id,
-            sdkSessionId: runtime.sdkSessionId,
+            sdkSessionId: staleSdkSessionId,
             error: effectiveError instanceof Error ? effectiveError.message : String(effectiveError),
           });
+          const recovery: AgentChatContinuityRecovery = {
+            state: "required",
+            reason: "thread_missing",
+            provider: "claude",
+            originalThreadId: staleSdkSessionId,
+            at: nowIso(),
+            detail: effectiveError instanceof Error ? effectiveError.message.slice(0, 2_000) : String(effectiveError).slice(0, 2_000),
+          };
+          managed.session.continuityRecovery = recovery;
           runtime.sdkSessionId = null;
           managed.runtimeInvalidated = true;
           clearLaneDirectiveKey(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
           refreshReconstructionContext(managed);
-          prewarmClaudeQuery(managed);
+          emitContinuityRecoveryNotice(managed, recovery, turnId);
         }
       }
 
@@ -22423,6 +22855,11 @@ export function createAgentChatService(args: {
     sandbox: AgentChatCodexSandbox;
   } | null;
 
+  type CodexPointerReplacementToken = {
+    originalThreadId: string | null;
+    mode: "recover_from_history" | "explicit_reset";
+  };
+
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
     codexPolicy: CodexPolicy;
   } => {
@@ -22461,7 +22898,34 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
+    options: { allowReplacePointer?: CodexPointerReplacementToken },
   ): Promise<void> => {
+    const persistedThreadId = readPersistedState(managed.session.id)?.threadId?.trim() || null;
+    const existingThreadId = managed.session.threadId?.trim() || persistedThreadId;
+    const replacementToken = options.allowReplacePointer;
+    // A crash mid-recover-from-history can leave threadId pointing at the
+    // half-built reconstruction thread while continuityRecovery still records
+    // the true original; a retry must still be allowed to replace it, so the
+    // token matches against the recovery's recorded original too, not only the
+    // current (possibly drifted) pointer.
+    const recoveryOriginalThreadId = managed.session.continuityRecovery?.originalThreadId?.trim() || null;
+    const tokenAuthorizesReplace = Boolean(replacementToken)
+      && (replacementToken!.originalThreadId === existingThreadId
+        || (recoveryOriginalThreadId !== null && replacementToken!.originalThreadId === recoveryOriginalThreadId));
+    if (
+      (managed.session.continuityRecovery?.state === "required" && !replacementToken)
+      || (existingThreadId && !tokenAuthorizesReplace)
+    ) {
+      logger.warn("agent_chat.fresh_thread_blocked", {
+        sessionId: managed.session.id,
+        threadId: existingThreadId,
+        replacementMode: replacementToken?.mode ?? null,
+      });
+      throw Object.assign(
+        new Error("Starting a fresh provider thread would replace this chat's existing continuity pointer."),
+        { code: "provider_thread_replace_blocked" as const },
+      );
+    }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const reasoningEffort = resolveCodexReasoningEffortForRuntime(
       managed.session.reasoningEffort,
@@ -24217,6 +24681,7 @@ export function createAgentChatService(args: {
     requestedCwd,
     runtimeMode,
     goal: requestedGoal,
+    recoveredFromSessionId,
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -24492,6 +24957,7 @@ export function createAgentChatService(args: {
         capabilityMode,
         completion: null,
         ...(normalizedGoal ? { goal: normalizedGoal } : {}),
+        ...(recoveredFromSessionId?.trim() ? { recoveredFromSessionId: recoveredFromSessionId.trim() } : {}),
         status: "idle",
         idleSinceAt: null,
         createdAt: startedAt,
@@ -24570,11 +25036,15 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         createdAt: startedAt,
       });
-      fs.writeFileSync(chatTranscriptFile, `${header}\n`, "utf8");
+      writeFileAtomic(chatTranscriptFile, `${header}\n`);
     } catch {
       // Non-fatal — chat transcript init failure should not block session creation
     }
 
+    lastPersistedPointerFingerprints.set(
+      sessionId,
+      pointerFingerprint(persistedPointerState({ provider: effectiveProvider })),
+    );
     managedSessions.set(sessionId, managed);
 
     const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
@@ -26699,7 +27169,11 @@ export function createAgentChatService(args: {
     runtime,
     cloudOverrides,
     allowActiveSession = false,
-  }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
+    allowContinuityRecovery = false,
+  }: AgentChatSendArgs & {
+    allowActiveSession?: boolean;
+    allowContinuityRecovery?: boolean;
+  }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
@@ -26711,6 +27185,7 @@ export function createAgentChatService(args: {
           ? "Use the attached issue context."
           : "";
     if (!trimmed.length) return null;
+    if (!allowContinuityRecovery) assertContinuityDispatchAllowed(managed);
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
@@ -26965,9 +27440,22 @@ export function createAgentChatService(args: {
       managed.runtime.activeTurnId = null;
     }
 
+    const resumeFailure = isCodexResumeFailureError(error)
+      ? error.resumeFailureClassification
+      : undefined;
     emitChatEvent(managed, {
       type: "error",
       message,
+      ...(resumeFailure
+        ? {
+            errorInfo: {
+              category: resumeFailure.kind === "transient" ? "network" as const : "unknown" as const,
+              provider: managed.session.provider,
+              model: managed.session.model,
+              resumeFailure,
+            },
+          }
+        : {}),
       turnId,
     });
     emitChatEvent(managed, {
@@ -26987,6 +27475,119 @@ export function createAgentChatService(args: {
 
     appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
+  };
+
+  const emitContinuityRecoveryNotice = (
+    managed: ManagedChatSession,
+    recovery: AgentChatContinuityRecovery,
+    turnId?: string,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "thread_error",
+      severity: "error",
+      status: recovery.state,
+      message: recovery.state === "required"
+        ? "This chat's original AI thread could not be resumed. Your chat history and project files are still here."
+        : "Rebuilt this chat's AI thread from ADE history.",
+      detail: {
+        kind: "continuity_recovery",
+        state: recovery.state,
+        reason: recovery.reason,
+        originalThreadId: recovery.originalThreadId,
+        ...(recovery.reconstructedThreadId ? { reconstructedThreadId: recovery.reconstructedThreadId } : {}),
+        ...(recovery.supersededBySessionId ? { supersededBySessionId: recovery.supersededBySessionId } : {}),
+      },
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const emitDiskPressureSendFailure = (
+    managed: ManagedChatSession,
+    state: DiskPressureState,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "error",
+      severity: "error",
+      status: "failed",
+      message,
+      detail: { kind: "disk_pressure", state },
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      errorInfo: {
+        category: "unknown",
+        code: "disk_full",
+        provider: managed.session.provider,
+        model: managed.session.model,
+      },
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: "failed",
+      message,
+      turnId,
+    });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status: "failed",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+  };
+
+  const codexResumeFailureError = (
+    managed: ManagedChatSession,
+    threadId: string,
+    error: unknown,
+  ): CodexResumeFailureError => {
+    const classification = classifyCodexResumeFailure(error, threadId);
+    logger.warn("agent_chat.codex_resume_failure_classified", {
+      sessionId: managed.session.id,
+      threadId,
+      kind: classification.kind,
+      rolloutFileFound: classification.rolloutFileFound,
+      detail: classification.detail,
+    });
+    if (classification.kind === "thread_missing" || classification.kind === "unknown") {
+      const recovery: AgentChatContinuityRecovery = {
+        state: "required",
+        reason: classification.kind,
+        provider: "codex",
+        originalThreadId: threadId,
+        at: nowIso(),
+        detail: classification.detail,
+      };
+      managed.session.continuityRecovery = recovery;
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, recovery);
+    }
+    return Object.assign(
+      new Error(`Could not resume the original Codex thread: ${classification.detail}`),
+      {
+        code: "provider_thread_resume_failed" as const,
+        resumeFailureClassification: classification,
+      },
+    );
+  };
+
+  const assertContinuityDispatchAllowed = (managed: ManagedChatSession): void => {
+    const recovery = managed.session.continuityRecovery;
+    if (recovery?.state !== "required") return;
+    emitContinuityRecoveryNotice(managed, recovery);
+    persistChatState(managed);
+    throw Object.assign(
+      new Error("This chat requires an explicit continuity recovery action before another turn can be sent."),
+      { code: "continuity_recovery_required" as const },
+    );
   };
 
   const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
@@ -29942,10 +30543,10 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               error: resumeError instanceof Error ? resumeError.message : String(resumeError)
             });
-            await startFreshCodexThread(managed, runtime, codexPolicy);
+            throw codexResumeFailureError(managed, threadIdToResume, resumeError);
           }
         } else {
-          await startFreshCodexThread(managed, runtime, codexPolicy);
+          await startFreshCodexThread(managed, runtime, codexPolicy, {});
         }
       }
 
@@ -30158,13 +30759,23 @@ export function createAgentChatService(args: {
     },
   ): Promise<void | AgentChatSteerResult> {
     const dispatchStartedAt = Date.now();
-    if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
     const routableText = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0;
+    // Gate BEFORE routing to steer: a send to an already-active chat becomes a
+    // steer() (which has no disk gate of its own), so checking after the route
+    // would let critical/exhausted pressure keep appending user input and
+    // driving provider work for active sessions while only idle sends paused.
+    if (routableText) {
+      const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+      if (diskDecision && !diskDecision.allowed) {
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        return;
+      }
+    }
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       return steer({
         sessionId: args.sessionId,
@@ -30178,6 +30789,7 @@ export function createAgentChatService(args: {
         interactionMode: args.interactionMode,
       });
     }
+    if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
@@ -30360,6 +30972,7 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
+    assertContinuityDispatchAllowed(managed);
     if (dispatchMode && managed.session.provider !== "claude") {
       throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
     }
@@ -30908,6 +31521,7 @@ export function createAgentChatService(args: {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(mode)}`);
     }
     const managed = ensureManagedSession(sessionId);
+    assertContinuityDispatchAllowed(managed);
     if (managed.session.provider === "codex") {
       throw new Error("dispatchSteer is not supported on Codex sessions.");
     }
@@ -31400,7 +32014,9 @@ export function createAgentChatService(args: {
             threadId,
             error: resumeError instanceof Error ? resumeError.message : String(resumeError)
           });
-          await startFreshCodexThread(managed, runtime, codexPolicy);
+          const classifiedError = codexResumeFailureError(managed, threadId, resumeError);
+          emitManagedSendFailure(managed, classifiedError);
+          throw classifiedError;
         }
       }
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
@@ -31455,6 +32071,406 @@ export function createAgentChatService(args: {
       sessionService.setOwnerPid(sessionId, processRegistry.pid, processRegistry.startedAt);
     }
     return managed.session;
+  };
+
+  const truncateContinuityText = (value: string, maxBytes: number): string => {
+    if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+    let text = Buffer.from(value, "utf8").subarray(0, Math.max(0, maxBytes - 3)).toString("utf8");
+    while (Buffer.byteLength(`${text}...`, "utf8") > maxBytes) text = text.slice(0, -1);
+    return `${text.replace(/\uFFFD$/u, "").trimEnd()}...`;
+  };
+
+  const buildContinuityCapsule = (managed: ManagedChatSession): string => {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
+    let envelopes: AgentChatEventEnvelope[] = [];
+    if (transcriptPath) {
+      try {
+        if (transcriptPath.endsWith(".gz")) {
+          // A compressed transcript can't be read by byte offset; decompress
+          // transparently (bounded) and take the prefix from the text, or the
+          // capsule's opening context would be empty for old compressed chats.
+          const decompressed = readHistoryFileSync(transcriptPath).toString("utf8");
+          const prefixText = decompressed.slice(0, 128 * 1024);
+          envelopes.push(...parseAgentChatTranscript(prefixText));
+        } else {
+          const stat = fs.statSync(transcriptPath);
+          const prefixLength = Math.min(stat.size, 128 * 1024);
+          const fd = fs.openSync(transcriptPath, "r");
+          try {
+            const prefix = Buffer.allocUnsafe(prefixLength);
+            const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
+            envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
+          } finally {
+            fs.closeSync(fd);
+          }
+        }
+        envelopes.push(...parseTranscriptHistoryTail(managed.session.id, transcriptPath).envelopes);
+      } catch {
+        // The bounded in-memory history below remains available.
+      }
+    }
+    const deduped = new Map<string, AgentChatEventEnvelope>();
+    for (const envelope of envelopes) {
+      if (envelope.sessionId !== managed.session.id) continue;
+      const key = envelope.sequence != null
+        ? `sequence:${envelope.sequence}`
+        : `${envelope.timestamp}:${JSON.stringify(envelope.event)}`;
+      deduped.set(key, envelope);
+    }
+    envelopes = [...deduped.values()].sort((left, right) =>
+      (left.sequence != null && right.sequence != null)
+        ? left.sequence - right.sequence
+        : Date.parse(left.timestamp) - Date.parse(right.timestamp));
+
+    const users = envelopes
+      .filter((entry) => entry.event.type === "user_message")
+      .map((entry) => {
+        const event = entry.event as Extract<AgentChatEvent, { type: "user_message" }>;
+        return event.displayText?.trim() || event.text.trim();
+      })
+      .filter(Boolean);
+    const assistants = envelopes.flatMap((entry) => {
+      if (entry.event.type === "text" && entry.event.text.trim()) return [entry.event.text.trim()];
+      if (entry.event.type !== "plan") return [];
+      return [[
+        entry.event.explanation?.trim(),
+        ...entry.event.steps.map((step) => `${step.status}: ${step.text}`),
+      ].filter(Boolean).join("\n")];
+    }).filter(Boolean);
+    const latestTodo = [...envelopes].reverse().find((entry) => entry.event.type === "todo_update");
+    const latestPlan = [...envelopes].reverse().find((entry) => entry.event.type === "plan");
+    let lastUserIndex = -1;
+    for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+      if (envelopes[index]!.event.type === "user_message") {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const unanswered = lastUserIndex >= 0
+      && !envelopes.slice(lastUserIndex + 1).some((entry) => entry.event.type === "text")
+      ? users.at(-1) ?? null
+      : null;
+    const row = sessionService.get(managed.session.id);
+    const lane = laneService.getLaneBaseAndBranch(managed.session.laneId);
+    const lines = [
+      "# ADE continuity capsule",
+      "",
+      `Chat: ${truncateContinuityText(row?.title?.trim() || defaultChatSessionTitle(managed.session.provider), 512)}`,
+      `Provider: ${managed.session.provider}`,
+      `Lane branch: ${lane.branchRef}`,
+      `Worktree: ${lane.worktreePath}`,
+      "",
+      "## Original task",
+      truncateContinuityText(users[0] ?? "No durable first user message was available.", 3_000),
+      "",
+      "## Recent user messages (newest first)",
+      ...(users.slice(-6).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_000)}`) || ["None available."]),
+      "",
+      "## Recent assistant summaries (newest first)",
+      ...(assistants.slice(-4).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_500)}`) || ["None available."]),
+    ];
+    if (latestPlan?.event.type === "plan") {
+      lines.push("", "## Latest plan", truncateContinuityText([
+        latestPlan.event.explanation?.trim(),
+        ...latestPlan.event.steps.map((step) => `- [${step.status}] ${step.text}`),
+      ].filter(Boolean).join("\n"), 3_000));
+    }
+    if (latestTodo?.event.type === "todo_update") {
+      lines.push("", "## Latest todo snapshot", truncateContinuityText(
+        latestTodo.event.items.map((item) => `- [${item.status}] ${item.description}`).join("\n"),
+        3_000,
+      ));
+    }
+    if (unanswered) lines.push("", "## Most recent unanswered request", truncateContinuityText(unanswered, 3_000));
+    lines.push("", "Continue from this bounded ADE history. Verify current project state before changing files.");
+    return truncateContinuityText(lines.join("\n"), 24 * 1024);
+  };
+
+  const recoverContinuity = async (
+    args: AgentChatRecoverContinuityArgs,
+  ): Promise<AgentChatContinuityRecoveryResult> => {
+    const sessionId = args.sessionId.trim();
+    if (continuityRecoveryInFlight.has(sessionId)) {
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+    continuityRecoveryInFlight.add(sessionId);
+    try {
+    const managed = ensureManagedSession(sessionId);
+    const recovery = managed.session.continuityRecovery;
+    if (recovery?.state !== "required") {
+      return { ok: false, mode: args.mode, reason: "not_required" };
+    }
+    if (args.mode === "start_new_chat" && recovery.supersededBySessionId) {
+      return {
+        ok: false,
+        mode: args.mode,
+        reason: "not_required",
+        newSessionId: recovery.supersededBySessionId,
+      };
+    }
+
+    if (args.mode === "start_new_chat") {
+      const row = sessionService.get(sessionId);
+      const created = await createSessionInternal({
+        laneId: managed.session.laneId,
+        provider: managed.session.provider,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        title: row?.title ? `${row.title} (recovered)` : undefined,
+        sessionProfile: managed.session.sessionProfile,
+        reasoningEffort: managed.session.reasoningEffort,
+        fastMode: managed.session.fastMode,
+        permissionMode: managed.session.permissionMode,
+        interactionMode: managed.session.interactionMode,
+        claudePermissionMode: managed.session.claudePermissionMode,
+        claudeOutputStyle: managed.session.claudeOutputStyle,
+        codexApprovalPolicy: managed.session.codexApprovalPolicy,
+        codexSandbox: managed.session.codexSandbox,
+        codexConfigSource: managed.session.codexConfigSource,
+        opencodePermissionMode: managed.session.opencodePermissionMode,
+        droidPermissionMode: managed.session.droidPermissionMode,
+        cursorModeId: managed.session.cursorModeId,
+        cursorConfigValues: managed.session.cursorConfigValues,
+        surface: managed.session.surface,
+        requestedCwd: managed.session.requestedCwd ?? undefined,
+        recoveredFromSessionId: sessionId,
+      });
+      managed.session.continuityRecovery = { ...recovery, supersededBySessionId: created.id };
+      persistChatState(managed);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "subagent_spawned",
+        message: "Started a new chat because this chat's original AI thread is still unavailable.",
+        detail: {
+          kind: "continuity_recovery",
+          state: "required",
+          reason: recovery.reason,
+          originalThreadId: recovery.originalThreadId,
+          supersededBySessionId: created.id,
+          spawnedSession: {
+            sessionId: created.id,
+            laneId: created.laneId,
+            title: sessionService.get(created.id)?.title ?? undefined,
+          },
+        },
+      });
+      return { ok: true, mode: args.mode, newSessionId: created.id };
+    }
+
+    const originalThreadId = recovery.originalThreadId?.trim() || null;
+
+    if (args.mode === "retry_original") {
+      if (!originalThreadId) return { ok: false, mode: args.mode, reason: "missing_original_thread" };
+      if (managed.session.provider === "codex") {
+        delete managed.session.continuityRecovery;
+        managed.session.threadId = originalThreadId;
+        persistChatState(managed);
+        try {
+          // Runtime setup (ensure/resolve) can throw before the resume — keep
+          // it inside the try so the catch below re-marks continuity recovery
+          // and the user never loses the recovery card on a setup failure.
+          const runtime = await ensureCodexSessionRuntime(managed);
+          const { codexPolicy } = resolveCodexThreadParams(managed);
+          refreshCodexDynamicTools(managed, runtime);
+          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+            threadId: originalThreadId,
+            model: managed.session.model,
+            cwd: managed.laneWorktreePath,
+            ...codexThreadConfigArgs(managed.session.reasoningEffort, await resolveCodexComputerUseMcp()),
+            developerInstructions: buildCodexDeveloperInstructions({
+              laneWorktreePath: managed.laneWorktreePath,
+              session: managed.session,
+              collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+              linearDirective: resolveSessionLinearDirective(managed.session.id),
+            }),
+            ...codexServiceTierArgs(managed.session),
+            ...codexPolicyArgs(codexPolicy),
+            excludeTurns: true,
+          });
+          const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+            ? resumeResponse.thread.id
+            : originalThreadId;
+          applyCodexEffectiveThreadState(managed, resumeResponse, { requestedCodexPolicy: codexPolicy });
+          managed.session.threadId = resumedThreadId;
+          runtime.threadResumed = true;
+          runtime.canAttachResumedTurnStart = true;
+          sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
+          persistChatState(managed);
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          return { ok: true, mode: args.mode, threadId: resumedThreadId };
+        } catch (error) {
+          const classifiedError = codexResumeFailureError(managed, originalThreadId, error);
+          const classification = classifiedError.resumeFailureClassification;
+          if (!managed.session.continuityRecovery) {
+            managed.session.continuityRecovery = {
+              state: "required",
+              reason: classification?.kind ?? "unknown",
+              provider: "codex",
+              originalThreadId,
+              at: nowIso(),
+              detail: classification?.detail ?? classifiedError.message,
+            };
+            persistChatState(managed);
+            emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+          }
+          return { ok: false, mode: args.mode, reason: classification?.kind ?? "unknown" };
+        }
+      }
+      if (managed.session.provider === "claude") {
+        const runtime = ensureClaudeSessionRuntime(managed);
+        resetClaudeQuerySession(managed, runtime, "session_reset");
+        runtime.sdkSessionId = originalThreadId;
+        delete managed.session.continuityRecovery;
+        managed.runtimeInvalidated = false;
+        try {
+          await ensureClaudeQuery(managed, runtime);
+          persistChatState(managed);
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          return { ok: true, mode: args.mode, threadId: originalThreadId };
+        } catch (error) {
+          managed.session.continuityRecovery = {
+            ...recovery,
+            at: nowIso(),
+            detail: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+          };
+          persistChatState(managed);
+          return { ok: false, mode: args.mode, reason: "thread_missing" };
+        }
+      }
+      return { ok: false, mode: args.mode, reason: "unsupported_provider" };
+    }
+
+    const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+    if (diskDecision && !diskDecision.allowed) {
+      emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+
+    const capsule = buildContinuityCapsule(managed);
+    let preparedCapsule: PreparedSendMessage | null;
+    try {
+      preparedCapsule = prepareSendMessage({
+        sessionId,
+        text: capsule,
+        displayText: "Rebuilt this chat's AI thread from ADE history.",
+        metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        allowContinuityRecovery: true,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.continuity_recovery_prepare_failed", {
+        sessionId,
+        provider: managed.session.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+    if (!preparedCapsule) {
+      return { ok: false, mode: args.mode, reason: "recovery_failed" };
+    }
+
+    if (managed.session.provider === "codex") {
+      const runtime = await ensureCodexSessionRuntime(managed);
+      if (runtime.activeTurnId || managed.session.status === "active") {
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
+      const originalResumeCommand = sessionService.get(sessionId)?.resumeCommand ?? null;
+      let reconstructedThreadId = "";
+      let dispatched = false;
+      try {
+        const { codexPolicy } = resolveCodexThreadParams(managed);
+        await startFreshCodexThread(managed, runtime, codexPolicy, {
+          allowReplacePointer: { originalThreadId, mode: "recover_from_history" },
+        });
+        reconstructedThreadId = managed.session.threadId?.trim() || "";
+        await sendMessage({
+          sessionId,
+          text: capsule,
+          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        }, {
+          awaitDispatch: true,
+          preparedMessage: preparedCapsule,
+          onBackendDispatched: () => {
+            dispatched = true;
+          },
+        });
+      } catch (error) {
+        logger.warn("agent_chat.continuity_recovery_dispatch_failed", {
+          sessionId,
+          provider: "codex",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!dispatched) {
+        if (originalThreadId) managed.session.threadId = originalThreadId;
+        else delete managed.session.threadId;
+        managed.session.continuityRecovery = recovery;
+        runtime.threadResumed = false;
+        runtime.canAttachResumedTurnStart = false;
+        sessionService.setResumeCommand(sessionId, originalResumeCommand);
+        persistChatState(managed);
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
+      managed.session.continuityRecovery = {
+        state: "reconstructed",
+        reason: recovery.reason,
+        provider: "codex",
+        originalThreadId,
+        reconstructedThreadId,
+        at: nowIso(),
+        ...(recovery.detail ? { detail: recovery.detail } : {}),
+      };
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+      return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
+    }
+    if (managed.session.provider === "claude") {
+      const runtime = ensureClaudeSessionRuntime(managed);
+      let dispatched = false;
+      try {
+        resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: true });
+        await sendMessage({
+          sessionId,
+          text: capsule,
+          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          metadata: { kind: "continuity_recovery", hideFullPrompt: true },
+        }, {
+          awaitDispatch: true,
+          preparedMessage: preparedCapsule,
+          onBackendDispatched: () => {
+            dispatched = true;
+          },
+        });
+      } catch (error) {
+        logger.warn("agent_chat.continuity_recovery_dispatch_failed", {
+          sessionId,
+          provider: "claude",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!dispatched) {
+        managed.session.continuityRecovery = recovery;
+        persistChatState(managed);
+        return { ok: false, mode: args.mode, reason: "recovery_failed" };
+      }
+      const reconstructedThreadId = runtime.sdkSessionId?.trim() || "";
+      managed.session.continuityRecovery = {
+        state: "reconstructed",
+        reason: recovery.reason,
+        provider: "claude",
+        originalThreadId,
+        at: nowIso(),
+        ...(reconstructedThreadId ? { reconstructedThreadId } : {}),
+      };
+      persistChatState(managed);
+      emitContinuityRecoveryNotice(managed, managed.session.continuityRecovery);
+      return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
+    }
+    return { ok: false, mode: args.mode, reason: "unsupported_provider" };
+    } finally {
+      continuityRecoveryInFlight.delete(sessionId);
+    }
   };
 
   const recoverCodexTurn = async ({
@@ -31789,6 +32805,12 @@ export function createAgentChatService(args: {
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
+        : {}),
+      ...(liveSession?.continuityRecovery || persisted?.continuityRecovery
+        ? { continuityRecovery: liveSession?.continuityRecovery ?? persisted?.continuityRecovery }
+        : {}),
+      ...(liveSession?.recoveredFromSessionId || persisted?.recoveredFromSessionId
+        ? { recoveredFromSessionId: liveSession?.recoveredFromSessionId ?? persisted?.recoveredFromSessionId }
         : {}),
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
@@ -33294,11 +34316,13 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     pendingNativeScheduledWakeBySession.delete(trimmedSessionId);
+    lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
     const transcriptPaths = new Set<string>([
       persistedMetadataPath,
+      `${persistedMetadataPath}.lkg`,
       dedicatedTranscriptPath,
       current.transcriptPath,
     ]);
@@ -35892,11 +36916,16 @@ export function createAgentChatService(args: {
           purpose,
           error: error instanceof Error ? error.message : String(error),
         });
-        throw new Error(`Could not resume this Codex thread for ${purpose}: ${error instanceof Error ? error.message : String(error)}`);
+        const classifiedError = codexResumeFailureError(managed, threadId, error);
+        emitManagedSendFailure(managed, classifiedError);
+        throw Object.assign(
+          new Error(`Could not resume this Codex thread for ${purpose}: ${classifiedError.message}`),
+          classifiedError,
+        );
       }
     }
 
-    await startFreshCodexThread(managed, runtime, codexPolicy);
+    await startFreshCodexThread(managed, runtime, codexPolicy, {});
     threadId = managed.session.threadId?.trim() ?? "";
     if (!threadId) {
       throw new Error(`Could not start Codex ${purpose} for this chat.`);
@@ -36115,6 +37144,18 @@ export function createAgentChatService(args: {
     });
   });
 
+  const isTranscriptPathActive = (filePath: string): boolean => {
+    const normalized = path.resolve(filePath);
+    if (pendingTranscriptWrites.has(normalized) || checkedTranscriptTails.has(normalized)) return true;
+    for (const managed of managedSessions.values()) {
+      if (transcriptPathCandidatesForSessionId(managed.session.id, managed)
+        .some((candidate) => path.resolve(candidate) === normalized)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   return {
     createSession,
     importExternalChatSession,
@@ -36145,6 +37186,7 @@ export function createAgentChatService(args: {
     cancelDispatchedSteer,
     interrupt,
     recoverCodexTurn,
+    recoverContinuity,
     resumeSession,
     listSessions,
     getSessionSummary,
@@ -36182,6 +37224,8 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    reconcileThreadPointerFromRedundantSources,
+    isTranscriptPathActive,
     warmupModel,
     listSubagents,
     getSessionCapabilities,

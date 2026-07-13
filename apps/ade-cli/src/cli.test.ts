@@ -1083,6 +1083,91 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds typed storage commands and renders the snapshot as text", () => {
+    const snapshotPlan = expectExecutePlan(buildCliPlan(["storage", "snapshot"]));
+    expect(inferFormatter(snapshotPlan)).toBe("storage-snapshot");
+    expect(snapshotPlan.steps).toEqual([
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          arguments: { domain: "storage", action: "getSnapshot", args: {} },
+        },
+        unwrapToolResult: true,
+      },
+    ]);
+
+    const refreshPlan = expectExecutePlan(
+      buildCliPlan(["storage", "snapshot", "--refresh"]),
+    );
+    expect(refreshPlan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "storage",
+        action: "getSnapshot",
+        args: { forceRefresh: true },
+      },
+    });
+
+    const compressPlan = expectExecutePlan(buildCliPlan(["storage", "compress"]));
+    expect(inferFormatter(compressPlan)).toBe("storage-compress");
+    expect(compressPlan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "storage", action: "compressNow", args: {} },
+    });
+
+    expect(
+      expectExecutePlan(buildCliPlan(["storage", "actions"])).steps[0]?.params,
+    ).toEqual({ name: "list_ade_actions", arguments: { domain: "storage" } });
+
+    expect(
+      expectExecutePlan(buildCliPlan([
+        "storage",
+        "action",
+        "cleanupPreview",
+        "--input-json",
+        '{"targets":["cache"]}',
+      ]))
+        .steps[0]?.params,
+    ).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "storage",
+        action: "cleanupPreview",
+        args: { targets: ["cache"] },
+      },
+    });
+
+    expect(() => buildCliPlan(["storage", "bogus"])).toThrow(/storage supports/);
+
+    const snapshotText = formatOutput(
+      {
+        generatedAt: "2026-07-12T00:00:00.000Z",
+        projectRoot: "/repo",
+        volume: { freeBytes: 5 * 1024 ** 3, totalBytes: 100 * 1024 ** 3 },
+        totalAdeBytes: 2 * 1024 ** 3,
+        categories: [
+          {
+            id: "chats_history",
+            bytes: 1.5 * 1024 ** 3,
+            fileCount: 12,
+            safety: "compressible",
+            compressibleBytes: 1024 ** 3,
+          },
+          { id: "caches", bytes: 512 * 1024 ** 2, fileCount: 3, safety: "safe_to_remove" },
+        ],
+        scanDurationMs: 5,
+        truncated: false,
+      },
+      { text: true } as never,
+      inferFormatter(snapshotPlan),
+    );
+    expect(snapshotText).toContain("ADE storage");
+    expect(snapshotText).toContain("GB free of");
+    expect(snapshotText).toContain("chats_history");
+  });
+
   it("formats external session action results as text", () => {
     const plan = expectExecutePlan(buildCliPlan([
       "actions",

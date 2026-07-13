@@ -139,6 +139,11 @@ function createRuntime() {
       start: vi.fn(() => {}),
       stop: vi.fn(() => {}),
     } as any,
+    storageInsightsService: {
+      getSnapshot: vi.fn(async () => ({ generatedAt: "2026-07-12T00:00:00.000Z", categories: [] })),
+      cleanupPreview: vi.fn(async () => ({ items: [], totalBytes: 0, blocked: [] })),
+      cleanup: vi.fn(async () => ({ removed: [], failed: [], freedBytes: 0 })),
+    } as any,
     autoUpdateService: {
       getSnapshot: vi.fn(() => ({ status: "idle", version: null })),
       checkForUpdates: vi.fn(() => {}),
@@ -2641,6 +2646,18 @@ describe("adeRpcServer", () => {
       expect.objectContaining({ domain: "usage", action: "refreshHistory" }),
     );
 
+    const storageActions = await callTool(handler, "list_ade_actions", { domain: "storage" });
+    expect(storageActions?.isError).toBeUndefined();
+    expect(storageActions.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ domain: "storage", action: "getSnapshot", name: "storage.getSnapshot" }),
+    );
+    expect(storageActions.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ domain: "storage", action: "cleanupPreview", name: "storage.cleanupPreview" }),
+    );
+    expect(storageActions.structuredContent.actions).not.toContainEqual(
+      expect.objectContaining({ domain: "storage", action: "cleanup" }),
+    );
+
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
@@ -2655,6 +2672,7 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "automation_planner")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "github")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "usage")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "storage")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "update")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
@@ -2776,6 +2794,15 @@ describe("adeRpcServer", () => {
     expect(quotaDemand?.isError).toBeUndefined();
     expect(fixture.runtime.usageTrackingService.noteQuotaDemand).toHaveBeenCalledWith(undefined);
     expect(quotaDemand.structuredContent.result).toEqual({ available: true, entries: [] });
+
+    const storageSnapshot = await callTool(handler, "run_ade_action", {
+      domain: "storage",
+      action: "getSnapshot",
+      args: { forceRefresh: true },
+    });
+    expect(storageSnapshot?.isError).toBeUndefined();
+    expect(fixture.runtime.storageInsightsService.getSnapshot).toHaveBeenCalledWith({ forceRefresh: true });
+    expect(storageSnapshot.structuredContent.result).toMatchObject({ categories: [] });
 
   });
 

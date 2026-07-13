@@ -4,12 +4,14 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
+import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
-type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
 
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set(["unified_memories", "unified_memories_fts"]);
@@ -23,6 +25,37 @@ const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 export type SqlValue = string | number | boolean | null | Uint8Array;
+
+export type KvDbOpenErrorCode =
+  | "disk_full"
+  | "insufficient_headroom"
+  | "db_integrity"
+  | "migration_incomplete"
+  | "migration_unknown_state"
+  | "unknown";
+
+const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
+  "disk_full",
+  "insufficient_headroom",
+  "db_integrity",
+  "migration_incomplete",
+  "migration_unknown_state",
+  "unknown",
+]);
+
+export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
+  const explicitCode = error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  if (KV_DB_OPEN_ERROR_CODES.has(explicitCode as KvDbOpenErrorCode)) {
+    return explicitCode as KvDbOpenErrorCode;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (isNoSpaceError(error) || /SQLITE_FULL/i.test(message)) return "disk_full";
+  if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
+  return "unknown";
+}
 
 export type AdeDbSyncApi = {
   isAvailable?: () => boolean;
@@ -97,6 +130,17 @@ export type AdeDb = {
   close: () => void;
 };
 
+export function runQuickCheck(db: Pick<AdeDb, "all"> | DatabaseSyncType): { healthy: boolean; detail: string } {
+  const rows = "all" in db
+    ? db.all<Record<string, unknown>>("pragma quick_check")
+    : db.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
+  const messages = rows.map((row) => String(Object.values(row)[0] ?? "")).filter(Boolean);
+  return {
+    healthy: messages.length === 1 && messages[0]?.toLowerCase() === "ok",
+    detail: messages.join("\n") || "The project data check returned no result.",
+  };
+}
+
 function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -106,6 +150,12 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   const db = new DatabaseSync(dbPath, { allowExtension: true });
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
+  db.exec("PRAGMA busy_timeout = 5000");
+  return db;
+}
+
+export function openReadonlyDatabase(dbPath: string): DatabaseSyncType {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
   return db;
 }
@@ -250,7 +300,80 @@ function rewriteCreateTableName(sql: string, fromName: string, toName: string): 
   return sql.replace(pattern, `$1${quoteIdentifier(toName)}`);
 }
 
-function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
+export type TableRebuildPlan = {
+  tableName: string;
+  stagingName: string;
+  createStagingSql: string;
+  columnsSql: string;
+  indexSqlsToRecreate: string[];
+};
+
+export function rebuildTableInTransaction(
+  db: DatabaseSyncType,
+  plan: TableRebuildPlan,
+  runStmt: typeof runStatement = runStatement,
+): void {
+  let transactionMayBeOpen = false;
+  try {
+    runStmt(db, "BEGIN IMMEDIATE");
+    transactionMayBeOpen = true;
+  } catch (error) {
+    try {
+      runStatement(db, "rollback");
+    } catch {
+      // BEGIN may have failed before opening a transaction.
+    }
+    throw error;
+  }
+
+  try {
+    const originalCount = getRow<{ count: number }>(
+      db,
+      `select count(*) as count from ${quoteIdentifier(plan.tableName)}`,
+    )?.count;
+    if (originalCount == null) {
+      throw codedError(`Unable to rebuild ${plan.tableName}: original row count is unavailable.`, "migration_incomplete");
+    }
+
+    runStmt(db, plan.createStagingSql);
+    runStmt(
+      db,
+      `insert into ${quoteIdentifier(plan.stagingName)} (${plan.columnsSql}) select ${plan.columnsSql} from ${quoteIdentifier(plan.tableName)}`,
+    );
+    const stagingCount = getRow<{ count: number }>(
+      db,
+      `select count(*) as count from ${quoteIdentifier(plan.stagingName)}`,
+    )?.count;
+    if (stagingCount !== originalCount) {
+      throw codedError(
+        `Unable to rebuild ${plan.tableName}: copied ${String(stagingCount)} of ${String(originalCount)} rows.`,
+        "migration_incomplete",
+      );
+    }
+
+    runStmt(db, `drop table ${quoteIdentifier(plan.tableName)}`);
+    runStmt(db, `alter table ${quoteIdentifier(plan.stagingName)} rename to ${quoteIdentifier(plan.tableName)}`);
+    for (const indexSql of plan.indexSqlsToRecreate) {
+      runStmt(db, indexSql);
+    }
+    runStmt(db, "commit");
+    transactionMayBeOpen = false;
+  } catch (error) {
+    if (transactionMayBeOpen) {
+      try {
+        runStatement(db, "rollback");
+      } catch {
+        // COMMIT may have succeeded before an injected failure was raised.
+      }
+    }
+    throw error;
+  }
+}
+
+function retrofitLegacyPrimaryKeyNotNullSchema(
+  db: DatabaseSyncType,
+  ambiguousTables: ReadonlySet<string> = new Set(),
+): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
     `select m.name, m.sql
@@ -275,6 +398,14 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   runStatement(db, "pragma foreign_keys = off");
   try {
     for (const table of tables) {
+      if (
+        ambiguousTables.has(table.name)
+        || table.name.startsWith("__ade_crr_repair_")
+        || table.name.startsWith("__ade_fk_repair_")
+      ) continue;
+      // Local-only tables never become CRRs, so their FK and unique-index
+      // schema must remain intact.
+      if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name)) continue;
       // CRR tables must be altered via crsql_begin_alter/commit_alter or rebuilt
       // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
       if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
@@ -319,14 +450,23 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
       const repairName = `__ade_crr_repair_${table.name}`;
       const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
       const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
-
-      runStatement(db, rewrittenSql);
-      runStatement(
+      const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
+      const indexSqls = allRows<{ name: string; sql: string | null }>(
         db,
-        `insert into ${quoteIdentifier(repairName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(table.name)}`,
-      );
-      runStatement(db, `drop table ${quoteIdentifier(table.name)}`);
-      runStatement(db, `alter table ${quoteIdentifier(repairName)} rename to ${quoteIdentifier(table.name)}`);
+        "select name, sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
+        [table.name],
+      )
+        .filter((index) => nonUniqueIndexNames.has(index.name))
+        .map((index) => index.sql?.trim() ?? "")
+        .filter(Boolean);
+
+      rebuildTableInTransaction(db, {
+        tableName: table.name,
+        stagingName: repairName,
+        createStagingSql: rewrittenSql,
+        columnsSql,
+        indexSqlsToRecreate: indexSqls,
+      });
       changed = true;
     }
   } finally {
@@ -360,7 +500,11 @@ const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
  *
  * Returns `true` if any table was rebuilt.
  */
-function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled: boolean): boolean {
+function retrofitForeignKeyCascadeActions(
+  db: DatabaseSyncType,
+  crsqliteEnabled: boolean,
+  ambiguousTables: ReadonlySet<string> = new Set(),
+): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
     `select m.name, m.sql
@@ -395,6 +539,11 @@ function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled:
   runStatement(db, "pragma foreign_keys = off");
   try {
     for (const table of tables) {
+      if (
+        ambiguousTables.has(table.name)
+        || table.name.startsWith("__ade_crr_repair_")
+        || table.name.startsWith("__ade_fk_repair_")
+      ) continue;
       const desired = desiredByTable.get(table.name);
       if (!desired) continue;
 
@@ -455,14 +604,21 @@ function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled:
       const repairName = `__ade_fk_repair_${table.name}`;
       const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
       const columnsSql = tableInfo.map((col) => quoteIdentifier(col.name)).join(", ");
-
-      runStatement(db, rewrittenSql);
-      runStatement(
+      const indexSqls = allRows<{ sql: string | null }>(
         db,
-        `insert into ${quoteIdentifier(repairName)} (${columnsSql}) select ${columnsSql} from ${quoteIdentifier(table.name)}`,
-      );
-      runStatement(db, `drop table ${quoteIdentifier(table.name)}`);
-      runStatement(db, `alter table ${quoteIdentifier(repairName)} rename to ${quoteIdentifier(table.name)}`);
+        "select sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
+        [table.name],
+      )
+        .map((index) => index.sql?.trim() ?? "")
+        .filter(Boolean);
+
+      rebuildTableInTransaction(db, {
+        tableName: table.name,
+        stagingName: repairName,
+        createStagingSql: rewrittenSql,
+        columnsSql,
+        indexSqlsToRecreate: indexSqls,
+      });
       changed = true;
     }
   } finally {
@@ -475,8 +631,37 @@ function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled:
 function writeMigrationBackupIfNeeded(dbPath: string): void {
   if (!fs.existsSync(dbPath)) return;
   const backupPath = `${dbPath}.pre-crsqlite-w1.bak`;
-  if (!fs.existsSync(backupPath)) {
-    fs.copyFileSync(dbPath, backupPath);
+  if (fs.existsSync(backupPath)) return;
+
+  const dbSize = fs.statSync(dbPath, { bigint: true }).size;
+  const freeBytes = BigInt(Math.trunc(readVolumeSpace(path.dirname(dbPath))?.freeBytes ?? 0));
+  const requiredBytes = dbSize + 256n * 1024n * 1024n;
+  if (freeBytes < requiredBytes) {
+    throw codedError(
+      `Insufficient free disk space for database migration backup: ${freeBytes} bytes available, ${requiredBytes} required.`,
+      "insufficient_headroom",
+    );
+  }
+
+  const tempPath = `${backupPath}.tmp-${process.pid}`;
+  try {
+    fs.rmSync(tempPath, { force: true });
+    fs.copyFileSync(dbPath, tempPath);
+    const copiedSize = fs.statSync(tempPath, { bigint: true }).size;
+    if (copiedSize !== dbSize) {
+      throw codedError(
+        `Database migration backup is incomplete: copied ${copiedSize} of ${dbSize} bytes.`,
+        "migration_incomplete",
+      );
+    }
+    fs.renameSync(tempPath, backupPath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // best effort cleanup
+    }
+    throw error;
   }
 }
 
@@ -881,6 +1066,104 @@ function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger):
   });
 }
 
+export type TableRebuildRecoveryReport = {
+  recovered: Array<{ table: string; action: string }>;
+  ambiguous: string[];
+};
+
+function tableColumnNames(db: DatabaseSyncType, tableName: string): string[] {
+  return allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`)
+    .map((column) => column.name);
+}
+
+export function recoverInterruptedTableRebuilds(
+  db: DatabaseSyncType,
+  logger?: Logger,
+): TableRebuildRecoveryReport {
+  const report: TableRebuildRecoveryReport = { recovered: [], ambiguous: [] };
+  try {
+    const candidates = allRows<{ name: string }>(
+      db,
+      "select name from sqlite_master where type = 'table' order by name asc",
+    ).filter(({ name }) =>
+      (name.startsWith("__ade_crr_repair_") && !name.startsWith("__ade_crr_repair_unified_memories"))
+      || name.startsWith("__ade_fk_repair_"),
+    );
+
+    for (const { name: stagingTable } of candidates) {
+      const prefix = stagingTable.startsWith("__ade_crr_repair_")
+        ? "__ade_crr_repair_"
+        : "__ade_fk_repair_";
+      const originalTable = stagingTable.slice(prefix.length);
+      const originalExists = rawHasTable(db, originalTable);
+      const stagingExists = rawHasTable(db, stagingTable);
+
+      if (!originalExists && !stagingExists) {
+        const action = "noop_both_missing";
+        report.recovered.push({ table: originalTable, action });
+        logger?.info("db.rebuild_recovery", { table: originalTable, stagingTable, action });
+        continue;
+      }
+      if (!stagingExists) continue;
+
+      const stagingColumns = tableColumnNames(db, stagingTable);
+      const stagingCount = getRow<{ count: number }>(
+        db,
+        `select count(*) as count from ${quoteIdentifier(stagingTable)}`,
+      )?.count ?? 0;
+
+      if (!originalExists && stagingColumns.length > 0) {
+        runStatement(db, `alter table ${quoteIdentifier(stagingTable)} rename to ${quoteIdentifier(originalTable)}`);
+        const action = "completed_interrupted_rename";
+        report.recovered.push({ table: originalTable, action });
+        logger?.info("db.rebuild_recovery", { table: originalTable, stagingTable, action });
+        continue;
+      }
+
+      const originalColumns = originalExists ? tableColumnNames(db, originalTable) : [];
+      const originalCount = originalExists
+        ? getRow<{ count: number }>(db, `select count(*) as count from ${quoteIdentifier(originalTable)}`)?.count ?? 0
+        : 0;
+
+      if (originalExists && stagingCount === 0) {
+        runStatement(db, `drop table ${quoteIdentifier(stagingTable)}`);
+        const action = "dropped_empty_staging";
+        report.recovered.push({ table: originalTable, action });
+        logger?.info("db.rebuild_recovery", { table: originalTable, stagingTable, action });
+        continue;
+      }
+
+      const columnsMatch = stagingColumns.length === originalColumns.length
+        && stagingColumns.every((column, index) => column === originalColumns[index]);
+      if (originalExists && stagingCount > 0 && columnsMatch && stagingCount <= originalCount) {
+        runStatement(db, `drop table ${quoteIdentifier(stagingTable)}`);
+        const action = "dropped_partial_staging";
+        report.recovered.push({ table: originalTable, action });
+        logger?.info("db.rebuild_recovery", { table: originalTable, stagingTable, action });
+        continue;
+      }
+
+      if (!report.ambiguous.includes(originalTable)) report.ambiguous.push(originalTable);
+      logger?.warn("db.rebuild_recovery_ambiguous", {
+        table: originalTable,
+        stagingTable,
+        originalRowCount: originalCount,
+        stagingRowCount: stagingCount,
+        originalColumns,
+        stagingColumns,
+      });
+    }
+  } catch (error) {
+    if (!isReadonlyDatabaseError(error)) throw error;
+    logger?.warn("db.rebuild_recovery_readonly", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  logger?.info("db.rebuild_recovery_report", report);
+  return report;
+}
+
 function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
   if (!rawHasTable(db, `${tableName}__crsql_clock`)) {
     return false;
@@ -1240,7 +1523,7 @@ function makeCrrAwareDb({
   };
 }
 
-function migrate(db: MigrationDb) {
+function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
 
@@ -1602,25 +1885,55 @@ function migrate(db: MigrationDb) {
       .sort((left, right) => left.pk - right.pk)
       .map((column) => column.name);
     if (runtimeProcessPk.join("\0") !== "pid\0started_at") {
-      db.run("drop table if exists __ade_runtime_processes_v2");
-      db.run(`
-        create table __ade_runtime_processes_v2 (
-          pid integer not null,
-          role text not null,
-          project_root text,
-          started_at text not null,
-          last_seen text not null,
-          primary key (pid, started_at)
-        )
-      `);
-      db.run(`
-        insert or ignore into __ade_runtime_processes_v2 (pid, role, project_root, started_at, last_seen)
-        select pid, role, project_root, started_at, last_seen
-          from runtime_processes
-         where started_at is not null and length(trim(started_at)) > 0
-      `);
-      db.run("drop table runtime_processes");
-      db.run("alter table __ade_runtime_processes_v2 rename to runtime_processes");
+      let transactionOpen = false;
+      try {
+        runStatement(rawDb, "BEGIN IMMEDIATE");
+        transactionOpen = true;
+        const expectedCount = getRow<{ count: number }>(
+          rawDb,
+          "select count(*) as count from runtime_processes where started_at is not null and length(trim(started_at)) > 0",
+        )?.count;
+        runStatement(rawDb, "drop table if exists __ade_runtime_processes_v2");
+        runStatement(rawDb, `
+          create table __ade_runtime_processes_v2 (
+            pid integer not null,
+            role text not null,
+            project_root text,
+            started_at text not null,
+            last_seen text not null,
+            primary key (pid, started_at)
+          )
+        `);
+        runStatement(rawDb, `
+          insert or ignore into __ade_runtime_processes_v2 (pid, role, project_root, started_at, last_seen)
+          select pid, role, project_root, started_at, last_seen
+            from runtime_processes
+           where started_at is not null and length(trim(started_at)) > 0
+        `);
+        const copiedCount = getRow<{ count: number }>(
+          rawDb,
+          "select count(*) as count from __ade_runtime_processes_v2",
+        )?.count;
+        if (expectedCount == null || copiedCount !== expectedCount) {
+          throw codedError(
+            `Unable to rebuild runtime_processes: copied ${String(copiedCount)} of ${String(expectedCount)} rows.`,
+            "migration_incomplete",
+          );
+        }
+        runStatement(rawDb, "drop table runtime_processes");
+        runStatement(rawDb, "alter table __ade_runtime_processes_v2 rename to runtime_processes");
+        runStatement(rawDb, "commit");
+        transactionOpen = false;
+      } catch (error) {
+        if (transactionOpen) {
+          try {
+            runStatement(rawDb, "rollback");
+          } catch {
+            // best effort rollback for this non-critical local table
+          }
+        }
+        throw error;
+      }
     }
   } catch {
     // Best-effort local bookkeeping migration; the next process heartbeat will
@@ -3192,8 +3505,13 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     getDb: () => db,
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
+  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadata(db);
 
   try {
+    if (existedBeforeOpen && !hadCrsqlMetadataBeforeOpen) {
+      writeMigrationBackupIfNeeded(dbPath);
+    }
+
     // Existing CRR tables install triggers that call cr-sqlite functions on
     // ordinary writes. Load the extension before any migrations or repair
     // updates can touch those tables in source-mode CLI and desktop startup.
@@ -3203,7 +3521,14 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       disableCrrTriggersForUnavailableRuntime(db, logger);
     }
 
-    migrate(crrAwareDb);
+    // Resolve interrupted table rebuilds BEFORE migrate(): a rebuild that
+    // crashed between drop and rename left the data only in the staging
+    // table, and migrate()'s `create table if not exists` would recreate the
+    // original empty — turning a completable rename into an ambiguous state.
+    const rebuildRecovery = recoverInterruptedTableRebuilds(db, logger);
+    const ambiguousRebuildTables = new Set(rebuildRecovery.ambiguous);
+
+    migrate(crrAwareDb, db);
     removeExcludedCrrMetadata(db, logger);
     // Tear down the legacy `unified_memories` schema (removed in #329) before
     // any retrofit pass runs — the FTS4 shadow tables cannot be dropped
@@ -3214,13 +3539,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
 
-    if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
-      writeMigrationBackupIfNeeded(dbPath);
-    }
-
     let retrofittedLegacyPrimaryKeySchema = false;
     try {
-      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db);
+      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
@@ -3232,13 +3553,13 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
-      migrate(crrAwareDb);
+      migrate(crrAwareDb, db);
       removeExcludedCrrMetadata(db, logger);
     }
 
     let retrofittedForeignKeySchema = false;
     try {
-      retrofittedForeignKeySchema = retrofitForeignKeyCascadeActions(db, crsqliteLoaded);
+      retrofittedForeignKeySchema = retrofitForeignKeyCascadeActions(db, crsqliteLoaded, ambiguousRebuildTables);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
@@ -3250,7 +3571,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
-      migrate(crrAwareDb);
+      migrate(crrAwareDb, db);
       removeExcludedCrrMetadata(db, logger);
     }
 

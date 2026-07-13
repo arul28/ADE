@@ -40,6 +40,20 @@ export default defineWorkspace([
     resolve: { alias: sharedResolveAlias },
     test: {
       ...shared,
+      name: "integration-main",
+      // Scoped to the cross-service integration suite. Widening this to
+      // src/main/**/*.integration.test.* would resurrect the long-dormant
+      // remoteRuntime.offlineRpc.integration.test.ts, which predates this
+      // project and no longer passes — fix or delete it before broadening.
+      include: ["src/main/services/__tests__/*.integration.test.{ts,tsx}"],
+      testTimeout: 60_000,
+      hookTimeout: 60_000,
+    },
+  },
+  {
+    resolve: { alias: sharedResolveAlias },
+    test: {
+      ...shared,
       name: "unit-main",
       include: ["src/main/**/*.test.{ts,tsx}"],
       exclude: unitExcludes,

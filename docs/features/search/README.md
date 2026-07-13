@@ -150,7 +150,11 @@ the timer drains due entries on a single serialized `workChain` promise,
 yielding to the event loop between sources. Each source's progress is a cursor
 in the `sources` table: chat and terminal transcripts are read incrementally
 from a byte cursor (capped at 4 MiB per pass, re-enqueuing when more remains),
-so a growing transcript is indexed in bounded slices. PR/lane-git sources
+so a growing transcript is indexed in bounded slices. When a transcript has
+been losslessly compacted to a `<transcript>.gz` generation, the processor
+reads the whole decompressed buffer through `readHistoryFileSync` and slices it
+in memory; because compaction is byte-identical, the existing byte cursor stays
+valid and the session is not reindexed. PR/lane-git sources
 re-derive their docs wholesale each run. `startBackfill` runs once, well past
 the host boot window, enqueues every session/PR/lane, and reconciles docs whose
 sessions were deleted while the service was down.
@@ -221,8 +225,12 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
   lines. The chat/terminal processors never consume an unterminated final line
   (chat: no trailing newline; terminal chunker: unforced partial tail) —
   consuming it would advance the cursor past a half-written record and
-  permanently drop it. A shrunk file (compaction/rewrite) is detected via
-  `stat.size < cursor` and triggers a from-scratch reindex of that session.
+  permanently drop it. A genuinely shrunk file (rewrite) is detected via
+  `fileSize < cursor` and triggers a from-scratch reindex of that session.
+  Lossless `.gz` history compaction is *not* a shrink: the transcript-path
+  resolver treats the `.gz` sibling as canonical (it strips the suffix before
+  the moved-path check), and `readHistoryFileSync` returns the same byte length,
+  so the cursor and indexed docs survive compaction untouched.
 - **Branches are indexed from the primary lane only.** `listBranches` returns
   every branch visible from the repo, so indexing per lane would duplicate the
   whole branch list N times. `processLaneGit` only indexes branches when the
@@ -250,7 +258,8 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
   canonical shared URL builders.
 - [Files and Editor](../files-and-editor/README.md) — the file quick-open /
   content-search index backs the delegated `file` kind.
+- [Storage and recovery](../storage-and-recovery/README.md) — the lossless
+  history compression whose `.gz` transcripts the ingestion processors read
+  transparently through `readHistoryFileSync`.
 - [System overview](../../ARCHITECTURE.md) — the `search` ADE action domain and
   services catalog entry.
-</content>
-</invoke>

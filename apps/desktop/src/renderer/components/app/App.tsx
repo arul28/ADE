@@ -18,6 +18,7 @@ import {
 } from "./InboundDeeplinkModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
+import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
@@ -662,6 +663,7 @@ function ProjectTabHost() {
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);
+  const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
@@ -829,6 +831,18 @@ function ProjectTabHost() {
       if (!mountedKeys.has(key)) storesRef.current.delete(key);
     }
   }, [mountedProjects]);
+
+  // A project open/switch that failed with a typed code takes over the whole
+  // surface with the recovery flow. Un-coded string errors still fall through
+  // to the dismissible banner in AppShell. Unmounts once the error is cleared
+  // or a new transition begins.
+  if (!projectTransition && projectTransitionError?.code && projectTransitionError.rootPath) {
+    return (
+      <div className="relative h-full min-h-0 w-full">
+        <ProjectRecoveryScreen />
+      </div>
+    );
+  }
 
   if (isExternalFilesRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (

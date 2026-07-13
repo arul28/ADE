@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
-import zlib from "node:zlib";
+import zlib, { gzipSync } from "node:zlib";
 import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
@@ -21,6 +21,7 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { injectFsFault } from "../../../test/faultInjection";
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -831,6 +832,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
 } from "./agentChatService";
+import { readThreadPointerLedger } from "./threadPointerLedger";
 import {
   enforceCrossMachineForkEncodedBudget,
   gunzipFromBase64,
@@ -2084,6 +2086,89 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 
 describe("createAgentChatService", () => {
+  describe("disk pressure enforcement", () => {
+    it("fails an exhausted send without starting a provider turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: {
+          canPerform: vi.fn(() => ({
+            allowed: false,
+            state: "exhausted",
+            code: "disk_full",
+            message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+          })),
+        },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Start new work." });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start" || payload.method === "turn/start")).toBe(false);
+      expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+        message: expect.stringContaining("almost out of storage"),
+        errorInfo: { code: "disk_full" },
+      });
+      expect(events.some((entry) => entry.event.type === "status" && entry.event.turnStatus === "failed")).toBe(true);
+      expect(events.some((entry) => entry.event.type === "done" && entry.event.status === "failed")).toBe(true);
+      expect(events.filter((entry) => entry.event.type === "system_notice")).toHaveLength(1);
+      expect(events.find((entry) => entry.event.type === "system_notice")?.event).toMatchObject({
+        detail: { kind: "disk_pressure", state: "exhausted" },
+      });
+      service.forceDisposeAll();
+    });
+
+    it("blocks an exhausted send that would route to a steer on an active chat", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const canPerform = vi.fn(() => ({
+        allowed: false,
+        state: "exhausted" as const,
+        code: "disk_full" as const,
+        message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+      }));
+      const { service } = createService({
+        diskPressureMonitor: { canPerform },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      // Make the session look active so routeActiveToSteer would otherwise
+      // convert the send into a steer() that bypasses the disk gate.
+      service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." });
+      await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
+      mockState.codexRequestPayloads = [];
+
+      const result = await service.sendMessage(
+        { sessionId: session.id, text: "Squeeze in more." },
+        { routeActiveToSteer: true },
+      );
+
+      // The gate ran before routing, so no steer was issued and no new
+      // provider work started.
+      expect(result).toBeUndefined();
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start" || p.method === "turn/steer")).toBe(false);
+      expect(events.some((entry) => entry.event.type === "system_notice"
+        && typeof entry.event.detail === "object"
+        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it.each([
+      ["warning monitor", { canPerform: vi.fn(() => ({ allowed: true, state: "warning" })) }],
+      ["absent monitor", undefined],
+    ])("lets a send proceed with an %s", async (_label, diskPressureMonitor) => {
+      const { service } = createService({ diskPressureMonitor });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Proceed normally." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      service.forceDisposeAll();
+    });
+  });
+
   it("returns an object with all expected methods", () => {
     const { service } = createService();
     expect(service.createSession).toBeTypeOf("function");
@@ -3886,7 +3971,7 @@ describe("createAgentChatService", () => {
 
     it("terminates and persists a failed Codex kickoff when turn/start rejects", async () => {
       const events: AgentChatEventEnvelope[] = [];
-      const writeFileSync = vi.spyOn(fs, "writeFileSync");
+      const renameSync = vi.spyOn(fs, "renameSync");
       mockState.codexResponseOverrides.set("turn/start", {
         error: { code: -32_000, message: "turn start exploded" },
       });
@@ -3905,7 +3990,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
-      writeFileSync.mockClear();
+      renameSync.mockClear();
       mockState.flushCodexResponses();
 
       await waitForEvent(
@@ -3935,10 +4020,9 @@ describe("createAgentChatService", () => {
       expect(failedIndex).toBeGreaterThan(errorIndex);
       expect(doneIndex).toBeGreaterThan(failedIndex);
       expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
-      expect(writeFileSync).toHaveBeenCalledWith(
+      expect(renameSync).toHaveBeenCalledWith(
+        expect.stringContaining(`.${session.id}.json.tmp-`),
         expect.stringContaining(`${session.id}.json`),
-        expect.any(String),
-        "utf8",
       );
     });
 
@@ -7217,7 +7301,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
     });
 
-    it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
+    it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {
       const primarySend = vi.fn().mockResolvedValue(undefined);
       const recoverySend = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -7293,13 +7377,18 @@ describe("createAgentChatService", () => {
 
       const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
-      expect(persisted.sdkSessionId).toEqual(expect.any(String));
-      expect(persisted.sdkSessionId).not.toBe("sdk-session-1");
+      expect(persisted.sdkSessionId).toBeUndefined();
+      expect(persisted.continuityRecovery).toMatchObject({
+        state: "required",
+        reason: "thread_missing",
+        provider: "claude",
+        originalThreadId: expect.any(String),
+      });
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
       expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
       expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
-      expect(recoverySend).toHaveBeenCalledWith("System initialization check. Respond with only the word READY.");
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+      expect(recoverySend).not.toHaveBeenCalled();
     });
 
     it("keeps continuity compaction scoped to identity sessions", async () => {
@@ -7378,7 +7467,9 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
       expect(persisted.continuitySummary).toBeUndefined();
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
+      expect(persisted.continuityRecovery).toMatchObject({ state: "required", provider: "claude" });
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+      expect(recoverySend).not.toHaveBeenCalled();
     });
   });
 
@@ -18516,6 +18607,48 @@ describe("createAgentChatService", () => {
   });
 
   describe("getChatEventHistory", () => {
+    it("hydrates identical events from a compressed transcript", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-01T10:00:00.000Z",
+        event: { type: "text", text: "compressed history" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(`${transcriptFile}.gz`, gzipSync(`${JSON.stringify(envelope)}\n`));
+      fs.rmSync(transcriptFile, { force: true });
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("compressed history") ? [envelope] : []);
+
+      expect(service.getChatEventHistory(session.id).events).toEqual([envelope]);
+    });
+
+    it("prefers the plain transcript in a both-exist crash window", async () => {
+      const { service, logger } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const plainEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-01T10:00:00.000Z",
+        event: { type: "text", text: "plain wins" },
+        sequence: 1,
+      };
+      const gzipEnvelope: AgentChatEventEnvelope = {
+        ...plainEnvelope,
+        event: { type: "text", text: "gzip loses" },
+      };
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(plainEnvelope)}\n`);
+      fs.writeFileSync(`${transcriptFile}.gz`, gzipSync(`${JSON.stringify(gzipEnvelope)}\n`));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("plain wins") ? [plainEnvelope] : [gzipEnvelope]);
+
+      expect(service.getChatEventHistory(session.id).events).toEqual([plainEnvelope]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.transcript_plain_preferred",
+        expect.objectContaining({ path: expect.stringContaining(`${session.id}.jsonl`) }),
+      );
+    });
+
     it("returns an empty history for an unknown session", async () => {
       const { service } = createService();
       const history = service.getChatEventHistory("unknown-session");
@@ -30203,5 +30336,607 @@ describe("suggestLaneNameFromPrompt", () => {
       laneId: null as any,
     });
     expect(result).toBe("parallel-task");
+  });
+});
+
+describe("durable chat metadata and transcript continuity", () => {
+  const chatSessionsDir = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions");
+  const metadataPath = (sessionId: string) => path.join(chatSessionsDir(), `${sessionId}.json`);
+  const ledgerPath = () => path.join(chatSessionsDir(), "thread-pointers.jsonl");
+
+  async function completeCodexTurn(turnPromise: Promise<unknown>, text = "done"): Promise<void> {
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    const turnNumber = mockState.codexTurnCounter;
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: { turn: { id: `turn-${turnNumber}`, status: "inProgress" } },
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: { turnId: `turn-${turnNumber}`, delta: text },
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: `turn-${turnNumber}`, status: "completed" } },
+    });
+    await turnPromise;
+  }
+
+  it("preserves prior metadata on ENOSPC and succeeds on the next persist", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    first.service.forceDisposeAll();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      threadId: "thread-resumed",
+    });
+
+    const { service, logger } = createService();
+    await service.resumeSession({ sessionId: session.id });
+    const before = fs.readFileSync(metadataPath(session.id));
+    const renameFault = injectFsFault({
+      op: "renameSync",
+      matchPath: (candidate) => path.resolve(candidate) === path.resolve(metadataPath(session.id)),
+    });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "thread/deleted",
+      params: { threadId: "thread-resumed" },
+    });
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.persist_failed",
+        expect.objectContaining({ sessionId: session.id, lkgUpdated: true }),
+      );
+    });
+    expect(fs.readFileSync(metadataPath(session.id))).toEqual(before);
+    expect(readPersistedChatState(session.id).threadId).toBe("thread-resumed");
+    expect(fs.readdirSync(chatSessionsDir()).filter((name) => name.includes(".tmp-"))).toEqual([]);
+
+    renameFault.restore();
+    await service.updateSession({ sessionId: session.id, title: "Persist after ENOSPC" });
+    expect(readPersistedChatState(session.id).threadId).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(`${metadataPath(session.id)}.lkg`, "utf8")).threadId).toBe("thread-resumed");
+  });
+
+  it("recovers a corrupt primary from the lkg and logs the recovery", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    first.service.forceDisposeAll();
+    const recoveredState = {
+      ...readPersistedChatState(session.id),
+      threadId: "thread-from-lkg",
+    };
+    fs.writeFileSync(`${metadataPath(session.id)}.lkg`, JSON.stringify(recoveredState, null, 2));
+    fs.writeFileSync(metadataPath(session.id), "{");
+
+    const { service, logger } = createService();
+    const resumed = await service.resumeSession({ sessionId: session.id });
+    expect(resumed.threadId).toBe("thread-from-lkg");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.persisted_state_recovered_lkg",
+      { sessionId: session.id },
+    );
+  });
+
+  it("records pointer changes, avoids restart duplicates, and compacts above 64 KiB", async () => {
+    const first = createService();
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    const firstTurn = first.service.runSessionTurn({ sessionId: session.id, text: "start a thread" });
+    await vi.waitFor(() => {
+      expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBe("thread-1");
+    });
+    await completeCodexTurn(firstTurn);
+    first.service.forceDisposeAll();
+    const lineCountBeforeRestart = fs.readFileSync(ledgerPath(), "utf8").trim().split("\n").length;
+
+    const second = createService();
+    await second.service.resumeSession({ sessionId: session.id });
+    expect(fs.readFileSync(ledgerPath(), "utf8").trim().split("\n")).toHaveLength(lineCountBeforeRestart);
+
+    const oldEntry = {
+      sessionId: "older-session",
+      provider: "codex",
+      pointer: "old",
+      prevPointer: null,
+      reason: "persist_change",
+      at: "2026-01-01T00:00:00.000Z",
+    };
+    const newEntry = { ...oldEntry, pointer: "new", prevPointer: "old", at: "2026-01-02T00:00:00.000Z" };
+    fs.appendFileSync(
+      ledgerPath(),
+      `${JSON.stringify(oldEntry)}\n${JSON.stringify(newEntry)}\n${"x".repeat(70 * 1024)}\n`,
+    );
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "thread/deleted",
+      params: { threadId: "thread-1" },
+    });
+    await vi.waitFor(() => {
+      expect(fs.statSync(ledgerPath()).size).toBeLessThanOrEqual(64 * 1024);
+      expect(readThreadPointerLedger(chatSessionsDir()).get(session.id)?.pointer).toBeNull();
+    });
+    expect(readThreadPointerLedger(chatSessionsDir()).get("older-session")?.pointer).toBe("new");
+  });
+
+  it("isolates a truncated transcript tail before the next user event", async () => {
+    const { service, logger } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+    const prefix: AgentChatEventEnvelope = {
+      sessionId: session.id,
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "text", text: "valid prefix" },
+    };
+    const fragment = "{\"id\":\"truncated";
+    fs.writeFileSync(transcriptFile, `${JSON.stringify(prefix)}\n${fragment}`, "utf8");
+
+    const turn = service.runSessionTurn({ sessionId: session.id, text: "fresh user event" });
+    await vi.waitFor(() => {
+      const raw = fs.readFileSync(transcriptFile, "utf8");
+      expect(raw).toContain(`${fragment}\n{`);
+      expect(raw).toContain("fresh user event");
+    });
+    await completeCodexTurn(turn, "fresh response");
+
+    const raw = fs.readFileSync(transcriptFile, "utf8");
+    const lines = raw.trimEnd().split("\n");
+    expect(JSON.parse(lines[0]!)).toEqual(prefix);
+    expect(lines[1]).toBe(fragment);
+    expect(JSON.parse(lines[2]!).event).toMatchObject({ type: "user_message", text: "fresh user event" });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    const parsed = actualTranscript.parseAgentChatTranscript(raw);
+    expect(parsed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ timestamp: prefix.timestamp, event: expect.objectContaining({ text: "valid prefix" }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: "user_message", text: "fresh user event" }) }),
+    ]));
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.transcript_tail_healed",
+      { path: path.resolve(transcriptFile), priorSize: Buffer.byteLength(`${JSON.stringify(prefix)}\n${fragment}`) },
+    );
+  });
+});
+
+describe("explicit provider-thread continuity recovery", () => {
+  const metadataPath = (sessionId: string) => path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`);
+  const ledgerPath = () => path.join(tmpRoot, ".ade", "cache", "chat-sessions", "thread-pointers.jsonl");
+  const transcriptPath = (sessionId: string) => path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
+
+  // Rollout-probe classification must not depend on the machine's real
+  // ~/.codex tree: an empty CODEX_HOME gives a deterministic completed
+  // probe (definitive absence); tests that want "local history exists"
+  // write a rollout fixture with writeCodexRolloutFixture.
+  let codexHomeDir: string | null = null;
+  beforeEach(() => {
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-home-"));
+    process.env.CODEX_HOME = codexHomeDir;
+  });
+  afterEach(() => {
+    if (codexHomeDir) {
+      fs.rmSync(codexHomeDir, { recursive: true, force: true });
+      codexHomeDir = null;
+    }
+  });
+
+  function writeCodexRolloutFixture(threadId: string): string {
+    const rolloutDir = path.join(process.env.CODEX_HOME!, "sessions", "2026", "07", "12");
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    const rolloutPath = path.join(rolloutDir, `rollout-2026-07-12T01-00-00-${threadId}.jsonl`);
+    fs.writeFileSync(rolloutPath, `${JSON.stringify({ type: "session_meta" })}\n`, "utf8");
+    return rolloutPath;
+  }
+
+  async function createPersistedCodexThread() {
+    const first = createService();
+    const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+    const turn = first.service.runSessionTurn({ sessionId: session.id, text: "Keep the original thread." });
+    await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true));
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "turn/started", params: { turn: { id: "turn-1", status: "inProgress" } } });
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed" } } });
+    await turn;
+    first.service.forceDisposeAll();
+    mockState.codexRequestPayloads = [];
+    return session;
+  }
+
+  it("preserves the pointer and emits a failed turn plus recovery notice when resume reports not found", async () => {
+    const session = await createPersistedCodexThread();
+    // The provider claims the thread is gone but local history still exists,
+    // so classification must not trust the deletion (reason "unknown").
+    writeCodexRolloutFixture("thread-1");
+    const resumeCommand = mockState.sessions.get(session.id)?.resumeCommand;
+    mockState.codexResponseOverrides.set("thread/resume", { error: { code: -32000, message: "thread not found" } });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Continue." }, { awaitDispatch: true }))
+      .rejects.toThrow("Could not resume the original Codex thread");
+    await vi.waitFor(() => expect(events.some((entry) => entry.event.type === "done" && entry.event.status === "failed")).toBe(true));
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(false);
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery: { state: "required", reason: "unknown", originalThreadId: "thread-1" },
+    });
+    expect(mockState.sessions.get(session.id)?.resumeCommand).toBe(resumeCommand);
+    expect(events.some((entry) => entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.kind === "continuity_recovery")).toBe(true);
+  });
+
+  it("keeps MCP startup failures retryable without continuity recovery", async () => {
+    const session = await createPersistedCodexThread();
+    mockState.codexResponseOverrides.set("thread/resume", { error: { code: -32000, message: "MCP server startup failed" } });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Retry later." }, { awaitDispatch: true })).rejects.toThrow();
+    await vi.waitFor(() => expect(events.some((entry) => entry.event.type === "error")).toBe(true));
+
+    expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
+    expect(readPersistedChatState(session.id).threadId).toBe("thread-1");
+    expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+      errorInfo: { resumeFailure: { kind: "provider_environment" } },
+    });
+  });
+
+  it("fails new turns fast while recovery is required without contacting the provider", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    mockState.codexRequestPayloads = [];
+
+    await expect(service.sendMessage({ sessionId: session.id, text: "Do not dispatch." }))
+      .rejects.toMatchObject({ code: "continuity_recovery_required" });
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start" || payload.method === "thread/resume")).toBe(false);
+    expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message.includes("original AI thread"))).toBe(true);
+  });
+
+  it("retries the original pointer explicitly and clears recovery on success", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", () => ({ thread: { id: "thread-1" } }));
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
+      .resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original", threadId: "thread-1" }));
+    expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
+    expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message === "Reconnected to the original thread.")).toBe(true);
+  });
+
+  it("rejects a concurrent continuity recovery for the same session", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", { thread: { id: "thread-1" } });
+    mockState.delayedCodexMethods.add("thread/resume");
+    const { service } = createService();
+
+    const first = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/resume")).toHaveLength(1);
+    });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
+      .resolves.toEqual({ ok: false, mode: "retry_original", reason: "recovery_failed" });
+    expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/resume")).toHaveLength(1);
+
+    mockState.pendingCodexResponses.splice(0).forEach((respond) => respond());
+    await expect(first).resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original" }));
+  });
+
+  it("leaves required recovery untouched when disk pressure blocks history reconstruction", async () => {
+    const session = await createPersistedCodexThread();
+    const continuityRecovery = {
+      state: "required" as const,
+      reason: "thread_missing" as const,
+      provider: "codex" as const,
+      originalThreadId: "thread-1",
+      at: new Date().toISOString(),
+    };
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery,
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      diskPressureMonitor: {
+        canPerform: vi.fn(() => ({
+          allowed: false,
+          state: "exhausted",
+          code: "disk_full",
+          message: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+        })),
+      },
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    mockState.codexRequestPayloads = [];
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" }))
+      .resolves.toEqual({ ok: false, mode: "recover_from_history", reason: "recovery_failed" });
+
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery,
+    });
+    expect(mockState.codexRequestPayloads).toEqual([]);
+    expect(events.filter((entry) => entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.kind === "disk_pressure")).toHaveLength(1);
+  });
+
+  it("restores required recovery and the original pointer when capsule dispatch rejects", async () => {
+    const session = await createPersistedCodexThread();
+    const continuityRecovery = {
+      state: "required" as const,
+      reason: "thread_missing" as const,
+      provider: "codex" as const,
+      originalThreadId: "thread-1",
+      at: new Date().toISOString(),
+    };
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery,
+    });
+    const { service, sessionService } = createService();
+    const originalResumeCommand = sessionService.get(session.id)?.resumeCommand;
+    mockState.codexRequestPayloads = [];
+    mockState.codexResponseOverrides.set("turn/start", {
+      error: { code: -32000, message: "capsule dispatch rejected" },
+    });
+
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" }))
+      .resolves.toEqual({ ok: false, mode: "recover_from_history", reason: "recovery_failed" });
+
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      threadId: "thread-1",
+      continuityRecovery,
+    });
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)?.pointer).toBe("thread-1");
+    expect(sessionService.get(session.id)?.resumeCommand).toBe(originalResumeCommand);
+  });
+
+  it("reconstructs a bounded hidden history capsule in the same chat", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const envelope = (sequence: number, event: Record<string, unknown>) => JSON.stringify({
+      sessionId: session.id,
+      sequence,
+      timestamp: new Date(1_760_000_000_000 + sequence).toISOString(),
+      event,
+    });
+    fs.writeFileSync(transcriptPath(session.id), [
+      envelope(1, { type: "user_message", text: "Original task" }),
+      `{"oversized":"${"x".repeat(3 * 1024 * 1024)}"}`,
+      envelope(2, { type: "user_message", text: "Most recent request" }),
+      envelope(3, { type: "todo_update", items: [{ id: "one", description: "Keep continuity", status: "in_progress" }] }),
+    ].join("\n") + "\n");
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    mockState.codexRequestPayloads = [];
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" });
+
+    expect(result).toMatchObject({ ok: true, mode: "recover_from_history", threadId: "thread-2" });
+    expect(Buffer.byteLength(result.capsulePreview ?? "", "utf8")).toBeLessThanOrEqual(24 * 1024);
+    expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "reconstructed",
+      originalThreadId: "thread-1",
+      reconstructedThreadId: "thread-2",
+    });
+    expect(events.some((entry) => entry.event.type === "user_message"
+      && entry.event.displayText === "Rebuilt this chat's AI thread from ADE history."
+      && entry.event.metadata?.hideFullPrompt === true)).toBe(true);
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
+      pointer: "thread-2",
+      prevPointer: "thread-1",
+    });
+  });
+
+  it("decompresses a gzipped transcript when building the recovery capsule", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const envelope = (sequence: number, event: Record<string, unknown>) => JSON.stringify({
+      sessionId: session.id,
+      sequence,
+      timestamp: new Date(1_760_000_000_000 + sequence).toISOString(),
+      event,
+    });
+    // Compress the transcript and remove the plain file, as the sweep would,
+    // so only the .gz remains for the capsule to read.
+    const plain = transcriptPath(session.id);
+    fs.mkdirSync(path.dirname(plain), { recursive: true });
+    fs.rmSync(plain, { force: true });
+    fs.writeFileSync(`${plain}.gz`, gzipSync([
+      envelope(1, { type: "user_message", text: "Compressed original task" }),
+      envelope(2, { type: "text", text: "Assistant reply worth keeping" }),
+    ].join("\n") + "\n"));
+    const { service } = createService();
+    mockState.codexRequestPayloads = [];
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" });
+
+    expect(result).toMatchObject({ ok: true, mode: "recover_from_history" });
+    // The capsule must carry the original task from the compressed history,
+    // not be empty because the gzip bytes failed to parse.
+    expect(result.capsulePreview).toContain("Compressed original task");
+  });
+
+  it("creates a distinct same-lane chat and records the recovery relationship", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "start_new_chat" });
+    expect(result.ok).toBe(true);
+    expect(result.newSessionId).not.toBe(session.id);
+    expect(readPersistedChatState(result.newSessionId!).recoveredFromSessionId).toBe(session.id);
+    expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "required",
+      supersededBySessionId: result.newSessionId,
+    });
+    expect(events.some((entry) => entry.sessionId === session.id
+      && entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.spawnedSession?.sessionId === result.newSessionId)).toBe(true);
+  });
+
+  it("moves a stale Claude SDK pointer into continuity recovery and records the prior pointer", async () => {
+    let streamCall = 0;
+    const handle = {
+      send: vi.fn().mockResolvedValue(undefined),
+      stream: vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stale", slash_commands: [] };
+          return;
+        }
+        throw new Error("session not found");
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-stale",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+    const { service } = createService();
+    const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+    await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
+    const originalSdkSessionId = readPersistedChatState(session.id).sdkSessionId as string;
+
+    await service.sendMessage({ sessionId: session.id, text: "Continue the Claude task." });
+    await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+      state: "required",
+      provider: "claude",
+      originalThreadId: originalSdkSessionId,
+    }));
+
+    expect(readPersistedChatState(session.id).sdkSessionId).toBeUndefined();
+    expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
+      pointer: null,
+      prevPointer: originalSdkSessionId,
+    });
+  });
+
+  it("reconciles missing metadata from ledger, resume command, transcript, or marks recovery required", async () => {
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const { service, sessionService } = createService();
+    const sessions = await Promise.all(["ledger", "resume", "transcript", "none"].map((title) =>
+      service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4", title })));
+    service.forceDisposeAll();
+    const [ledger, resume, transcript, none] = sessions;
+    for (const session of sessions) {
+      fs.rmSync(metadataPath(session.id), { force: true });
+      fs.rmSync(`${metadataPath(session.id)}.lkg`, { force: true });
+    }
+    fs.writeFileSync(ledgerPath(), `${JSON.stringify({
+      sessionId: ledger.id, provider: "codex", pointer: "thread-ledger", prevPointer: null,
+      reason: "persist_change", at: new Date().toISOString(),
+    })}\n`);
+    sessionService.setResumeCommand(resume.id, "chat:codex:thread-resume");
+    sessionService.setResumeCommand(transcript.id, null);
+    sessionService.setResumeCommand(none.id, null);
+    fs.writeFileSync(transcriptPath(transcript.id), `${JSON.stringify({
+      sessionId: transcript.id,
+      timestamp: new Date().toISOString(),
+      event: { type: "codex_token_usage", usage: { threadId: "thread-transcript" } },
+    })}\n`);
+
+    service.reconcileThreadPointerFromRedundantSources(ledger.id);
+    service.reconcileThreadPointerFromRedundantSources(resume.id);
+    service.reconcileThreadPointerFromRedundantSources(transcript.id);
+    service.reconcileThreadPointerFromRedundantSources(none.id);
+
+    expect(readPersistedChatState(ledger.id).threadId).toBe("thread-ledger");
+    expect(readPersistedChatState(resume.id).threadId).toBe("thread-resume");
+    expect(readPersistedChatState(transcript.id).threadId).toBe("thread-transcript");
+    expect(readPersistedChatState(none.id).continuityRecovery).toMatchObject({ state: "required", reason: "unknown" });
   });
 });

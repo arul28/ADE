@@ -15,6 +15,9 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { DiskPressureMonitor } from "../storage/diskPressure";
+import { readHistoryFileSync, reinflateHistoryFileSync } from "../storage/historyCompression";
+import { writeFileAtomic } from "../state/durableFile";
 import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
@@ -1104,6 +1107,7 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
+  diskPressureMonitor,
   loadPty,
   disposePtyBackend
 }: {
@@ -1134,6 +1138,7 @@ export function createPtyService({
     lastOutputPreview: string | null;
     at: string;
   }) => void;
+  diskPressureMonitor?: DiskPressureMonitor | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
@@ -3592,6 +3597,15 @@ export function createPtyService({
       const startedAt = new Date().toISOString();
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
+      // Reaching here always spawns a NEW PTY/process — the live-attach case
+      // returned above — so resuming a tracked CLI session whose PTY is gone
+      // is a new launch and must be gated too, not only brand-new sessions.
+      if (tracked && isTrackedCliToolType(toolTypeHint)) {
+        const decision = diskPressureMonitor?.canPerform("cli_launch");
+        if (decision && !decision.allowed) {
+          throw Object.assign(new Error(decision.message), { code: decision.code });
+        }
+      }
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
       const requestedInitialInput = typeof args.initialInput === "string" ? args.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;
@@ -3616,6 +3630,9 @@ export function createPtyService({
       if (tracked) {
         try {
           fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+          reinflateHistoryFileSync(transcriptPath, (targetPath, data) => {
+            writeFileAtomic(targetPath, data, { fsync: true });
+          });
           try {
             transcriptBytesWritten = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
           } catch {
@@ -4916,6 +4933,29 @@ export function createPtyService({
       if (!transcriptPath) return null;
       let fd: number | null = null;
       try {
+        const readablePath = fs.existsSync(transcriptPath)
+          ? transcriptPath
+          : fs.existsSync(`${transcriptPath}.gz`)
+            ? `${transcriptPath}.gz`
+            : transcriptPath;
+        if (readablePath.endsWith(".gz")) {
+          const full = readHistoryFileSync(readablePath);
+          const end = Math.max(0, Math.min(Math.floor(args.endOffset), full.length));
+          const start = Math.min(Math.max(0, Math.floor(args.startOffset)), end);
+          if (end <= start) return { data: "", startOffset: end, endOffset: end };
+          const page = full.subarray(start, end);
+          let boundary = start > 0 && args.alignStartToSafeBoundary
+            ? scanToTranscriptPageBoundary(page)
+            : 0;
+          while (boundary < page.length && (page[boundary]! & 0b1100_0000) === 0b1000_0000) {
+            boundary += 1;
+          }
+          return {
+            data: page.subarray(boundary).toString("utf8"),
+            startOffset: start + boundary,
+            endOffset: end,
+          };
+        }
         const fileSize = Math.max(0, Number(fs.statSync(transcriptPath).size) || 0);
         const end = Math.max(0, Math.min(Math.floor(args.endOffset), fileSize));
         const start = Math.min(Math.max(0, Math.floor(args.startOffset)), end);
@@ -5142,6 +5182,14 @@ export function createPtyService({
     hasLiveSessions(): boolean {
       for (const entry of ptys.values()) {
         if (!entry.disposed) return true;
+      }
+      return false;
+    },
+
+    isTranscriptPathActive(filePath: string): boolean {
+      const normalized = path.resolve(filePath);
+      for (const entry of ptys.values()) {
+        if (!entry.disposed && path.resolve(entry.transcriptPath) === normalized) return true;
       }
       return false;
     },
