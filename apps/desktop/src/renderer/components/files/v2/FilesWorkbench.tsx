@@ -11,6 +11,7 @@ import {
   applyGitStatusToTree,
   appendTreeNodeChildren,
   defaultFilesWorkspaceId,
+  directoryLoadMoreOffset,
   filesProjectSessionKey,
   filesSessionKey,
   formatFilesError,
@@ -74,6 +75,12 @@ const TREE_PAGE_SIZE = 2_000;
 const REVEAL_MAX_CHILDREN = 10_000;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
+
+// Stable no-tabs fallback: a fresh object per render would give every derived
+// memo (open tabs, watched workspace ids) a new identity each render, forcing
+// the file-watcher effect to re-subscribe and drop its pending debounced
+// refreshes. Reducers never mutate state, so sharing one instance is safe.
+const EMPTY_GROUPS_STATE = createInitialGroupsState();
 
 // Cross-mount caches survive remounts (the route unmounts FilesWorkbench when
 // you switch tabs), so re-opening Files shows the workspace + tree instantly
@@ -197,7 +204,7 @@ export function FilesWorkbench({
   dirtyTabIdsRef.current = dirtyTabIds;
 
   const store = useEditorGroupsStore();
-  const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
+  const groupsState = store.sessions[sessionKey] ?? EMPTY_GROUPS_STATE;
   const applyGroups = useCallback(
     (reducer: Parameters<typeof store.apply>[1]) => store.apply(sessionKey, reducer),
     [store, sessionKey],
@@ -586,40 +593,61 @@ export function FilesWorkbench({
     return { children, loadMoreOffset };
   }, []);
 
+  // Directory operations (watcher refresh, load-more) are serialized per path:
+  // a refresh that snapshots the loaded count while a load-more is in flight
+  // would otherwise resolve last and shrink the freshly grown window (or a late
+  // load-more would append at a stale offset). Each op reads the tree only
+  // after every earlier op on the same path has settled. Distinct paths still
+  // run concurrently.
+  const treeOpQueueRef = useRef(new Map<string, Promise<void>>());
+  const runSerializedTreeOp = useCallback(async (parentPath: string, op: () => Promise<void>) => {
+    const queue = treeOpQueueRef.current;
+    const prev = queue.get(parentPath) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    queue.set(parentPath, next);
+    try {
+      await next;
+    } finally {
+      if (queue.get(parentPath) === next) queue.delete(parentPath);
+    }
+  }, []);
+
   const refreshLoadedDirectory = useCallback(
-    async (
+    (
       parentPath: string,
       reqId = workspaceId,
       options: { suppressMissingError?: boolean; minChildren?: number } = {},
     ) => {
-      if (!reqId) return;
-      setLoadingDirs((prev) => new Set(prev).add(parentPath));
-      try {
-        const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
-        const result = await fetchDirectoryChildren(
-          reqId,
-          parentPath,
-          Math.max(loadedCount, options.minChildren ?? 0),
-        );
-        if (!result || workspaceIdRef.current !== reqId) return;
-        setTree((prev) => {
-          const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
-          writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
-          return nextTree;
-        });
-      } catch (err) {
-        const message = formatFilesError(err);
-        if (options.suppressMissingError && isMissingWorkspaceRootError(message)) return;
-        if (workspaceIdRef.current === reqId) setError(message);
-      } finally {
-        setLoadingDirs((prev) => {
-          const next = new Set(prev);
-          next.delete(parentPath);
-          return next;
-        });
-      }
+      if (!reqId) return Promise.resolve();
+      return runSerializedTreeOp(parentPath, async () => {
+        setLoadingDirs((prev) => new Set(prev).add(parentPath));
+        try {
+          const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
+          const result = await fetchDirectoryChildren(
+            reqId,
+            parentPath,
+            Math.max(loadedCount, options.minChildren ?? 0),
+          );
+          if (!result || workspaceIdRef.current !== reqId) return;
+          setTree((prev) => {
+            const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
+            writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
+            return nextTree;
+          });
+        } catch (err) {
+          const message = formatFilesError(err);
+          if (options.suppressMissingError && isMissingWorkspaceRootError(message)) return;
+          if (workspaceIdRef.current === reqId) setError(message);
+        } finally {
+          setLoadingDirs((prev) => {
+            const next = new Set(prev);
+            next.delete(parentPath);
+            return next;
+          });
+        }
+      });
     },
-    [fetchDirectoryChildren, projectCacheKey, workspaceId],
+    [fetchDirectoryChildren, projectCacheKey, runSerializedTreeOp, workspaceId],
   );
 
   const loadDirectory = useCallback(
@@ -641,37 +669,41 @@ export function FilesWorkbench({
   );
 
   const loadMoreChildren = useCallback(
-    async (parentPath: string, startOffset: number) => {
-      if (!workspaceId) return;
+    (parentPath: string, startOffset: number) => {
+      if (!workspaceId) return Promise.resolve();
       const reqId = workspaceId;
-      setLoadingDirs((prev) => new Set(prev).add(parentPath));
-      try {
-        // One page per click: a single IPC round trip appends immediately and
-        // the "Load more…" row persists while nextOffset remains.
-        const page = await window.ade.files.listTreeChildren({
-          workspaceId: reqId,
-          parentPath,
-          offset: startOffset,
-          limit: TREE_PAGE_SIZE,
-          includeIgnored: true,
-        });
-        if (workspaceIdRef.current !== reqId) return;
-        setTree((prev) => {
-          const nextTree = appendTreeNodeChildren(prev, parentPath, page.children, page.nextOffset);
-          writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
-          return nextTree;
-        });
-      } catch (err) {
-        if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
-      } finally {
-        setLoadingDirs((prev) => {
-          const next = new Set(prev);
-          next.delete(parentPath);
-          return next;
-        });
-      }
+      return runSerializedTreeOp(parentPath, async () => {
+        setLoadingDirs((prev) => new Set(prev).add(parentPath));
+        try {
+          // One page per click: a single IPC round trip appends immediately and
+          // the "Load more…" row persists while nextOffset remains. Re-read the
+          // cursor from the tree in case an earlier serialized op moved it.
+          const offset = directoryLoadMoreOffset(treeRef.current, parentPath) ?? startOffset;
+          const page = await window.ade.files.listTreeChildren({
+            workspaceId: reqId,
+            parentPath,
+            offset,
+            limit: TREE_PAGE_SIZE,
+            includeIgnored: true,
+          });
+          if (workspaceIdRef.current !== reqId) return;
+          setTree((prev) => {
+            const nextTree = appendTreeNodeChildren(prev, parentPath, page.children, page.nextOffset);
+            writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
+            return nextTree;
+          });
+        } catch (err) {
+          if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
+        } finally {
+          setLoadingDirs((prev) => {
+            const next = new Set(prev);
+            next.delete(parentPath);
+            return next;
+          });
+        }
+      });
     },
-    [projectCacheKey, workspaceId],
+    [projectCacheKey, runSerializedTreeOp, workspaceId],
   );
 
   const toggleDirectory = useCallback(

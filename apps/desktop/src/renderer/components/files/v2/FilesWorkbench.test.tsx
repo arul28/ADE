@@ -14,6 +14,8 @@ import {
 } from "./editorGroupsStore";
 import { FilesWorkbench } from "./FilesWorkbench";
 import {
+  filesProjectCacheKey,
+  filesTreeCacheKey,
   filesTreeCacheStats,
   releaseFilesProjectCaches,
   resetFilesTreeCachesForTests,
@@ -265,7 +267,7 @@ describe("FilesWorkbench", () => {
     window.ade.files.listWorkspaces = vi.fn(() => listedWorkspaces);
     // Cached-first render from a previous visit; the authoritative list (and
     // the remap it triggers) resolves later.
-    writeCachedWorkspaces("local::/repo", workspaces);
+    writeCachedWorkspaces(filesProjectCacheKey({ kind: "local" }, "/repo"), workspaces);
 
     render(<FilesWorkbench active />);
     expect(useEditorGroupsStore.getState().getSession(sessionKey)?.groups["group-1"]?.tabs)
@@ -421,6 +423,49 @@ describe("FilesWorkbench", () => {
     expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }));
   });
 
+  it("serializes a watcher refresh behind an in-flight load-more so the grown window is preserved", async () => {
+    const listTreeChildren = installLargeDirectoryMocks(12_000);
+    type FileChangeHandler = Parameters<typeof window.ade.files.onChange>[0];
+    let changeHandler: FileChangeHandler | null = null;
+    window.ade.files.onChange = vi.fn((cb: FileChangeHandler) => {
+      changeHandler = cb;
+      return () => undefined;
+    });
+
+    render(<FilesWorkbench active />);
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
+    fireEvent.click(screen.getByTestId("expand-bigdir"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    listTreeChildren.mockClear();
+
+    // Hold the load-more page in flight…
+    let releaseLoadMore!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseLoadMore = resolve;
+    });
+    const paged = listTreeChildren.getMockImplementation()!;
+    listTreeChildren.mockImplementationOnce(async (args: { offset?: number; limit?: number }) => {
+      await gate;
+      return paged(args);
+    });
+    fireEvent.click(screen.getByTestId("load-more-bigdir"));
+
+    // …while a watcher event queues a refresh that would have snapshotted the
+    // pre-append 2,000-entry window.
+    act(() => {
+      changeHandler?.({ workspaceId: "workspace-a", path: "bigdir/f-1.txt", type: "modified", ts: new Date().toISOString() });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300)); // debounce fires; refresh is queued behind the load-more
+    releaseLoadMore();
+
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), { timeout: 3_000 });
+    // load-more (1 call) ran first; the refresh then re-listed the grown
+    // 4,000-entry window (2 calls) instead of shrinking it back to one page.
+    await waitFor(() => expect(listTreeChildren).toHaveBeenCalledTimes(3), { timeout: 3_000 });
+    expect(screen.getByTestId("bigdir-children").textContent).toBe("4000");
+    expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("4000");
+  });
+
   it("renders the cached tree instantly on remount, then refreshes authoritatively", async () => {
     installLargeDirectoryMocks(12_000);
     const first = render(<FilesWorkbench active />);
@@ -454,14 +499,14 @@ describe("FilesWorkbench", () => {
 
     // Releasing another project's caches while this one is mounted never
     // touches open tabs, dirty state, or the rendered tree.
-    releaseFilesProjectCaches("local::/other");
+    releaseFilesProjectCaches(filesProjectCacheKey({ kind: "local" }, "/other"));
     expect(screen.getByTestId("dirty-count").textContent).toBe("1");
     expect(screen.getByTestId("tab-count").textContent).toBe("1");
     expect(screen.getByTestId("bigdir-children").textContent).toBe("2000");
 
     first.unmount();
     // Project-surface eviction path: caches for this project are released.
-    releaseFilesProjectCaches("local::/repo");
+    releaseFilesProjectCaches(filesProjectCacheKey({ kind: "local" }, "/repo"));
     expect(filesTreeCacheStats().entries).toBe(0);
 
     render(<FilesWorkbench active />);
@@ -476,6 +521,6 @@ describe("FilesWorkbench", () => {
     installLargeDirectoryMocks(12_000);
     render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
-    await waitFor(() => expect(filesTreeCacheStats().pinnedKeys).toContain("local::/repo::workspace-a"));
+    await waitFor(() => expect(filesTreeCacheStats().pinnedKeys).toContain(filesTreeCacheKey(filesProjectCacheKey({ kind: "local" }, "/repo"), "workspace-a")));
   });
 });

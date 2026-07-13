@@ -104,6 +104,12 @@ export function loadedDirectoryChildrenCount(nodes: FileTreeNode[], directoryPat
   return node?.type === "directory" && Array.isArray(node.children) ? node.children.length : 0;
 }
 
+/** Current "Load more" cursor for a directory, or undefined when not truncated. */
+export function directoryLoadMoreOffset(nodes: FileTreeNode[], directoryPath: string): number | undefined {
+  const node = findFileTreeNodeByPath(nodes, directoryPath);
+  return node?.type === "directory" && node.loadMoreOffset != null ? node.loadMoreOffset : undefined;
+}
+
 /** Merge a freshly-fetched root listing while keeping already-loaded subtrees. */
 export function mergeTreePreservingLoadedChildren(
   nextNodes: FileTreeNode[],

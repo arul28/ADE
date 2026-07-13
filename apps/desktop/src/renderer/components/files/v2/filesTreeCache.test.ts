@@ -44,10 +44,21 @@ describe("filesTreeCache", () => {
     resetFilesTreeCachesForTests();
   });
 
-  it("derives binding-qualified project cache keys for local and remote bindings", () => {
-    expect(filesProjectCacheKey({ kind: "local" }, "/repo")).toBe("local::/repo");
-    expect(filesProjectCacheKey(null, "/repo")).toBe("local::/repo");
-    expect(filesProjectCacheKey({ kind: "remote", targetId: "host-1" }, "/repo")).toBe("remote:host-1::/repo");
+  it("derives binding-qualified, collision-safe project cache keys", () => {
+    expect(filesProjectCacheKey({ kind: "local" }, "/repo")).toBe(filesProjectCacheKey(null, "/repo"));
+    expect(filesProjectCacheKey({ kind: "remote", targetId: "host-1" }, "/repo"))
+      .not.toBe(filesProjectCacheKey({ kind: "local" }, "/repo"));
+    // Components are encoded, so a delimiter inside a root path or workspace id
+    // can never make two distinct tuples share a key…
+    expect(filesProjectCacheKey(null, "/a::b")).not.toBe(filesProjectCacheKey(null, "/a"));
+    expect(filesTreeCacheKey(filesProjectCacheKey(null, "/a"), "ws::x"))
+      .not.toBe(filesTreeCacheKey(filesProjectCacheKey(null, "/a::x"), "ws"));
+    // …and the prefix-based project release cannot cross ownership boundaries.
+    const evil = filesProjectCacheKey(null, "/repo::extra");
+    const victim = filesProjectCacheKey(null, "/repo");
+    writeCachedTree(filesTreeCacheKey(evil, "ws"), makeTree("dir", 3));
+    releaseFilesProjectCaches(victim);
+    expect(readCachedTree(filesTreeCacheKey(evil, "ws"))).toBeDefined();
   });
 
   it("accounts nodes and estimated bytes per cached tree", () => {

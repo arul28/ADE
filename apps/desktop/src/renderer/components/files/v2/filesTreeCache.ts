@@ -72,6 +72,11 @@ function measureSubtree(nodes: FileTreeNode[]): SubtreeStats {
   return stats;
 }
 
+// Key components are URI-encoded so the "::" delimiter can never occur inside
+// a component: keys are injective and the prefix-based project release cannot
+// cross ownership boundaries (e.g. a root path that itself contains "::").
+const encodeKeyPart = (part: string): string => encodeURIComponent(part);
+
 export function filesProjectCacheKey(
   binding: { kind: "remote"; targetId: string } | { kind: string } | null | undefined,
   projectRootPath: string,
@@ -79,11 +84,11 @@ export function filesProjectCacheKey(
   const bindingKey = binding?.kind === "remote"
     ? `remote:${(binding as { targetId: string }).targetId}`
     : "local";
-  return `${bindingKey}::${projectRootPath}`;
+  return `${encodeKeyPart(bindingKey)}::${encodeKeyPart(projectRootPath)}`;
 }
 
 export function filesTreeCacheKey(projectCacheKey: string, workspaceId: string): string {
-  return `${projectCacheKey}::${workspaceId}`;
+  return `${projectCacheKey}::${encodeKeyPart(workspaceId)}`;
 }
 
 /* ---- Workspace roster (lightweight) ---- */

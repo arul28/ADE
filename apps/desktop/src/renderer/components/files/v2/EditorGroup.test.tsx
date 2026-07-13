@@ -226,8 +226,8 @@ describe("EditorGroup", () => {
     isDirty.mockReturnValue(false);
     render(<EditorGroup {...props} />);
 
+    // The clean-model guard returns synchronously before any write is issued.
     fireEvent.click(screen.getByTitle("Save (⌘S)"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(writeText).not.toHaveBeenCalled();
     expect(markSaved).not.toHaveBeenCalled();
   });
