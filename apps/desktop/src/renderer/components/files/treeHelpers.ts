@@ -54,18 +54,6 @@ export function isMissingWorkspaceRootError(message: string): boolean {
   return /(?:ENOENT|no such file or directory|worktree is missing|workspace is missing)/i.test(message);
 }
 
-export function fileTreeNodeByPath(nodes: FileTreeNode[]): Map<string, FileTreeNode> {
-  const out = new Map<string, FileTreeNode>();
-  const walk = (items: FileTreeNode[]) => {
-    for (const item of items) {
-      out.set(item.path, item);
-      if (item.children?.length) walk(item.children);
-    }
-  };
-  walk(nodes);
-  return out;
-}
-
 function findFileTreeNodeByPath(nodes: FileTreeNode[], nodePath: string): FileTreeNode | undefined {
   for (const node of nodes) {
     if (node.path === nodePath) return node;
@@ -116,12 +104,20 @@ export function loadedDirectoryChildrenCount(nodes: FileTreeNode[], directoryPat
   return node?.type === "directory" && Array.isArray(node.children) ? node.children.length : 0;
 }
 
+/** Current "Load more" cursor for a directory, or undefined when not truncated. */
+export function directoryLoadMoreOffset(nodes: FileTreeNode[], directoryPath: string): number | undefined {
+  const node = findFileTreeNodeByPath(nodes, directoryPath);
+  return node?.type === "directory" && node.loadMoreOffset != null ? node.loadMoreOffset : undefined;
+}
+
 /** Merge a freshly-fetched root listing while keeping already-loaded subtrees. */
 export function mergeTreePreservingLoadedChildren(
   nextNodes: FileTreeNode[],
   previousNodes: FileTreeNode[],
 ): FileTreeNode[] {
-  const previousByPath = fileTreeNodeByPath(previousNodes);
+  // Only direct roots are looked up, so a shallow map is enough — walking every
+  // loaded descendant here made each root refresh O(total loaded nodes).
+  const previousByPath = new Map(previousNodes.map((node) => [node.path, node]));
   return nextNodes.map((node) => {
     if (node.type !== "directory") return node;
     const previous = previousByPath.get(node.path);
@@ -139,7 +135,7 @@ function mergeChildrenPreservingLoadedDescendants(
   nextChildren: FileTreeNode[],
   previousChildren: FileTreeNode[] = [],
 ): FileTreeNode[] {
-  const previousByPath = fileTreeNodeByPath(previousChildren);
+  const previousByPath = new Map(previousChildren.map((child) => [child.path, child]));
   return nextChildren.map((child) => {
     if (child.type !== "directory" || child.children) return child;
     const previous = previousByPath.get(child.path);
@@ -153,6 +149,35 @@ function mergeChildrenPreservingLoadedDescendants(
   });
 }
 
+/**
+ * Clone only the branch that leads to `targetPath` and apply `update` to the
+ * matching directory node. Every sibling branch keeps its identity so React
+ * (and cache accounting) can skip untouched subtrees; previously these
+ * helpers cloned every loaded directory in the tree on each refresh.
+ */
+function updateTreeNodeAtPath(
+  nodes: FileTreeNode[],
+  targetPath: string,
+  update: (node: FileTreeNode) => FileTreeNode,
+): FileTreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.path === targetPath) {
+      changed = true;
+      return update(node);
+    }
+    if (node.children?.length && targetPath.startsWith(`${node.path}/`)) {
+      const nextChildren = updateTreeNodeAtPath(node.children, targetPath, update);
+      if (nextChildren !== node.children) {
+        changed = true;
+        return { ...node, children: nextChildren };
+      }
+    }
+    return node;
+  });
+  return changed ? next : nodes;
+}
+
 /** Replace a directory node's children (used by paginated lazy expansion). */
 export function replaceTreeNodeChildren(
   nodes: FileTreeNode[],
@@ -160,20 +185,12 @@ export function replaceTreeNodeChildren(
   children: FileTreeNode[],
   loadMoreOffset: number | null = null,
 ): FileTreeNode[] {
-  return nodes.map((node) => {
-    if (node.path === parentPath) {
-      return {
-        ...node,
-        children: mergeChildrenPreservingLoadedDescendants(children, node.children),
-        loadMoreOffset,
-        childrenTruncated: loadMoreOffset != null,
-      };
-    }
-    if (node.children?.length) {
-      return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
-    }
-    return node;
-  });
+  return updateTreeNodeAtPath(nodes, parentPath, (node) => ({
+    ...node,
+    children: mergeChildrenPreservingLoadedDescendants(children, node.children),
+    loadMoreOffset,
+    childrenTruncated: loadMoreOffset != null,
+  }));
 }
 
 /** Append another page of children to a directory node. */
@@ -183,22 +200,16 @@ export function appendTreeNodeChildren(
   children: FileTreeNode[],
   loadMoreOffset: number | null = null,
 ): FileTreeNode[] {
-  return nodes.map((node) => {
-    if (node.path === parentPath) {
-      const existing = node.children ?? [];
-      const seen = new Set(existing.map((child) => child.path));
-      const merged = [...existing];
-      for (const child of children) {
-        if (seen.has(child.path)) continue;
-        seen.add(child.path);
-        merged.push(child);
-      }
-      return { ...node, children: merged, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
+  return updateTreeNodeAtPath(nodes, parentPath, (node) => {
+    const existing = node.children ?? [];
+    const seen = new Set(existing.map((child) => child.path));
+    const merged = [...existing];
+    for (const child of children) {
+      if (seen.has(child.path)) continue;
+      seen.add(child.path);
+      merged.push(child);
     }
-    if (node.children?.length) {
-      return { ...node, children: appendTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
-    }
-    return node;
+    return { ...node, children: merged, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
   });
 }
 

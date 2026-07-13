@@ -34,15 +34,18 @@ The component accepts `preferredLaneId`, `embedded`, and `active`. The
 `embedded` compacts the Work-sidebar mount without introducing a separate
 implementation path.
 
-Module-level caches keep workspaces and root trees warm across route
-remounts. Both are keyed by the **binding identity** — a `bindingKey`
-of `local` or `remote:<targetId>` joined to the project root path as
-`projectCacheKey = "<bindingKey>::<projectRoot>"` — so a local session
-and a remote session for the same on-disk path never pollute each
-other's cached workspace list or tree:
+Module-level caches in `v2/filesTreeCache.ts` keep workspaces and root
+trees warm across route remounts. Both are keyed by the **binding
+identity** — `filesProjectCacheKey` joins a `bindingKey` of `local` or
+`remote:<targetId>` to the project root path as
+`"<bindingKey>::<projectRoot>"` — so a local session and a remote
+session for the same on-disk path never pollute each other's cached
+workspace list or tree:
 
-- `workspacesCacheByProject` keyed by `projectCacheKey`
-- `rootTreeCacheByKey` keyed by `projectCacheKey::workspaceId`
+- the workspace roster cache, keyed by `projectCacheKey` (bounded LRU)
+- the explorer tree cache, keyed by `projectCacheKey::workspaceId`
+  (node/byte-accounted LRU; mounted workbenches pin their rendered tree
+  and warm-project-surface eviction releases a project's entries)
 
 Editor state is kept per `filesSessionKey(projectRoot, laneId)` through
 `useEditorGroupsStore`. Editor sessions are keyed by project root
@@ -85,10 +88,14 @@ picker chrome and preselects the active lane worktree. Switching workspaces:
 4. Leaves file service and preload contracts unchanged.
 
 The main-process file service remains the source of truth for path
-safety, trust checks, and workspace roots. There is no read-only /
-view-only workspace policy: every resolved workspace is editable, and
-whether a tab shows editable Monaco is decided purely by viewer kind
-(code tabs edit; image/pdf/large-text viewers are naturally read-only).
+safety and workspace roots. There is no read-only / view-only workspace
+policy: every resolved workspace is editable, and whether a tab shows
+editable Monaco is decided purely by viewer capability plus payload
+(`viewerRegistry.tabIsTextEditable`): code, markdown Source, and CSV
+Source tabs edit whenever the full text payload loaded; image/pdf/
+large-text/binary viewers are naturally read-only, and a partial
+streamed payload stays read-only so a truncated buffer can never be
+saved back.
 
 ## File Explorer Tree
 
@@ -145,12 +152,15 @@ discarded.
 
 Dirty tracking is based on Monaco alternative version ids. A save writes
 through the files write bridge, updates the model baseline, invalidates the
-content cache, and refreshes git decorations. Every `code`-viewer tab is
+content cache, and refreshes git decorations. Every editable-viewer tab is
 saveable — the save button and the `Cmd+S` / `Ctrl+S` handler are gated on
-`viewerKind === "code"` alone, with no editability check. The group-level
-save handler also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff
-mode, saving the hidden Monaco model without forcing the user back to edit
-mode.
+`viewerIsEditable(viewerKind)` (code, markdown Source, and CSV Source),
+not on `viewerKind === "code"`. When no mounted editor API is present the
+fallback save path only writes a *dirty* model: a clean parked model may be
+stale (external edits reload the tab content, not the model), so saving a
+clean tab must never revert an external change. The group-level save handler
+also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff mode, saving the
+hidden Monaco model without forcing the user back to edit mode.
 
 ## Viewers
 
@@ -161,11 +171,15 @@ from path extension and file metadata.
 Supported viewers:
 
 - `CodeViewer` for editable text and Monaco-backed source files
-- `MarkdownViewer`
+- `MarkdownViewer` — Preview↔Source toggle; Source mounts the editable
+  `CodeViewer`, and Preview renders the dirty buffer only when the tab has
+  unsaved edits (otherwise the authoritative file payload)
 - `ImageViewer`
 - `MediaViewer` for audio/video files Chromium can play, with a renderer-side
   size cap before it builds a Blob URL
-- `CsvViewer`
+- `CsvViewer` — virtualized sortable/filterable table with a Table↔Source
+  toggle; Source is offered only when the payload round-trips as text
+  (`!readOnly`), so a partial streamed CSV stays a read-only table
 - `PdfViewer`
 - `LargeTextViewer` for streamed large text
 - `DocumentViewer` for Office-style documents; it shows type/path metadata

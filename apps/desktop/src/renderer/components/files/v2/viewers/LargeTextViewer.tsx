@@ -95,7 +95,7 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
         className="flex shrink-0 items-center gap-2 border-b px-3 py-1 text-xs"
         style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
       >
-        <Lock size={12} /> Read-only
+        <Lock size={12} /> Read-only — too large for inline editing
         <span style={{ color: COLORS.textDim }}>· {formatBytes(content.totalSize ?? content.size)}</span>
         {streaming ? <span style={{ color: COLORS.textDim }}>· loading…</span> : null}
         {capped ? <span style={{ color: COLORS.warning }}>· showing first {formatBytes(MAX_STREAM_BYTES)}</span> : null}

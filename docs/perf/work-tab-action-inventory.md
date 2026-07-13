@@ -293,8 +293,8 @@ Coverage states:
 | work.files.mount | Mount Files tab | measured | `FilesWorkbench.tsx` |
 | work.files.workspace | Change workspace selector | measured | `FilesWorkbench.tsx` |
 | work.files.view-lane | Navigate to lane from Files header/banner | external-skip | `FilesWorkbench.tsx` |
-| work.files.primary-edit | Toggle primary edit allowance | measured | `FilesWorkbench.tsx` |
-| work.files.trust-edit | Trust and edit primary workspace | prompt-only | `FilesWorkbench.tsx` |
+| work.files.primary-edit | Toggle primary edit allowance | moved | `FilesWorkbench.tsx` |
+| work.files.trust-edit | Trust and edit primary workspace | moved | `FilesWorkbench.tsx` |
 | work.files.theme | Toggle editor light/dark theme | measured | `FilesWorkbench.tsx` |
 | work.files.open-in.menu | Open external app menu | external-skip | `FilesWorkbench.tsx` |
 | work.files.open-in.item | Open file in external app | external-skip | `FilesWorkbench.tsx` |
@@ -1645,9 +1645,12 @@ Rows promoted to `measured`:
   `Dismiss error`, and verified the error cleared.
 - `work.files.context.copy-path`: keep coverage on the permanent workbench
   context menu and clipboard path action.
-- `work.files.primary-edit`: keep coverage on service-level read-only policy
-  and the standalone Files route, since the embedded Work pane intentionally
-  keeps primary-workspace edit chrome out of the compact surface.
+- `work.files.primary-edit` / `work.files.trust-edit`: marked `moved` — the
+  read-only default and trust/enable-editing controls were removed entirely.
+  Every writable text-backed file (code/plain text, markdown source, csv
+  source) is editable immediately in every workspace; the invariant is covered
+  by `viewerRegistry.test.ts`, `ViewerHost.test.tsx`, `EditorGroup.test.tsx`
+  save-path tests, and `fileService.test.ts` write/path-safety tests.
 
 ### Focused fixture evidence: Work grid and session-list tests
 

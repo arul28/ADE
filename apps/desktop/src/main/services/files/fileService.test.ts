@@ -680,6 +680,61 @@ describe("fileService", () => {
     }
   });
 
+  it("writes workspace text atomically for any resolved workspace and reports real failures", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-write-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "docs", "notes.md"), "# old\n", "utf8");
+
+      // Immediate save path: no trust step, no read-only gate, atomic replace.
+      service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/notes.md", text: "# new\n" });
+      expect(fs.readFileSync(path.join(rootPath, "docs", "notes.md"), "utf8")).toBe("# new\n");
+
+      // Honest failure: an unwritable directory surfaces the filesystem error
+      // instead of claiming success. Permission bits do not constrain root
+      // (CAP_DAC_OVERRIDE in containerized CI) and chmod is a no-op on
+      // Windows, so this branch only runs for unprivileged POSIX users.
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
+        const locked = path.join(rootPath, "locked");
+        fs.mkdirSync(locked, { recursive: true });
+        fs.writeFileSync(path.join(locked, "file.txt"), "x", "utf8");
+        fs.chmodSync(locked, 0o500);
+        try {
+          expect(() =>
+            service.writeWorkspaceText({ workspaceId: "workspace-1", path: "locked/file.txt", text: "y" }),
+          ).toThrow(/EACCES|EPERM|permission/i);
+          expect(fs.readFileSync(path.join(locked, "file.txt"), "utf8")).toBe("x");
+        } finally {
+          fs.chmodSync(locked, 0o700);
+        }
+      }
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses writes that escape the workspace root or touch .git internals", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-write-safety-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, ".git"), { recursive: true });
+      expect(() =>
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: "../outside.txt", text: "nope" }),
+      ).toThrow();
+      expect(() =>
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: ".git/config", text: "nope" }),
+      ).toThrow(/\.git/i);
+      expect(fs.existsSync(path.join(path.dirname(rootPath), "outside.txt"))).toBe(false);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("orders directories before files within a page", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-paginate-order-"));
     const laneService = createLaneServiceStub(rootPath);

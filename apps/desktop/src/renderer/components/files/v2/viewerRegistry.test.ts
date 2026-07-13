@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViewerKind, viewerIsEditable } from "./viewerRegistry";
+import { contentSupportsTextEditing, resolveViewerKind, tabIsTextEditable, viewerIsEditable } from "./viewerRegistry";
 
 describe("resolveViewerKind", () => {
   const cases: Array<[string, Parameters<typeof resolveViewerKind>[0], ReturnType<typeof resolveViewerKind>]> = [
@@ -43,10 +43,31 @@ describe("resolveViewerKind", () => {
     expect(resolveViewerKind({ path: "huge.md", isPartial: true })).toBe("largeText");
   });
 
-  it("only the code viewer is editable", () => {
-    expect(viewerIsEditable("code")).toBe(true);
-    for (const kind of ["image", "markdown", "csv", "pdf", "audio", "video", "document", "largeText", "binary", "diff", "conflict"] as const) {
+  it("text-backed viewers (code, markdown source, csv source) are editable; others stay read-only viewers", () => {
+    for (const kind of ["code", "markdown", "csv"] as const) {
+      expect(viewerIsEditable(kind)).toBe(true);
+    }
+    for (const kind of ["image", "pdf", "audio", "video", "document", "largeText", "binary", "diff", "conflict"] as const) {
       expect(viewerIsEditable(kind)).toBe(false);
     }
+  });
+
+  it("editability requires a full text payload — honest boundaries, not trust gates", () => {
+    const fullText = { isBinary: false, isPartial: false, encoding: "utf-8" };
+    // Writable text-backed files are editable immediately: no trust toggle,
+    // no enable-editing step, no read-only default.
+    expect(tabIsTextEditable("code", fullText)).toBe(true);
+    expect(tabIsTextEditable("markdown", fullText)).toBe(true);
+    expect(tabIsTextEditable("csv", fullText)).toBe(true);
+    // A partial (streamed) buffer would truncate the file on save.
+    expect(contentSupportsTextEditing({ ...fullText, isPartial: true })).toBe(false);
+    expect(tabIsTextEditable("csv", { ...fullText, isPartial: true })).toBe(false);
+    // Binary/base64/omitted payloads cannot round-trip through the text editor.
+    expect(contentSupportsTextEditing({ ...fullText, isBinary: true })).toBe(false);
+    expect(contentSupportsTextEditing({ ...fullText, encoding: "base64" })).toBe(false);
+    expect(contentSupportsTextEditing({ ...fullText, contentOmitted: true })).toBe(false);
+    // Non-text viewers stay read-only even with a full text payload.
+    expect(tabIsTextEditable("binary", fullText)).toBe(false);
+    expect(tabIsTextEditable("image", fullText)).toBe(false);
   });
 });

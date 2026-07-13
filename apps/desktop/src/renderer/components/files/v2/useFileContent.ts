@@ -24,6 +24,32 @@ export function primeFileContent(workspaceId: string, path: string, content: Fil
   }
 }
 
+// Mounted hooks subscribe so a save reaches them even when their state came
+// from a forced reload (reloadToken > 0 bypasses the cache) or the LRU entry
+// was evicted.
+const savedTextListeners = new Set<(key: string, text: string) => void>();
+
+function contentAcceptsTextUpdate(content: FileContent): boolean {
+  return !content.isBinary && content.encoding !== "base64" && !content.isPartial;
+}
+
+/**
+ * Sync the cached payload (and every mounted `useFileContent` state for the
+ * same file) with text the editor just wrote to disk. Keeps clean-model reads
+ * (markdown preview, CSV table, fallback saves) consistent with the last save
+ * during the gap before the watcher echoes the write back; the watcher-driven
+ * reload remains the authoritative refresh.
+ */
+export function updateCachedFileContentText(workspaceId: string, path: string, text: string): void {
+  const key = cacheKey(workspaceId, path);
+  const existing = cache.get(key);
+  if (existing && contentAcceptsTextUpdate(existing)) {
+    cache.delete(key);
+    cache.set(key, { ...existing, content: text });
+  }
+  for (const listener of savedTextListeners) listener(key, text);
+}
+
 export type FileContentState =
   | { status: "loading" }
   | { status: "ready"; content: FileContent }
@@ -61,6 +87,26 @@ export function useFileContent(workspaceId: string, path: string | null, reloadT
       cancelled = true;
     };
   }, [workspaceId, path, reloadToken]);
+
+  // Apply just-saved editor text directly to this hook's state so viewers stay
+  // in sync with the write even when the cache was bypassed (forced reload) or
+  // the LRU entry was evicted.
+  useEffect(() => {
+    if (!path) return;
+    const key = cacheKey(workspaceId, path);
+    const onSavedText = (updatedKey: string, text: string) => {
+      if (updatedKey !== key) return;
+      setState((prev) => (
+        prev.status === "ready" && contentAcceptsTextUpdate(prev.content)
+          ? { status: "ready", content: { ...prev.content, content: text } }
+          : prev
+      ));
+    };
+    savedTextListeners.add(onSavedText);
+    return () => {
+      savedTextListeners.delete(onSavedText);
+    };
+  }, [workspaceId, path]);
 
   // Synchronous cache short-circuit: when the active path changes, the effect
   // hasn't updated `state` yet for the new path. If the content is already

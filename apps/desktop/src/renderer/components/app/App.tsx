@@ -105,6 +105,7 @@ import {
   type AppStoreApi,
 } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
+import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/filesTreeCache";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
@@ -686,6 +687,7 @@ function ProjectTabHost() {
     voiceInputEnabled: s.voiceInputEnabled,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
+  const filesCacheKeysRef = React.useRef(new Map<string, string>());
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
@@ -823,12 +825,23 @@ function ProjectTabHost() {
         entry.binding,
       ));
     }
+    filesCacheKeysRef.current.set(
+      entry.surfaceKey,
+      filesProjectCacheKey(entry.binding, entry.project.rootPath),
+    );
   }
 
   React.useEffect(() => {
     const mountedKeys = new Set(mountedProjects.map((entry) => entry.surfaceKey));
     for (const key of storesRef.current.keys()) {
-      if (!mountedKeys.has(key)) storesRef.current.delete(key);
+      if (!mountedKeys.has(key)) {
+        storesRef.current.delete(key);
+        // Release the evicted surface's Files roster/tree caches with it —
+        // module-level caches must not outlive the warm project surface.
+        const filesCacheKey = filesCacheKeysRef.current.get(key);
+        filesCacheKeysRef.current.delete(key);
+        if (filesCacheKey) releaseFilesProjectCaches(filesCacheKey);
+      }
     }
   }, [mountedProjects]);
 

@@ -3,6 +3,7 @@ import { COLORS } from "../../lanes/laneDesignTokens";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab } from "./editorGroupsStore";
 import { useFileContent } from "./useFileContent";
+import { tabIsTextEditable } from "./viewerRegistry";
 import { CodeViewer } from "./viewers/CodeViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
 import { MarkdownViewer } from "./viewers/MarkdownViewer";
@@ -47,7 +48,9 @@ export function ViewerHost(props: ViewerHostProps) {
     rootPath: props.rootPath,
     tab,
     content: contentState.content,
-    readOnly: tab.viewerKind !== "code",
+    // Read-only only when the payload can't round-trip as text (partial stream,
+    // binary, base64) — never as a trust/permission gate on writable text files.
+    readOnly: !tabIsTextEditable(tab.viewerKind, contentState.content),
     theme: props.theme,
     registry: props.registry,
     onDirtyChange: props.onDirtyChange,

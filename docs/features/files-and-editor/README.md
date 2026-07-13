@@ -126,21 +126,40 @@ Renderer:
   file-type icons and `changeStatus*` helpers shared with the explorer.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
   and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
-  tree/decorations helpers used by the workbench.
+  tree/decorations helpers used by the workbench. `treeHelpers` also
+  owns the incremental-tree utilities (`loadedDirectoryChildrenCount`,
+  `mergeTreePreservingLoadedChildren`, `appendTreeNodeChildren`) so
+  watcher refreshes re-list only the already-loaded window.
+- `apps/desktop/src/renderer/components/files/v2/filesTreeCache.ts` —
+  bounded module-level workspace-roster and explorer-tree caches
+  (node/byte-accounted LRU with per-key pinning for mounted explorers;
+  `FILES_TREE_CACHE_NODE_BUDGET`, `FILES_TREE_CACHE_BYTE_BUDGET`,
+  `FILES_ROSTER_CACHE_MAX_PROJECTS`, `filesProjectCacheKey`,
+  `pinCachedTree` / `unpinCachedTree`, `releaseFilesProjectCaches`).
 - `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
   workbench shell: editor groups, preview/pinned tabs, split/move
   support, project-scoped tab-scope persistence, warm empty state,
   search/create overlays, and
   viewers for code, markdown, image, audio/video playback, CSV/TSV,
   PDF, Office-document fallback, large text, binary, and diffs.
+  `v2/viewerRegistry.ts` decides both which viewer renders a file and
+  whether a tab is editable (`tabIsTextEditable` = editable viewer kind
+  AND a full, non-binary text payload). The markdown Preview↔Source and
+  CSV Table↔Source viewers share `viewers/ViewerModeToggle.tsx` for the
+  toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
+  last mode across viewer remounts (e.g. the reload after a save).
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
   diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
   `ChatFileChangesPanel`, and `PrDetailPane`.
-- `apps/desktop/src/renderer/components/files/v2/*.test.ts` and
+- `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
-  — renderer workbench state and model-lifetime tests.
+  — renderer workbench state and model-lifetime tests, including
+  `filesTreeCache.test.ts` (cache budgets / pinning / eviction),
+  `viewerRegistry.test.ts` (viewer + editability resolution),
+  `ViewerHost.test.tsx` (payload-driven `readOnly`), and
+  `EditorGroup.test.tsx` (clean-model save guard).
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
   root with workspace picker, live file tree/read, a magnifying-glass
   button that opens the search page, and live file-action gating from
@@ -226,11 +245,18 @@ Three modes, each driven by a tab's internal state (no service-side
 mode concept):
 
 - **Edit** — Monaco with read/write semantics, syntax highlighting,
-  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs add a per-tab
-  preview toggle (Eye icon in the tab toolbar) that swaps the Monaco
-  host for a lazily-imported `PlanMarkdown` renderer. The preference is
-  per tab and persisted in the page's per-session state alongside the
-  open tab list and active path.
+  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs open in a
+  Preview↔Source toggle; Source mounts the same editable Monaco host.
+  CSV/TSV tabs open in a Table↔Source toggle; Source is offered only
+  when the payload loaded completely (a partial streamed CSV keeps the
+  read-only table so a truncated buffer can never be saved back).
+  Editability is a viewer capability (`viewerRegistry.tabIsTextEditable`):
+  every text-backed viewer that mounts Monaco over a full text payload is
+  editable immediately — there is no trust toggle, enable-editing step,
+  read-only default, or per-workspace gate. The only read-only states are
+  honest boundaries: partial/streamed oversized text (`largeText` viewer),
+  binary/base64 payloads, and real filesystem or remote-write failures,
+  which surface as errors instead of silent no-ops.
 - **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
   use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
   Sources: staged vs working tree, HEAD vs working tree, or
@@ -370,6 +396,21 @@ For deeper detail on the watcher + trust boundary, see
   skip `.git`, skip volatile `.ade` runtime paths, honor
   `includeIgnored`, sort directories before files, and paginate via
   `nextOffset` rather than silently dropping entries.
+- Directory expansion fetches exactly one `TREE_PAGE_SIZE` (2,000) page —
+  a single IPC round trip — and renders it immediately with a "Load
+  more…" row for the remainder; each load-more click appends one more
+  page. Watcher-driven refreshes re-list only the already-loaded window
+  (`loadedDirectoryChildrenCount`), never an arbitrary 10,000 children.
+  Path reveals (external opens) are the exception and page up to
+  `REVEAL_MAX_CHILDREN` so the revealed entry materializes.
+- The cross-mount workspace roster and explorer tree caches live in
+  `v2/filesTreeCache.ts` and are bounded: trees are node/byte-accounted
+  with LRU eviction over budget, mounted workbenches pin their rendered
+  tree (eviction can never desync a live explorer), and warm
+  project-surface eviction in `App.tsx` releases the project's Files
+  caches. Evicted trees reload through the normal `refreshRoot` path.
+  The cache holds only tree structure — Monaco models, dirty buffers,
+  editor groups, and open tabs are never touched by its policy.
 - Monaco models are reused per path and disposed on tab close,
   rename/delete cleanup, workspace switch, or unmount. Do not dispose
   them on ordinary tab switches, theme changes, read-only toggles, or
