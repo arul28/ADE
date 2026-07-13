@@ -4134,9 +4134,16 @@ button:active, [role="button"]:active {
 }
 
 /* Model reasoning slider: progressive fill, active-tier pulse, and drag state. */
-@keyframes ade-reasoning-effort-word-pop {
-  0% { opacity: 0; transform: translateY(3px); filter: blur(3px); }
-  100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+@keyframes ade-reasoning-effort-word-roll-up {
+  0% { opacity: 0; transform: translateY(65%) perspective(90px) rotateX(-78deg); filter: blur(2px); }
+  72% { opacity: 1; transform: translateY(-4%) perspective(90px) rotateX(6deg); filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) perspective(90px) rotateX(0); filter: blur(0); }
+}
+
+@keyframes ade-reasoning-effort-word-roll-down {
+  0% { opacity: 0; transform: translateY(-65%) perspective(90px) rotateX(78deg); filter: blur(2px); }
+  72% { opacity: 1; transform: translateY(4%) perspective(90px) rotateX(-6deg); filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) perspective(90px) rotateX(0); filter: blur(0); }
 }
 
 @keyframes ade-reasoning-fill-sheen {
@@ -4151,7 +4158,16 @@ button:active, [role="button"]:active {
 }
 
 .ade-reasoning-effort-word {
-  animation: ade-reasoning-effort-word-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  display: inline-block;
+  transform-origin: center bottom;
+}
+
+.ade-reasoning-effort-word[data-direction="up"] {
+  animation: ade-reasoning-effort-word-roll-up 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-reasoning-effort-word[data-direction="down"] {
+  animation: ade-reasoning-effort-word-roll-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .ade-reasoning-slider-fill {
