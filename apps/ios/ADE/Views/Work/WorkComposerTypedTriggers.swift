@@ -308,6 +308,56 @@ private final class WorkComposerPastingTextView: UITextView {
   }
 }
 
+/// UIKit responder changes can synchronously re-enter SwiftUI's view graph.
+/// Always apply the latest focus request after the current representable update
+/// has yielded so send-time draft mutations cannot create an AttributeGraph
+/// dependency cycle.
+@MainActor
+private final class WorkComposerFocusScheduler {
+  private var lastRequest: Bool?
+  private var pendingTask: Task<Void, Never>?
+
+  @discardableResult
+  func apply(_ isFocused: Bool, to textView: UITextView) -> Task<Void, Never>? {
+    // SwiftUI may update the representable more than once for the same state.
+    // Keep the queued transition instead of canceling it without a replacement.
+    if lastRequest == isFocused, pendingTask != nil { return pendingTask }
+
+    let previousRequest = lastRequest
+    lastRequest = isFocused
+    pendingTask?.cancel()
+    pendingTask = nil
+
+    // Preserve the existing initial-false behavior: creating a composer with
+    // an unfocused binding must not dismiss a responder owned by another view.
+    guard isFocused || previousRequest == true else { return nil }
+
+    // When UIKit already matches the latest binding and no transition remains
+    // queued, there is nothing to defer. This keeps routine SwiftUI updates
+    // from creating main-actor tasks after focus has settled.
+    guard textView.isFirstResponder != isFocused else { return nil }
+
+    pendingTask = Task { @MainActor [weak self, weak textView] in
+      await Task.yield()
+      guard !Task.isCancelled,
+            let self,
+            let textView,
+            self.lastRequest == isFocused
+      else { return }
+
+      self.pendingTask = nil
+      if isFocused {
+        if !textView.isFirstResponder {
+          textView.becomeFirstResponder()
+        }
+      } else if textView.isFirstResponder {
+        textView.resignFirstResponder()
+      }
+    }
+    return pendingTask
+  }
+}
+
 /// Plain UITextView composer for start-chat surfaces that do not need typed
 /// trigger chips but still need multiline sizing and image-paste interception.
 struct WorkPlainComposerTextView: UIViewRepresentable {
@@ -377,7 +427,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     var parent: WorkPlainComposerTextView
     weak var textView: UITextView?
     private var placeholderLabel: UILabel?
-    private var lastFocusRequest: Bool?
+    private let focusScheduler = WorkComposerFocusScheduler()
 
     init(_ parent: WorkPlainComposerTextView) {
       self.parent = parent
@@ -399,13 +449,9 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
       updateHeight()
     }
 
-    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) {
-      if isFocused, !textView.isFirstResponder {
-        textView.becomeFirstResponder()
-      } else if !isFocused, lastFocusRequest == true, textView.isFirstResponder {
-        textView.resignFirstResponder()
-      }
-      lastFocusRequest = isFocused
+    @discardableResult
+    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) -> Task<Void, Never>? {
+      focusScheduler.apply(isFocused, to: textView)
     }
 
     func handlePasteImages(_ images: [UIImage]) -> Bool {
@@ -562,7 +608,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     private var chips: [(range: NSRange, text: String)] = []
     private var placeholderLabel: UILabel?
     private var triggerInputTraitsActive = false
-    private var lastFocusRequest: Bool?
+    private let focusScheduler = WorkComposerFocusScheduler()
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -583,13 +629,9 @@ struct WorkComposerTextView: UIViewRepresentable {
       if parent.draftState.isFocused { parent.draftState.isFocused = false }
     }
 
-    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) {
-      if isFocused, !textView.isFirstResponder {
-        textView.becomeFirstResponder()
-      } else if !isFocused, lastFocusRequest == true, textView.isFirstResponder {
-        textView.resignFirstResponder()
-      }
-      lastFocusRequest = isFocused
+    @discardableResult
+    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) -> Task<Void, Never>? {
+      focusScheduler.apply(isFocused, to: textView)
     }
 
     private func chipAttributes(kind: WorkComposerTriggerKind) -> [NSAttributedString.Key: Any] {

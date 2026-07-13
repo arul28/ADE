@@ -1057,6 +1057,19 @@ describe("parseClaudeWindows", () => {
     expect(result.windows.find((window) => window.windowType === "weekly")?.modelBreakdown?.opus).toBe(5);
   });
 
+  it("uses a zero reset countdown for malformed provider timestamps", () => {
+    const result = parseClaudeWindows({
+      five_hour: { utilization: 35, resets_at: "not-a-date" },
+    });
+
+    expect(result.windows).toEqual([
+      expect.objectContaining({
+        resetsAt: "not-a-date",
+        resetsInMs: 0,
+      }),
+    ]);
+  });
+
   it("parses extra_usage when present", () => {
     const result = parseClaudeWindows({
       five_hour: { utilization: 15, resets_at: "2026-03-14T21:00:00+00:00" },
@@ -1107,11 +1120,41 @@ Resets Jul 12 at 3pm
 // ../ai/providerCredentialSources.test.ts, colocated with the module.
 
 describe("parseCodexRateLimitWindows", () => {
-  it("accepts the wham HTTP response shape", () => {
+  it("classifies current weekly-only wham responses by their duration", () => {
     const result = parseCodexRateLimitWindows({
       rate_limit: {
-        primary_window: { used_percent: 15, reset_at: 1773446952 },
-        secondary_window: { used_percent: 63, reset_at: 1773853354 },
+        primary_window: {
+          used_percent: 63,
+          reset_at: 1773853354,
+          limit_window_seconds: 7 * 24 * 60 * 60,
+        },
+        secondary_window: null,
+      },
+    });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        provider: "codex",
+        windowType: "weekly",
+        percentUsed: 63,
+        windowDurationMs: 7 * 24 * 60 * 60_000,
+      }),
+    ]);
+  });
+
+  it("detects five-hour and weekly wham windows without relying on their positions", () => {
+    const result = parseCodexRateLimitWindows({
+      rate_limit: {
+        primary_window: {
+          used_percent: 63,
+          reset_at: 1773853354,
+          limit_window_seconds: 7 * 24 * 60 * 60,
+        },
+        secondary_window: {
+          used_percent: 15,
+          reset_at: 1773446952,
+          limit_window_seconds: 5 * 60 * 60,
+        },
       },
     });
 

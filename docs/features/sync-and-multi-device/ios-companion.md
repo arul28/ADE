@@ -209,7 +209,8 @@ apps/ios/
 │   │   │                            # WorkComposerTypedTriggers (UITextView
 │   │   │                            #   composer + cursor-relative /command
 │   │   │                            #   & @file detection, inline suggestion
-│   │   │                            #   strip, chip pills; replaced the
+│   │   │                            #   strip, chip pills, deferred/coalesced
+│   │   │                            #   UIKit focus transitions; replaced the
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
 │   │   │                            # WorkChatAttachmentTray,
@@ -1043,10 +1044,18 @@ composer: Work session chat clears the observable `UITextView` focus request,
 Work new-chat and personal new-chat clear their focus bindings, and the Hub
 inline composer collapses its full panel. The prompt field therefore returns to
 its compact resting state without an interactive keyboard swipe that can
-conflict with chat navigation. On `WorkNewChatScreen`, the cross-client activity
-carousel is part of the main scroll content rather than a pinned sibling above
-the composer, so keyboard presentation gives an expanding multi-line prompt the
-available space instead of lifting the activity panel with it.
+conflict with chat navigation. `WorkComposerTextView` and
+`WorkPlainComposerTextView` never call `becomeFirstResponder` or
+`resignFirstResponder` synchronously from `UIViewRepresentable.updateUIView`.
+Their shared focus scheduler yields past the active SwiftUI update, coalesces
+rapid focus changes to the latest request, and ignores an initial unfocused
+binding so it cannot dismiss a responder owned by another view. This prevents
+send-time draft clearing from re-entering SwiftUI's view graph while preserving
+keyboard dismissal and later focus restoration. On `WorkNewChatScreen`, the
+cross-client activity carousel is part of the main scroll content rather than a
+pinned sibling above the composer, so keyboard presentation gives an expanding
+multi-line prompt the available space instead of lifting the activity panel
+with it.
 
 Mobile chat image attachments use the same host-side temp attachment contract as
 desktop. Work and Hub chat composers expose an add-attachment control beside the
