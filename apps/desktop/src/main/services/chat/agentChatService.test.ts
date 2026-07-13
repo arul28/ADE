@@ -30798,6 +30798,46 @@ describe("explicit provider-thread continuity recovery", () => {
     });
   });
 
+  it("decompresses a gzipped transcript when building the recovery capsule", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "thread_missing",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+    vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+    const envelope = (sequence: number, event: Record<string, unknown>) => JSON.stringify({
+      sessionId: session.id,
+      sequence,
+      timestamp: new Date(1_760_000_000_000 + sequence).toISOString(),
+      event,
+    });
+    // Compress the transcript and remove the plain file, as the sweep would,
+    // so only the .gz remains for the capsule to read.
+    const plain = transcriptPath(session.id);
+    fs.mkdirSync(path.dirname(plain), { recursive: true });
+    fs.rmSync(plain, { force: true });
+    fs.writeFileSync(`${plain}.gz`, gzipSync([
+      envelope(1, { type: "user_message", text: "Compressed original task" }),
+      envelope(2, { type: "text", text: "Assistant reply worth keeping" }),
+    ].join("\n") + "\n"));
+    const { service } = createService();
+    mockState.codexRequestPayloads = [];
+
+    const result = await service.recoverContinuity({ sessionId: session.id, mode: "recover_from_history" });
+
+    expect(result).toMatchObject({ ok: true, mode: "recover_from_history" });
+    // The capsule must carry the original task from the compressed history,
+    // not be empty because the gzip bytes failed to parse.
+    expect(result.capsulePreview).toContain("Compressed original task");
+  });
+
   it("creates a distinct same-lane chat and records the recovery relationship", async () => {
     const session = await createPersistedCodexThread();
     writePersistedChatState(session.id, {

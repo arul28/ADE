@@ -268,8 +268,13 @@ export function createHistoryCompressor(deps: {
     roots: CompressionRoots,
     opts: { maxFiles?: number } = {},
   ): Promise<CompressionSweepSummary> => {
-    const snapshot = deps.diskPressure?.getSnapshot({ maxAgeMs: 1_000 });
-    if (snapshot && snapshot.state !== "normal") {
+    // Gate on the compression policy, not on "not normal": warning-level
+    // pressure still allows compression (it is one of the safest ways to
+    // reclaim space), and only critical/exhausted refuse it. Refusing at
+    // warning made "compress old history" report 0 files exactly when the
+    // user wanted to free space.
+    const decision = deps.diskPressure?.canPerform("compression");
+    if (decision && !decision.allowed) {
       return { filesCompressed: 0, savedBytes: 0, filesConsidered: 0 };
     }
     const maxFiles = Math.max(0, Math.floor(opts.maxFiles ?? DEFAULT_MAX_FILES));

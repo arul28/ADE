@@ -145,6 +145,24 @@ describe("historyCompression", () => {
     });
   });
 
+  it("still compresses at warning-level pressure, where reclaiming space matters most", async () => {
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60_000);
+    const filePath = path.join(root, "warn.jsonl");
+    fs.writeFileSync(filePath, "reclaim me\n");
+    fs.utimesSync(filePath, old, old);
+    const compressor = createHistoryCompressor({
+      logger,
+      diskPressure: pressure("warning"),
+      isPathActive: () => false,
+      betweenFilesDelayMs: 0,
+    });
+
+    const result = await compressor.runIdleSweep([{ path: root, kind: "chat_transcript" }]);
+    expect(result.filesCompressed).toBe(1);
+    expect(fs.existsSync(`${filePath}.gz`)).toBe(true);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
   it("re-inflates atomically before append and removes the compressed copy", () => {
     const plainPath = path.join(root, "resumed.jsonl");
     fs.writeFileSync(`${plainPath}.gz`, gzipSync("old\n"));

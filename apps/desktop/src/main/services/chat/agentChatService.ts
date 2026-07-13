@@ -32085,15 +32085,24 @@ export function createAgentChatService(args: {
     let envelopes: AgentChatEventEnvelope[] = [];
     if (transcriptPath) {
       try {
-        const stat = fs.statSync(transcriptPath);
-        const prefixLength = Math.min(stat.size, 128 * 1024);
-        const fd = fs.openSync(transcriptPath, "r");
-        try {
-          const prefix = Buffer.allocUnsafe(prefixLength);
-          const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
-          envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
-        } finally {
-          fs.closeSync(fd);
+        if (transcriptPath.endsWith(".gz")) {
+          // A compressed transcript can't be read by byte offset; decompress
+          // transparently (bounded) and take the prefix from the text, or the
+          // capsule's opening context would be empty for old compressed chats.
+          const decompressed = readHistoryFileSync(transcriptPath).toString("utf8");
+          const prefixText = decompressed.slice(0, 128 * 1024);
+          envelopes.push(...parseAgentChatTranscript(prefixText));
+        } else {
+          const stat = fs.statSync(transcriptPath);
+          const prefixLength = Math.min(stat.size, 128 * 1024);
+          const fd = fs.openSync(transcriptPath, "r");
+          try {
+            const prefix = Buffer.allocUnsafe(prefixLength);
+            const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
+            envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
+          } finally {
+            fs.closeSync(fd);
+          }
         }
         envelopes.push(...parseTranscriptHistoryTail(managed.session.id, transcriptPath).envelopes);
       } catch {
