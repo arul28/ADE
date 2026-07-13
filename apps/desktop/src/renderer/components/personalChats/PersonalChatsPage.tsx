@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
+  AgentChatApprovalDecision,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatModelCatalog,
@@ -296,6 +297,24 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
 
   const selectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
   const selectedEvents = selectedId ? eventsBySession[selectedId] ?? EMPTY_EVENTS : EMPTY_EVENTS;
+  // Stable row-facing handlers so a draft-only keystroke (which rerenders this
+  // page) does not defeat the memoized AgentChatMessageList boundary.
+  const handleListApproval = useCallback(
+    (
+      itemId: string,
+      decision: AgentChatApprovalDecision,
+      responseText?: string | null,
+      answers?: Record<string, string | string[]>,
+    ) => {
+      if (!selectedId) return;
+      void callPersonal<void>("respondToInput", { sessionId: selectedId, itemId, decision, responseText, answers });
+    },
+    [selectedId],
+  );
+  const appendDraft = useCallback(
+    (text: string) => setDraft((current) => (current ? `${current}\n${text}` : text)),
+    [],
+  );
   const dynamicCatalog = useMemo(
     () => catalog ? descriptorsFromAgentChatModelCatalog(catalog) : null,
     [catalog],
@@ -548,11 +567,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                     laneId={null}
                     sessionId={selectedId}
                     assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}
-                    onApproval={(itemId, decision, responseText, answers) => {
-                      if (!selectedId) return;
-                      void callPersonal<void>("respondToInput", { sessionId: selectedId, itemId, decision, responseText, answers });
-                    }}
-                    onInsertDraft={(text) => setDraft((current) => current ? `${current}\n${text}` : text)}
+                    onApproval={handleListApproval}
+                    onInsertDraft={appendDraft}
                   />
                 </div>
               ) : heroMode ? (
@@ -569,7 +585,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             </div>
             {toolPanel === "browser" ? (
               <div className="w-[min(44%,560px)] min-w-[340px] border-l border-white/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
-                <ChatBuiltInBrowserPanel sessionId={selectedId} projectRootOverride={null} onInsertDraft={(text) => setDraft((current) => current ? `${current}\n${text}` : text)} />
+                <ChatBuiltInBrowserPanel sessionId={selectedId} projectRootOverride={null} onInsertDraft={appendDraft} />
               </div>
             ) : null}
             {toolPanel === "terminal" ? (

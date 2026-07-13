@@ -17,9 +17,20 @@ export function ClaudeCacheTtlBadge({
 
   useEffect(() => {
     if (!idleSinceAt) return;
-    setNowMs(Date.now());
+    const now = Date.now();
+    setNowMs(now);
+    // Already expired at mount: publish the final state, install no interval.
+    if (getClaudeCacheTtlRemainingMs(idleSinceAt, now) <= 0) return;
     const intervalId = window.setInterval(() => {
-      setNowMs(Date.now());
+      const tickNow = Date.now();
+      setNowMs(tickNow);
+      // Publish the final expired state, then stop the one-second interval while
+      // the component stays mounted. An expired badge must not keep waking the
+      // renderer once per second (offscreen cards / retained Work trees amplify
+      // this). Cleanup below still fires on prop change and unmount.
+      if (getClaudeCacheTtlRemainingMs(idleSinceAt, tickNow) <= 0) {
+        window.clearInterval(intervalId);
+      }
     }, 1000);
     return () => window.clearInterval(intervalId);
   }, [idleSinceAt]);

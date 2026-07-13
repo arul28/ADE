@@ -778,7 +778,12 @@ function SessionSurface({
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
-  const surfaceVisible = pageActive && (layoutVariant === "grid-tile" ? true : isActive);
+  // Visibility is decoupled from active ownership. `terminalVisible` means "keep
+  // this surface rendered and streaming" and defaults to `isActive`, so the
+  // single-session/tab callers that omit it are unchanged. The grid passes
+  // `terminalVisible` for every tile, so all tiles stay visible while only the
+  // focused one (session.id === activeItemId) is active.
+  const surfaceVisible = pageActive && terminalVisible;
   if (isChat) {
     return (
       <AgentChatPane
@@ -1079,7 +1084,11 @@ export function WorkViewArea({
     <SessionSurface
       session={session}
       lanes={lanes}
-      isActive
+      // Exactly the focused grid member is active; every displayed tile stays
+      // visible (terminalVisible) and keeps receiving live output. Only the
+      // active tile accepts keyboard input / autofocus; pointer-down on a tile
+      // transfers activeItemId (WorkGridView's onPaneMouseDown) before typing.
+      isActive={session.id === activeItemId}
       pageActive={pageActive}
       shouldAutofocus={session.id === activeItemId}
       terminalVisible
