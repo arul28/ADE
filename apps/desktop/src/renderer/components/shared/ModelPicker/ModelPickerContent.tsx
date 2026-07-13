@@ -9,7 +9,13 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
-import { MODEL_REGISTRY, type AuthType, type ModelDescriptor, type ProviderFamily } from "../../../../shared/modelRegistry";
+import {
+  MODEL_REGISTRY,
+  resolveCliProviderForModel,
+  type AuthType,
+  type ModelDescriptor,
+  type ProviderFamily,
+} from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
@@ -98,6 +104,11 @@ function providerIsReady(status: AuthStatus | undefined): boolean {
   return status === "ok" || status === "limited";
 }
 
+function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boolean {
+  const provider = resolveCliProviderForModel(model);
+  return provider === "claude" || provider === "codex" || provider === "droid";
+}
+
 export type ModelPickerContentProps = {
   value: string;
   surfaceKey: string;
@@ -125,6 +136,7 @@ export type ModelPickerContentProps = {
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
+  registryFilter?: (model: ModelDescriptor) => boolean;
 };
 
 export const ModelPickerContent = memo(function ModelPickerContent({
@@ -142,6 +154,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   allowCliOnlyModels = false,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   allowRegistryExpansion = true,
+  registryFilter,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
   // Reference it so unused-var lint stays quiet, and so future code paths
@@ -155,17 +168,18 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const { recents, recordUsage } = useModelRecents();
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
   const { setDefault: setSurfaceDefault } = usePerSurfaceModelDefaults();
-  const internalAuth = useProviderAuthStatus();
+  const hasExternalAuthStatus = Boolean(providerAuthStatus && Object.keys(providerAuthStatus).length > 0);
+  const internalAuth = useProviderAuthStatus({ loadStatus: !hasExternalAuthStatus });
 
   const recentSet = useMemo(() => new Set(recents), [recents]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
 
   const effectiveAuth = useMemo<Partial<Record<ProviderFamily, AuthStatus>>>(() => {
-    if (providerAuthStatus && Object.keys(providerAuthStatus).length > 0) {
-      return providerAuthStatus;
+    if (hasExternalAuthStatus) {
+      return providerAuthStatus ?? internalAuth.status;
     }
     return internalAuth.status;
-  }, [providerAuthStatus, internalAuth.status]);
+  }, [hasExternalAuthStatus, providerAuthStatus, internalAuth.status]);
 
   // The cheap binary probe answers "is OpenCode installed?" in ms (separate
   // from the slow full getStatus probe). Until that lands we don't render
@@ -201,15 +215,22 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   );
 
   const expandedModels = useMemo<readonly ModelDescriptor[]>(() => {
-    if (authOnly || !allowRegistryExpansion) return models;
+    if (!allowRegistryExpansion) return models;
     const merged = new Map<string, ModelDescriptor>();
     for (const m of models) merged.set(m.id, m);
     for (const m of MODEL_REGISTRY) {
       if (m.deprecated) continue;
+      if (registryFilter && !registryFilter(m)) continue;
+      if (
+        authOnly
+        && !(providerAuthEstablishesModelAvailability(m) && familyIsReady(m.family))
+      ) {
+        continue;
+      }
       if (!merged.has(m.id)) merged.set(m.id, m);
     }
     return [...merged.values()];
-  }, [allowRegistryExpansion, authOnly, models]);
+  }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     const set = new Set<ProviderFamily>();
@@ -435,6 +456,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return Object.keys(effectiveAuth).length > 0 ? familyIsReady(m.family) : true;
       }
       if (Object.keys(effectiveAuth).length > 0) {
+        if (providerAuthEstablishesModelAvailability(m)) return familyIsReady(m.family);
         return familyIsReady(m.family) && isAvailable(m.id);
       }
       return isAvailable(m.id);

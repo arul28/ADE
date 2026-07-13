@@ -69,6 +69,7 @@ const recentStore: string[] = [];
 let authOnlyState = false;
 const reasoningByFamilyStore: Record<string, string> = {};
 let providerAuthStatusInternal: Record<string, "ok" | "unauthed" | "limited"> = {};
+let providerAuthStatusOptions: Array<{ loadStatus?: boolean } | undefined> = [];
 let opencodeBinaryInstalledInternal = true;
 
 vi.mock("./useModelFavorites", () => ({
@@ -125,12 +126,15 @@ vi.mock("./useReasoningByFamily", () => ({
 }));
 
 vi.mock("./useProviderAuthStatus", () => ({
-  useProviderAuthStatus: () => ({
-    status: { ...providerAuthStatusInternal },
-    opencodeBinaryInstalled: opencodeBinaryInstalledInternal,
-    binaryProbed: true,
-    loaded: true,
-  }),
+  useProviderAuthStatus: (options?: { loadStatus?: boolean }) => {
+    providerAuthStatusOptions.push(options);
+    return {
+      status: { ...providerAuthStatusInternal },
+      opencodeBinaryInstalled: opencodeBinaryInstalledInternal,
+      binaryProbed: true,
+      loaded: true,
+    };
+  },
 }));
 
 type SearchItem = {
@@ -240,6 +244,7 @@ beforeEach(() => {
   authOnlyState = false;
   for (const key of Object.keys(reasoningByFamilyStore)) delete reasoningByFamilyStore[key];
   providerAuthStatusInternal = {};
+  providerAuthStatusOptions = [];
   opencodeBinaryInstalledInternal = true;
   resetModelPickerRuntimeCatalogForTests();
   resetRuntimeCatalogDescriptorCacheForTests();
@@ -646,6 +651,39 @@ describe("ModelPicker", () => {
       .map((el) => el.getAttribute("data-model-id"));
     expect(ids).toContain(SONNET.id);
     expect(ids).not.toContain(GPT.id);
+  });
+
+  it("uses authenticated direct-provider models when the discovered id list is incomplete", async () => {
+    const user = userEvent.setup();
+    authOnlyState = true;
+    providerAuthStatusInternal = { anthropic: "unauthed", openai: "ok" };
+    const { onChange } = renderPicker({
+      models: [SONNET],
+      availableModelIds: [SONNET.id],
+    });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await user.click(screen.getByRole("tab", { name: /^OpenAI$/i }));
+
+    const gptRow = await screen.findByRole("option", { name: "GPT-5.4" });
+    expect(gptRow.getAttribute("data-model-id")).toBe(GPT.id);
+    expect(gptRow.getAttribute("aria-disabled")).toBeNull();
+    await user.click(gptRow);
+    expect(onChange).toHaveBeenCalledWith(GPT.id);
+  });
+
+  it("does not load internal status when the caller supplied auth state", async () => {
+    const user = userEvent.setup();
+    renderPicker({ providerAuthStatus: { anthropic: "ok" } });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect(document.querySelector('[data-model-picker-content="true"]')).toBeTruthy();
+    expect(providerAuthStatusOptions.at(-1)).toEqual({ loadStatus: false });
+    expect(
+      screen.getAllByRole("option").find((option) => option.getAttribute("data-model-id") === SONNET.id)
+        ?.getAttribute("aria-disabled"),
+    ).toBeNull();
   });
 
   it("shows Cursor in the auth-only rail even before Cursor models are discovered", async () => {

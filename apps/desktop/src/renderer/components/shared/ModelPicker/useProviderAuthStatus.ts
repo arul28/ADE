@@ -1,34 +1,51 @@
-import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAiStatusCached,
+  peekAiStatusCached,
+  type AiStatusCacheInvalidatedEventDetail,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../../lib/aiDiscoveryCache";
+import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import type { AuthStatus } from "./ModelPickerRail";
 
 type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 
-type ProviderAuthStore = {
-  status: AuthStatusMap;
-  opencodeBinaryInstalled: boolean;
-  /** True once the cheap binary check has completed; independent of the slower full-status fetch. */
-  binaryProbed: boolean;
-  loaded: boolean;
-  inFlight: Promise<void> | null;
-  setStatus: (status: AuthStatusMap, opencodeBinaryInstalled: boolean) => void;
-  setBinaryProbed: (installed: boolean) => void;
-  setInFlight: (promise: Promise<void> | null) => void;
+type ProviderStatusSnapshot = {
+  availableProviders?: { claude?: unknown; codex?: unknown; cursor?: unknown; droid?: unknown };
+  opencodeProviders?: Array<{ id: string; connected: boolean }>;
+  opencodeBinaryInstalled?: unknown;
 };
 
-const useProviderAuthStore = create<ProviderAuthStore>((set) => ({
-  status: {},
+type ProviderBinarySnapshot = {
+  opencodeBinaryInstalled: boolean;
+  binaryProbed: boolean;
+};
+
+const EMPTY_AUTH_STATUS: AuthStatusMap = {};
+const UNKNOWN_BINARY: ProviderBinarySnapshot = {
   opencodeBinaryInstalled: false,
   binaryProbed: false,
-  loaded: false,
-  inFlight: null,
-  setStatus: (status, opencodeBinaryInstalled) =>
-    set({ status, opencodeBinaryInstalled, binaryProbed: true, loaded: true, inFlight: null }),
-  setBinaryProbed: (installed) => set({ opencodeBinaryInstalled: installed, binaryProbed: true }),
-  setInFlight: (promise) => set({ inFlight: promise }),
-}));
+};
+const binaryProbeRequests = new Map<string, Promise<boolean | null>>();
+
+function authStatusMapsEqual(left: AuthStatusMap, right: AuthStatusMap): boolean {
+  const keys = new Set<ProviderFamily>([
+    ...(Object.keys(left) as ProviderFamily[]),
+    ...(Object.keys(right) as ProviderFamily[]),
+  ]);
+  for (const key of keys) {
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
+export function resetProviderAuthStatusForTests(): void {
+  binaryProbeRequests.clear();
+}
 
 // AiClaudeAvailability is an object with `binary.present` + `auth.ready` —
 // historic callers also passed plain booleans, so accept both. We treat Claude
@@ -48,10 +65,7 @@ function isClaudeOk(value: unknown): boolean {
   return false;
 }
 
-export function familiesFromStatus(status: {
-  availableProviders?: { claude?: unknown; codex?: unknown; cursor?: unknown; droid?: unknown };
-  opencodeProviders?: Array<{ id: string; connected: boolean }>;
-}): AuthStatusMap {
+export function familiesFromStatus(status: ProviderStatusSnapshot): AuthStatusMap {
   const out: AuthStatusMap = {};
   out.anthropic = isClaudeOk(status.availableProviders?.claude) ? "ok" : "unauthed";
   out.openai = status.availableProviders?.codex === true ? "ok" : "unauthed";
@@ -75,37 +89,129 @@ export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstal
  * no probe. Used to flip the OpenCode-gated empty state without waiting on
  * the slow getStatus() roundtrip.
  */
-async function probeBinary(): Promise<void> {
-  const ade = (window as unknown as { ade?: { ai?: { isOpenCodeInstalled?: () => Promise<{ installed: boolean }> } } }).ade;
-  const check = ade?.ai?.isOpenCodeInstalled;
-  if (typeof check !== "function") return;
-  try {
-    const result = await check();
-    useProviderAuthStore.getState().setBinaryProbed(result.installed === true);
-  } catch {
-    /* leave binaryProbed false; consumers fall back to the full fetch */
-  }
+function probeBinary(scopeKey: string): Promise<boolean | null> {
+  const existing = binaryProbeRequests.get(scopeKey);
+  if (existing) return existing;
+  const check = window.ade?.ai?.isOpenCodeInstalled;
+  if (typeof check !== "function") return Promise.resolve(null);
+  let request: Promise<boolean | null>;
+  request = check()
+    .then((result) => result.installed === true)
+    .catch(() => null)
+    .finally(() => {
+      if (binaryProbeRequests.get(scopeKey) === request) {
+        binaryProbeRequests.delete(scopeKey);
+      }
+    });
+  binaryProbeRequests.set(scopeKey, request);
+  return request;
 }
 
-export function useProviderAuthStatus(): {
+export function useProviderAuthStatus(options?: { loadStatus?: boolean }): {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
   /** True once we have a definitive answer for opencodeBinaryInstalled (cheap probe done). */
   binaryProbed: boolean;
   loaded: boolean;
 } {
-  const slice = useProviderAuthStore(
-    useShallow((state) => ({
-      status: state.status,
-      opencodeBinaryInstalled: state.opencodeBinaryInstalled,
-      binaryProbed: state.binaryProbed,
-      loaded: state.loaded,
-    })),
+  const { projectRoot, binaryScopeKey } = useAppStore(
+    useShallow((state) => {
+      const activeProjectRoot = selectActiveProjectRoot(state);
+      return {
+        projectRoot: activeProjectRoot,
+        binaryScopeKey: `${state.projectBinding?.key ?? "local"}::${activeProjectRoot ?? "<no-project>"}`,
+      };
+    }),
   );
-  // Keep picker open cheap: only resolve the OpenCode binary here. Runtime
-  // catalog refreshes are triggered by selecting the relevant rail.
+  const cachedStatus = peekAiStatusCached(projectRoot);
+  const [status, setStatus] = useState<AuthStatusMap>(() => (
+    cachedStatus ? familiesFromStatus(cachedStatus) : EMPTY_AUTH_STATUS
+  ));
+  const [loaded, setLoaded] = useState(cachedStatus != null);
+  const [binary, setBinary] = useState<ProviderBinarySnapshot>(() => (
+    typeof cachedStatus?.opencodeBinaryInstalled === "boolean"
+      ? {
+          opencodeBinaryInstalled: opencodeBinaryInstalledFromStatus(cachedStatus),
+          binaryProbed: true,
+        }
+      : UNKNOWN_BINARY
+  ));
+
   useEffect(() => {
-    void probeBinary();
-  }, []);
-  return slice;
+    let active = true;
+    const cached = peekAiStatusCached(projectRoot);
+    setBinary(
+      typeof cached?.opencodeBinaryInstalled === "boolean"
+        ? {
+            opencodeBinaryInstalled: opencodeBinaryInstalledFromStatus(cached),
+            binaryProbed: true,
+          }
+        : UNKNOWN_BINARY,
+    );
+    void probeBinary(binaryScopeKey).then((installed) => {
+      if (!active || installed == null) return;
+      setBinary({ opencodeBinaryInstalled: installed, binaryProbed: true });
+    });
+    return () => {
+      active = false;
+    };
+  }, [binaryScopeKey, projectRoot]);
+
+  useEffect(() => {
+    if (options?.loadStatus === false) return;
+    let active = true;
+
+    const applyStatus = (nextStatus: ProviderStatusSnapshot) => {
+      if (!active) return;
+      const nextAuthStatus = familiesFromStatus(nextStatus);
+      setStatus((current) => authStatusMapsEqual(current, nextAuthStatus) ? current : nextAuthStatus);
+      setLoaded(true);
+      if (typeof nextStatus.opencodeBinaryInstalled === "boolean") {
+        setBinary({
+          opencodeBinaryInstalled: opencodeBinaryInstalledFromStatus(nextStatus),
+          binaryProbed: true,
+        });
+      }
+    };
+
+    const cached = peekAiStatusCached(projectRoot);
+    if (cached) {
+      applyStatus(cached);
+    } else {
+      setStatus(EMPTY_AUTH_STATUS);
+      setLoaded(false);
+    }
+
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail;
+      if ((detail?.projectRoot ?? null) !== projectRoot) return;
+      const updated = peekAiStatusCached(projectRoot);
+      if (updated) applyStatus(updated);
+    };
+    const onInvalidated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
+      if (detail && !detail.allProjects && detail.projectRoot !== projectRoot) return;
+      setStatus(EMPTY_AUTH_STATUS);
+      setLoaded(false);
+    };
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+
+    const bridge = window.ade?.ai?.getStatus;
+    if (typeof bridge === "function") {
+      void getAiStatusCached({ projectRoot }).then(applyStatus).catch(() => undefined);
+    }
+
+    return () => {
+      active = false;
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+    };
+  }, [options?.loadStatus, projectRoot]);
+
+  return {
+    status,
+    loaded,
+    ...binary,
+  };
 }

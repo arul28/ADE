@@ -346,6 +346,7 @@ export const ModelPicker = memo(function ModelPicker({
                 allowCliOnlyModels={allowCliOnlyModels}
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
+                {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />
             ) : null}
