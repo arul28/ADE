@@ -85,10 +85,14 @@ picker chrome and preselects the active lane worktree. Switching workspaces:
 4. Leaves file service and preload contracts unchanged.
 
 The main-process file service remains the source of truth for path
-safety, trust checks, and workspace roots. There is no read-only /
-view-only workspace policy: every resolved workspace is editable, and
-whether a tab shows editable Monaco is decided purely by viewer kind
-(code tabs edit; image/pdf/large-text viewers are naturally read-only).
+safety and workspace roots. There is no read-only / view-only workspace
+policy: every resolved workspace is editable, and whether a tab shows
+editable Monaco is decided purely by viewer capability plus payload
+(`viewerRegistry.tabIsTextEditable`): code, markdown Source, and CSV
+Source tabs edit whenever the full text payload loaded; image/pdf/
+large-text/binary viewers are naturally read-only, and a partial
+streamed payload stays read-only so a truncated buffer can never be
+saved back.
 
 ## File Explorer Tree
 

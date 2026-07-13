@@ -1,17 +1,32 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CaretDown, CaretUp, MagnifyingGlass } from "@phosphor-icons/react";
+import { CaretDown, CaretUp, Code, MagnifyingGlass, Table } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
+import { CodeViewer } from "./CodeViewer";
 import type { ViewerProps } from "./types";
+import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 
 const ROW_HEIGHT = 26;
 const MAX_ROWS = 500_000;
 
 type SortState = { col: number; dir: "asc" | "desc" } | null;
+type Mode = "table" | "source";
 
-/** CSV/TSV viewer: a virtualized, sortable, filterable table with a frozen header. */
-export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
+/**
+ * CSV/TSV viewer: a virtualized, sortable, filterable table with a frozen
+ * header, plus a Source mode that mounts the full editable code editor.
+ * Source is only offered when the payload round-trips as text (`!readOnly`):
+ * an oversized streamed CSV keeps the table so a partial buffer can never be
+ * saved back and truncate the file.
+ */
+export function CsvViewer(props: ViewerProps) {
+  const { workspaceId, tab, content, registry, readOnly } = props;
+  const [mode, setModeState] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "table"));
+  const setMode = (next: Mode) => {
+    rememberViewerMode(tab.id, next);
+    setModeState(next);
+  };
   const [rows, setRows] = useState<string[][]>([]);
   const [parsing, setParsing] = useState(true);
   const [truncated, setTruncated] = useState(false);
@@ -21,15 +36,18 @@ export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
 
   const delimiter = tab.path.toLowerCase().endsWith(".tsv") ? "\t" : ",";
 
-  // Assemble the full text (streaming the rest when the first chunk is partial)
-  // then parse off the main thread via papaparse's worker.
+  // Assemble the full text (live Monaco buffer when Source mode created one,
+  // else the readFile payload plus streamed ranges when the first chunk is
+  // partial) then parse off the main thread via papaparse's worker.
   useEffect(() => {
+    if (mode !== "table") return;
     let cancelled = false;
     setParsing(true);
     setTruncated(false);
     (async () => {
-      let text = content.content;
-      let next: number | null = content.isPartial ? content.nextOffset ?? null : null;
+      const live = registry.getValue(tab.id);
+      let text = live ?? content.content;
+      let next: number | null = live == null && content.isPartial ? content.nextOffset ?? null : null;
       let guard = 0;
       while (next != null) {
         const page = await window.ade.files.readFileRange({ workspaceId, path: tab.path, offset: next, length: 512 * 1024 });
@@ -60,7 +78,7 @@ export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.path, content.content, content.isPartial, content.nextOffset, delimiter]);
+  }, [workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, mode, registry]);
 
   const header = rows[0] ?? [];
   const bodyRows = useMemo(() => rows.slice(1), [rows]);
@@ -102,6 +120,26 @@ export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
 
   const gridTemplate = header.length ? `repeat(${header.length}, minmax(120px, 1fr))` : "1fr";
 
+  const modeToggle = !readOnly ? (
+    <div className="flex items-center gap-1">
+      <ModeButton active={mode === "table"} onClick={() => setMode("table")} icon={<Table size={14} />} label="Table" />
+      <ModeButton active={mode === "source"} onClick={() => setMode("source")} icon={<Code size={14} />} label="Source" />
+    </div>
+  ) : null;
+
+  if (mode === "source" && !readOnly) {
+    return (
+      <div className="flex h-full min-h-0 min-w-0 flex-col">
+        <div className="flex shrink-0 items-center gap-1 border-b px-2 py-1" style={{ borderColor: COLORS.border }}>
+          {modeToggle}
+        </div>
+        <div className="min-h-0 min-w-0 flex-1">
+          <CodeViewer {...props} />
+        </div>
+      </div>
+    );
+  }
+
   if (parsing) {
     return <div className="flex h-full items-center justify-center text-sm" style={{ color: COLORS.textDim }}>Parsing CSV…</div>;
   }
@@ -109,6 +147,7 @@ export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5" style={{ borderColor: COLORS.border }}>
+        {modeToggle}
         <div className="relative flex items-center">
           <MagnifyingGlass size={13} style={{ position: "absolute", left: 6, color: COLORS.textDim }} />
           <input
@@ -172,5 +211,21 @@ export function CsvViewer({ workspaceId, tab, content }: ViewerProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+function ModeButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
+      style={{
+        color: active ? COLORS.textPrimary : COLORS.textMuted,
+        background: active ? "rgba(255,255,255,0.07)" : "transparent",
+      }}
+    >
+      {icon} {label}
+    </button>
   );
 }

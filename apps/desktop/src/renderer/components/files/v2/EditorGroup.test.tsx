@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import { editorTabId } from "./editorGroupsStore";
@@ -81,6 +81,7 @@ const baseProps: EditorGroupProps = {
 };
 
 beforeEach(() => {
+  writeText.mockReset();
   writeText.mockResolvedValue(undefined);
   markSaved.mockClear();
   Object.defineProperty(window, "ade", {
@@ -144,5 +145,83 @@ describe("EditorGroup", () => {
     const input = screen.getByTestId("viewer-input");
     fireEvent.keyDown(input, { key: "s", metaKey: true });
     expect(writeText).not.toHaveBeenCalled();
+  });
+
+  const tabOfKind = (viewerKind: "markdown" | "csv" | "binary" | "image", path: string) => ({
+    ...baseProps,
+    group: {
+      ...baseProps.group,
+      activeTabId: editorTabId("workspace-1", path),
+      recentTabIds: [editorTabId("workspace-1", path)],
+      tabs: [{
+        id: editorTabId("workspace-1", path),
+        workspaceId: "workspace-1",
+        laneId: "lane-1",
+        path,
+        title: path.split("/").pop()!,
+        viewerKind,
+        languageId: "plaintext",
+        preview: false,
+        pinned: false,
+      }],
+    },
+  });
+
+  it("saves a dirty markdown tab immediately via Cmd+S — no enable step, no read-only gate", async () => {
+    const props = tabOfKind("markdown", "docs/notes.md");
+    const onDirtyChange = vi.fn();
+    render(<EditorGroup {...props} onDirtyChange={onDirtyChange} />);
+
+    expect(screen.getByTitle("Save (⌘S)")).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith({
+        workspaceId: "workspace-1",
+        path: "docs/notes.md",
+        text: "saved text",
+      });
+    });
+    await waitFor(() => {
+      expect(markSaved).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"));
+      expect(onDirtyChange).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"), false);
+    });
+  });
+
+  it("saves a csv tab through the toolbar Save button", async () => {
+    const props = tabOfKind("csv", "data/rows.csv");
+    render(<EditorGroup {...props} />);
+    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith({
+        workspaceId: "workspace-1",
+        path: "data/rows.csv",
+        text: "saved text",
+      });
+    });
+  });
+
+  it("reports write failures honestly instead of claiming success", async () => {
+    const props = tabOfKind("markdown", "docs/notes.md");
+    const onError = vi.fn();
+    writeText.mockRejectedValueOnce(new Error("EACCES: permission denied"));
+    render(<EditorGroup {...props} onError={onError} />);
+
+    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
+    });
+    expect(markSaved).not.toHaveBeenCalled();
+  });
+
+  it("exposes no save affordance for non-text viewers", () => {
+    for (const kind of ["binary", "image"] as const) {
+      const props = tabOfKind(kind, kind === "binary" ? "blob.bin" : "logo.png");
+      const { unmount } = render(<EditorGroup {...props} />);
+      expect(screen.queryByTitle("Save (⌘S)")).toBeNull();
+      fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
+      expect(writeText).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 });

@@ -44,6 +44,16 @@ import {
   useEditorGroupsStore,
 } from "./editorGroupsStore";
 import { getFilesTabScope, toggleFilesTabScope, type FilesTabScope } from "./filesTabScope";
+import {
+  filesProjectCacheKey,
+  filesTreeCacheKey,
+  pinCachedTree,
+  readCachedTree,
+  readCachedWorkspaces,
+  unpinCachedTree,
+  writeCachedTree,
+  writeCachedWorkspaces,
+} from "./filesTreeCache";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
@@ -59,17 +69,16 @@ import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
 const TREE_PAGE_SIZE = 2_000;
-const MAX_AUTO_LOADED_CHILDREN = 10_000;
+// Path reveals (external opens) may need entries beyond the first page; they
+// page up to this bound instead of the single visible page expansion uses.
+const REVEAL_MAX_CHILDREN = 10_000;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
 
-// Module-level caches survive remounts (the route unmounts FilesWorkbench when you
-// switch tabs), so re-opening Files shows the workspace + tree instantly instead of
-// flashing a loading/empty state while listWorkspaces / listTree refetch.
-const workspacesCacheByProject = new Map<string, FilesWorkspace[]>();
-const rootTreeCacheByKey = new Map<string, FileTreeNode[]>();
-const readCachedWorkspaces = (projectCacheKey: string): FilesWorkspace[] => workspacesCacheByProject.get(projectCacheKey) ?? [];
-const rootTreeCacheKey = (projectCacheKey: string, workspaceId: string): string => `${projectCacheKey}::${workspaceId}`;
+// Cross-mount caches survive remounts (the route unmounts FilesWorkbench when
+// you switch tabs), so re-opening Files shows the workspace + tree instantly
+// instead of flashing a loading/empty state while listWorkspaces / listTree
+// refetch. They are bounded and pinned via filesTreeCache — see that module.
 
 function recentScopeIdForWorkspace(workspace: FilesWorkspace | null | undefined, fallbackLaneId: string | null): string | null {
   if (!workspace) return fallbackLaneId;
@@ -121,8 +130,7 @@ export function FilesWorkbench({
   const projectRootPath = project?.rootPath ?? "";
   const projectBinding = useAppStore((s) => s.projectBinding);
   const isRemoteProject = projectBinding?.kind === "remote";
-  const bindingKey = projectBinding?.kind === "remote" ? `remote:${projectBinding.targetId}` : "local";
-  const projectCacheKey = `${bindingKey}::${projectRootPath}`;
+  const projectCacheKey = filesProjectCacheKey(projectBinding, projectRootPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const lanes = useAppStore((s) => s.lanes);
   const globalLaneId = preferredLaneId ?? selectedLaneId ?? null;
@@ -147,7 +155,7 @@ export function FilesWorkbench({
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
   const [tree, setTree] = useState<FileTreeNode[]>(
-    () => rootTreeCacheByKey.get(rootTreeCacheKey(projectCacheKey, initialWorkspaceId)) ?? [],
+    () => readCachedTree(filesTreeCacheKey(projectCacheKey, initialWorkspaceId)) ?? [],
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -201,7 +209,7 @@ export function FilesWorkbench({
           ...prev.filter((candidate) => candidate.id !== nextWorkspace.id),
           nextWorkspace,
         ];
-        workspacesCacheByProject.set(projectCacheKey, next);
+        writeCachedWorkspaces(projectCacheKey, next);
         return next;
       });
     },
@@ -444,7 +452,7 @@ export function FilesWorkbench({
         if (cancelled) return;
         setWorkspaces((prev) => {
           const merged = projectChanged ? ws : mergeExternalWorkspaces(ws, prev);
-          workspacesCacheByProject.set(projectCacheKey, merged);
+          writeCachedWorkspaces(projectCacheKey, merged);
           return merged;
         });
         setWorkspacesLoaded(true);
@@ -494,7 +502,7 @@ export function FilesWorkbench({
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
         const decorated = applyGitStatusToTree(prev, decorations);
-        rootTreeCacheByKey.set(rootTreeCacheKey(projectCacheKey, reqId), decorated);
+        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), decorated);
         return decorated;
       });
     },
@@ -510,7 +518,7 @@ export function FilesWorkbench({
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
         const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
-        rootTreeCacheByKey.set(rootTreeCacheKey(projectCacheKey, reqId), merged);
+        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), merged);
         return merged;
       });
       setError(null);
@@ -520,10 +528,20 @@ export function FilesWorkbench({
     }
   }, [workspaceId, projectCacheKey, refreshTreeGitDecorations]);
 
+  // Pin the rendered tree while this workbench is mounted: the React state
+  // below holds the same nodes, so evicting the cache copy would only create
+  // a stale-cache/live-tree split without freeing memory.
+  useEffect(() => {
+    if (!workspaceId) return;
+    const treeKey = filesTreeCacheKey(projectCacheKey, workspaceId);
+    pinCachedTree(treeKey);
+    return () => unpinCachedTree(treeKey);
+  }, [projectCacheKey, workspaceId]);
+
   // Reload explorer tree when the selected workspace changes (tabs stay open).
   useEffect(() => {
     if (!active || !workspaceId) return;
-    setTree(rootTreeCacheByKey.get(rootTreeCacheKey(projectCacheKey, workspaceId)) ?? []);
+    setTree(readCachedTree(filesTreeCacheKey(projectCacheKey, workspaceId)) ?? []);
     setExpanded(new Set());
     setLoadingDirs(new Set());
     setError(null);
@@ -539,11 +557,15 @@ export function FilesWorkbench({
     };
   }, [active]);
 
-  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string, minChildren = MAX_AUTO_LOADED_CHILDREN) => {
+  // Fetch a directory's children starting from the first page. Expansion asks
+  // for one page (a single IPC round trip renders immediately with a
+  // "Load more…" row); refresh passes the already-loaded count so a
+  // user-grown window stays fully populated across watcher refreshes.
+  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string, minChildren = TREE_PAGE_SIZE) => {
     const children: FileTreeNode[] = [];
     let offset = 0;
     let loadMoreOffset: number | null = null;
-    const targetChildren = Math.max(MAX_AUTO_LOADED_CHILDREN, minChildren);
+    const targetChildren = Math.max(TREE_PAGE_SIZE, minChildren);
     for (;;) {
       const page = await window.ade.files.listTreeChildren({
         workspaceId: reqId,
@@ -565,16 +587,24 @@ export function FilesWorkbench({
   }, []);
 
   const refreshLoadedDirectory = useCallback(
-    async (parentPath: string, reqId = workspaceId, options: { suppressMissingError?: boolean } = {}) => {
+    async (
+      parentPath: string,
+      reqId = workspaceId,
+      options: { suppressMissingError?: boolean; minChildren?: number } = {},
+    ) => {
       if (!reqId) return;
       setLoadingDirs((prev) => new Set(prev).add(parentPath));
       try {
         const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
-        const result = await fetchDirectoryChildren(reqId, parentPath, loadedCount);
+        const result = await fetchDirectoryChildren(
+          reqId,
+          parentPath,
+          Math.max(loadedCount, options.minChildren ?? 0),
+        );
         if (!result || workspaceIdRef.current !== reqId) return;
         setTree((prev) => {
           const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
-          rootTreeCacheByKey.set(rootTreeCacheKey(projectCacheKey, reqId), nextTree);
+          writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
           return nextTree;
         });
       } catch (err) {
@@ -601,8 +631,10 @@ export function FilesWorkbench({
 
   const loadDirectoryPath = useCallback(
     async (directoryPath: string) => {
+      // Reveals must materialize the revealed entries even when they sit past
+      // the first page, so page deeper than a plain expansion.
       for (const ancestor of pathAncestors(directoryPath)) {
-        await refreshLoadedDirectory(ancestor);
+        await refreshLoadedDirectory(ancestor, workspaceIdRef.current, { minChildren: REVEAL_MAX_CHILDREN });
       }
     },
     [refreshLoadedDirectory],
@@ -614,29 +646,19 @@ export function FilesWorkbench({
       const reqId = workspaceId;
       setLoadingDirs((prev) => new Set(prev).add(parentPath));
       try {
-        const children: FileTreeNode[] = [];
-        let offset = startOffset;
-        let loadMoreOffset: number | null = null;
-        for (;;) {
-          const page = await window.ade.files.listTreeChildren({
-            workspaceId: reqId,
-            parentPath,
-            offset,
-            limit: TREE_PAGE_SIZE,
-            includeIgnored: true,
-          });
-          if (workspaceIdRef.current !== reqId) return;
-          children.push(...page.children);
-          if (page.nextOffset == null) break;
-          if (children.length >= MAX_AUTO_LOADED_CHILDREN) {
-            loadMoreOffset = page.nextOffset;
-            break;
-          }
-          offset = page.nextOffset;
-        }
+        // One page per click: a single IPC round trip appends immediately and
+        // the "Load more…" row persists while nextOffset remains.
+        const page = await window.ade.files.listTreeChildren({
+          workspaceId: reqId,
+          parentPath,
+          offset: startOffset,
+          limit: TREE_PAGE_SIZE,
+          includeIgnored: true,
+        });
+        if (workspaceIdRef.current !== reqId) return;
         setTree((prev) => {
-          const nextTree = appendTreeNodeChildren(prev, parentPath, children, loadMoreOffset);
-          rootTreeCacheByKey.set(rootTreeCacheKey(projectCacheKey, reqId), nextTree);
+          const nextTree = appendTreeNodeChildren(prev, parentPath, page.children, page.nextOffset);
+          writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
           return nextTree;
         });
       } catch (err) {

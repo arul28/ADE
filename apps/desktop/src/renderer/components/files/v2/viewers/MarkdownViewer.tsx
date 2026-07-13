@@ -3,6 +3,7 @@ import { Code, Eye } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { CodeViewer } from "./CodeViewer";
 import type { ViewerProps } from "./types";
+import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 
 // Same renderer the orchestration / plan.md views use (react-markdown + remark-gfm
 // + rehype-raw/sanitize, styled headings/tables/code, shiki, mermaid). Lazy-loaded
@@ -14,10 +15,15 @@ const PlanMarkdown = lazy(() =>
 type Mode = "preview" | "source";
 
 /** Markdown viewer with a code↔preview toggle. Source uses the full code editor
- *  (editable, model-backed); preview renders the live buffer value. */
+ *  (editable immediately, model-backed — Cmd+S saves); preview renders the live
+ *  buffer value including unsaved edits. */
 export function MarkdownViewer(props: ViewerProps) {
-  const [mode, setMode] = useState<Mode>("preview");
   const { registry, tab, content } = props;
+  const [mode, setModeState] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "preview"));
+  const setMode = (next: Mode) => {
+    rememberViewerMode(tab.id, next);
+    setModeState(next);
+  };
 
   // Preview reflects the live model value (incl. unsaved edits) when present.
   const previewText = mode === "preview" ? registry.getValue(tab.id) ?? content.content : "";

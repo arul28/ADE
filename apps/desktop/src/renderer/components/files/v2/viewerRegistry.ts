@@ -49,7 +49,42 @@ export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
   return "code";
 }
 
-/** Whether a viewer kind supports inline editing (others are read-only). */
+/**
+ * Viewer kinds whose surface mounts the Monaco code editor over the full text
+ * buffer: plain code/text, markdown (Source mode), and CSV/TSV (Source mode).
+ * These are text-backed formats ADE round-trips losslessly through
+ * `files.writeText`, so they are editable immediately — no trust toggle, no
+ * enable-editing step, no read-only default.
+ */
+const TEXT_EDITABLE_VIEWER_KINDS: ReadonlySet<ViewerKind> = new Set(["code", "markdown", "csv"]);
+
+/** Whether a viewer kind has a text-editing surface (others are read-only viewers). */
 export function viewerIsEditable(kind: ViewerKind): boolean {
-  return kind === "code";
+  return TEXT_EDITABLE_VIEWER_KINDS.has(kind);
+}
+
+/**
+ * Whether the loaded payload itself can be safely edited and written back as
+ * text. This is the honest safety boundary, not a trust gate: a partial
+ * (streamed) buffer would truncate the file on save, and binary/base64
+ * payloads cannot round-trip through the text editor.
+ */
+export function contentSupportsTextEditing(content: {
+  isBinary?: boolean;
+  isPartial?: boolean;
+  encoding?: string;
+  contentOmitted?: boolean;
+}): boolean {
+  return !content.isBinary
+    && !content.isPartial
+    && !content.contentOmitted
+    && content.encoding !== "base64";
+}
+
+/** Editable = the viewer has a text surface AND the payload round-trips as text. */
+export function tabIsTextEditable(
+  kind: ViewerKind,
+  content: { isBinary?: boolean; isPartial?: boolean; encoding?: string; contentOmitted?: boolean },
+): boolean {
+  return viewerIsEditable(kind) && contentSupportsTextEditing(content);
 }

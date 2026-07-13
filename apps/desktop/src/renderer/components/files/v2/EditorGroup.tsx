@@ -10,6 +10,7 @@ import type { TabWorkspaceContext } from "./EditorGroups";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import type { FilesTabScope } from "./filesTabScope";
 import { filterTabsForScope, isLaneGroupBoundary, orderTabsByLane } from "./tabDisplayOrder";
+import { viewerIsEditable } from "./viewerRegistry";
 import { ViewerHost } from "./ViewerHost";
 import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
@@ -128,7 +129,7 @@ export function EditorGroup(props: EditorGroupProps) {
       });
       return;
     }
-    if (activeTab.viewerKind !== "code") return;
+    if (!viewerIsEditable(activeTab.viewerKind)) return;
     const text = registry.getValue(activeTab.id);
     if (text == null) return;
     void window.ade.files
@@ -143,7 +144,7 @@ export function EditorGroup(props: EditorGroupProps) {
   }, [activeContext, activeTab, onDirtyChange, onError, registry]);
 
   useEffect(() => {
-    if (!props.isActiveGroup || !activeTab || activeTab.viewerKind !== "code") return;
+    if (!props.isActiveGroup || !activeTab || !viewerIsEditable(activeTab.viewerKind)) return;
     const onKey = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
       if (!mod || event.shiftKey || event.altKey || (event.key !== "s" && event.key !== "S")) return;
@@ -215,7 +216,7 @@ export function EditorGroup(props: EditorGroupProps) {
                 })}
               </div>
             ) : null}
-            {activeTab.viewerKind === "code" ? (
+            {viewerIsEditable(activeTab.viewerKind) ? (
               <button type="button" onClick={saveActive} title="Save (⌘S)" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>

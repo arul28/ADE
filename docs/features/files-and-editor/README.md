@@ -226,11 +226,18 @@ Three modes, each driven by a tab's internal state (no service-side
 mode concept):
 
 - **Edit** — Monaco with read/write semantics, syntax highlighting,
-  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs add a per-tab
-  preview toggle (Eye icon in the tab toolbar) that swaps the Monaco
-  host for a lazily-imported `PlanMarkdown` renderer. The preference is
-  per tab and persisted in the page's per-session state alongside the
-  open tab list and active path.
+  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs open in a
+  Preview↔Source toggle; Source mounts the same editable Monaco host.
+  CSV/TSV tabs open in a Table↔Source toggle; Source is offered only
+  when the payload loaded completely (a partial streamed CSV keeps the
+  read-only table so a truncated buffer can never be saved back).
+  Editability is a viewer capability (`viewerRegistry.tabIsTextEditable`):
+  every text-backed viewer that mounts Monaco over a full text payload is
+  editable immediately — there is no trust toggle, enable-editing step,
+  read-only default, or per-workspace gate. The only read-only states are
+  honest boundaries: partial/streamed oversized text (`largeText` viewer),
+  binary/base64 payloads, and real filesystem or remote-write failures,
+  which surface as errors instead of silent no-ops.
 - **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
   use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
   Sources: staged vs working tree, HEAD vs working tree, or
@@ -370,6 +377,21 @@ For deeper detail on the watcher + trust boundary, see
   skip `.git`, skip volatile `.ade` runtime paths, honor
   `includeIgnored`, sort directories before files, and paginate via
   `nextOffset` rather than silently dropping entries.
+- Directory expansion fetches exactly one `TREE_PAGE_SIZE` (2,000) page —
+  a single IPC round trip — and renders it immediately with a "Load
+  more…" row for the remainder; each load-more click appends one more
+  page. Watcher-driven refreshes re-list only the already-loaded window
+  (`loadedDirectoryChildrenCount`), never an arbitrary 10,000 children.
+  Path reveals (external opens) are the exception and page up to
+  `REVEAL_MAX_CHILDREN` so the revealed entry materializes.
+- The cross-mount workspace roster and explorer tree caches live in
+  `v2/filesTreeCache.ts` and are bounded: trees are node/byte-accounted
+  with LRU eviction over budget, mounted workbenches pin their rendered
+  tree (eviction can never desync a live explorer), and warm
+  project-surface eviction in `App.tsx` releases the project's Files
+  caches. Evicted trees reload through the normal `refreshRoot` path.
+  The cache holds only tree structure — Monaco models, dirty buffers,
+  editor groups, and open tabs are never touched by its policy.
 - Monaco models are reused per path and disposed on tab close,
   rename/delete cleanup, workspace switch, or unmount. Do not dispose
   them on ordinary tab switches, theme changes, read-only toggles, or
