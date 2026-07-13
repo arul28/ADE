@@ -694,18 +694,22 @@ describe("fileService", () => {
       expect(fs.readFileSync(path.join(rootPath, "docs", "notes.md"), "utf8")).toBe("# new\n");
 
       // Honest failure: an unwritable directory surfaces the filesystem error
-      // instead of claiming success.
-      const locked = path.join(rootPath, "locked");
-      fs.mkdirSync(locked, { recursive: true });
-      fs.writeFileSync(path.join(locked, "file.txt"), "x", "utf8");
-      fs.chmodSync(locked, 0o500);
-      try {
-        expect(() =>
-          service.writeWorkspaceText({ workspaceId: "workspace-1", path: "locked/file.txt", text: "y" }),
-        ).toThrow(/EACCES|EPERM|permission/i);
-        expect(fs.readFileSync(path.join(locked, "file.txt"), "utf8")).toBe("x");
-      } finally {
-        fs.chmodSync(locked, 0o700);
+      // instead of claiming success. Permission bits do not constrain root
+      // (CAP_DAC_OVERRIDE in containerized CI), so this branch only runs for
+      // unprivileged users.
+      if (process.getuid?.() !== 0) {
+        const locked = path.join(rootPath, "locked");
+        fs.mkdirSync(locked, { recursive: true });
+        fs.writeFileSync(path.join(locked, "file.txt"), "x", "utf8");
+        fs.chmodSync(locked, 0o500);
+        try {
+          expect(() =>
+            service.writeWorkspaceText({ workspaceId: "workspace-1", path: "locked/file.txt", text: "y" }),
+          ).toThrow(/EACCES|EPERM|permission/i);
+          expect(fs.readFileSync(path.join(locked, "file.txt"), "utf8")).toBe("x");
+        } finally {
+          fs.chmodSync(locked, 0o700);
+        }
       }
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
