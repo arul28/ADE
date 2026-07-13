@@ -4203,6 +4203,8 @@ button:active, [role="button"]:active {
 @media (prefers-reduced-motion: reduce) {
   .ade-toast-enter { animation: none; }
   .ade-reasoning-effort-word,
+  .ade-reasoning-effort-word[data-direction="up"],
+  .ade-reasoning-effort-word[data-direction="down"],
   .ade-reasoning-slider-fill::after,
   .ade-reasoning-slider-fill-max {
     animation: none;
