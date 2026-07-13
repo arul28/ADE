@@ -797,6 +797,8 @@ type CodexSubagentThreadState = {
   metadata: AgentChatSubagentMetadata | null;
   metadataRequested: boolean;
   metadataInFlight: boolean;
+  resumeExpected: boolean;
+  interruptPending: boolean;
   activeTurnId: string | null;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
@@ -1196,8 +1198,11 @@ type OpenCodeRuntime = {
   reasoningByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
   compactionStartedPartIds: Set<string>;
-  /** IDs of OpenCode child sessions already announced as subagents this run. */
-  subagentSessionIds: Set<string>;
+  /** OpenCode child sessions whose own terminal event has not arrived yet. */
+  subagentSessions: Map<string, {
+    summary: string;
+    turnId: string;
+  }>;
   /**
    * Trigger (manual/auto) captured from the most recent compaction "begin" part, so
    * the matching session.compacted end event can report the same trigger. Cleared
@@ -1249,8 +1254,6 @@ type CursorRuntime = {
   cloudRuns: Map<string, CursorCloudActiveRun>;
   /** RunId attached to the currently active cloud turn, when runtime === "cloud". */
   activeCloudRunId: string | null;
-  /** Last observed Cursor task status by run_id for subagent lifecycle mapping. */
-  cursorTaskStatusByRunId: Map<string, string>;
   pendingDispatchAck?: { turnId: string; resolve: () => void };
 };
 
@@ -2341,6 +2344,7 @@ const CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
 const CODEX_STALL_RECONCILE_TIMEOUT_MS = 10_000;
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
+const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
@@ -9337,7 +9341,7 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       toolStateByPartId: new Map(),
       compactionStartedPartIds: new Set(),
-      subagentSessionIds: new Set(),
+      subagentSessions: new Map(),
       lastCompactionTrigger: null,
     };
     handle.setEvictionHandler((reason) => {
@@ -18124,6 +18128,34 @@ export function createAgentChatService(args: {
         latencyMs: Date.now() - turnStartedAt,
       });
     };
+    const childUsageBySession = new Map<string, { totalTokens: number; costUsd: number }>();
+    const childUsageEvent = (childId: string): { totalTokens: number; costUsd?: number } | undefined => {
+      const acc = childUsageBySession.get(childId);
+      if (!acc || acc.totalTokens <= 0) return undefined;
+      return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
+    };
+    const settleOpenCodeSubagent = (
+      childKey: string,
+      status: "completed" | "failed" | "stopped",
+      summaryOverride?: string,
+    ): boolean => {
+      const child = runtime.subagentSessions.get(childKey);
+      if (!child) return false;
+      const summary = summaryOverride ?? child.summary;
+      const childUsage = childUsageEvent(childKey);
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId: childKey,
+        parentToolUseId: null,
+        status,
+        summary,
+        finalSummary: summary,
+        ...(childUsage ? { usage: childUsage } : {}),
+        turnId: child.turnId,
+      });
+      runtime.subagentSessions.delete(childKey);
+      return true;
+    };
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
@@ -18209,17 +18241,7 @@ export function createAgentChatService(args: {
         });
         if (imageEvent) emitChatEvent(managed, imageEvent);
       };
-      // Per-child (subagent) usage accumulator for this turn. OpenCode child
-      // sessions stream their own `step-finish` parts (tagged with the child's
-      // sessionID); we sum their tokens/cost here and attach the running total to
-      // the subagent progress/result events so the subagent drawer can show
-      // usage the way Codex/Claude do.
-      const childUsageBySession = new Map<string, { totalTokens: number; costUsd: number }>();
-      const childUsageEvent = (childId: string): { totalTokens: number; costUsd?: number } | undefined => {
-        const acc = childUsageBySession.get(childId);
-        if (!acc || acc.totalTokens <= 0) return undefined;
-        return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
-      };
+      let parentSessionIdle = false;
       for await (const event of eventStream) {
         const resolveSessionId = (): string | null => {
           switch (event.type) {
@@ -18261,6 +18283,28 @@ export function createAgentChatService(args: {
           }
         };
 
+        if (event.type === "session.idle" && event.properties.sessionID !== runtime.handle.sessionId) {
+          const childKey = event.properties.sessionID;
+          settleOpenCodeSubagent(childKey, "completed");
+          if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
+          continue;
+        }
+
+        if (event.type === "session.error") {
+          const childKey = event.properties.sessionID ?? null;
+          const child = childKey ? runtime.subagentSessions.get(childKey) : null;
+          if (childKey && child) {
+            const summary = openCodeSessionErrorMessage(event.properties.error);
+            settleOpenCodeSubagent(childKey, "failed", summary);
+            if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
+            continue;
+          }
+          if (!childKey || childKey === runtime.handle.sessionId) {
+            throw new Error(openCodeSessionErrorMessage(event.properties.error));
+          }
+          continue;
+        }
+
         // Surface OpenCode child sessions (spawned via the `task` subagent
         // tool) as subagent lifecycle events. Child sessions carry a
         // `parentID` pointing at this runtime's primary session.
@@ -18286,8 +18330,11 @@ export function createAgentChatService(args: {
                 : childDescription;
             };
             const ensureSubagentStarted = (): void => {
-              if (runtime.subagentSessionIds.has(childKey)) return;
-              runtime.subagentSessionIds.add(childKey);
+              if (runtime.subagentSessions.has(childKey)) return;
+              runtime.subagentSessions.set(childKey, {
+                summary: formatSummary(),
+                turnId,
+              });
               // We intentionally do NOT set `agentType` here. OpenCode encodes
               // the human-readable identity in `session.title`, which we surface
               // as `description`. The renderer prefers `agentType` when present,
@@ -18307,6 +18354,10 @@ export function createAgentChatService(args: {
               // Synthesize started first if we missed the created event so the
               // panel has a row to update.
               ensureSubagentStarted();
+              runtime.subagentSessions.set(childKey, {
+                summary: formatSummary(),
+                turnId,
+              });
               emitChatEvent(managed, {
                 type: "subagent_progress",
                 taskId: childKey,
@@ -18317,18 +18368,10 @@ export function createAgentChatService(args: {
                 turnId,
               });
             } else {
-              // session.deleted
-              emitChatEvent(managed, {
-                type: "subagent_result",
-                taskId: childKey,
-                parentToolUseId: null,
-                status: "completed",
-                summary: formatSummary(),
-                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
-                turnId,
-              });
-              runtime.subagentSessionIds.delete(childKey);
+              // Deletion is distinct from normal completion (`session.idle`).
+              settleOpenCodeSubagent(childKey, "stopped", "Subagent session deleted");
             }
+            if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
             continue;
           }
         }
@@ -18343,7 +18386,7 @@ export function createAgentChatService(args: {
             childPart.type === "step-finish"
             && childPart.sessionID
             && childPart.sessionID !== runtime.handle.sessionId
-            && runtime.subagentSessionIds.has(childPart.sessionID)
+            && runtime.subagentSessions.has(childPart.sessionID)
           ) {
             const prev = childUsageBySession.get(childPart.sessionID) ?? { totalTokens: 0, costUsd: 0 };
             const t = childPart.tokens;
@@ -18354,7 +18397,7 @@ export function createAgentChatService(args: {
               costUsd: prev.costUsd + (typeof childPart.cost === "number" ? childPart.cost : 0),
             });
             // Don't emit here — the running total rides along on the next child
-            // session.updated (progress) / session.deleted (result) event via
+            // session.updated (progress) / session.idle (result) event via
             // childUsageEvent(), so we avoid empty-summary "dead" progress events.
             continue;
           }
@@ -18589,12 +18632,8 @@ export function createAgentChatService(args: {
           }
 
           if (part.type === "subtask") {
-            emitChatEvent(managed, {
-              type: "subagent_started",
-              taskId: part.id,
-              description: part.description,
-              turnId,
-            });
+            // Child session events are the canonical lifecycle. A subtask part
+            // describes the invocation but has no terminal-state contract.
             continue;
           }
 
@@ -18784,13 +18823,14 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        if (event.type === "session.error") {
-          throw new Error(openCodeSessionErrorMessage(event.properties.error));
-        }
-
         if (event.type === "session.idle") {
-          break;
+          parentSessionIdle = true;
+          if (runtime.subagentSessions.size === 0) break;
+          continue;
         }
+      }
+      if (!parentSessionIdle || runtime.subagentSessions.size > 0) {
+        throw new Error("OpenCode event stream ended before the parent and child sessions became idle");
       }
 
       // ── Shared turn completion ──
@@ -18843,6 +18883,13 @@ export function createAgentChatService(args: {
         }
       }
     } catch (error) {
+      const stoppedSummary = runtime.interrupted || isAbortRelatedError(error)
+        ? "Parent turn interrupted before the child session became idle"
+        : "OpenCode event stream ended before the child session became idle";
+      for (const [childKey, child] of runtime.subagentSessions) {
+        if (child.turnId !== turnId) continue;
+        settleOpenCodeSubagent(childKey, "stopped", stoppedSummary);
+      }
       setOpenCodeRuntimeBusy(runtime, false);
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
@@ -19670,6 +19717,13 @@ export function createAgentChatService(args: {
     const includeBackground = options?.includeBackground ?? true;
     for (const { taskId, parentToolUseId, background } of [...runtime.activeSubagents.values()]) {
       if (!includeBackground && background) continue;
+      const threadState = runtime.codexSubagentThreads.get(taskId);
+      if (threadState) {
+        threadState.status = "stopped";
+        threadState.activeTurnId = null;
+        threadState.resumeExpected = false;
+        threadState.interruptPending = false;
+      }
       emitChatEvent(managed, {
         type: "subagent_result",
         taskId,
@@ -20172,6 +20226,8 @@ export function createAgentChatService(args: {
       metadata: null,
       metadataRequested: false,
       metadataInFlight: false,
+      resumeExpected: false,
+      interruptPending: false,
       activeTurnId: null,
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
@@ -20287,6 +20343,184 @@ export function createAgentChatService(args: {
     recordCodexSubagentTranscriptMessages(managed, runtime, state.threadId, messages);
   }
 
+  function codexSubagentTurnSummary(
+    turn: Record<string, unknown> | null,
+    status: "completed" | "failed" | "stopped",
+  ): string {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = asRecord(items[index]);
+      if (stringOrNull(item?.type) !== "agentMessage") continue;
+      const text = stringOrNull(item?.text);
+      if (text) return text;
+    }
+    const errorMessage = stringOrNull(asRecord(turn?.error)?.message);
+    if (errorMessage) return errorMessage;
+    if (status === "failed") return "Agent failed";
+    if (status === "stopped") return "Agent stopped";
+    return "Agent completed";
+  }
+
+  function settleCodexSubagentTurn(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    state: CodexSubagentThreadState,
+    status: "completed" | "failed" | "stopped",
+    summary: string,
+    childTurnId: string | null,
+  ): void {
+    const wasRunning = state.status === "running" || runtime.activeSubagents.has(state.threadId);
+    state.activeTurnId = null;
+    state.status = status;
+    state.interruptPending = false;
+    runtime.activeSubagents.delete(state.threadId);
+    recordCodexSubagentTranscriptMessages(managed, runtime, state.threadId, [
+      transcriptMessageWithMetadata(codexLiveTranscriptMessage(state.threadId, {
+        type: "status",
+        turnStatus: status === "completed" ? "completed" : status === "failed" ? "failed" : "interrupted",
+        ...(childTurnId ? { turnId: childTurnId } : {}),
+      }, "system"), codexSubagentMetadataForThread(runtime, state.threadId)),
+    ]);
+    if (!wasRunning) return;
+    emitChatEvent(managed, {
+      type: "subagent_result",
+      taskId: state.threadId,
+      agentId: state.threadId,
+      agentType: state.label,
+      label: state.label,
+      model: state.model,
+      reasoningEffort: state.reasoningEffort,
+      parentToolUseId: state.parentToolUseId,
+      status,
+      summary,
+      finalSummary: summary,
+      ...(state.parentTurnId ? { turnId: state.parentTurnId } : {}),
+    });
+  }
+
+  function scheduleCodexSubagentInterruptFallback(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    state: CodexSubagentThreadState,
+    turnId: string | null,
+  ): void {
+    const fallback = setTimeout(() => {
+      if (managed.runtime !== runtime || !state.interruptPending) return;
+      if (turnId && state.activeTurnId !== turnId) return;
+      if (!turnId && state.activeTurnId) return;
+      if (state.status === "running") {
+        settleCodexSubagentTurn(managed, runtime, state, "stopped", "Interrupted by user", turnId);
+        // Keep the latch when no child turn was announced yet. A later start
+        // must still be interrupted upstream even though the UI is settled.
+        if (!turnId) state.interruptPending = true;
+      } else {
+        state.activeTurnId = null;
+        state.interruptPending = false;
+      }
+      persistChatState(managed);
+    }, CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS);
+    fallback.unref?.();
+  }
+
+  async function requestCodexSubagentTurnInterrupt(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    state: CodexSubagentThreadState,
+    initialTurnId: string,
+  ): Promise<void> {
+    state.resumeExpected = false;
+    state.interruptPending = true;
+    let interruptedTurnId = initialTurnId;
+    const requestInterrupt = (turnId: string): Promise<unknown> => runtime.request("turn/interrupt", {
+      threadId: state.threadId,
+      turnId,
+    }, { timeoutMs: CODEX_INTERRUPT_REQUEST_TIMEOUT_MS });
+
+    try {
+      await requestInterrupt(interruptedTurnId);
+    } catch (error) {
+      const mismatch = parseCodexActiveTurnMismatch(error);
+      if (mismatch?.expectedTurnId === interruptedTurnId) {
+        interruptedTurnId = mismatch.foundTurnId;
+        state.activeTurnId = interruptedTurnId;
+        try {
+          await requestInterrupt(interruptedTurnId);
+        } catch (retryError) {
+          logger.warn("agent_chat.codex_subagent_interrupt_retry_failed", {
+            sessionId: managed.session.id,
+            threadId: state.threadId,
+            turnId: interruptedTurnId,
+            error: retryError instanceof Error ? retryError.message : String(retryError),
+          });
+          settleCodexSubagentTurn(
+            managed,
+            runtime,
+            state,
+            "stopped",
+            "Interrupted by user before Codex app-server acknowledged the child interrupt",
+            interruptedTurnId,
+          );
+          teardownRuntime(managed, "handle_close");
+          return;
+        }
+      } else {
+        logger.warn("agent_chat.codex_subagent_interrupt_failed", {
+          sessionId: managed.session.id,
+          threadId: state.threadId,
+          turnId: interruptedTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        settleCodexSubagentTurn(
+          managed,
+          runtime,
+          state,
+          "stopped",
+          "Interrupted by user before Codex app-server acknowledged the child interrupt",
+          interruptedTurnId,
+        );
+        teardownRuntime(managed, "handle_close");
+        return;
+      }
+    }
+
+    scheduleCodexSubagentInterruptFallback(managed, runtime, state, interruptedTurnId);
+  }
+
+  async function interruptActiveCodexSubagentTurns(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<boolean> {
+    const active = [...runtime.activeSubagents.values()];
+    if (active.length === 0) return false;
+
+    await Promise.all(active.map(async (entry) => {
+      const state = runtime.codexSubagentThreads.get(entry.taskId);
+      if (!state) {
+        runtime.activeSubagents.delete(entry.taskId);
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: entry.taskId,
+          parentToolUseId: entry.parentToolUseId,
+          status: "stopped",
+          summary: "Interrupted by user",
+          ...(runtime.startedTurnId ? { turnId: runtime.startedTurnId } : {}),
+        });
+        return;
+      }
+      if (state.interruptPending) return;
+      state.resumeExpected = false;
+      state.interruptPending = true;
+      if (!state.activeTurnId) {
+        scheduleCodexSubagentInterruptFallback(managed, runtime, state, null);
+        return;
+      }
+      await requestCodexSubagentTurnInterrupt(managed, runtime, state, state.activeTurnId);
+    }));
+
+    persistChatState(managed);
+    return true;
+  }
+
   function handleCodexSubagentNotification(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -20301,36 +20535,73 @@ export function createAgentChatService(args: {
     if (method === "turn/started") {
       const turn = asRecord(params.turn);
       const turnId = stringOrNull(turn?.id) ?? turnIdFromParams;
+      if (state.interruptPending) {
+        logger.debug("agent_chat.codex_subagent_turn_start_during_interrupt", {
+          sessionId: managed.session.id,
+          threadId,
+          turnId,
+        });
+        if (turnId) {
+          state.activeTurnId = turnId;
+          void requestCodexSubagentTurnInterrupt(managed, runtime, state, turnId);
+        }
+        return true;
+      }
+      const resumed = state.status !== "running";
+      if (resumed && !state.resumeExpected) {
+        logger.debug("agent_chat.codex_subagent_late_turn_start_ignored", {
+          sessionId: managed.session.id,
+          threadId,
+          turnId,
+          status: state.status,
+        });
+        return true;
+      }
+      state.resumeExpected = false;
       state.activeTurnId = turnId ?? null;
+      state.status = "running";
+      if (resumed) {
+        runtime.activeSubagents.set(threadId, {
+          taskId: threadId,
+          description: state.prompt ?? state.label,
+          background: state.background,
+          parentToolUseId: state.parentToolUseId,
+        });
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: threadId,
+          agentId: threadId,
+          agentType: state.label,
+          label: state.label,
+          model: state.model,
+          reasoningEffort: state.reasoningEffort,
+          parentToolUseId: state.parentToolUseId,
+          description: state.prompt ?? state.label,
+          summary: "Agent resumed",
+          ...(state.parentTurnId ? { turnId: state.parentTurnId } : {}),
+        });
+      }
       return true;
     }
 
     if (method === "turn/completed") {
       const turn = asRecord(params.turn);
       const turnId = stringOrNull(turn?.id) ?? turnIdFromParams ?? state.activeTurnId;
-      state.activeTurnId = null;
-      state.status = String(turn?.status ?? "").toLowerCase() === "failed" ? "failed" : state.status;
-      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
-        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
-          type: "status",
-          turnStatus: state.status === "failed" ? "failed" : "completed",
-          ...(turnId ? { turnId } : {}),
-        }, "system"), codexSubagentMetadataForThread(runtime, threadId)),
-      ]);
+      const status = mapCodexCollabAgentStatus(turn?.status) ?? "completed";
+      settleCodexSubagentTurn(
+        managed,
+        runtime,
+        state,
+        status,
+        codexSubagentTurnSummary(turn, status),
+        turnId,
+      );
       return true;
     }
 
     if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
       const turnId = turnIdFromParams ?? state.activeTurnId;
-      state.activeTurnId = null;
-      state.status = "stopped";
-      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
-        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
-          type: "status",
-          turnStatus: "interrupted",
-          ...(turnId ? { turnId } : {}),
-        }, "system"), codexSubagentMetadataForThread(runtime, threadId)),
-      ]);
+      settleCodexSubagentTurn(managed, runtime, state, "stopped", "Agent interrupted", turnId);
       return true;
     }
 
@@ -20971,6 +21242,10 @@ export function createAgentChatService(args: {
         for (const targetId of targetIds) {
           const existing = runtime.activeSubagents.get(targetId);
           const threadState = runtime.codexSubagentThreads.get(targetId);
+          if (threadState) {
+            threadState.resumeExpected = true;
+            threadState.interruptPending = false;
+          }
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: targetId,
@@ -21003,6 +21278,9 @@ export function createAgentChatService(args: {
             });
             continue;
           }
+          if (!existing && threadState && threadState.status !== "running") {
+            continue;
+          }
           if (threadState) threadState.status = subagentStatus;
           runtime.activeSubagents.delete(agentThreadId);
           emitChatEvent(managed, {
@@ -21024,7 +21302,15 @@ export function createAgentChatService(args: {
         for (const targetId of targetIds) {
           const existing = runtime.activeSubagents.get(targetId);
           const threadState = runtime.codexSubagentThreads.get(targetId);
-          if (threadState) threadState.status = "stopped";
+          if (!existing && threadState && threadState.status !== "running") {
+            continue;
+          }
+          if (threadState) {
+            threadState.status = "stopped";
+            threadState.activeTurnId = null;
+            threadState.resumeExpected = false;
+            threadState.interruptPending = false;
+          }
           runtime.activeSubagents.delete(targetId);
           emitChatEvent(managed, {
             type: "subagent_result",
@@ -21519,15 +21805,6 @@ export function createAgentChatService(args: {
       turnId,
       ...(status === "failed" && errorMessage ? { message: errorMessage } : {}),
     });
-    stopActiveCodexSubagents(
-      managed,
-      runtime,
-      turnId,
-      status === "failed"
-        ? "Parent turn failed before ADE received a final subagent status"
-        : "Parent turn completed before ADE received a final subagent status",
-      { includeBackground: false },
-    );
     void emitTurnDiffSummaryIfChanged(managed, turnId);
     emitChatEvent(managed, {
       type: "done",
@@ -21753,7 +22030,7 @@ export function createAgentChatService(args: {
       runtime.startedTurnId = null;
       runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.approvals.clear();
-      stopActiveCodexSubagents(managed, runtime, activeTurnId, "Codex thread was deleted upstream");
+      await interruptActiveCodexSubagentTurns(managed, runtime);
       markSessionIdleWithFreshCache(managed);
       if (managed.session.threadId === deletedThreadId) {
         delete managed.session.threadId;
@@ -21972,16 +22249,6 @@ export function createAgentChatService(args: {
           ? { message: String(turn.error.message) }
           : {})
       });
-
-      stopActiveCodexSubagents(
-        managed,
-        runtime,
-        turnId,
-        status === "failed"
-          ? "Parent turn failed before ADE received a final subagent status"
-          : "Parent turn completed before ADE received a final subagent status",
-        { includeBackground: false },
-      );
 
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
@@ -22245,7 +22512,6 @@ export function createAgentChatService(args: {
       }
       runtime.approvals.clear();
       markSessionIdleWithFreshCache(managed);
-      stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
       emitChatEvent(managed, {
         type: "status",
         turnStatus: "interrupted",
@@ -28611,7 +28877,6 @@ export function createAgentChatService(args: {
       const events = mapCursorSdkMessageToChatEvents(event, {
         turnId,
         cwd: managed.laneWorktreePath,
-        taskStatusMap: runtime.cursorTaskStatusByRunId,
         runtime: isCloud ? "cloud" : "local",
         ...(meta?.runId ? { runId: meta.runId } : {}),
       });
@@ -28849,7 +29114,6 @@ export function createAgentChatService(args: {
       configOptions: [],
       cloudRuns: new Map(),
       activeCloudRunId: null,
-      cursorTaskStatusByRunId: new Map(),
     };
     throwIfCursorSetupInterrupted();
     managed.runtime = rt;
@@ -31749,7 +32013,11 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
-      if (!managed.session.threadId || !runtime.activeTurnId) return;
+      if (!managed.session.threadId) return;
+      if (!runtime.activeTurnId) {
+        await interruptActiveCodexSubagentTurns(managed, runtime);
+        return;
+      }
       let interruptedTurnId = runtime.activeTurnId;
       const interruptActiveTurn = async (turnId: string): Promise<void> => {
         rememberInterruptedCodexTurn(runtime, turnId);
@@ -31804,7 +32072,7 @@ export function createAgentChatService(args: {
           return;
         }
       }
-      stopActiveCodexSubagents(managed, runtime, interruptedTurnId, "Interrupted by user");
+      await interruptActiveCodexSubagentTurns(managed, runtime);
       return;
     }
 
@@ -34187,16 +34455,11 @@ export function createAgentChatService(args: {
               });
             }
           }
-          stopActiveCodexSubagents(
-            managed,
-            runtime,
-            interruptedTurnId,
-            "Interrupted while closing the session",
-          );
         }
       } catch {
         // ignore interrupt failures while disposing
       }
+      await interruptActiveCodexSubagentTurns(managed, runtime).catch(() => {});
 
       // Archive the Codex thread on the server
       if (managed.session.threadId) {
@@ -35710,8 +35973,9 @@ export function createAgentChatService(args: {
    *   app does). Falls back to filtering the parent session's
    *   `eventHistoryBySession` by `taskId === threadId` when the runtime is
    *   idle or the call fails.
-   * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
-   *   subagent's `agentId`; we filter the parent stream by that value.
+   * - **Cursor**: Task tool lifecycle envelopes use the returned child
+   *   `agentId` when present and always retain the Task call `taskId`; we
+   *   match either identity because startup failures may not return an agent.
    * - **Everything else (droid, lmstudio, …)**: `null`.
    *
    * Exposed via getSubagentTranscript, which byte-bounds whatever this
@@ -35839,14 +36103,16 @@ export function createAgentChatService(args: {
 
     if (treatAsCodexLike) {
       const envelopes = eventHistoryBySession.get(normalizedSessionId) ?? [];
-      const matchKey: "taskId" | "agentId" =
-        runtimeKind === "cursor" || provider === "cursor" ? "agentId" : "taskId";
+      const isCursorSession = runtimeKind === "cursor" || provider === "cursor";
       const matched: AgentChatSubagentTranscriptMessage[] = [];
       const metadata = provider === "codex" ? codexSubagentMetadataForThread(codexRuntime, normalizedAgentId) : null;
       for (const envelope of envelopes) {
         const event = envelope.event as Record<string, unknown> & { type: string };
-        const candidate = event[matchKey];
-        if (typeof candidate !== "string" || candidate !== normalizedAgentId) continue;
+        const matchesRequestedSubagent = isCursorSession
+          ? [event.agentId, event.taskId].some((candidate) =>
+              candidate === normalizedAgentId || (normalizedTaskId !== null && candidate === normalizedTaskId))
+          : event.taskId === normalizedAgentId;
+        if (!matchesRequestedSubagent) continue;
         const text = (() => {
           if (typeof event.summary === "string" && event.summary.length) return event.summary;
           if (typeof event.description === "string" && event.description.length) return event.description;

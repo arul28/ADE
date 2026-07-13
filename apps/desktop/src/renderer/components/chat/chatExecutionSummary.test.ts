@@ -261,7 +261,7 @@ describe("deriveChatSubagentSnapshots", () => {
     ]);
   });
 
-  it("marks non-background running snapshots stopped when their parent turn has already ended", () => {
+  it("keeps a running subagent active when its parent turn has already ended", () => {
     const events: AgentChatEventEnvelope[] = [
       {
         sessionId: "session-1",
@@ -289,8 +289,9 @@ describe("deriveChatSubagentSnapshots", () => {
     expect(deriveChatSubagentSnapshots(events)).toEqual([
       expect.objectContaining({
         taskId: "call-spawn-1",
-        status: "stopped",
-        summary: "Parent turn ended before ADE received a final subagent status",
+        status: "running",
+        description: "Inspect desktop IPC path",
+        summary: null,
       }),
     ]);
   });
