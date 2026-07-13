@@ -2389,8 +2389,8 @@ function flushQueuedTranscriptWrite(filePath: string): void {
       writeFileAtomic(targetPath, data, { fsync: true });
     });
     let chunk = Buffer.concat(pending.chunks);
-    if (!checkedTranscriptTails.has(normalizedPath)) {
-      checkedTranscriptTails.add(normalizedPath);
+    const needsTailCheck = !checkedTranscriptTails.has(normalizedPath);
+    if (needsTailCheck) {
       try {
         const stat = fs.statSync(normalizedPath);
         if (stat.size > 0) {
@@ -2415,6 +2415,11 @@ function flushQueuedTranscriptWrite(filePath: string): void {
       }
     }
     fs.appendFileSync(normalizedPath, chunk);
+    // Only mark the tail verified once the append actually landed. A partial
+    // append that threw (e.g. ENOSPC) can leave the file without a trailing
+    // newline, so the next flush must re-check and heal it rather than skip
+    // validation forever and corrupt the following event.
+    checkedTranscriptTails.add(normalizedPath);
   } catch {
     // Transcript persistence is best effort; callers still receive live events.
   }

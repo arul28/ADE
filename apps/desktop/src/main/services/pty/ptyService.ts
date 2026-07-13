@@ -3597,7 +3597,10 @@ export function createPtyService({
       const startedAt = new Date().toISOString();
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
-      if (!existingSession && tracked && isTrackedCliToolType(toolTypeHint)) {
+      // Reaching here always spawns a NEW PTY/process — the live-attach case
+      // returned above — so resuming a tracked CLI session whose PTY is gone
+      // is a new launch and must be gated too, not only brand-new sessions.
+      if (tracked && isTrackedCliToolType(toolTypeHint)) {
         const decision = diskPressureMonitor?.canPerform("cli_launch");
         if (decision && !decision.allowed) {
           throw Object.assign(new Error(decision.message), { code: decision.code });
