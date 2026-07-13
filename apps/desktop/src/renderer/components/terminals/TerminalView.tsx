@@ -702,6 +702,10 @@ function clearDisposeTimer(runtime: CachedRuntime) {
 
 function parkRuntime(runtime: CachedRuntime) {
   setRuntimeInteractionState(runtime, false);
+  // A parked runtime is unmounted from any visible surface — hide its host from
+  // the interactive + AT tree (the parking root is also inert, but keep the host
+  // attribute explicit so it is hidden the instant it is parked).
+  setRuntimeHostHidden(runtime, true);
   const parking = ensureParkedRoot();
   if (runtime.host.parentElement !== parking) {
     parking.appendChild(runtime.host);
@@ -732,27 +736,36 @@ export function disposeTerminalRuntimesForProjectChange(
 }
 
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
+  // Active ownership gates keyboard input and tab-focusability only. It must NOT
+  // gate `inert`/`aria-hidden`: a visible-but-inactive grid tile has to stay
+  // clickable (so a pointer-down can transfer focus and activate it) and remain
+  // readable by assistive tech. Hiding from the interactive/AT tree is a
+  // visibility concern, handled by setRuntimeHostHidden.
   runtime.active = active;
   runtime.inputEnabled = active;
   try {
+    // tabIndex stays active-gated: an inactive tile stays out of the Tab order
+    // while remaining click/programmatically focusable.
     runtime.host.tabIndex = active ? 0 : -1;
   } catch {
     // ignore
   }
+}
+
+/**
+ * Visibility-gated hiding of a terminal host from the interactive + AT tree.
+ * A hidden host (parked or on an inactive/offscreen surface) is `inert` +
+ * `aria-hidden`; a visible host is fully interactive even when it is not the
+ * active grid member.
+ */
+function setRuntimeHostHidden(runtime: CachedRuntime, hidden: boolean) {
   try {
-    if (active) {
-      runtime.host.removeAttribute("aria-hidden");
-    } else {
+    if (hidden) {
       runtime.host.setAttribute("aria-hidden", "true");
-    }
-  } catch {
-    // ignore
-  }
-  try {
-    if (active) {
-      runtime.host.removeAttribute("inert");
-    } else {
       runtime.host.setAttribute("inert", "");
+    } else {
+      runtime.host.removeAttribute("aria-hidden");
+      runtime.host.removeAttribute("inert");
     }
   } catch {
     // ignore
@@ -2252,6 +2265,7 @@ export function TerminalView({
     clearDisposeTimer(runtime);
     setRuntimeInteractionState(runtime, mountConfig.isActive);
     setRuntimeVisibilityState(runtime, mountConfig.isVisible);
+    setRuntimeHostHidden(runtime, !mountConfig.isVisible);
 
     const onRuntimeSnapshot: RuntimeListener = (snapshot) => {
       setExited(snapshot.exitCode);
@@ -2464,6 +2478,9 @@ export function TerminalView({
     const wrapper = wrapperRef.current;
     setRuntimeInteractionState(runtime, isActive);
     setRuntimeVisibilityState(runtime, isVisible);
+    // Host hidden state follows visibility, not active ownership, so a visible
+    // inactive grid tile stays interactive/clickable and AT-readable.
+    setRuntimeHostHidden(runtime, !isVisible);
 
     if (wrapper) {
       wrapper.tabIndex = -1;

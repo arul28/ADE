@@ -49,6 +49,28 @@ vi.mock("@lobehub/icons", () => {
   };
 });
 
+// Render-count instrumentation for the memo-boundary tests below.
+// AgentChatMessageListMain calls useAppStore exactly twice in its body and
+// nowhere else in the module (rows do not read the store), so a counting delegate
+// is an exact list-BODY render counter. It delegates to the real hook so store
+// behavior is unchanged for every other test in this file.
+let memoListBodyRenders = 0;
+vi.mock("../../state/appStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof AppStoreModule>();
+  return {
+    ...actual,
+    useAppStore: ((selector: (s: unknown) => unknown, equality?: (a: unknown, b: unknown) => boolean) => {
+      memoListBodyRenders++;
+      return (actual.useAppStore as unknown as (s: typeof selector, e?: typeof equality) => unknown)(
+        selector,
+        equality,
+      );
+    }) as typeof actual.useAppStore,
+  };
+});
+
+import { useCallback, useMemo, useState } from "react";
+import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
   calculateVirtualWindow,
@@ -3186,5 +3208,69 @@ describe("AgentChatMessageList inline ask-user card", () => {
       surfaces: ["main", "renderer"],
       handoff: "ready",
     });
+  });
+});
+
+describe("AgentChatMessageList memo boundary", () => {
+  const TEXT_EVENTS: AgentChatEventEnvelope[] = [
+    {
+      sessionId: "s1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: { type: "text", text: "Hello world.", itemId: "text-1", turnId: "turn-1" },
+    },
+  ];
+
+  /**
+   * A composer-like owner holding character-level draft state (like AgentChatPane /
+   * PersonalChatsPage) that renders the memoized transcript boundary. `unstable`
+   * recreates a row-facing callback each render to model the pre-fix inline-arrow
+   * props that defeated the boundary.
+   */
+  function Harness({ unstable = false }: { unstable?: boolean }) {
+    const [draft, setDraft] = useState("");
+    const events = useMemo(() => TEXT_EVENTS, []);
+    const stableApproval = useCallback(() => {}, []);
+    const onApproval = unstable ? () => {} : stableApproval;
+    return (
+      <MemoryRouter>
+        <input data-testid="draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <AgentChatMessageList
+          events={events}
+          sessionId="s1"
+          assistantLabel="Assistant"
+          onApproval={onApproval as never}
+        />
+      </MemoryRouter>
+    );
+  }
+
+  it("is a memoized component", () => {
+    expect((AgentChatMessageList as unknown as { $$typeof: symbol }).$$typeof).toBe(
+      Symbol.for("react.memo"),
+    );
+  });
+
+  it("does not re-render on a draft-only update when transcript props are unchanged", () => {
+    memoListBodyRenders = 0;
+    const { getByTestId } = render(<Harness />);
+    expect(memoListBodyRenders).toBeGreaterThan(0);
+
+    const before = memoListBodyRenders;
+    fireEvent.change(getByTestId("draft"), { target: { value: "typing a draft" } });
+    fireEvent.change(getByTestId("draft"), { target: { value: "typing a draft further" } });
+    // The memoized boundary bails out: the list body does not re-run on draft-only updates.
+    expect(memoListBodyRenders).toBe(before);
+  });
+
+  it("re-renders when a row-facing callback identity churns (guards the stabilization)", () => {
+    memoListBodyRenders = 0;
+    const { getByTestId } = render(<Harness unstable />);
+    expect(memoListBodyRenders).toBeGreaterThan(0);
+
+    const before = memoListBodyRenders;
+    fireEvent.change(getByTestId("draft"), { target: { value: "typing" } });
+    // An unstable row-facing prop defeats the boundary — proving the boundary + prop
+    // stabilization are load-bearing, not incidental.
+    expect(memoListBodyRenders).toBeGreaterThan(before);
   });
 });

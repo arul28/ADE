@@ -5735,4 +5735,11 @@ function AgentChatMessageListMain({
   );
 }
 
-export const AgentChatMessageList = AgentChatMessageListMain;
+// Memoized transcript boundary. Draft/composer keystrokes rerender the owning
+// pane (AgentChatPane / PersonalChatsPage), but those callers pass referentially
+// stable props (memoized events/state + useCallback'd row-facing handlers), so a
+// draft-only update no longer commits the message list or its virtualized rows.
+// The component still rerenders on real transcript/prop changes and on its own
+// appStore subscriptions (density, runtime name).
+export const AgentChatMessageList = React.memo(AgentChatMessageListMain);
+AgentChatMessageList.displayName = "AgentChatMessageList";

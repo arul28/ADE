@@ -3709,6 +3709,10 @@ export function AgentChatPane({
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
   selectedEventsForDisplayRef.current = selectedEventsForDisplay;
+  const chatHasMessages = useMemo(
+    () => selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text"),
+    [selectedEventsForDisplay],
+  );
   const [wakeAwayWindow, setWakeAwayWindow] = useState<{
     sessionId: string;
     lastViewedAtMs: number;
@@ -9280,6 +9284,43 @@ export function AgentChatPane({
     }
   }, [openRewindConfirmDialog, refreshSessions, selectedEvents, selectedSessionId]);
 
+  // Row-facing handlers for AgentChatMessageList are stabilized so a draft-only
+  // keystroke (which rerenders this pane) does not change the memoized transcript
+  // boundary's props. Each still observes current session/turn/model/lane state
+  // through its dependency list, so retry/recovery/model-picker behavior is
+  // unchanged. Do NOT depend on the draft here.
+  const handleListApproval = useCallback(
+    (
+      itemId: string,
+      decision: AgentChatApprovalDecision,
+      responseText?: string | null,
+      answers?: Record<string, string | string[]>,
+    ) => {
+      void handleApproval(itemId, decision, responseText, answers);
+    },
+    [handleApproval],
+  );
+  const handleListCodexRecovery = useCallback(
+    (args: AgentChatRecoverCodexTurnArgs) => window.ade.agentChat.recoverCodexTurn(args),
+    [],
+  );
+  const handleListRetryProviderFailure = useCallback(
+    async (failedTurnId: string | null) => {
+      if (!selectedSessionId) return "This chat is no longer selected.";
+      if (turnActive) return "A turn is already active in this thread. Wait for it to finish before retrying.";
+      return resendLastUserMessage(selectedSessionId, failedTurnId);
+    },
+    [resendLastUserMessage, selectedSessionId, turnActive],
+  );
+  const handleListChooseProviderFailureModel = useCallback(() => {
+    if (turnActive) return;
+    setModelPickerOpenRequest((request) => ({
+      key: (request?.key ?? 0) + 1,
+      sessionId: modelPickerOpenRequestSessionId,
+      laneId,
+    }));
+  }, [laneId, modelPickerOpenRequestSessionId, turnActive]);
+
   const interrupt = useCallback(async () => {
     if (!selectedSessionId) return;
     // Let the stop button disappear immediately while the main-process interrupt finishes.
@@ -10709,7 +10750,7 @@ export function AgentChatPane({
               }
             }}
             promptSuggestion={promptSuggestion}
-            chatHasMessages={selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text")}
+            chatHasMessages={chatHasMessages}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
@@ -11417,29 +11458,13 @@ export function AgentChatPane({
                       laneId={laneId}
                       sessionId={selectedSessionId}
                       onInsertDraft={insertComposerDraft}
-                      onRevealChatTerminal={(terminal) => {
-                        revealChatTerminal(terminal);
-                      }}
+                      onRevealChatTerminal={revealChatTerminal}
                       turnDiffSummaries={selectedTurnDiffSummaries}
                       onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
-                      onApproval={(itemId, decision, responseText, answers) => {
-                        void handleApproval(itemId, decision, responseText, answers);
-                      }}
-                      onCodexRecovery={(args: AgentChatRecoverCodexTurnArgs) =>
-                        window.ade.agentChat.recoverCodexTurn(args)}
-                      onRetryProviderFailure={async (failedTurnId) => {
-                        if (!selectedSessionId) return "This chat is no longer selected.";
-                        if (turnActive) return "A turn is already active in this thread. Wait for it to finish before retrying.";
-                        return resendLastUserMessage(selectedSessionId, failedTurnId);
-                      }}
-                      onChooseProviderFailureModel={() => {
-                        if (turnActive) return;
-                        setModelPickerOpenRequest((request) => ({
-                          key: (request?.key ?? 0) + 1,
-                          sessionId: modelPickerOpenRequestSessionId,
-                          laneId,
-                        }));
-                      }}
+                      onApproval={handleListApproval}
+                      onCodexRecovery={handleListCodexRecovery}
+                      onRetryProviderFailure={handleListRetryProviderFailure}
+                      onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                       mosaic={subagentView ? undefined : mosaicContext}
                       scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                     />

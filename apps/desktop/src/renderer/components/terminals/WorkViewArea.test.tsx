@@ -3,7 +3,7 @@
 import type * as ReactNamespace from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
 import { WorkViewArea } from "./WorkViewArea";
 
@@ -151,6 +151,37 @@ vi.mock("../chat/AgentChatPane", async () => {
 
 vi.mock("./WorkStartSurface", () => ({
   WorkStartSurface: () => <div data-testid="work-start-surface" />,
+}));
+
+// The real grid renders through PaneTilingLayout (react-resizable-panels), which
+// needs ResizeObserver + measured sizes that jsdom lacks. Mock the tiling wrapper
+// so the test exercises the real renderGridSession/SessionSurface ownership logic
+// (isActive/visible derivation + onFocusSession pointer transfer) directly.
+vi.mock("./WorkGridView", () => ({
+  WorkGridView: ({
+    gridSet,
+    sessions,
+    renderSession,
+    onFocusSession,
+  }: {
+    gridSet: { sessionIds: string[] };
+    sessions: TerminalSessionSummary[];
+    renderSession: (session: TerminalSessionSummary) => ReactNamespace.ReactNode;
+    onFocusSession: (sessionId: string) => void;
+  }) => (
+    <div data-testid="work-grid-view">
+      {gridSet.sessionIds.map((id) => {
+        const session = sessions.find((s) => s.id === id);
+        if (!session) return null;
+        return (
+          <div key={id} data-testid="grid-tile" data-session-id={id} onMouseDown={() => onFocusSession(id)}>
+            {renderSession(session)}
+          </div>
+        );
+      })}
+    </div>
+  ),
+  SingleSessionGridDropZone: ({ children }: { children: ReactNamespace.ReactNode }) => <div>{children}</div>,
 }));
 
 const terminalPreviewMock = vi.fn();
@@ -1312,6 +1343,76 @@ describe("WorkViewArea", () => {
     terminal = within(view.container).getByTestId("terminal-view");
     expect(terminal.getAttribute("data-session-id")).toBe("session-2");
     expect(terminal.getAttribute("data-active")).toBe("true");
+  });
+
+  it("keeps exactly one active tile with every tile visible in a mixed grid, and transfers active ownership on focus", () => {
+    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
+    const chat = makeChatSession("chat-1");
+    const terminal = makeRunningSession("term-1", "pty-term-1");
+    const gridSets = [{ id: "grid-1", layoutId: "layout-grid-1", sessionIds: ["chat-1", "term-1"] }];
+    const lane: LaneSummary = {
+      id: "lane-1",
+      name: "Lane 1",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "lane-1",
+      worktreePath: "/tmp/lane-1",
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-04-06T12:00:00.000Z",
+    };
+    const onSelectItem = vi.fn();
+    const renderTree = (activeItemId: string) => (
+      <WorkViewArea
+        lanes={[lane]}
+        sessions={[chat, terminal]}
+        visibleSessions={[chat, terminal]}
+        activeItemId={activeItemId}
+        gridSets={gridSets}
+        draftKind="chat"
+        onSelectItem={onSelectItem}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+      />
+    );
+
+    const view = render(renderTree("chat-1"));
+
+    // Both tiles are visible; exactly the focused chat tile is active.
+    const chatPane = within(view.container).getByTestId("agent-chat-pane");
+    const term = within(view.container).getByTestId("terminal-view");
+    expect(chatPane.getAttribute("data-tile-visible")).toBe("true");
+    expect(term.getAttribute("data-visible")).toBe("true");
+    expect(chatPane.getAttribute("data-tile-active")).toBe("true");
+    expect(term.getAttribute("data-active")).toBe("false");
+    // Exactly one active member across all tiles.
+    const activeCount =
+      within(view.container).queryAllByTestId("agent-chat-pane").filter((el) => el.getAttribute("data-tile-active") === "true").length
+      + within(view.container).queryAllByTestId("terminal-view").filter((el) => el.getAttribute("data-active") === "true").length;
+    expect(activeCount).toBe(1);
+
+    // Pointer-down on the inactive terminal tile transfers activeItemId before any typing.
+    fireEvent.mouseDown(term);
+    expect(onSelectItem).toHaveBeenCalledWith("term-1");
+
+    // Focusing the terminal moves active ownership; both tiles remain visible.
+    view.rerender(renderTree("term-1"));
+    const chatPaneAfter = within(view.container).getByTestId("agent-chat-pane");
+    const termAfter = within(view.container).getByTestId("terminal-view");
+    expect(termAfter.getAttribute("data-active")).toBe("true");
+    expect(chatPaneAfter.getAttribute("data-tile-active")).toBe("false");
+    expect(termAfter.getAttribute("data-visible")).toBe("true");
+    expect(chatPaneAfter.getAttribute("data-tile-visible")).toBe("true");
   });
 
 });
