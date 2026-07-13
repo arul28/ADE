@@ -35,7 +35,11 @@ import {
 } from "../../../shared/crossMachineHandoff";
 import { providerSupportsHandoffFork } from "../../../shared/types/chat";
 import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
-import type { ProviderFamily } from "../../../shared/modelRegistry";
+import {
+  resolveProviderGroupForModel,
+  type ModelDescriptor,
+  type ProviderFamily,
+} from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { cn } from "../ui/cn";
 
@@ -212,6 +216,9 @@ export function CrossMachineHandoffModal({
   const providerLabel = providerDisplayLabel(sourceProvider);
   const forkModelIds = forkAvailableModelIds ?? availableModelIds;
   const modelIdsForMode = mode === "fork" ? forkModelIds : availableModelIds;
+  const forkModelFilter = useCallback((descriptor: ModelDescriptor) => (
+    Boolean(sourceProvider && resolveProviderGroupForModel(descriptor) === sourceProvider)
+  ), [sourceProvider]);
 
   const selectedConnection = useMemo(
     () => connections.find((connection) => connection.target.id === selectedTargetId) ?? null,
@@ -811,7 +818,7 @@ export function CrossMachineHandoffModal({
                         surfaceKey="cross-machine-handoff"
                         compact
                         {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
-                        {...(mode === "fork" ? { constrainToAvailableModelIds: true } : {})}
+                        {...(mode === "fork" ? { filter: forkModelFilter } : {})}
                         {...(onOpenSignIn ? { onOpenSignIn } : {})}
                       />
                     </div>

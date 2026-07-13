@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
+  AI_STATUS_CACHE_UPDATED_EVENT,
   getAgentChatModelsCached,
   getAiStatusCached,
   invalidateAiDiscoveryCache,
   peekAiStatusCached,
   type AiStatusCacheInvalidatedEventDetail,
+  type AiStatusCacheUpdatedEventDetail,
 } from "./aiDiscoveryCache";
 
 const getStatusMock = vi.fn();
@@ -205,5 +207,30 @@ describe("aiDiscoveryCache", () => {
       { projectRoot: "/project/a", allProjects: false },
       { projectRoot: null, allProjects: true },
     ]);
+  });
+
+  it("emits one project-scoped update after a fresh status request", async () => {
+    const events: AiStatusCacheUpdatedEventDetail[] = [];
+    const listener = (event: Event) => {
+      events.push((event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail);
+    };
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, listener);
+    getStatusMock.mockResolvedValueOnce({
+      mode: "subscription",
+      availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+    });
+
+    try {
+      await getAiStatusCached({ projectRoot: " /project/a " });
+      await getAiStatusCached({ projectRoot: "/project/a" });
+    } finally {
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, listener);
+    }
+
+    expect(events).toEqual([{ projectRoot: "/project/a" }]);
+    expect(getStatusMock).toHaveBeenCalledTimes(1);
+    expect(peekAiStatusCached("/project/a")?.mode).toBe("subscription");
   });
 });

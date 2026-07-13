@@ -4950,8 +4950,8 @@ export function AgentChatPane({
       .map((model) => model.id);
     const extras = filtered.filter((modelId) => !ordered.includes(modelId));
     extras.sort((left, right) => {
-      const leftLabel = getModelById(left)?.displayName ?? left;
-      const rightLabel = getModelById(right)?.displayName ?? right;
+      const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left)?.displayName ?? left;
+      const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right)?.displayName ?? right;
       return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
     });
     return [...ordered, ...extras];
@@ -4968,7 +4968,7 @@ export function AgentChatPane({
   );
   const chatActionsHandoffActive = chatActionsOpen && chatActionsTab === "handoff";
   const handoffTargetDescriptor = useMemo(
-    () => (handoffModelId ? (getModelById(handoffModelId) ?? null) : null),
+    () => (handoffModelId ? (resolveModelDescriptorWithRuntimeCatalog(handoffModelId) ?? null) : null),
     [handoffModelId],
   );
   const handoffTargetProvider = useMemo(
@@ -4980,11 +4980,15 @@ export function AgentChatPane({
   // model may still change within it — so the fork model picker is constrained
   // to same-provider models below.
   const handoffForkSupported = providerSupportsHandoffFork(selectedSession?.provider);
+  const handoffForkModelFilter = useCallback((descriptor: ModelDescriptor) => {
+    const sourceProvider = selectedSession?.provider;
+    return Boolean(sourceProvider && resolveProviderGroupForModel(descriptor) === sourceProvider);
+  }, [selectedSession?.provider]);
   const handoffForkAvailableModelIds = useMemo(() => {
     const sourceProvider = selectedSession?.provider;
     if (!sourceProvider) return [] as string[];
     return handoffAvailableModelIds.filter((id) => {
-      const desc = getModelById(id);
+      const desc = resolveModelDescriptorWithRuntimeCatalog(id);
       return desc ? resolveProviderGroupForModel(desc) === sourceProvider : false;
     });
   }, [handoffAvailableModelIds, selectedSession?.provider]);
@@ -5033,7 +5037,7 @@ export function AgentChatPane({
   // provider independently of the local-handoff picker. Reasoning/permission
   // fields still inherit the source-session-derived handoff defaults.
   const remoteHandoffTargetDescriptor = useMemo(
-    () => (remoteHandoffModelId ? (getModelById(remoteHandoffModelId) ?? null) : null),
+    () => (remoteHandoffModelId ? (resolveModelDescriptorWithRuntimeCatalog(remoteHandoffModelId) ?? null) : null),
     [remoteHandoffModelId],
   );
   const remoteHandoffTargetProvider = useMemo(
@@ -9949,8 +9953,8 @@ export function AgentChatPane({
                 value={handoffModelId}
                 onChange={setHandoffModelId}
                 surfaceKey="chat-handoff"
-                availableModelIds={handoffForkAvailableModelIds}
-                constrainToAvailableModelIds
+                availableModelIds={handoffAvailableModelIds}
+                filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
               />
               <ReasoningEffortPicker

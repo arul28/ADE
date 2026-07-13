@@ -12,6 +12,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerResult,
+  AiSettingsStatus,
   PrSummary,
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
@@ -464,6 +465,7 @@ function installAdeMocks(options?: {
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
   includeClaudeModel?: boolean;
   cursorModels?: Array<{ id: string }>;
+  aiStatus?: AiSettingsStatus;
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
 }) {
@@ -545,7 +547,9 @@ function installAdeMocks(options?: {
       }),
     },
     ai: {
-      getStatus: vi.fn().mockRejectedValue(new Error("no ai status")),
+      getStatus: options?.aiStatus
+        ? vi.fn().mockResolvedValue(options.aiStatus)
+        : vi.fn().mockRejectedValue(new Error("no ai status")),
     },
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
@@ -3905,6 +3909,51 @@ describe("AgentChatPane submit recovery", () => {
     });
     expect(screen.getAllByText("Cursor Both").length).toBeGreaterThan(0);
     expect(screen.queryByText("Cursor CLI Only")).toBeNull();
+  });
+
+  it("shows authenticated OpenAI handoff models when detected model ids lag auth status", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "sonnet",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    installAdeMocks({
+      sessions: [session],
+      aiStatus: {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: true, source: "bundled", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [],
+        availableModelIds: [],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+
+    const openAiModel = await screen.findByRole("option", { name: "GPT-5.4" });
+    expect(openAiModel.getAttribute("data-model-id")).toBe("openai/gpt-5.4");
+    expect(openAiModel.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(openAiModel);
+    expect(await screen.findByRole("button", { name: /Select model \(current: GPT-5\.4\)/i })).toBeTruthy();
   });
 
   it("hides chat handoff when the pane cannot open the created work chat", async () => {

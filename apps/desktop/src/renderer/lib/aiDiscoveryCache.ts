@@ -17,10 +17,15 @@ type ModelsCacheEntry = {
 const DEFAULT_AI_STATUS_TTL_MS = 10_000;
 const DEFAULT_MODELS_TTL_MS = 30_000;
 export const AI_STATUS_CACHE_INVALIDATED_EVENT = "ade:ai-status-cache-invalidated";
+export const AI_STATUS_CACHE_UPDATED_EVENT = "ade:ai-status-cache-updated";
 
 export type AiStatusCacheInvalidatedEventDetail = {
   projectRoot: string | null;
   allProjects: boolean;
+};
+
+export type AiStatusCacheUpdatedEventDetail = {
+  projectRoot: string | null;
 };
 
 const aiStatusCache = new Map<string, StatusCacheEntry>();
@@ -40,6 +45,15 @@ function emitAiStatusCacheInvalidated(detail: AiStatusCacheInvalidatedEventDetai
   window.dispatchEvent(new CustomEvent<AiStatusCacheInvalidatedEventDetail>(
     AI_STATUS_CACHE_INVALIDATED_EVENT,
     { detail },
+  ));
+}
+
+function emitAiStatusCacheUpdated(projectRoot: string | null | undefined): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  if (typeof CustomEvent === "undefined") return;
+  window.dispatchEvent(new CustomEvent<AiStatusCacheUpdatedEventDetail>(
+    AI_STATUS_CACHE_UPDATED_EVENT,
+    { detail: { projectRoot: projectRoot?.trim() || null } },
   ));
 }
 
@@ -111,6 +125,7 @@ export async function getAiStatusCached(args: {
         includesOpenCodeInventory: requiresOpenCodeInventory,
         inFlightIncludesOpenCodeInventory: false,
       });
+      emitAiStatusCacheUpdated(args.projectRoot);
     }
     return status;
   }).catch((error) => {

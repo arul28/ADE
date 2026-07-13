@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { familiesFromStatus, opencodeBinaryInstalledFromStatus } from "./useProviderAuthStatus";
+/* @vitest-environment jsdom */
+
+import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { ProjectInfo } from "../../../../shared/types";
+import { invalidateAiDiscoveryCache } from "../../../lib/aiDiscoveryCache";
+import { useAppStore } from "../../../state/appStore";
+import {
+  familiesFromStatus,
+  opencodeBinaryInstalledFromStatus,
+  resetProviderAuthStatusForTests,
+  useProviderAuthStatus,
+} from "./useProviderAuthStatus";
 
 // `familiesFromStatus` is the pure mapper inside useProviderAuthStatus.
 // We test it directly so the Claude availability shape (object with binary/auth,
@@ -122,5 +134,123 @@ describe("opencodeBinaryInstalledFromStatus", () => {
   it("returns false for non-boolean truthy values (defensive)", () => {
     expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: "yes" })).toBe(false);
     expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: 1 })).toBe(false);
+  });
+});
+
+describe("useProviderAuthStatus", () => {
+  beforeEach(() => {
+    resetProviderAuthStatusForTests();
+  });
+
+  afterEach(() => {
+    cleanup();
+    invalidateAiDiscoveryCache();
+    useAppStore.setState({ project: null, projectBinding: null });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+  });
+
+  it("shares one project-scoped status request across concurrent picker consumers", async () => {
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [],
+    });
+    const isOpenCodeInstalled = vi.fn()
+      .mockResolvedValueOnce({ installed: true })
+      .mockResolvedValueOnce({ installed: false });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    useAppStore.setState({
+      project: {
+        rootPath: "/project/shared-auth",
+        displayName: "Shared auth",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: null,
+    });
+
+    function ConcurrentConsumers() {
+      const first = useProviderAuthStatus();
+      const second = useProviderAuthStatus();
+      return React.createElement(
+        "div",
+        null,
+        `${first.status.openai}:${second.status.openai}:${String(first.opencodeBinaryInstalled)}`,
+      );
+    }
+
+    render(React.createElement(ConcurrentConsumers));
+
+    expect(await screen.findByText("ok:ok:true")).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      useAppStore.setState({
+        project: {
+          rootPath: "/project/other-runtime",
+          displayName: "Other runtime",
+          baseRef: "main",
+        } satisfies ProjectInfo,
+      });
+    });
+
+    expect(await screen.findByText("ok:ok:false")).toBeTruthy();
+    expect(isOpenCodeInstalled).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips status discovery when the picker already received auth state", async () => {
+    const getStatus = vi.fn();
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: true });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ai: {
+          getStatus,
+          isOpenCodeInstalled,
+        },
+      },
+    });
+    useAppStore.setState({
+      project: {
+        rootPath: "/project/external-auth",
+        displayName: "External auth",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: null,
+    });
+
+    function ExternalAuthConsumer() {
+      const auth = useProviderAuthStatus({ loadStatus: false });
+      return React.createElement("div", null, auth.loaded ? "loaded" : "idle");
+    }
+
+    render(React.createElement(ExternalAuthConsumer));
+
+    expect(screen.getByText("idle")).toBeTruthy();
+    expect(getStatus).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
+    });
   });
 });
