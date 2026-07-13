@@ -736,7 +736,10 @@ declare global {
           args?: ProjectBrowseInput,
         ) => Promise<ProjectBrowseResult>;
         getDetail: (rootPath: string) => Promise<ProjectDetail>;
-        inspectPath: (path: string) => Promise<ProjectPathInspection>;
+        inspectPath: (
+          path: string,
+          opts?: { fresh?: boolean },
+        ) => Promise<ProjectPathInspection>;
         resolveIcon: (rootPath: string) => Promise<ProjectIcon>;
         chooseIcon: (rootPath: string) => Promise<ProjectIcon | null>;
         removeIcon: (rootPath: string) => Promise<ProjectIcon>;

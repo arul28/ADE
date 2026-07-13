@@ -55,6 +55,7 @@ import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
+import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { ReadmeMarkdown } from "./ReadmeMarkdown";
 import { RemoteProjectOpenDialog } from "../projects/RemoteProjectOpenDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
@@ -101,7 +102,7 @@ type BrowseRow = {
   path: string;
   kind: "parent" | "directory";
   isGitRepo: boolean;
-  worktreeOf?: WorktreeParentRef | null;
+  worktreeOf?: WorktreeParentRef;
 };
 
 type ProjectLocation =
@@ -840,7 +841,7 @@ export function CommandPalette({
         path: withTrailingSeparator(entry.fullPath),
         kind: "directory",
         isGitRepo: entry.isGitRepo,
-        worktreeOf: entry.worktreeOf ?? null,
+        worktreeOf: entry.worktreeOf,
       });
     }
     return rows;
@@ -2000,23 +2001,10 @@ export function CommandPalette({
                                               {row.title}
                                             </span>
                                             {row.worktreeOf ? (
-                                              <span
-                                                title={`Worktree of ${row.worktreeOf.displayName}`}
-                                                className="inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
-                                                style={{
-                                                  background:
-                                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                                                  borderColor:
-                                                    "color-mix(in srgb, var(--color-accent) 30%, transparent)",
-                                                  color: "var(--color-accent)",
-                                                }}
-                                              >
-                                                <TreeStructure
-                                                  size={9}
-                                                  weight="bold"
-                                                />
-                                                worktree
-                                              </span>
+                                              <WorktreeBadge
+                                                worktreeOf={row.worktreeOf}
+                                                compact
+                                              />
                                             ) : null}
                                           </div>
                                           <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">

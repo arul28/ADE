@@ -3361,8 +3361,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.projectBrowseDirectories, args),
     getDetail: async (rootPath: string): Promise<ProjectDetail> =>
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
-    inspectPath: async (path: string): Promise<ProjectPathInspection> =>
-      ipcRenderer.invoke(IPC.projectInspectPath, { path }),
+    inspectPath: async (
+      path: string,
+      opts?: { fresh?: boolean },
+    ): Promise<ProjectPathInspection> =>
+      ipcRenderer.invoke(IPC.projectInspectPath, { path, fresh: opts?.fresh }),
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
       projectIconCache.get(rootPath),
     chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>

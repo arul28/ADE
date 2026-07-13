@@ -20,7 +20,10 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import { inspectProjectPath } from "../projects/projectPathInspector";
+import {
+  inspectProjectPathCached,
+  invalidateProjectPathInspectionCache,
+} from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   removeProjectIconOverride,
@@ -3649,44 +3652,10 @@ export function registerIpc({
     }
   );
 
-  const PROJECT_PATH_INSPECTION_CACHE_TTL_MS = 10_000;
-  const projectPathInspectionCache = new Map<string, {
-    expiresAtMs: number;
-    promise: Promise<ProjectPathInspection>;
-  }>();
-  const getCachedProjectPathInspection = (selectedPath: string): Promise<ProjectPathInspection> => {
-    const now = Date.now();
-    const cached = projectPathInspectionCache.get(selectedPath);
-    if (cached && (cached.expiresAtMs > now || cached.expiresAtMs === Number.POSITIVE_INFINITY)) {
-      return cached.promise;
-    }
-    const promise = inspectProjectPath(selectedPath);
-    projectPathInspectionCache.set(selectedPath, {
-      expiresAtMs: Number.POSITIVE_INFINITY,
-      promise,
-    });
-    if (projectPathInspectionCache.size > 64) {
-      const oldestKey = projectPathInspectionCache.keys().next().value;
-      if (typeof oldestKey === "string") projectPathInspectionCache.delete(oldestKey);
-    }
-    promise.then(() => {
-      const current = projectPathInspectionCache.get(selectedPath);
-      if (current?.promise === promise) {
-        current.expiresAtMs = Date.now() + PROJECT_PATH_INSPECTION_CACHE_TTL_MS;
-      }
-    });
-    promise.catch(() => {
-      if (projectPathInspectionCache.get(selectedPath)?.promise === promise) {
-        projectPathInspectionCache.delete(selectedPath);
-      }
-    });
-    return promise;
-  };
-
   ipcMain.handle(
     IPC.projectInspectPath,
-    async (_event, arg: { path?: unknown } = {}): Promise<ProjectPathInspection> =>
-      getCachedProjectPathInspection(String(arg?.path ?? "")),
+    async (_event, arg: { path?: unknown; fresh?: unknown } = {}): Promise<ProjectPathInspection> =>
+      inspectProjectPathCached(String(arg?.path ?? ""), { fresh: arg?.fresh === true }),
   );
 
   // Project-root allowlist for icon resolution. Tab/catalog icons are
@@ -5180,6 +5149,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.attach(arg);
+    invalidateProjectPathInspectionCache();
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;

@@ -67,6 +67,7 @@ import type {
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
 
 type LaneRow = {
   id: string;
@@ -5535,9 +5536,21 @@ export function createLaneService({
       );
       if (existingPath?.id) {
         if (existingPath.status === "archived") {
-          throw new Error(`This worktree is already linked as archived lane '${existingPath.name}'. Unarchive it instead.`);
+          throw codedError(
+            encodeCodedErrorMessage(
+              "lane_already_linked",
+              `This worktree is already linked as archived lane '${existingPath.name}'. Unarchive it instead.`,
+            ),
+            "lane_already_linked",
+          );
         }
-        throw new Error(`This worktree is already linked as lane '${existingPath.name}'.`);
+        throw codedError(
+          encodeCodedErrorMessage(
+            "lane_already_linked",
+            `This worktree is already linked as lane '${existingPath.name}'.`,
+          ),
+          "lane_already_linked",
+        );
       }
 
       const existingBranch = db.get<{ id: string; name: string; status: string; worktree_path: string }>(
@@ -5546,9 +5559,21 @@ export function createLaneService({
       );
       if (existingBranch?.id && normAbs(existingBranch.worktree_path) !== attachedPath) {
         if (existingBranch.status === "archived") {
-          throw new Error(`Branch '${branchRef}' is already linked to archived lane '${existingBranch.name}'. Unarchive it instead.`);
+          throw codedError(
+            encodeCodedErrorMessage(
+              "lane_already_linked",
+              `Branch '${branchRef}' is already linked to archived lane '${existingBranch.name}'. Unarchive it instead.`,
+            ),
+            "lane_already_linked",
+          );
         }
-        throw new Error(`Branch '${branchRef}' is already linked to lane '${existingBranch.name}'.`);
+        throw codedError(
+          encodeCodedErrorMessage(
+            "lane_already_linked",
+            `Branch '${branchRef}' is already linked to lane '${existingBranch.name}'.`,
+          ),
+          "lane_already_linked",
+        );
       }
 
       const laneId = randomUUID();

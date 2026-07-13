@@ -1683,7 +1683,7 @@ export function TopBar({
         }
         return;
       }
-      switchProjectToPath(rootPath).catch(() => {});
+      switchProjectToPath(rootPath, { skipWorktreeGate: true }).catch(() => {});
     },
     [project?.rootPath, switchProjectToPath, windowId],
   );

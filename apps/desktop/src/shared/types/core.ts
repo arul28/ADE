@@ -368,7 +368,7 @@ export type ProjectBrowseEntry = {
    * When the entry is a linked git worktree, the repo it belongs to. Populated
    * cheaply from the `.git` gitdir pointer (no git shell-out) for git entries.
    */
-  worktreeOf?: WorktreeParentRef | null;
+  worktreeOf?: WorktreeParentRef;
 };
 
 export type ProjectLanguageShare = {
@@ -391,7 +391,7 @@ export type ProjectDirtyBreakdown = {
 export type ProjectDetail = {
   rootPath: string;
   isGitRepo: boolean;
-  worktreeOf?: WorktreeParentRef | null;
+  worktreeOf?: WorktreeParentRef;
   branchName: string | null;
   dirtyCount: number | null;
   /** Split of the dirty count into staged / unstaged / untracked for the hover tooltip. */
@@ -441,7 +441,7 @@ export type RecentProjectSummary = {
   displayName: string;
   lastOpenedAt: string;
   exists: boolean;
-  worktreeOf?: WorktreeParentRef | null;
+  worktreeOf?: WorktreeParentRef;
   laneCount?: number;
   /** Defaults to "local" when absent (back-compat with older callers). */
   kind?: "local" | "remote";

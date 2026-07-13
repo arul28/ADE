@@ -5227,6 +5227,14 @@ describe("laneService attach", () => {
         color: summary.color,
         lane: summary,
       });
+      await expect(service.attach({
+        name: "Attached feature again",
+        attachedPath,
+      })).rejects.toMatchObject({
+        code: "lane_already_linked",
+        message:
+          "lane_already_linked: This worktree is already linked as lane 'Attached feature'.",
+      });
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });

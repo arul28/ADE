@@ -41,6 +41,7 @@ export function resolveWorktreeParentRef(worktreeRoot: string): WorktreeParentRe
 
   const pointerTarget = readGitDirPointer(worktreeRoot);
   if (!pointerTarget) return null;
+  if (path.basename(path.dirname(pointerTarget)) !== "worktrees") return null;
 
   const commonGitDir = path.dirname(path.dirname(pointerTarget));
   if (path.basename(commonGitDir) !== ".git") return null;

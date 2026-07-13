@@ -9,9 +9,9 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { ProjectPathInspection } from "../../../shared/types";
-import { extractError } from "../../lib/format";
+import { parseCodedErrorMessage } from "../../../shared/codedError";
 import { fadeScale } from "../../lib/motion";
+import { abbreviateHome } from "../../lib/pathUtils";
 import { useAppStore } from "../../state/appStore";
 import {
   COLORS,
@@ -20,28 +20,9 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { deriveLaneName, openWorktreeAsLane } from "./worktreeLaneFlow";
 
 const DOCS_URL = "https://www.ade-app.dev/docs/lanes/repos-and-worktrees";
-
-function basename(input: string): string {
-  const parts = input.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? input;
-}
-
-// Abbreviate the user's home directory to `~` for compact local paths.
-function abbreviateHome(input: string): string {
-  const home = typeof process !== "undefined" ? (process.env?.HOME ?? "") : "";
-  if (home && (input === home || input.startsWith(`${home}/`))) {
-    return `~${input.slice(home.length)}`;
-  }
-  return input;
-}
-
-function deriveLaneName(inspection: ProjectPathInspection): string {
-  const fromBranch = inspection.branchRef?.trim();
-  if (fromBranch) return fromBranch;
-  return inspection.worktreeRoot ? basename(inspection.worktreeRoot) : "worktree";
-}
 
 type BusyKind = "lane" | "standalone" | null;
 
@@ -69,59 +50,25 @@ export function WorktreeOpenDialog() {
     dismiss();
   }, [busy, dismiss]);
 
-  const goToLane = useCallback(
-    (laneId: string) => {
-      setBusy(null);
-      setError(null);
-      dismiss();
-      navigate(`/lanes?laneId=${laneId}&focus=single`);
-    },
-    [dismiss, navigate],
-  );
-
   const openAsLane = useCallback(async () => {
     if (!inspection || !parent || !inspection.worktreeRoot) return;
     setBusy("lane");
     setError(null);
     try {
-      await switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
-      if (parent.existingLane) {
-        goToLane(parent.existingLane.id);
-        return;
-      }
-      try {
-        const lane = await window.ade.lanes.attach({
-          name: derivedLaneName,
-          attachedPath: inspection.worktreeRoot,
-        });
-        goToLane(lane.id);
-      } catch (attachErr) {
-        const message = extractError(attachErr);
-        // The worktree/branch may already be linked as a lane (attach errors
-        // carry only the lane NAME, not its id). Re-inspect to resolve the id
-        // and jump to the existing lane instead of surfacing a hard error.
-        if (/already linked/i.test(message)) {
-          try {
-            const fresh = await window.ade.project.inspectPath(
-              inspection.worktreeRoot,
-            );
-            const laneId = fresh.parent?.existingLane?.id ?? null;
-            if (laneId) {
-              goToLane(laneId);
-              return;
-            }
-          } catch {
-            // Fall through to the inline error below.
-          }
-        }
-        setError(message);
-        setBusy(null);
-      }
-    } catch (switchErr) {
-      setError(extractError(switchErr));
+      await openWorktreeAsLane(inspection, {
+        switchProjectToPath,
+        navigate: (path) => {
+          setBusy(null);
+          setError(null);
+          dismiss();
+          navigate(path);
+        },
+      });
+    } catch (err) {
+      setError(parseCodedErrorMessage(err).message);
       setBusy(null);
     }
-  }, [derivedLaneName, goToLane, inspection, parent, switchProjectToPath]);
+  }, [dismiss, inspection, navigate, parent, switchProjectToPath]);
 
   const openStandalone = useCallback(async () => {
     if (!inspection?.worktreeRoot) return;
@@ -134,7 +81,7 @@ export function WorktreeOpenDialog() {
       setBusy(null);
       dismiss();
     } catch (err) {
-      setError(extractError(err));
+      setError(parseCodedErrorMessage(err).message);
       setBusy(null);
     }
   }, [dismiss, inspection, switchProjectToPath]);

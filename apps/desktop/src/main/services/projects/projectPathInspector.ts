@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
@@ -12,14 +11,7 @@ import {
   realpathIfExists,
 } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { runGit } from "../git/git";
-
-type DatabaseSyncConstructor = new (
-  dbPath: string,
-  options?: { allowExtension?: boolean; readOnly?: boolean },
-) => DatabaseSyncType;
-
-const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+import { hasColumn, hasTable, openReadOnlyDatabase } from "./readOnlySqlite";
 
 type ExistingLaneRow = {
   id: string;
@@ -30,13 +22,6 @@ type ExistingLaneRow = {
   worktree_path: string | null;
   attached_root_path: string | null;
 };
-
-function hasTable(db: DatabaseSyncType, tableName: string): boolean {
-  return Boolean(
-    db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-      .get<{ present?: number }>(tableName)?.present,
-  );
-}
 
 export function normalizeInspectionPath(value: string | null | undefined): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -52,7 +37,7 @@ export function readExistingParentLane(
 
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
     if (!hasTable(db, "projects") || !hasTable(db, "lanes")) return null;
 
@@ -100,7 +85,7 @@ export function readStandaloneProjectState(
 
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
 
     const laneCount = hasTable(db, "lanes")
@@ -110,11 +95,29 @@ export function readStandaloneProjectState(
           from lanes
           where coalesce(status, 'active') != 'archived'
             and archived_at is null
+            and lane_type != 'primary'
         `,
       ).get<{ count?: number }>()?.count ?? 0
       : 0;
-    const chatCount = hasTable(db, "claude_sessions")
-      ? db.prepare("select count(1) as count from claude_sessions")
+    // Legacy chat rows predate per-provider tool types and were persisted as
+    // tool_type 'other' with a 'chat:' resume command (see sessionService's
+    // chat enumeration) — count them too or old worktree DBs undercount.
+    const includeLegacyChatRows = hasColumn(db, "terminal_sessions", "resume_command");
+    const chatCount = hasTable(db, "terminal_sessions")
+      && hasColumn(db, "terminal_sessions", "tool_type")
+      ? db.prepare(
+        `
+          select count(1) as count
+          from terminal_sessions
+          where (
+            tool_type is not null
+            and (lower(tool_type) like '%-chat' or lower(tool_type) = 'cursor')
+          )
+          ${includeLegacyChatRows
+            ? "or (tool_type = 'other' and lower(coalesce(resume_command, '')) like 'chat:%')"
+            : ""}
+        `,
+      )
         .get<{ count?: number }>()?.count ?? 0
       : 0;
 
@@ -248,4 +251,52 @@ export async function inspectProjectPath(selectedPath: string): Promise<ProjectP
     parent: parentRoot ? toParentInfo(parentRoot, worktreeRoot) : null,
     standaloneState,
   };
+}
+
+const PROJECT_PATH_INSPECTION_CACHE_TTL_MS = 10_000;
+const PROJECT_PATH_INSPECTION_CACHE_MAX_ENTRIES = 64;
+const projectPathInspectionCache = new Map<string, {
+  expiresAtMs: number;
+  promise: Promise<ProjectPathInspection>;
+}>();
+
+export function inspectProjectPathCached(
+  selectedPath: string,
+  opts: { fresh?: boolean } = {},
+): Promise<ProjectPathInspection> {
+  const now = Date.now();
+  const cached = projectPathInspectionCache.get(selectedPath);
+  if (!opts.fresh && cached && cached.expiresAtMs > now) {
+    return cached.promise;
+  }
+
+  const promise = inspectProjectPath(selectedPath);
+  projectPathInspectionCache.delete(selectedPath);
+  projectPathInspectionCache.set(selectedPath, {
+    expiresAtMs: Number.POSITIVE_INFINITY,
+    promise,
+  });
+  if (projectPathInspectionCache.size > PROJECT_PATH_INSPECTION_CACHE_MAX_ENTRIES) {
+    const oldestKey = projectPathInspectionCache.keys().next().value;
+    if (typeof oldestKey === "string") projectPathInspectionCache.delete(oldestKey);
+  }
+
+  void promise.then(
+    () => {
+      const current = projectPathInspectionCache.get(selectedPath);
+      if (current?.promise === promise) {
+        current.expiresAtMs = Date.now() + PROJECT_PATH_INSPECTION_CACHE_TTL_MS;
+      }
+    },
+    () => {
+      if (projectPathInspectionCache.get(selectedPath)?.promise === promise) {
+        projectPathInspectionCache.delete(selectedPath);
+      }
+    },
+  );
+  return promise;
+}
+
+export function invalidateProjectPathInspectionCache(): void {
+  projectPathInspectionCache.clear();
 }

@@ -13,7 +13,6 @@ import {
   PushPin,
   Stop,
   Terminal,
-  TreeStructure,
   X,
 } from "@phosphor-icons/react";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -29,7 +28,9 @@ import {
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
 import { MergeWorktreeProjectDialog } from "../projects/MergeWorktreeProjectDialog";
+import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
+import { abbreviateHome } from "../../lib/pathUtils";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import {
   AddCommandDialog,
@@ -441,16 +442,6 @@ function recentKey(rp: RecentProjectSummary): string {
     : rp.rootPath;
 }
 
-// Abbreviate the user's home directory to `~` for compact local paths.
-function abbreviateHome(path: string): string {
-  const home =
-    typeof process !== "undefined" ? (process.env?.HOME ?? "") : "";
-  if (home && (path === home || path.startsWith(`${home}/`))) {
-    return `~${path.slice(home.length)}`;
-  }
-  return path;
-}
-
 // A single recents row. Local rows resolve a project icon (and tint their tile
 // with the sampled accent); remote rows use a host-resolved icon when present,
 // plus the amber machine badge and connection dot. Offline remote rows are
@@ -632,37 +623,7 @@ function RecentProjectRow({
               </span>
             ) : null}
             {!isRemote && rp.worktreeOf ? (
-              <span
-                title={`Worktree of ${rp.worktreeOf.displayName}`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: "0.04em",
-                  textTransform: "uppercase",
-                  padding: "2px 7px",
-                  borderRadius: 8,
-                  maxWidth: 180,
-                  overflow: "hidden",
-                  background: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
-                  color: COLORS.accent,
-                  border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
-                  flexShrink: 0,
-                }}
-              >
-                <TreeStructure size={10} weight="bold" style={{ flexShrink: 0 }} />
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  worktree of {rp.worktreeOf.displayName}
-                </span>
-              </span>
+              <WorktreeBadge worktreeOf={rp.worktreeOf} />
             ) : null}
           </div>
           <div

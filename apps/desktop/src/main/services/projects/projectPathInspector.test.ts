@@ -7,7 +7,11 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getProjectDetail } from "./projectDetailService";
-import { inspectProjectPath } from "./projectPathInspector";
+import {
+  inspectProjectPath,
+  inspectProjectPathCached,
+  invalidateProjectPathInspectionCache,
+} from "./projectPathInspector";
 import { toShallowRecentProjectSummary } from "./recentProjectSummary";
 import { resolveWorktreeParentRef } from "./worktreeParent";
 
@@ -96,6 +100,7 @@ function createParentDatabase(mainRoot: string, worktreeRoot: string): void {
 }
 
 afterEach(() => {
+  invalidateProjectPathInspectionCache();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
@@ -166,7 +171,7 @@ describe("inspectProjectPath", () => {
     });
   });
 
-  it("counts active standalone lanes and chat sessions in the worktree database", async () => {
+  it("excludes the primary lane and counts only chat terminal sessions", async () => {
     const { fixtureRoot, mainRoot } = createRepo("ade-path-inspector-standalone-");
     const worktreeRoot = path.join(fixtureRoot, "wt-a");
     addWorktree(mainRoot, worktreeRoot, "feat-a");
@@ -175,14 +180,27 @@ describe("inspectProjectPath", () => {
     const db = new DatabaseSync(dbPath);
     try {
       db.exec(`
-        create table lanes(id text primary key, status text, archived_at text);
-        create table claude_sessions(session_id text primary key);
-        insert into lanes values ('lane-a', 'active', null);
-        insert into lanes values ('lane-b', null, null);
-        insert into lanes values ('lane-archived', 'archived', '2026-07-13T00:00:00.000Z');
-        insert into claude_sessions values ('chat-a');
-        insert into claude_sessions values ('chat-b');
-        insert into claude_sessions values ('chat-c');
+        create table lanes(
+          id text primary key,
+          status text,
+          archived_at text,
+          lane_type text not null
+        );
+        create table terminal_sessions(
+          session_id text primary key,
+          tool_type text,
+          resume_command text
+        );
+        insert into lanes values ('lane-primary', 'active', null, 'primary');
+        insert into lanes values ('lane-a', 'active', null, 'attached');
+        insert into lanes values ('lane-b', null, null, 'worktree');
+        insert into lanes values ('lane-archived', 'archived', '2026-07-13T00:00:00.000Z', 'attached');
+        insert into terminal_sessions values ('chat-codex', 'codex-chat', null);
+        insert into terminal_sessions values ('chat-cursor', 'cursor', null);
+        insert into terminal_sessions values ('legacy-chat', 'other', 'chat:resume-abc');
+        insert into terminal_sessions values ('other-shell', 'other', null);
+        insert into terminal_sessions values ('plain-shell', 'shell', null);
+        insert into terminal_sessions values ('missing-tool', null, null);
       `);
     } finally {
       db.close();
@@ -191,6 +209,21 @@ describe("inspectProjectPath", () => {
     const inspection = await inspectProjectPath(worktreeRoot);
 
     expect(inspection.standaloneState).toEqual({ chatCount: 3, laneCount: 2 });
+  });
+
+  it("supports cached reads, fresh bypasses, and explicit invalidation", async () => {
+    const { mainRoot } = createRepo("ade-path-inspector-cache-");
+
+    expect((await inspectProjectPathCached(mainRoot)).branchRef).toBe("main");
+    git(mainRoot, ["checkout", "-b", "feature/cache-fresh"]);
+    expect((await inspectProjectPathCached(mainRoot)).branchRef).toBe("main");
+    expect((await inspectProjectPathCached(mainRoot, { fresh: true })).branchRef)
+      .toBe("feature/cache-fresh");
+
+    git(mainRoot, ["checkout", "-b", "feature/cache-invalidated"]);
+    invalidateProjectPathInspectionCache();
+    expect((await inspectProjectPathCached(mainRoot)).branchRef)
+      .toBe("feature/cache-invalidated");
   });
 
   it("returns a null branch for a detached worktree", async () => {
@@ -253,5 +286,21 @@ describe("worktree parent disk metadata", () => {
     const { mainRoot } = createRepo("ade-worktree-parent-root-");
 
     expect(resolveWorktreeParentRef(mainRoot)).toBeNull();
+  });
+
+  it("does not misclassify a submodule gitdir pointer as a worktree", () => {
+    const fixtureRoot = makeTempDir("ade-worktree-parent-submodule-");
+    const superRoot = path.join(fixtureRoot, "super");
+    const submoduleRoot = path.join(superRoot, "vendor", "dependency");
+    const pointerTarget = path.join(superRoot, ".git", "modules", "dependency");
+    fs.mkdirSync(pointerTarget, { recursive: true });
+    fs.mkdirSync(submoduleRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(submoduleRoot, ".git"),
+      `gitdir: ${pointerTarget}\n`,
+      "utf8",
+    );
+
+    expect(resolveWorktreeParentRef(submoduleRoot)).toBeNull();
   });
 });

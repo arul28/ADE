@@ -2,6 +2,15 @@ function normalizeSeparators(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
+/** Abbreviate the user's home directory to `~` for compact local paths. */
+export function abbreviateHome(value: string): string {
+  const home = typeof process !== "undefined" ? (process.env?.HOME ?? "") : "";
+  if (home && (value === home || value.startsWith(`${home}/`))) {
+    return `~${value.slice(home.length)}`;
+  }
+  return value;
+}
+
 function isWindowsDriveRoot(value: string): boolean {
   return /^[A-Za-z]:\/$/.test(value);
 }

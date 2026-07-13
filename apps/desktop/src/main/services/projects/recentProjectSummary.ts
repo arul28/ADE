@@ -1,19 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { RecentProjectSummary } from "../../../shared/types";
 import type { RecentProjectRemote } from "../state/globalState";
+import { hasTable, openReadOnlyDatabase } from "./readOnlySqlite";
 import { resolveGitMetadataDirectory, resolveWorktreeParentRef } from "./worktreeParent";
-
-type DatabaseSyncConstructor = new (
-  dbPath: string,
-  options?: { allowExtension?: boolean; readOnly?: boolean },
-) => DatabaseSyncType;
-
-const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 type RecentProjectEntry = {
   rootPath: string;
@@ -50,13 +42,6 @@ function laneExistsOnDisk(row: LaneCountRow, projectRoot: string): boolean {
   return candidatePath ? fs.existsSync(candidatePath) : false;
 }
 
-function hasTable(db: DatabaseSyncType, tableName: string): boolean {
-  return Boolean(
-    db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-      .get<{ present?: number }>(tableName)?.present,
-  );
-}
-
 type AdeProjectInspection = {
   projectId: string | null;
   defaultBaseRef: string | null;
@@ -75,7 +60,7 @@ function inspectAdeProject(projectRoot: string): AdeProjectInspection {
 
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 5000");
     const hasProjectsTable = hasTable(db, "projects");
     const hasLanesTable = hasTable(db, "lanes");

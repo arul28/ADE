@@ -3,30 +3,21 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { AnimatePresence, motion } from "motion/react";
 import { CircleNotch, GitMerge, X } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
+import { parseCodedErrorMessage } from "../../../shared/codedError";
 import type {
   ProjectPathInspection,
   RecentProjectSummary,
 } from "../../../shared/types";
-import { extractError } from "../../lib/format";
 import { fadeScale } from "../../lib/motion";
 import { useAppStore } from "../../state/appStore";
+import { showToast } from "../app/toast/toastStore";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
   outlineButton,
 } from "../lanes/laneDesignTokens";
-
-function basename(input: string): string {
-  const parts = input.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? input;
-}
-
-function deriveLaneName(inspection: ProjectPathInspection): string {
-  const fromBranch = inspection.branchRef?.trim();
-  if (fromBranch) return fromBranch;
-  return inspection.worktreeRoot ? basename(inspection.worktreeRoot) : "worktree";
-}
+import { openWorktreeAsLane } from "./worktreeLaneFlow";
 
 function retiredWorkLine(
   state: { chatCount: number; laneCount: number } | null,
@@ -70,14 +61,14 @@ export function MergeWorktreeProjectDialog({
     setLoading(true);
     setError(null);
     void window.ade.project
-      .inspectPath(recent.rootPath)
+      .inspectPath(recent.rootPath, { fresh: true })
       .then((result) => {
         if (cancelledRef.current) return;
         setInspection(result);
       })
       .catch((err) => {
         if (cancelledRef.current) return;
-        setError(extractError(err));
+        setError(parseCodedErrorMessage(err).message);
       })
       .finally(() => {
         if (cancelledRef.current) return;
@@ -88,8 +79,8 @@ export function MergeWorktreeProjectDialog({
     };
   }, [recent.rootPath]);
 
-  const parent = inspection?.parent ?? recent.worktreeOf ?? null;
-  const parentName = parent?.displayName ?? recent.worktreeOf?.displayName ?? "";
+  const parent = inspection?.parent ?? recent.worktreeOf;
+  const parentName = parent?.displayName ?? "";
   const warningLine = retiredWorkLine(inspection?.standaloneState ?? null);
 
   const close = useCallback(() => {
@@ -97,61 +88,45 @@ export function MergeWorktreeProjectDialog({
     onClose();
   }, [busy, onClose]);
 
-  const goToLane = useCallback(
-    (laneId: string) => {
-      // Retire the standalone recents entry immediately (no undo window for a
-      // deliberate merge), then jump to the newly-homed lane.
-      void window.ade.project
-        .forgetRecent(recentKey)
-        .then((next) => onRecentsUpdated(next))
-        .catch(() => {});
-      onClose();
-      navigate(`/lanes?laneId=${laneId}&focus=single`);
-    },
-    [navigate, onClose, onRecentsUpdated, recentKey],
-  );
-
   const confirmMerge = useCallback(async () => {
     if (!inspection?.parent || !inspection.worktreeRoot) return;
-    const parentInfo = inspection.parent;
     setBusy(true);
     setError(null);
+    let switched = false;
     try {
-      await switchProjectToPath(parentInfo.rootPath, { skipWorktreeGate: true });
-      if (parentInfo.existingLane) {
-        goToLane(parentInfo.existingLane.id);
-        return;
-      }
-      try {
-        const lane = await window.ade.lanes.attach({
-          name: deriveLaneName(inspection),
-          attachedPath: inspection.worktreeRoot,
-        });
-        goToLane(lane.id);
-      } catch (attachErr) {
-        const message = extractError(attachErr);
-        if (/already linked/i.test(message)) {
+      await openWorktreeAsLane(inspection, {
+        switchProjectToPath: async (rootPath, opts) => {
+          await switchProjectToPath(rootPath, opts);
+          switched = true;
+        },
+        navigate: async (path) => {
+          // The lane exists by the time this runs — retiring the recents row is
+          // cleanup, and a failure here must not block landing on the lane or
+          // report the merge itself as failed.
           try {
-            const fresh = await window.ade.project.inspectPath(
-              inspection.worktreeRoot,
-            );
-            const laneId = fresh.parent?.existingLane?.id ?? null;
-            if (laneId) {
-              goToLane(laneId);
-              return;
-            }
+            const next = await window.ade.project.forgetRecent(recentKey);
+            onRecentsUpdated(next);
           } catch {
-            // Fall through to inline error.
+            // Row stays until the next manual remove; merge still succeeded.
           }
-        }
-        setError(message);
-        setBusy(false);
-      }
-    } catch (switchErr) {
-      setError(extractError(switchErr));
+          onClose();
+          await navigate(path);
+        },
+      });
+    } catch (err) {
+      const message = parseCodedErrorMessage(err).message;
+      setError(message);
       setBusy(false);
+      if (switched) {
+        showToast({
+          title: "Merge failed",
+          message,
+          tone: "error",
+          durationMs: 0,
+        });
+      }
     }
-  }, [goToLane, inspection, switchProjectToPath]);
+  }, [inspection, navigate, onClose, onRecentsUpdated, recentKey, switchProjectToPath]);
 
   const canConfirm = Boolean(inspection?.parent) && !busy && !loading;
 

@@ -172,7 +172,9 @@ describe("WorktreeOpenDialog", () => {
 
   it("already-linked attach error re-inspects and jumps to the existing lane", async () => {
     attach.mockRejectedValueOnce(
-      new Error("This worktree is already linked as lane 'feature x'."),
+      new Error(
+        "lane_already_linked: This worktree is already linked as lane 'feature x'.",
+      ),
     );
     inspectPath.mockResolvedValueOnce(
       baseInspection({
@@ -195,6 +197,9 @@ describe("WorktreeOpenDialog", () => {
 
     fireEvent.click(screen.getByText("Open as a lane in app"));
 
+    await waitFor(() =>
+      expect(inspectPath).toHaveBeenCalledWith(WORKTREE_ROOT, { fresh: true }),
+    );
     await waitFor(() =>
       expect(navigateSpy).toHaveBeenCalledWith(
         "/lanes?laneId=lane-existing&focus=single",

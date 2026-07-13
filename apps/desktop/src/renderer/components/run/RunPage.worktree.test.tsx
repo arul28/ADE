@@ -12,6 +12,10 @@ import { MemoryRouter } from "react-router-dom";
 import { RunPage } from "./RunPage";
 import { useAppStore } from "../../state/appStore";
 import type { ProjectPathInspection, RecentProjectSummary } from "../../../shared/types";
+import {
+  dismissToast,
+  getToasts,
+} from "../app/toast/toastStore";
 
 const navigateSpy = vi.fn();
 vi.mock("react-router-dom", async () => {
@@ -68,6 +72,7 @@ function inspection(
 }
 
 beforeEach(() => {
+  for (const toast of getToasts()) dismissToast(toast.id);
   navigateSpy.mockReset();
   listRecent.mockReset();
   listRecent.mockResolvedValue([worktreeRecent]);
@@ -150,7 +155,9 @@ describe("RunPage worktree recents", () => {
 
     // Dialog fetches fresh inspection, then confirm.
     const confirm = await screen.findByText("Merge into app");
-    await waitFor(() => expect(inspectPath).toHaveBeenCalledWith(WORKTREE_ROOT));
+    await waitFor(() =>
+      expect(inspectPath).toHaveBeenCalledWith(WORKTREE_ROOT, { fresh: true }),
+    );
     fireEvent.click(confirm);
 
     await waitFor(() =>
@@ -167,5 +174,42 @@ describe("RunPage worktree recents", () => {
         "/lanes?laneId=lane-merged&focus=single",
       ),
     );
+  });
+
+  it("surfaces a post-switch attach failure through a persistent toast", async () => {
+    attach.mockRejectedValueOnce(new Error("attach broke"));
+    renderWelcome();
+
+    await screen.findByText("app-feature");
+    fireEvent.click(screen.getByLabelText("Merge into app as a lane…"));
+    const confirm = await screen.findByText("Merge into app");
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(getToasts().at(-1)).toMatchObject({
+        title: "Merge failed",
+        message: "attach broke",
+        tone: "error",
+        durationMs: 0,
+      }),
+    );
+  });
+
+  it("still lands on the lane when retiring the recents row fails after attach", async () => {
+    attach.mockResolvedValueOnce({ id: "lane-merged" });
+    forgetRecent.mockRejectedValueOnce(new Error("forget failed"));
+    renderWelcome();
+
+    await screen.findByText("app-feature");
+    fireEvent.click(screen.getByLabelText("Merge into app as a lane…"));
+    const confirm = await screen.findByText("Merge into app");
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(navigateSpy).toHaveBeenCalledWith(
+        "/lanes?laneId=lane-merged&focus=single",
+      ),
+    );
+    expect(getToasts().some((toast) => toast.title === "Merge failed")).toBe(false);
   });
 });
