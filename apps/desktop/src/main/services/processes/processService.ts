@@ -897,6 +897,10 @@ export function createProcessService({
     },
 
     async restart(arg: ProcessActionArgs): Promise<ProcessRuntime> {
+      // Refuse before stopping: otherwise exhausted storage would kill a
+      // healthy process and then refuse to launch its replacement, leaving
+      // the user worse off than if Restart had done nothing.
+      assertProcessStartAllowed();
       const targets = selectEntriesForAction(arg);
       const stopped = waitForEntriesStopped(targets);
       await stopEntries(targets, "stopped");
@@ -921,6 +925,7 @@ export function createProcessService({
     },
 
     async restartStack(arg: ProcessStackArgs): Promise<void> {
+      assertProcessStartAllowed();
       const config = projectConfigService.getExecutableConfig();
       const stack = stackById(config, arg.stackId);
       const targets = stack.processIds.flatMap((processId) => listActiveEntriesForLaneProcess(arg.laneId, processId));
@@ -945,6 +950,7 @@ export function createProcessService({
     },
 
     async restartGroup(arg: ProcessGroupArgs): Promise<void> {
+      assertProcessStartAllowed();
       const effective = projectConfigService.get().effective;
       const processIds = groupProcessIds(effective, arg.groupId);
       if (processIds.length === 0) return;

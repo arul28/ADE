@@ -1300,8 +1300,10 @@ describe("processService PTY-backed run commands", () => {
         message: expect.stringContaining("almost out of storage"),
       });
       expect(ptyService.create).toHaveBeenCalledTimes(1);
+      // Restart refuses before stopping, so the healthy process is left
+      // running rather than killed-then-unrestartable.
       expect(service.listRuntime("lane-pressure")).toEqual([
-        expect.objectContaining({ runId: running.runId, status: "exited" }),
+        expect.objectContaining({ runId: running.runId, status: "running" }),
       ]);
     } finally {
       service.disposeAll();
