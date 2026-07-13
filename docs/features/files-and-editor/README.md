@@ -126,21 +126,40 @@ Renderer:
   file-type icons and `changeStatus*` helpers shared with the explorer.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
   and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
-  tree/decorations helpers used by the workbench.
+  tree/decorations helpers used by the workbench. `treeHelpers` also
+  owns the incremental-tree utilities (`loadedDirectoryChildrenCount`,
+  `mergeTreePreservingLoadedChildren`, `appendTreeNodeChildren`) so
+  watcher refreshes re-list only the already-loaded window.
+- `apps/desktop/src/renderer/components/files/v2/filesTreeCache.ts` —
+  bounded module-level workspace-roster and explorer-tree caches
+  (node/byte-accounted LRU with per-key pinning for mounted explorers;
+  `FILES_TREE_CACHE_NODE_BUDGET`, `FILES_TREE_CACHE_BYTE_BUDGET`,
+  `FILES_ROSTER_CACHE_MAX_PROJECTS`, `filesProjectCacheKey`,
+  `pinCachedTree` / `unpinCachedTree`, `releaseFilesProjectCaches`).
 - `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
   workbench shell: editor groups, preview/pinned tabs, split/move
   support, project-scoped tab-scope persistence, warm empty state,
   search/create overlays, and
   viewers for code, markdown, image, audio/video playback, CSV/TSV,
   PDF, Office-document fallback, large text, binary, and diffs.
+  `v2/viewerRegistry.ts` decides both which viewer renders a file and
+  whether a tab is editable (`tabIsTextEditable` = editable viewer kind
+  AND a full, non-binary text payload). The markdown Preview↔Source and
+  CSV Table↔Source viewers share `viewers/ViewerModeToggle.tsx` for the
+  toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
+  last mode across viewer remounts (e.g. the reload after a save).
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
   diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
   `ChatFileChangesPanel`, and `PrDetailPane`.
-- `apps/desktop/src/renderer/components/files/v2/*.test.ts` and
+- `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
-  — renderer workbench state and model-lifetime tests.
+  — renderer workbench state and model-lifetime tests, including
+  `filesTreeCache.test.ts` (cache budgets / pinning / eviction),
+  `viewerRegistry.test.ts` (viewer + editability resolution),
+  `ViewerHost.test.tsx` (payload-driven `readOnly`), and
+  `EditorGroup.test.tsx` (clean-model save guard).
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
   root with workspace picker, live file tree/read, a magnifying-glass
   button that opens the search page, and live file-action gating from
