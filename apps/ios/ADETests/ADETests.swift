@@ -10244,6 +10244,26 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first.map(workSubagentMeaningfulName), "Sagan")
   }
 
+  func testWorkSubagentResultAfterParentDoneStillSettlesRunningSnapshot() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-13T00:00:01.000Z","sequence":1,"event":{"type":"status","turnStatus":"started","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-13T00:00:02.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-thread-1","agentId":"agent-thread-1","agentType":"Sagan","description":"Inspect provider lifecycle","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-13T00:00:03.000Z","sequence":3,"event":{"type":"done","status":"completed","summary":"Parent turn completed","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-13T00:00:04.000Z","sequence":4,"event":{"type":"subagent_result","taskId":"agent-thread-1","agentId":"agent-thread-1","agentType":"Sagan","status":"completed","summary":"Provider lifecycle verified","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let snapshots = buildWorkSubagentSnapshots(from: transcript)
+    let resultRows = buildWorkSubagentTimelineRows(from: transcript).filter { $0.kind == .result }
+
+    XCTAssertEqual(snapshots.count, 1)
+    XCTAssertEqual(snapshots.first?.status, .succeeded)
+    XCTAssertEqual(snapshots.first?.latestSummary, "Provider lifecycle verified")
+    XCTAssertEqual(workSubagentRunningCount(snapshots), 0)
+    XCTAssertEqual(resultRows.first?.summary, "Provider lifecycle verified")
+    XCTAssertTrue(workTranscriptLatestTurnEnded(transcript))
+  }
+
   // MARK: - Subagent timeline rows (mirrors chatSubagents.ts deriveSubagentTimelineRows)
 
   func testWorkSubagentTimelineRowsEmitOneSpawnDespiteDuplicateStartedAndFoldRicherResult() {

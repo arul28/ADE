@@ -16233,6 +16233,24 @@ describe("createAgentChatService", () => {
         && event.event.status === "completed",
       );
       expect(completedResults).toHaveLength(0);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "late-agent-turn", status: "inProgress" },
+        },
+      });
+
+      expect(events.some((event) =>
+        event.event.type === "subagent_progress"
+        && event.event.taskId === "agent-thread-1"
+        && event.event.summary === "Agent resumed"
+      )).toBe(false);
+      expect(
+        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+      ).toBe("stopped");
     });
 
     it("emits Codex subagent events for current collabAgentToolCall app-server items", async () => {
@@ -17176,7 +17194,7 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
-    it("stops foreground Codex subagents when the parent turn completes without a terminal subagent event", async () => {
+    it("keeps Codex subagents active after the parent turn and settles them from the child turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -17214,6 +17232,14 @@ describe("createAgentChatService", () => {
           },
         },
       });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "agent-turn-1", status: "inProgress" },
+        },
+      });
 
       expect(service.hasActiveWorkloads()).toBe(true);
 
@@ -17235,10 +17261,249 @@ describe("createAgentChatService", () => {
         expect.objectContaining({
           taskId: "agent-thread-1",
           parentToolUseId: "call-spawn-1",
-          status: "stopped",
-          summary: "Parent turn completed before ADE received a final subagent status",
+          status: "running",
         }),
       ]);
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          threadId: "agent-thread-1",
+          turn: {
+            id: "agent-turn-1",
+            status: "completed",
+            items: [{
+              id: "agent-message-1",
+              type: "agentMessage",
+              text: "The renderer lifecycle is correct.",
+            }],
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-1"
+          && event.event.status === "completed",
+      );
+
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          status: "completed",
+          summary: "The renderer lifecycle is correct.",
+          finalSummary: "The renderer lifecycle is correct.",
+        }),
+      ]);
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "close-call-1",
+            type: "collabAgentToolCall",
+            tool: "close_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            status: "completed",
+          },
+        },
+      });
+
+      expect(events.filter((event) =>
+        event.event.type === "subagent_result" && event.event.taskId === "agent-thread-1"
+      )).toHaveLength(1);
+      expect(service.listSubagents({ sessionId: session.id })[0]).toMatchObject({
+        status: "completed",
+        finalSummary: "The renderer lifecycle is correct.",
+      });
+    });
+
+    it("interrupts a Codex child turn after the parent turn has completed", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "agent-turn-1", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      await service.interrupt({ sessionId: session.id });
+
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "turn/interrupt",
+          params: {
+            threadId: "agent-thread-1",
+            turnId: "agent-turn-1",
+          },
+        }),
+      ]));
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: {
+          threadId: "agent-thread-1",
+          turnId: "agent-turn-1",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-1"
+          && event.event.status === "stopped",
+      );
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("interrupts a Codex child whose turn starts after the parent and Stop complete", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      await service.interrupt({ sessionId: session.id });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt")).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "delayed-agent-turn", status: "inProgress" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            method: "turn/interrupt",
+            params: {
+              threadId: "agent-thread-1",
+              turnId: "delayed-agent-turn",
+            },
+          }),
+        ]));
+      });
+      expect(events.some((event) =>
+        event.event.type === "subagent_progress"
+        && event.event.taskId === "agent-thread-1"
+        && event.event.summary === "Agent resumed"
+      )).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: {
+          threadId: "agent-thread-1",
+          turnId: "delayed-agent-turn",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_result"
+          && event.event.taskId === "agent-thread-1"
+          && event.event.status === "stopped",
+      );
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
@@ -27297,6 +27562,175 @@ describe("createAgentChatService", () => {
 
     releaseStream();
     await sendPromise;
+  });
+
+  it("keeps an OpenCode turn active until child sessions become idle", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Delegate the repository scan.",
+    });
+    const started = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      {
+        type: "session.created",
+        properties: {
+          info: {
+            id: "opencode-child-1",
+            parentID: "opencode-session-1",
+            title: "Repository explorer",
+          },
+        },
+      },
+      {
+        type: "session.idle",
+        properties: { sessionID: "opencode-session-1" },
+      },
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "subagent_started" && event.event.taskId === "opencode-child-1",
+    );
+    expect(events.some((event) =>
+      event.event.type === "done" && event.event.turnId === started.event.turnId
+    )).toBe(false);
+
+    pushEvents(
+      {
+        type: "session.updated",
+        properties: {
+          info: {
+            id: "opencode-child-1",
+            parentID: "opencode-session-1",
+            title: "Repository explorer",
+            summary: { additions: 4, deletions: 1, files: 2 },
+          },
+        },
+      },
+      {
+        type: "session.idle",
+        properties: { sessionID: "opencode-child-1" },
+      },
+    );
+
+    const result = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "subagent_result" }>;
+      } => event.event.type === "subagent_result" && event.event.taskId === "opencode-child-1",
+    );
+    expect(result.event).toMatchObject({
+      status: "completed",
+      summary: "+4 −1 · 2 files",
+      finalSummary: "+4 −1 · 2 files",
+      turnId: started.event.turnId,
+    });
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Delegate the repository scan.",
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    state.events.push({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "opencode-child-eof",
+          parentID: "opencode-session-1",
+          title: "Repository explorer",
+        },
+      },
+    });
+    state.waiters.splice(0).forEach((waiter) => waiter());
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "subagent_started" && event.event.taskId === "opencode-child-eof",
+    );
+
+    state.aborted = true;
+    state.waiters.splice(0).forEach((waiter) => waiter());
+    const stopped = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "subagent_result" }>;
+      } => event.event.type === "subagent_result" && event.event.taskId === "opencode-child-eof",
+    );
+    expect(stopped.event).toMatchObject({
+      status: "stopped",
+      summary: "OpenCode event stream ended before the child session became idle",
+    });
+
+    releaseStream();
+    await sendPromise;
+    expect(service.hasActiveWorkloads()).toBe(false);
   });
 
   it("renders assistant OpenCode image file parts without echoing user attachments", async () => {

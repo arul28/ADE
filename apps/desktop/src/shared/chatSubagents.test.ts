@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentChatEvent } from "./types/chat";
+import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
 import {
   buildSubagentPaneRows,
   groupPaneSectionItems,
@@ -9,8 +9,10 @@ import {
   isNonAgentTaskRun,
   isRealSubagent,
   preferSubagentSummary,
+  subagentActivitySummaryFromEvents,
   subagentAgentKey,
   subagentIndexForPaneLine,
+  subagentSnapshotsFromEvents,
   type SubagentSnapshot,
 } from "./chatSubagents";
 
@@ -26,6 +28,61 @@ function paneSnapshot(id: string, status: SubagentSnapshot["status"], overrides:
 }
 
 describe("chat pane scalability helpers", () => {
+  it("keeps a child active after its parent turn ends until the child emits a result", () => {
+    const parentDoneEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-13T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "child-1",
+          description: "Inspect provider lifecycle",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-13T12:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ];
+
+    expect(subagentSnapshotsFromEvents(parentDoneEvents)).toEqual([
+      expect.objectContaining({ id: "child-1", status: "running" }),
+    ]);
+    expect(subagentActivitySummaryFromEvents(parentDoneEvents)).toEqual({
+      totalCount: 1,
+      runningCount: 1,
+    });
+
+    const childDoneEvents: AgentChatEventEnvelope[] = [
+      ...parentDoneEvents,
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-13T12:00:02.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "child-1",
+          status: "completed",
+          summary: "Lifecycle verified",
+          turnId: "turn-1",
+        },
+      },
+    ];
+
+    expect(subagentSnapshotsFromEvents(childDoneEvents)).toEqual([
+      expect.objectContaining({ id: "child-1", status: "completed" }),
+    ]);
+    expect(subagentActivitySummaryFromEvents(childDoneEvents)).toEqual({
+      totalCount: 1,
+      runningCount: 0,
+    });
+  });
+
   it("partitions in source order while pins override earlier and cleared membership", () => {
     const running = paneSnapshot("running", "running");
     const completed = paneSnapshot("completed", "completed");

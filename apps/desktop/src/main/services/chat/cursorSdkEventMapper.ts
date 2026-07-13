@@ -163,7 +163,6 @@ function extractTextContent(message: unknown): string[] {
 export type CursorSdkEventMapperMeta = {
   turnId: string;
   cwd: string;
-  taskStatusMap: Map<string, string>;
   runtime?: AgentChatRuntime;
   runId?: string;
   compactionActive?: boolean;
@@ -205,22 +204,6 @@ function compactionEventsFromSignal(
 function tagRuntime<T>(event: T, runtime?: AgentChatRuntime): T {
   if (!runtime || runtime === "local") return event;
   return { ...event, runtime } as T;
-}
-
-function isCursorTaskTerminalStatus(status: string): boolean {
-  const lower = status.toLowerCase();
-  return lower === "completed"
-    || lower === "failed"
-    || lower === "stopped"
-    || lower === "cancelled"
-    || lower === "error";
-}
-
-function cursorTaskResultStatus(status: string): "completed" | "failed" | "stopped" {
-  const lower = status.toLowerCase();
-  if (lower === "completed") return "completed";
-  if (lower === "stopped" || lower === "cancelled") return "stopped";
-  return "failed";
 }
 
 function normalizeCloudStatus(raw: string | null): AgentChatCloudRunStatus | null {
@@ -312,6 +295,71 @@ export function mapCursorSdkMessageToChatEvents(
           status: status === "running" ? "running" : failed ? "failed" : "completed",
         }, runtime)];
       }
+      if (lowerTool === "task") {
+        const taskArgs = asRecord(args);
+        const taskResult = asRecord(result);
+        const taskValue = asRecord(taskResult?.value);
+        const subagentType = asRecord(taskArgs?.subagentType);
+        const description = readString(taskArgs?.description) ?? "Cursor subagent";
+        const agentType = readString(subagentType?.name) ?? readString(subagentType?.kind);
+        const model = readString(taskArgs?.model);
+        const agentId = readString(taskValue?.agentId) ?? readString(taskArgs?.agentId);
+        const resultStatus = readString(taskResult?.status);
+        const failed = status === "error" || resultStatus === "error";
+        const summary = failed
+          ? summarizeUnknown(taskResult?.error) ?? `${description} failed`
+          : readString(taskValue?.resultSuffix)
+            ?? (taskValue?.isBackground === true
+              ? "Background subagent launched; Cursor does not expose a detached child event stream."
+              : `${description} completed`);
+
+        if (status === "running") {
+          return [
+            tagRuntime({
+              type: "activity" as const,
+              activity: "spawning_agent" as const,
+              detail: description,
+              turnId,
+            }, runtime),
+            tagRuntime({ type: "tool_call" as const, tool, args, itemId: callId, turnId }, runtime),
+            tagRuntime({
+              type: "subagent_started" as const,
+              taskId: callId,
+              ...(agentId ? { agentId } : {}),
+              ...(agentType ? { agentType, label: agentType } : {}),
+              ...(model ? { model } : {}),
+              parentToolUseId: callId,
+              description,
+              turnId,
+            }, runtime),
+          ];
+        }
+
+        const durationMs = readNumber(taskValue?.durationMs);
+        return [
+          tagRuntime({
+            type: "tool_result" as const,
+            tool,
+            result,
+            itemId: callId,
+            turnId,
+            status: failed ? "failed" : "completed",
+          }, runtime),
+          tagRuntime({
+            type: "subagent_result" as const,
+            taskId: callId,
+            ...(agentId ? { agentId } : {}),
+            ...(agentType ? { agentType, label: agentType } : {}),
+            ...(model ? { model } : {}),
+            parentToolUseId: callId,
+            status: failed ? "failed" : "completed",
+            summary,
+            finalSummary: summary,
+            ...(durationMs != null ? { usage: { durationMs } } : {}),
+            turnId,
+          }, runtime),
+        ];
+      }
       const command = lowerTool === "shell" || lowerTool === "bash" || lowerTool === "terminal"
         ? extractCommand(args)
         : null;
@@ -345,69 +393,12 @@ export function mapCursorSdkMessageToChatEvents(
     }
     case "task": {
       const text = readString(record.text);
-      const runId = readString(record.run_id);
-      const agentId = readString(record.agent_id);
-      const status = readString(record.status);
-      const out: AgentChatEvent[] = [];
-
-      const makeResultEvent = (terminalStatus: string): AgentChatEvent => {
-        const resultStatus = cursorTaskResultStatus(terminalStatus);
-        return tagRuntime({
-          type: "subagent_result" as const,
-          taskId: runId!,
-          ...(agentId ? { agentId } : {}),
-          parentToolUseId: null,
-          status: resultStatus,
-          summary: text ?? `subagent ${resultStatus}`,
-          turnId,
-        }, runtime);
-      };
-
-      if (runId) {
-        const prevStatus = meta.taskStatusMap.get(runId) ?? null;
-        if (prevStatus === null) {
-          if (status && isCursorTaskTerminalStatus(status)) {
-            out.push(makeResultEvent(status));
-          } else {
-            meta.taskStatusMap.set(runId, status ?? "started");
-            out.push(tagRuntime({
-              type: "subagent_started" as const,
-              taskId: runId,
-              ...(agentId ? { agentId } : {}),
-              parentToolUseId: null,
-              description: text ?? "subagent",
-              turnId,
-            }, runtime));
-          }
-        } else if (status && status !== prevStatus) {
-          meta.taskStatusMap.set(runId, status);
-          if (isCursorTaskTerminalStatus(status)) {
-            out.push(makeResultEvent(status));
-            meta.taskStatusMap.delete(runId);
-          } else if (text) {
-            // Cursor exposes no child transcript, so live `task` text is the only
-            // interior signal we get — surface it as progress for the subagent
-            // drawer (the panel never takes over a Cursor subagent).
-            out.push(tagRuntime({
-              type: "subagent_progress" as const,
-              taskId: runId,
-              ...(agentId ? { agentId } : {}),
-              parentToolUseId: null,
-              summary: text,
-              turnId,
-            }, runtime));
-          }
-        }
-      }
-      if (text) {
-        out.push(tagRuntime({
+      return text ? [tagRuntime({
           type: "activity" as const,
-          activity: "spawning_agent" as const,
+          activity: "working" as const,
           detail: text,
           turnId,
-        }, runtime));
-      }
-      return out;
+        }, runtime)] : [];
     }
     case "status": {
       const statusText = readString(record.status);

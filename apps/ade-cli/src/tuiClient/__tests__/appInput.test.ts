@@ -1676,7 +1676,7 @@ describe("subagentSnapshotsFromEvents", () => {
     });
   });
 
-  it("stops foreground subagents when their parent turn has ended", () => {
+  it("keeps foreground and background subagents active when their parent turn has ended", () => {
     const snapshots = subagentSnapshotsFromEvents([
       {
         sessionId: "s1",
@@ -1710,8 +1710,8 @@ describe("subagentSnapshotsFromEvents", () => {
     ]);
 
     expect(snapshots.find((snapshot) => snapshot.id === "agent-1")).toMatchObject({
-      status: "stopped",
-      summary: "Parent turn ended before ADE received a final subagent status",
+      status: "running",
+      summary: "Foreground agent",
     });
     expect(snapshots.find((snapshot) => snapshot.id === "agent-bg")).toMatchObject({
       status: "running",

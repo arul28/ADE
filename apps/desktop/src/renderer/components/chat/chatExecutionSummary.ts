@@ -137,17 +137,7 @@ function resolveSubagentSnapshot(
 
 export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): ChatSubagentSnapshot[] {
   const snapshots = new Map<string, ChatSubagentSnapshot>();
-  const terminalTurnIds = new Set<string>();
   const resolvedKeysByParent = buildResolvedSubagentKeysByParent(events);
-
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (event.type === "done") {
-      terminalTurnIds.add(event.turnId);
-    } else if (event.type === "status" && event.turnStatus !== "started" && event.turnId) {
-      terminalTurnIds.add(event.turnId);
-    }
-  }
 
   for (const envelope of events) {
     const event = normalizeSubagentLifecycleEvent(envelope.event);
@@ -226,22 +216,6 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskType: event.taskType ?? existing?.taskType,
         workflowName: event.workflowName ?? existing?.workflowName,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
-      });
-    }
-  }
-
-  for (const [key, snapshot] of snapshots) {
-    if (
-      snapshot.status === "running"
-      && snapshot.background !== true
-      && snapshot.turnId
-      && terminalTurnIds.has(snapshot.turnId)
-    ) {
-      snapshots.set(key, {
-        ...snapshot,
-        status: "stopped",
-        summary: snapshot.summary ?? "Parent turn ended before ADE received a final subagent status",
-        finalSummary: snapshot.finalSummary ?? "Parent turn ended before ADE received a final subagent status",
       });
     }
   }

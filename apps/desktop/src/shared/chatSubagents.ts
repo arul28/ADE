@@ -699,17 +699,7 @@ function isParentSubagentPlaceholder(snapshot: SubagentSnapshot | undefined, par
 
 export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): SubagentSnapshot[] {
   const snapshots = new Map<string, SubagentSnapshot>();
-  const terminalTurnIds = new Set<string>();
   const resolvedIdsByParent = buildResolvedSubagentIdsByParent(events);
-
-  for (const envelope of events) {
-    const event = envelope.event as Record<string, unknown>;
-    const turnId = typeof event.turnId === "string" ? event.turnId : null;
-    if (!turnId) continue;
-    const isDone = event.type === "done";
-    const isTerminalStatus = event.type === "status" && event.turnStatus !== "started";
-    if (isDone || isTerminalStatus) terminalTurnIds.add(turnId);
-  }
 
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
@@ -839,37 +829,16 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     }
   }
 
-  for (const [key, snapshot] of snapshots) {
-    if (
-      snapshot.kind === "subagent"
-      && snapshot.status === "running"
-      && snapshot.background !== true
-      && snapshot.turnId
-      && terminalTurnIds.has(snapshot.turnId)
-    ) {
-      const terminalSummary = "Parent turn ended before ADE received a final subagent status";
-      snapshots.set(key, {
-        ...snapshot,
-        status: "stopped",
-        summary: snapshot.summary && snapshot.summary !== snapshot.name ? snapshot.summary : terminalSummary,
-      });
-    }
-  }
-
   return [...snapshots.values()];
 }
 
 export function subagentActivitySummaryFromEvents(events: AgentChatEventEnvelope[]): { totalCount: number; runningCount: number } {
   const snapshots = new Map<string, Pick<SubagentSnapshot, "status" | "kind" | "background" | "turnId">>();
-  const terminalTurnIds = new Set<string>();
 
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "";
     const turnId = typeof event.turnId === "string" ? event.turnId : null;
-    if (turnId && (type === "done" || (type === "status" && event.turnStatus !== "started"))) {
-      terminalTurnIds.add(turnId);
-    }
 
     if (type === "teammate.idle") {
       const teamName = typeof event.teamName === "string" ? event.teamName : "";
@@ -915,19 +884,8 @@ export function subagentActivitySummaryFromEvents(events: AgentChatEventEnvelope
   }
 
   let runningCount = 0;
-  for (const [id, snapshot] of snapshots) {
-    let status = snapshot.status;
-    if (
-      snapshot.kind === "subagent"
-      && status === "running"
-      && snapshot.background !== true
-      && snapshot.turnId
-      && terminalTurnIds.has(snapshot.turnId)
-    ) {
-      status = "stopped";
-      snapshots.set(id, { ...snapshot, status });
-    }
-    if (status === "running") runningCount += 1;
+  for (const snapshot of snapshots.values()) {
+    if (snapshot.status === "running") runningCount += 1;
   }
   return { totalCount: snapshots.size, runningCount };
 }
