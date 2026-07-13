@@ -89,6 +89,20 @@ and in tests.
   `ADE_PTY_HOST_WORKER_PATH` + `ADE_PTY_HOST_WORKER_NODE` or
   `ADE_PTY_HOST_WORKER_COMMAND` from remote bootstrap so PTYs run through the
   uploaded worker/static runtime instead of relying on a source checkout.
+- `apps/desktop/src/main/services/pty/resourceUsageSampling.ts` — the
+  async, coalesced machine process sampler behind the TopBar
+  resource-pressure indicator. Owns `createProcessMetricRowsCollector`
+  (bounded, timeout-guarded `ps` collector that coalesces callers and never
+  rejects), `classifyProcessRoles` (disjoint per-PID attribution into
+  Electron / `ade-runtime` / `ade-pty-host` / `provider-agent` / `shell` /
+  `unknown` roles, claiming explicit roots before any descendant walk), and
+  `computeAppResourceUsageSnapshot` (folds Electron `getAppMetrics()` and
+  system memory in, skips the `ps` sample when nothing is active). Driven by
+  the `ade.app.getResourceUsage` handler in `registerIpc.ts`;
+  `ptyService.getResourceAttribution()` supplies the live PTY roots + kinds.
+  See [pty-and-processes.md](./pty-and-processes.md#resource-pressure-attribution).
+- `apps/desktop/src/main/services/pty/resourceUsageSampling.test.ts` —
+  collector coalescing/timeout/bounds and role-classification tests.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence

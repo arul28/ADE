@@ -757,6 +757,35 @@ describe("TopBar", () => {
     expect(indicator.getAttribute("title")).toContain("selected chats and terminals stay full speed");
   });
 
+  it("surfaces role attribution and staleness on the pressure indicator without mislabeling", async () => {
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+    resourceUsageMock.mockResolvedValue({
+      sampledAt: "2026-04-22T00:00:00.000Z",
+      processCount: 24,
+      cpuPercent: 92,
+      mainCpuPercent: 8,
+      rendererCpuPercent: 14,
+      memoryMB: 5_800,
+      mainMemoryMB: 320,
+      rendererMemoryMB: 640,
+      activePtyCount: 12,
+      ptyProcessCount: 0,
+      ptyCpuPercent: null,
+      ptyMemoryMB: null,
+      freeMemoryMB: 900,
+      totalMemoryMB: 16_000,
+      processSample: { status: "unavailable", reason: "timeout", sampledAt: "2026-04-22T00:00:00.000Z", durationMs: 1_000 },
+      roleUsage: null,
+    });
+
+    render(<TopBar />);
+
+    const indicator = await screen.findByLabelText("ADE resource pressure level 4");
+    expect(indicator.getAttribute("data-ade-resource-pressure-sample-status")).toBe("unavailable");
+    expect(indicator.getAttribute("title")).toContain("Terminal process metrics are temporarily unavailable.");
+    expect(indicator.getAttribute("title")).not.toContain("agent process");
+  });
+
   it("consolidates a cross-window project tab dropped onto the same project", async () => {
     render(<TopBar />);
 
