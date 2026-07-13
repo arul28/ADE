@@ -73,7 +73,7 @@ type SpawnLike = (
   stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown } | null;
   on(event: "error", listener: (err: Error) => void): unknown;
   on(event: "close", listener: (code: number | null) => void): unknown;
-  kill(signal?: NodeJS.Signals): boolean;
+  kill(signal?: NodeJS.Signals): unknown;
 };
 
 export type ProcessMetricRowsCollectorOptions = {
@@ -322,10 +322,7 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
 
   const claimedRuntime = runtimePids.filter((pid) => claim(pid, "ade-runtime"));
   const claimedPtyHosts = ptyHostPids.filter((pid) => claim(pid, "ade-pty-host"));
-  const claimedDesktopRoots = desktopRoots.filter((root) => claim(
-    root.pid,
-    root.kind === "provider-agent" ? "provider-agent" : root.kind === "shell" ? "shell" : "unknown",
-  ));
+  const claimedDesktopRoots = desktopRoots.filter((root) => claim(root.pid, root.kind));
 
   // Descendant inference: provider trees stay provider (helpers belong to the
   // agent); everything else is "unknown" — a shell or an ADE runtime can host
