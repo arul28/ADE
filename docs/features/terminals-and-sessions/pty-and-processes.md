@@ -407,6 +407,62 @@ any entry is not disposed. `main.ts`'s
 checks) so a project context with running CLIs / agents / shells is
 never evicted by the warm-idle cap.
 
+### Resource-pressure attribution
+
+`ptyService.getResourceAttribution()` returns the live PTY roots for the
+TopBar resource-pressure indicator: `{ activePtyCount, roots }` where each
+root is `{ pid, kind }` and `kind` is derived from the entry's
+`toolTypeHint` (`shell` / `run-shell` → `"shell"`, `other` → `"unknown"`,
+any recognized provider CLI → `"provider-agent"`). It only carries the PIDs
+and their spawn-metadata role — it no longer samples `ps` or aggregates CPU
+/ memory itself. The actual machine sampling and per-role aggregation live in
+`resourceUsageSampling.ts` (see below), which the `ade.app.getResourceUsage`
+IPC handler drives.
+
+The sampler in
+`apps/desktop/src/main/services/pty/resourceUsageSampling.ts` has three
+pieces:
+
+- **Coalesced `ps` collector** (`createProcessMetricRowsCollector`) — spawns
+  `ps -axo pid=,ppid=,pcpu=,rss=` asynchronously with a 1 s timeout and a
+  2 MB stdout bound, coalescing all concurrent callers onto one in-flight
+  child and never rejecting (it resolves an `unavailable` sample with a
+  `timeout` / `spawn-error` / `exit-code` / `oversized-output` reason
+  instead). A single process-wide collector is created lazily in
+  `registerIpc.ts` and disposed on `will-quit`, so a slow or failing `ps`
+  never blocks Electron main.
+- **Disjoint role classification** (`classifyProcessRoles`) — assigns every
+  sampled PID to at most one `AppResourceProcessRole`. Electron PIDs
+  (main/renderer/helper, plus `process.pid`) are claimed first and excluded
+  from every tree walk. Then ADE-runtime roots, ADE PTY-host owner PIDs, and
+  the desktop-owned PTY roots (with their explicit `provider-agent` /
+  `shell` / `unknown` kind) are claimed before any descendant walk, so an
+  explicit identity always wins over inheritance. Descendant inference is
+  deliberately conservative: only a `provider-agent` root's descendants stay
+  `provider-agent` (helpers belong to the agent); shells, ADE runtimes, and
+  PTY hosts propagate `unknown` to their children because they can host
+  arbitrary work. The classifier also returns the legacy aggregate
+  `PtyProcessResourceUsageSnapshot` over the same non-Electron tree.
+- **Snapshot assembly** (`computeAppResourceUsageSnapshot`) — folds the
+  Electron `getAppMetrics()` buckets and system memory together with the
+  classified role usage into an `AppResourceUsageSnapshot`. It skips the
+  `ps` sample entirely when nothing is active (no roots and
+  `activePtyCount === 0`), recording `processSample.status = "skipped"` with
+  reason `idle`. The result carries optional `roleUsage[]` (per-role process
+  count / CPU / summed-RSS memory) and `processSample` (sample availability
+  and staleness); both are absent on legacy synced peers, so consumers must
+  tolerate their absence.
+
+`registerIpc.ts`'s `ade.app.getResourceUsage` handler is async with a 900 ms
+cache (`APP_RESOURCE_USAGE_CACHE_MS`) plus in-flight coalescing keyed by the
+context set, so every window/project shares one sample. The renderer's
+`resourcePressure.ts` groups the roles into "ADE app" (Electron +
+`ade-runtime` + `ade-pty-host`), "agents" (`provider-agent`), and "other
+terminal processes" (`shell` + `unknown`) for the indicator description, and
+appends a staleness note when `processSample.status === "unavailable"`. The
+numeric pressure thresholds are unchanged; only the attribution and the
+description text changed.
+
 ### Send-or-continue (`sendToSession`)
 
 `ptyService.sendToSession({ sessionId, text, cols?, rows?, model?,

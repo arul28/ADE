@@ -1,4 +1,4 @@
-import type { AppResourceUsageSnapshot } from "../../shared/types";
+import type { AppResourceRoleUsage, AppResourceUsageSnapshot } from "../../shared/types";
 
 export type ResourcePressureLevel = 0 | 1 | 2 | 3 | 4;
 
@@ -83,14 +83,78 @@ function preferPositiveMetric(primary: number | null | undefined, fallback: numb
   return typeof primary === "number" && Number.isFinite(primary) && primary >= 1 ? primary : fallback;
 }
 
-export function resourcePressureDescription(usage: AppResourceUsageSnapshot | null): string {
+function sumRoleGroup(
+  roleUsage: AppResourceRoleUsage[],
+  roles: AppResourceRoleUsage["role"][],
+): { processCount: number; cpuPercent: number | null; memoryMB: number | null } {
+  let processCount = 0;
+  let cpuPercent: number | null = null;
+  let memoryMB: number | null = null;
+  for (const entry of roleUsage) {
+    if (!roles.includes(entry.role)) continue;
+    processCount += entry.processCount;
+    if (typeof entry.cpuPercent === "number" && Number.isFinite(entry.cpuPercent)) {
+      cpuPercent = (cpuPercent ?? 0) + entry.cpuPercent;
+    }
+    if (typeof entry.memoryMB === "number" && Number.isFinite(entry.memoryMB)) {
+      memoryMB = (memoryMB ?? 0) + entry.memoryMB;
+    }
+  }
+  return { processCount, cpuPercent, memoryMB };
+}
+
+function roleGroupDetail(
+  label: string,
+  group: { processCount: number; cpuPercent: number | null; memoryMB: number | null },
+): string | null {
+  const cpu = formatPercent(group.cpuPercent);
+  const memory = formatMemory(group.memoryMB);
+  const memoryResident = memory ? `${memory} resident` : null;
+  const parts = [cpu, memoryResident].filter((part): part is string => Boolean(part));
+  if (parts.length === 0) return null;
+  return `${label} ${parts.join(" · ")}`;
+}
+
+// Memory figures are summed resident set sizes: shared pages count once per
+// process, so these are honest aggregates of resident memory, not unique
+// footprints — and never leak evidence.
+function roleUsageDetails(usage: AppResourceUsageSnapshot): string[] | null {
+  const roleUsage = usage.roleUsage;
+  if (!roleUsage || roleUsage.length === 0) return null;
+  const adeInfra = sumRoleGroup(roleUsage, [
+    "electron-main",
+    "electron-renderer",
+    "electron-helper",
+    "ade-runtime",
+    "ade-pty-host",
+  ]);
+  const agents = sumRoleGroup(roleUsage, ["provider-agent"]);
+  const other = sumRoleGroup(roleUsage, ["shell", "unknown"]);
   const details = [
-    usage?.activePtyCount ? `${usage.activePtyCount} live ADE runtime${usage.activePtyCount === 1 ? "" : "s"}` : null,
-    usage?.ptyProcessCount ? `${usage.ptyProcessCount} agent process${usage.ptyProcessCount === 1 ? "" : "es"}` : null,
+    roleGroupDetail("ADE app", adeInfra),
+    agents.processCount > 0
+      ? roleGroupDetail(`${agents.processCount} agent process${agents.processCount === 1 ? "" : "es"}`, agents)
+      : null,
+    other.processCount > 0 ? roleGroupDetail("other terminal processes", other) : null,
+  ].filter((part): part is string => Boolean(part));
+  return details.length > 0 ? details : null;
+}
+
+function legacyDetails(usage: AppResourceUsageSnapshot | null): string[] {
+  return [
+    usage?.activePtyCount ? `${usage.activePtyCount} live terminal${usage.activePtyCount === 1 ? "" : "s"}` : null,
+    usage?.ptyProcessCount ? `${usage.ptyProcessCount} terminal process${usage.ptyProcessCount === 1 ? "" : "es"}` : null,
     formatPercent(preferPositiveMetric(usage?.ptyCpuPercent, usage?.cpuPercent)),
     formatMemory(preferPositiveMetric(usage?.ptyMemoryMB, usage?.memoryMB)),
   ].filter((part): part is string => Boolean(part));
+}
+
+export function resourcePressureDescription(usage: AppResourceUsageSnapshot | null): string {
+  const details = (usage ? roleUsageDetails(usage) : null) ?? legacyDetails(usage);
   const fallbackDetails = details.length > 0 ? details : [formatSystemMemory(usage)].filter((part): part is string => Boolean(part));
   const detailText = fallbackDetails.length > 0 ? ` (${fallbackDetails.join(", ")})` : "";
-  return `ADE is under load${detailText}. Background live refreshes are slowed; selected chats and terminals stay full speed.`;
+  const staleNote = usage?.processSample?.status === "unavailable"
+    ? " Terminal process metrics are temporarily unavailable."
+    : "";
+  return `ADE is under load${detailText}.${staleNote} Background live refreshes are slowed; selected chats and terminals stay full speed.`;
 }

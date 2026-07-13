@@ -91,6 +91,38 @@ export type PtyProcessResourceUsageSnapshot = {
   ptyMemoryMB: number | null;
 };
 
+/**
+ * Disjoint process-role buckets for resource attribution. Every sampled PID is
+ * classified into at most one role. Provider agents and shells are not ADE
+ * infrastructure even when they descend from an ADE runtime; descendants that
+ * cannot be classified from explicit spawn metadata are "unknown".
+ */
+export type AppResourceProcessRole =
+  | "electron-main"
+  | "electron-renderer"
+  | "electron-helper"
+  | "ade-runtime"
+  | "ade-pty-host"
+  | "shell"
+  | "provider-agent"
+  | "unknown";
+
+export type AppResourceRoleUsage = {
+  role: AppResourceProcessRole;
+  processCount: number;
+  cpuPercent: number | null;
+  /** Summed resident set size (RSS). Shared pages count once per process, so this is aggregate resident memory — not unique/private memory and not leak evidence. */
+  memoryMB: number | null;
+};
+
+export type AppResourceProcessSampleInfo = {
+  /** "skipped" means nothing was active so no process sample was taken. */
+  status: "ok" | "unavailable" | "skipped";
+  reason: "timeout" | "spawn-error" | "exit-code" | "oversized-output" | "idle" | null;
+  sampledAt: string | null;
+  durationMs: number | null;
+};
+
 export type AppResourceUsageSnapshot = PtyProcessResourceUsageSnapshot & {
   sampledAt: string;
   processCount: number;
@@ -102,6 +134,10 @@ export type AppResourceUsageSnapshot = PtyProcessResourceUsageSnapshot & {
   rendererMemoryMB: number | null;
   freeMemoryMB: number | null;
   totalMemoryMB: number | null;
+  /** Availability/staleness of the machine process sample. Absent on legacy peers. */
+  processSample?: AppResourceProcessSampleInfo | null;
+  /** Disjoint per-role attribution for sampled processes. Absent on legacy peers. */
+  roleUsage?: AppResourceRoleUsage[] | null;
 };
 
 export type LatestReleaseInfo = {

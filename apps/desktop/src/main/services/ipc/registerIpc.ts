@@ -56,7 +56,6 @@ import type {
   AppInfo,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
-  PtyProcessResourceUsageSnapshot,
   LatestReleaseInfo,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -523,8 +522,16 @@ import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
-import { readProcessMetricRows, sampleProcessTreeResourceUsage } from "../pty/ptyService";
-import type { createPtyService, ProcessMetricRowsProvider } from "../pty/ptyService";
+import type { createPtyService } from "../pty/ptyService";
+import {
+  computeAppResourceUsageSnapshot,
+  createProcessMetricRowsCollector,
+} from "../pty/resourceUsageSampling";
+import type {
+  AppResourceUsageAttributionSources,
+  ProcessMetricRowsCollector,
+  ResourceAttributionRoot,
+} from "../pty/resourceUsageSampling";
 import {
   type createDiffService,
   MAX_DIFF_SIDE_TEXT_BYTES,
@@ -628,7 +635,6 @@ import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
 
-type ElectronProcessMetric = ReturnType<typeof app.getAppMetrics>[number];
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
   contexts: AppResourceUsageContext[];
@@ -636,80 +642,23 @@ let appResourceUsageCache: {
   sampledAtMs: number;
   snapshot: AppResourceUsageSnapshot;
 } | null = null;
+let appResourceUsageInFlight: {
+  contexts: AppResourceUsageContext[];
+  localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
+  promise: Promise<AppResourceUsageSnapshot>;
+} | null = null;
+let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
+
+function getAppProcessMetricRowsCollector(): ProcessMetricRowsCollector {
+  if (!appProcessMetricRowsCollector) {
+    const collector = createProcessMetricRowsCollector();
+    appProcessMetricRowsCollector = collector;
+    app.once("will-quit", () => collector.dispose());
+  }
+  return appProcessMetricRowsCollector;
+}
 
 type AppResourceUsageContext = Pick<AppContext, "processRegistry" | "ptyService" | "sessionService">;
-
-function roundMetric(value: number | null | undefined, digits = 1): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const scale = 10 ** digits;
-  return Math.round(value * scale) / scale;
-}
-
-function sumMetricCpu(metrics: ElectronProcessMetric[]): number | null {
-  let total = 0;
-  let seen = false;
-  for (const metric of metrics) {
-    const value = metric.cpu?.percentCPUUsage;
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    total += value;
-    seen = true;
-  }
-  return seen ? roundMetric(total) : null;
-}
-
-function sumMetricMemoryMB(metrics: ElectronProcessMetric[]): number | null {
-  let totalKb = 0;
-  let seen = false;
-  for (const metric of metrics) {
-    const value = metric.memory?.workingSetSize;
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    totalKb += value;
-    seen = true;
-  }
-  return seen ? roundMetric(totalKb / 1024) : null;
-}
-
-function sumOptionalMetrics(...values: Array<number | null | undefined>): number | null {
-  let total = 0;
-  let seen = false;
-  for (const value of values) {
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    total += value;
-    seen = true;
-  }
-  return seen ? roundMetric(total) : null;
-}
-
-function emptyPtyResourceUsage(): PtyProcessResourceUsageSnapshot {
-  return {
-    activePtyCount: 0,
-    ptyProcessCount: 0,
-    ptyCpuPercent: 0,
-    ptyMemoryMB: 0,
-  };
-}
-
-function combinePtyResourceUsage(
-  first: PtyProcessResourceUsageSnapshot,
-  second: PtyProcessResourceUsageSnapshot,
-): PtyProcessResourceUsageSnapshot {
-  const sumUsageMetric = (
-    metric: "ptyCpuPercent" | "ptyMemoryMB",
-  ): number | null => {
-    const firstActive = first.activePtyCount > 0 || first.ptyProcessCount > 0;
-    const secondActive = second.activePtyCount > 0 || second.ptyProcessCount > 0;
-    if (firstActive && first[metric] == null) return null;
-    if (secondActive && second[metric] == null) return null;
-    return sumOptionalMetrics(first[metric], second[metric]);
-  };
-
-  return {
-    activePtyCount: first.activePtyCount + second.activePtyCount,
-    ptyProcessCount: first.ptyProcessCount + second.ptyProcessCount,
-    ptyCpuPercent: sumUsageMetric("ptyCpuPercent"),
-    ptyMemoryMB: sumUsageMetric("ptyMemoryMB"),
-  };
-}
 
 function collectRuntimeOwnedPtyRoots(
   sessionService?: ReturnType<typeof createSessionService> | null,
@@ -741,47 +690,6 @@ function collectRuntimeOwnedPtyRoots(
   };
 }
 
-function getRuntimeOwnedPtyUsage(
-  contexts: AppResourceUsageContext[],
-  localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
-  readRows?: ProcessMetricRowsProvider,
-): PtyProcessResourceUsageSnapshot {
-  let activePtyCount = 0;
-  const ownerPids = new Set<number>();
-  for (const ctx of contexts) {
-    const roots = collectRuntimeOwnedPtyRoots(ctx.sessionService, ctx.processRegistry);
-    activePtyCount += roots.activePtyCount;
-    for (const pid of roots.ownerPids) ownerPids.add(pid);
-  }
-  for (const pid of localRuntimeConnectionPool?.getRuntimeProcessIds?.() ?? []) {
-    if (typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
-      ownerPids.add(pid);
-    }
-  }
-  return sampleProcessTreeResourceUsage(Array.from(ownerPids), activePtyCount, readRows);
-}
-
-function createSharedProcessMetricRowsProvider(): ProcessMetricRowsProvider {
-  let rows: ReturnType<typeof readProcessMetricRows> | undefined;
-  return () => {
-    if (rows === undefined) rows = readProcessMetricRows();
-    return rows;
-  };
-}
-
-function processMetricKind(metric: ElectronProcessMetric): string {
-  return String(metric.type ?? "").toLowerCase();
-}
-
-function isMainProcessMetric(metric: ElectronProcessMetric): boolean {
-  return processMetricKind(metric) === "browser";
-}
-
-function isRendererProcessMetric(metric: ElectronProcessMetric): boolean {
-  const kind = processMetricKind(metric);
-  return kind === "renderer" || kind === "tab";
-}
-
 function getSystemMemoryMB(): { freeMemoryMB: number | null; totalMemoryMB: number | null } {
   const electronProcess = process as NodeJS.Process & {
     getSystemMemoryInfo?: () => { free?: number; total?: number };
@@ -792,49 +700,47 @@ function getSystemMemoryMB(): { freeMemoryMB: number | null; totalMemoryMB: numb
   }
   try {
     const info = read();
+    const round = (value: number): number | null => (
+      Number.isFinite(value) ? Math.round(value) : null
+    );
     return {
-      freeMemoryMB: roundMetric((info.free ?? 0) / 1024, 0),
-      totalMemoryMB: roundMetric((info.total ?? 0) / 1024, 0),
+      freeMemoryMB: round((info.free ?? 0) / 1024),
+      totalMemoryMB: round((info.total ?? 0) / 1024),
     };
   } catch {
     return { freeMemoryMB: null, totalMemoryMB: null };
   }
 }
 
-function getAppResourceUsageSnapshot(
+function collectAppResourceAttributionSources(
   contexts: AppResourceUsageContext[],
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
-): AppResourceUsageSnapshot {
-  const metrics = app.getAppMetrics();
-  const mainMetrics = metrics.filter(isMainProcessMetric);
-  const rendererMetrics = metrics.filter(isRendererProcessMetric);
-  const readRows = createSharedProcessMetricRowsProvider();
-  const ptyServiceUsage = contexts.reduce(
-    (usage, ctx) => combinePtyResourceUsage(
-      usage,
-      ctx.ptyService?.getResourceUsageSnapshot?.(readRows) ?? emptyPtyResourceUsage(),
-    ),
-    emptyPtyResourceUsage(),
-  );
-  const ptyUsage = combinePtyResourceUsage(
-    ptyServiceUsage,
-    getRuntimeOwnedPtyUsage(contexts, localRuntimeConnectionPool, readRows),
-  );
-  const electronCpuPercent = sumMetricCpu(metrics);
-  const electronMemoryMB = sumMetricMemoryMB(metrics);
-  const memory = getSystemMemoryMB();
+): AppResourceUsageAttributionSources {
+  let activePtyCount = 0;
+  const desktopPtyRoots: ResourceAttributionRoot[] = [];
+  const adePtyHostPids = new Set<number>();
+  for (const ctx of contexts) {
+    const attribution = ctx.ptyService?.getResourceAttribution?.();
+    if (attribution) {
+      activePtyCount += attribution.activePtyCount;
+      desktopPtyRoots.push(...attribution.roots);
+    }
+    const runtimeOwned = collectRuntimeOwnedPtyRoots(ctx.sessionService, ctx.processRegistry);
+    activePtyCount += runtimeOwned.activePtyCount;
+    for (const pid of runtimeOwned.ownerPids) adePtyHostPids.add(pid);
+  }
+  const adeRuntimePids = new Set<number>();
+  for (const pid of localRuntimeConnectionPool?.getRuntimeProcessIds?.() ?? []) {
+    if (typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
+      adeRuntimePids.add(pid);
+      adePtyHostPids.delete(pid);
+    }
+  }
   return {
-    ...ptyUsage,
-    sampledAt: new Date().toISOString(),
-    processCount: metrics.length + ptyUsage.ptyProcessCount,
-    cpuPercent: sumOptionalMetrics(electronCpuPercent, ptyUsage.ptyCpuPercent),
-    mainCpuPercent: sumMetricCpu(mainMetrics),
-    rendererCpuPercent: sumMetricCpu(rendererMetrics),
-    memoryMB: sumOptionalMetrics(electronMemoryMB, ptyUsage.ptyMemoryMB),
-    mainMemoryMB: sumMetricMemoryMB(mainMetrics),
-    rendererMemoryMB: sumMetricMemoryMB(rendererMetrics),
-    freeMemoryMB: memory.freeMemoryMB,
-    totalMemoryMB: memory.totalMemoryMB,
+    adeRuntimePids: Array.from(adeRuntimePids),
+    adePtyHostPids: Array.from(adePtyHostPids),
+    desktopPtyRoots,
+    activePtyCount,
   };
 }
 
@@ -845,10 +751,13 @@ function sameAppResourceUsageContexts(
   return first.length === second.length && first.every((ctx, index) => ctx === second[index]);
 }
 
+// One in-flight sample serves every caller (all windows/projects); the newest
+// completed snapshot is cached and republished until it goes stale. A slow or
+// failed `ps` never blocks Electron main — collection is fully asynchronous.
 function getCachedAppResourceUsageSnapshot(
   contexts: AppResourceUsageContext[],
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
-): AppResourceUsageSnapshot {
+): Promise<AppResourceUsageSnapshot> {
   const now = Date.now();
   if (
     appResourceUsageCache
@@ -856,16 +765,39 @@ function getCachedAppResourceUsageSnapshot(
     && appResourceUsageCache.localRuntimeConnectionPool === localRuntimeConnectionPool
     && now - appResourceUsageCache.sampledAtMs < APP_RESOURCE_USAGE_CACHE_MS
   ) {
-    return appResourceUsageCache.snapshot;
+    return Promise.resolve(appResourceUsageCache.snapshot);
   }
-  const snapshot = getAppResourceUsageSnapshot(contexts, localRuntimeConnectionPool);
-  appResourceUsageCache = {
+  if (
+    appResourceUsageInFlight
+    && sameAppResourceUsageContexts(appResourceUsageInFlight.contexts, contexts)
+    && appResourceUsageInFlight.localRuntimeConnectionPool === localRuntimeConnectionPool
+  ) {
+    return appResourceUsageInFlight.promise;
+  }
+  const promise = computeAppResourceUsageSnapshot(
+    {
+      getElectronMetrics: () => app.getAppMetrics(),
+      getSystemMemoryMB,
+      collector: getAppProcessMetricRowsCollector(),
+    },
+    collectAppResourceAttributionSources(contexts, localRuntimeConnectionPool),
+  ).then((snapshot) => {
+    appResourceUsageCache = {
+      contexts: [...contexts],
+      localRuntimeConnectionPool,
+      sampledAtMs: Date.now(),
+      snapshot,
+    };
+    return snapshot;
+  }).finally(() => {
+    if (appResourceUsageInFlight?.promise === promise) appResourceUsageInFlight = null;
+  });
+  appResourceUsageInFlight = {
     contexts: [...contexts],
     localRuntimeConnectionPool,
-    sampledAtMs: now,
-    snapshot,
+    promise,
   };
-  return snapshot;
+  return promise;
 }
 
 export type AppContext = {

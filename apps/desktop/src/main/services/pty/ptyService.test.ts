@@ -431,49 +431,48 @@ describe("ptyService", () => {
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
-  describe("resource usage snapshots", () => {
-    it("uses supplied process metric rows for active PTYs", async () => {
+  describe("resource attribution roots", () => {
+    it("classifies live PTY roots from explicit spawn metadata without sampling processes", async () => {
       const { service } = createHarness();
 
       await service.create({
         laneId: "lane-1",
-        title: "Tracked shell",
+        title: "Interactive shell",
         cols: 80,
         rows: 24,
       });
       mocks.spawnSync.mockClear();
 
-      const readRows = vi.fn(() => [
-        { pid: 12345, ppid: 1, cpuPercent: 10, rssKB: 1024 },
-        { pid: 23456, ppid: 12345, cpuPercent: 2.5, rssKB: 2048 },
-        { pid: 34567, ppid: 1, cpuPercent: 80, rssKB: 4096 },
-      ]);
+      const attribution = service.getResourceAttribution();
 
-      const usage = service.getResourceUsageSnapshot(readRows);
-
-      expect(readRows).toHaveBeenCalledTimes(1);
       expect(mocks.spawnSync).not.toHaveBeenCalled();
-      expect(usage).toEqual({
+      expect(attribution).toEqual({
         activePtyCount: 1,
-        ptyProcessCount: 2,
-        ptyCpuPercent: 12.5,
-        ptyMemoryMB: 3,
+        roots: [{ pid: 12345, kind: "shell" }],
       });
     });
 
-    it("does not sample process metrics when no PTYs are active", () => {
+    it("classifies tracked provider CLIs as provider-agent roots", async () => {
       const { service } = createHarness();
-      const readRows = vi.fn(() => {
-        throw new Error("should not sample");
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex session",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex",
       });
 
-      expect(service.getResourceUsageSnapshot(readRows)).toEqual({
-        activePtyCount: 0,
-        ptyProcessCount: 0,
-        ptyCpuPercent: 0,
-        ptyMemoryMB: 0,
+      expect(service.getResourceAttribution()).toEqual({
+        activePtyCount: 1,
+        roots: [{ pid: 12345, kind: "provider-agent" }],
       });
-      expect(readRows).not.toHaveBeenCalled();
+    });
+
+    it("reports no roots when no PTYs are active", () => {
+      const { service } = createHarness();
+      expect(service.getResourceAttribution()).toEqual({ activePtyCount: 0, roots: [] });
     });
   });
 

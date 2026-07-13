@@ -25,6 +25,7 @@ import {
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
@@ -57,7 +58,6 @@ import type {
   TerminalSessionStatus,
   TerminalSessionSummary,
   TerminalToolType,
-  PtyProcessResourceUsageSnapshot,
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
@@ -158,135 +158,6 @@ const AGENT_CLI_READY_POLL_MS = 100;
 const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
 const PTY_PROCESS_TREE_MAX_DEPTH = 12;
-
-export type ProcessMetricRow = {
-  pid: number;
-  ppid: number;
-  cpuPercent: number;
-  rssKB: number;
-};
-
-export type ProcessMetricRowsProvider = () => ProcessMetricRow[] | null;
-
-function roundUsageMetric(value: number | null | undefined, digits = 1): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const scale = 10 ** digits;
-  return Math.round(value * scale) / scale;
-}
-
-export function readProcessMetricRows(): ProcessMetricRow[] | null {
-  try {
-    const result = spawnSync("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], {
-      encoding: "utf8",
-      timeout: 1000,
-    });
-    if (result.error || result.status !== 0) return null;
-    return String(result.stdout ?? "")
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [pidRaw, ppidRaw, cpuRaw, rssRaw] = line.split(/\s+/u);
-        const pid = Number.parseInt(pidRaw ?? "", 10);
-        const ppid = Number.parseInt(ppidRaw ?? "", 10);
-        const cpuPercent = Number.parseFloat(cpuRaw ?? "");
-        const rssKB = Number.parseInt(rssRaw ?? "", 10);
-        if (
-          !Number.isFinite(pid)
-          || pid <= 0
-          || !Number.isFinite(ppid)
-          || ppid < 0
-          || !Number.isFinite(cpuPercent)
-          || !Number.isFinite(rssKB)
-          || rssKB < 0
-        ) {
-          return null;
-        }
-        return { pid, ppid, cpuPercent, rssKB };
-      })
-      .filter((row): row is ProcessMetricRow => row != null);
-  } catch {
-    return null;
-  }
-}
-
-function collectProcessTreePids(
-  rootPids: number[],
-  rows: ProcessMetricRow[],
-): Set<number> {
-  const byParent = new Map<number, number[]>();
-  const knownPids = new Set<number>();
-  for (const row of rows) {
-    knownPids.add(row.pid);
-    const children = byParent.get(row.ppid) ?? [];
-    children.push(row.pid);
-    byParent.set(row.ppid, children);
-  }
-
-  const seen = new Set<number>();
-  let frontier = rootPids
-    .map((pid) => Math.trunc(pid))
-    .filter((pid) => Number.isFinite(pid) && pid > 0 && knownPids.has(pid));
-  for (const pid of frontier) seen.add(pid);
-
-  for (let depth = 0; depth < PTY_PROCESS_TREE_MAX_DEPTH && frontier.length > 0; depth += 1) {
-    const next: number[] = [];
-    for (const parent of frontier) {
-      for (const child of byParent.get(parent) ?? []) {
-        if (seen.has(child)) continue;
-        seen.add(child);
-        next.push(child);
-      }
-    }
-    frontier = next;
-  }
-  return seen;
-}
-
-export function sampleProcessTreeResourceUsage(
-  rootPids: number[],
-  activePtyCount = rootPids.length,
-  readRows: ProcessMetricRowsProvider = readProcessMetricRows,
-): PtyProcessResourceUsageSnapshot {
-  if (activePtyCount === 0 && rootPids.length === 0) {
-    return {
-      activePtyCount: 0,
-      ptyProcessCount: 0,
-      ptyCpuPercent: 0,
-      ptyMemoryMB: 0,
-    };
-  }
-
-  const rows = readRows();
-  if (!rows) {
-    return {
-      activePtyCount,
-      ptyProcessCount: 0,
-      ptyCpuPercent: null,
-      ptyMemoryMB: null,
-    };
-  }
-
-  const ptyProcessPids = collectProcessTreePids(rootPids, rows);
-  const rowsByPid = new Map(rows.map((row) => [row.pid, row]));
-  let cpuPercent = 0;
-  let rssKB = 0;
-  let processCount = 0;
-  for (const pid of ptyProcessPids) {
-    const row = rowsByPid.get(pid);
-    if (!row) continue;
-    processCount += 1;
-    cpuPercent += row.cpuPercent;
-    rssKB += row.rssKB;
-  }
-
-  return {
-    activePtyCount,
-    ptyProcessCount: processCount,
-    ptyCpuPercent: roundUsageMetric(cpuPercent),
-    ptyMemoryMB: roundUsageMetric(rssKB / 1024),
-  };
-}
 
 let cachedOpenCodeReplayResumeSupport: boolean | null = null;
 
@@ -919,6 +790,20 @@ function buildInitialResumeMetadata(args: {
   return null;
 }
 
+export type PtyResourceAttribution = {
+  activePtyCount: number;
+  roots: ResourceAttributionRoot[];
+};
+
+// Explicit spawn metadata → disjoint attribution role. Shell-like terminals
+// stay "shell"; anything without a recognized provider identity is "unknown"
+// rather than guessed from command lines.
+function attributionRootKindForToolType(toolType: TerminalToolType | null): ResourceAttributionRootKind {
+  if (toolType == null || toolType === "shell" || toolType === "run-shell") return "shell";
+  if (toolType === "other") return "unknown";
+  return "provider-agent";
+}
+
 function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "cursor-cli" | "droid" | "opencode" | "claude-orchestrated" | "codex-orchestrated" | "opencode-orchestrated" {
   return toolType === "claude"
     || toolType === "codex"
@@ -1166,13 +1051,15 @@ export function createPtyService({
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
 
-  const getResourceUsageSnapshot = (readRows?: ProcessMetricRowsProvider): PtyProcessResourceUsageSnapshot => {
+  const getResourceAttribution = (): PtyResourceAttribution => {
     const liveEntries = Array.from(ptys.values()).filter((entry) => !entry.disposed);
-    const activePtyCount = liveEntries.length;
-    const rootPids = liveEntries
-      .map((entry) => entry.pty.pid)
-      .filter((pid): pid is number => typeof pid === "number" && Number.isFinite(pid) && pid > 0);
-    return sampleProcessTreeResourceUsage(rootPids, activePtyCount, readRows);
+    const roots: ResourceAttributionRoot[] = [];
+    for (const entry of liveEntries) {
+      const pid = entry.pty.pid;
+      if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) continue;
+      roots.push({ pid, kind: attributionRootKindForToolType(entry.toolTypeHint) });
+    }
+    return { activePtyCount: liveEntries.length, roots };
   };
 
   const isOwnedByLivePeerRuntime = (session: {
@@ -5194,7 +5081,7 @@ export function createPtyService({
       return false;
     },
 
-    getResourceUsageSnapshot,
+    getResourceAttribution,
 
     onData(listener: PtyDataListener): () => void {
       dataListeners.add(listener);
