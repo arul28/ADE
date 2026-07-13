@@ -301,7 +301,7 @@ describe("RemoteConnectionPool", () => {
     pool.onEntryEvicted(onEvicted);
     await pool.connect(pairedTarget);
 
-    client.emitDisconnect(new Error("Remote ADE service timed out waiting for method projects.list (5000ms)."));
+    client.emitDisconnect(new Error("Remote ADE service connection failed: ECONNRESET"));
     await Promise.resolve();
 
     expect(client.close).toHaveBeenCalledTimes(1);
@@ -843,49 +843,27 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
   });
 
-  it("retries idempotent reads once when the RPC client times out", async () => {
-    const firstClient = createClient();
-    const firstSsh = createSsh();
-    firstClient.call.mockRejectedValueOnce(
-      new Error("Remote ADE service timed out waiting for method projects.list (5000ms)."),
+  it("propagates request timeouts without reconnecting or replaying retryable reads", async () => {
+    const client = createClient();
+    const ssh = createSsh();
+    const timeout = new Error(
+      "Remote ADE service timed out waiting for method projects.list (5000ms).",
     );
+    client.call.mockRejectedValueOnce(timeout);
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
-      client: firstClient,
-      ssh: firstSsh,
+      client,
+      ssh,
       result: connectResult("1.0.0"),
-    });
-    const secondClient = createClient();
-    secondClient.call.mockResolvedValueOnce([
-      {
-        projectId: "project-1",
-        rootPath: "/srv/app",
-        displayName: "app",
-        addedAt: 1,
-        lastOpenedAt: 2,
-        gitOriginUrl: null,
-      },
-    ]);
-    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
-      client: secondClient,
-      ssh: createSsh(),
-      result: connectResult("1.0.1"),
     });
     const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.projectsForTarget(target)).resolves.toEqual([
-      {
-        projectId: "project-1",
-        rootPath: "/srv/app",
-        displayName: "app",
-        addedAt: 1,
-        lastOpenedAt: 2,
-        gitOriginUrl: null,
-      },
-    ]);
+    await expect(pool.projectsForTarget(target)).rejects.toThrow(timeout.message);
 
-    expect(firstSsh.end).toHaveBeenCalledTimes(1);
-    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledWith("projects.list", {});
+    expect(client.close).not.toHaveBeenCalled();
+    expect(ssh.end).not.toHaveBeenCalled();
   });
 
   it("backs off new SSH bootstraps after a connect failure", async () => {
@@ -1057,6 +1035,44 @@ describe("RemoteConnectionPool", () => {
       },
     });
     expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it("does not reconnect or replay a timed-out mutation", async () => {
+    const client = createClient();
+    const ssh = createSsh();
+    const timeout = new Error(
+      "Remote ADE service timed out waiting for method ade/actions/call (600000ms).",
+    );
+    client.call.mockRejectedValueOnce(timeout);
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool(
+      { get: () => null } as unknown as RemoteTargetRegistry,
+      "1.0.0",
+    );
+
+    await expect(pool.callActionForTarget(target, "project-1", {
+      domain: "lane",
+      action: "create",
+      args: { name: "work" },
+    })).rejects.toThrow(timeout.message);
+
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "create",
+        args: { name: "work" },
+      },
+    });
+    expect(client.close).not.toHaveBeenCalled();
+    expect(ssh.end).not.toHaveBeenCalled();
   });
 
   it("blocks a handoff when the active transport differs from the route the user reviewed", async () => {

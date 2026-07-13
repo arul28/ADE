@@ -38,7 +38,10 @@ import {
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjects } from "./remoteBootstrap";
-import type { RemoteConnectionPool } from "./remoteConnectionPool";
+import {
+  isRemoteRuntimeConnectionError,
+  type RemoteConnectionPool,
+} from "./remoteConnectionPool";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "./pairingInput";
@@ -125,8 +128,9 @@ function automaticReconnectStoppedMessage(): string {
 }
 
 function isImplicitConnectionFailure(error: unknown): boolean {
+  if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|sync (?:connection|websocket|endpoint).*(?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
+  return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
     message,
   );
 }
@@ -897,7 +901,8 @@ export class RemoteConnectionService {
             });
           }
           continue;
-        } catch {
+        } catch (error) {
+          if (!isImplicitConnectionFailure(error)) continue;
           this.pool.disconnect(target.id);
           this.mergeStatus(target.id, {
             state: "error",

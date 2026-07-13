@@ -25,11 +25,12 @@ end-to-end encrypted tunnel; see the trust boundary in
   plus the Advanced SSH transport (multi-route fallback, bounded connect/exec
   timeouts, strict host-key verification, normalized handshake errors) and
   runtime upload/bootstrap. The folder also owns the target registry, runtime
-  RPC client, remote connection pool (paired-first with eligible SSH fallback,
-  eviction listeners, retryable reads, preview forwards, optional-action
-  fallbacks, event-stream gap/epoch propagation, route-pinned sensitive action
-  dispatch, and capability-gated handoff storage preflight), connection service, and
-  Bonjour + Tailscale discovery.
+  RPC client (request-local timeouts with connection-fatal transport/protocol
+  failures), remote connection pool (paired-first with eligible SSH fallback,
+  eviction listeners, connection-failure retryable reads, preview forwards,
+  optional-action fallbacks, event-stream gap/epoch propagation, route-pinned
+  sensitive action dispatch, and capability-gated handoff storage preflight),
+  connection service, and Bonjour + Tailscale discovery.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
   action/sync/event dispatch, local-runtime project action/sync/event routing,
@@ -267,7 +268,7 @@ On desktop, the top-bar Mobile control is a runtime control, not a project contr
 - `Remote ADE service could not start a compatible RPC runtime. Tried ...` — every alternate ADE home (`.ade`, `.ade-alpha`, `.ade-beta`) failed to start. The error lists each home and the underlying reason. Install or rebuild `ade` on the remote machine for the desktop's target architecture.
 - `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
 - `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
-- `Remote ADE service connection failed: timed out waiting for method ...` — the RPC client timed out and tore the connection down deliberately so the pool can rebuild it. Retry the action; the pool will reconnect using the latest known route.
+- `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.
 - "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
 

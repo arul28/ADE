@@ -98,18 +98,17 @@ export class RuntimeRpcClient {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const pending = this.pending.get(id);
+        const pending = this.takePending(id);
         if (!pending) return;
-        this.failConnection(
-          new Error(`Remote ADE service timed out waiting for method ${method} (${timeoutMs}ms).`),
+        pending.reject(
+          new Error(`Remote ADE service timed out waiting for method ${pending.method} (${timeoutMs}ms).`),
         );
       }, timeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.transport.write(`${JSON.stringify(payload)}\n`);
       } catch (error) {
-        this.pending.delete(id);
-        clearTimeout(timer);
+        this.takePending(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
@@ -194,6 +193,14 @@ export class RuntimeRpcClient {
     }
   }
 
+  private takePending(id: number): PendingRequest | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    return pending;
+  }
+
   /**
    * Fail the single request answered by a discarded oversized line. The
    * envelope id is recovered from the retained line head; a `"method"` key
@@ -214,7 +221,7 @@ export class RuntimeRpcClient {
       ? Number(idMatch[1])
       : null;
     const approxMiB = (oversized.discardedChars / (1024 * 1024)).toFixed(1);
-    const pending = responseId != null ? this.pending.get(responseId) : undefined;
+    const pending = responseId != null ? this.takePending(responseId) : undefined;
     if (!pending || responseId == null) {
       console.warn("Remote ADE service sent an oversized message; discarded", {
         approxMiB,
@@ -222,8 +229,6 @@ export class RuntimeRpcClient {
       });
       return;
     }
-    this.pending.delete(responseId);
-    clearTimeout(pending.timer);
     pending.reject(new Error(
       `Remote ADE service response for method ${pending.method} exceeded 16 MiB (~${approxMiB} MiB) and was discarded.`,
     ));
@@ -252,10 +257,8 @@ export class RuntimeRpcClient {
       }
       return;
     }
-    const pending = this.pending.get(id);
+    const pending = this.takePending(id);
     if (!pending) return;
-    this.pending.delete(id);
-    clearTimeout(pending.timer);
     const error = response.error;
     if (error && typeof error === "object" && !Array.isArray(error)) {
       const rpcError = error as { code?: unknown; message?: unknown; data?: unknown };

@@ -805,6 +805,92 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
+  it("keeps the connection healthy when one remote request times out", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let succeed = true;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(async () => {
+        if (succeed) {
+          return { domain: "file", action: "read", result: { ok: true }, statusHints: {} };
+        }
+        throw new Error(
+          "Remote ADE service timed out waiting for method ade/actions/call (25000ms).",
+        );
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.callAction(previouslyConnected.id, "project-1", {
+      domain: "file",
+      action: "read",
+    });
+
+    succeed = false;
+    await expect(
+      service.callAction(previouslyConnected.id, "project-1", {
+        domain: "file",
+        action: "read",
+      }),
+    ).rejects.toThrow(/timed out waiting for method ade\/actions\/call/i);
+
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
+  it("does not disconnect a healthy client when a resume probe request times out", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callMachineForTarget: vi.fn(async () => {
+        throw new Error(
+          "Remote ADE service timed out waiting for method ping (5000ms).",
+        );
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool, {
+      pingTimeoutMs: 5_000,
+    });
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    service.probeSavedConnections();
+    await vi.waitFor(() => {
+      expect(pool.callMachineForTarget).toHaveBeenCalledWith(
+        previouslyConnected,
+        "ping",
+        {},
+        { timeoutMs: 5_000 },
+      );
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pool.disconnect).not.toHaveBeenCalled();
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
   it("does not flag the remote unreachable when adding a project fails with a host-side error", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

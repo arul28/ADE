@@ -21,7 +21,6 @@ import {
   createLocalRuntimeOutputLogger,
   isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
-  isLocalRuntimeMethodTimeout,
   isRetryableReadAction,
   localReleaseBuildOutputRuntimeBlock,
   LocalRuntimeConnectionPool,
@@ -720,60 +719,61 @@ describe("local runtime connection pool", () => {
     expect(staleClient.close).toHaveBeenCalledTimes(1);
   });
 
-  it("does not let a stale timed-out action clear an in-flight reconnect", () => {
+  it("does not let a stale timed-out action clear or close an in-flight reconnect", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     } as never, { disableSync: true });
+    const rootPath = path.resolve("/repo");
     const reconnect = new Promise<unknown>(() => {});
-    const staleClient = { close: vi.fn() };
+    let rejectAction!: (error: Error) => void;
+    const staleClient = {
+      call: vi.fn(() => new Promise((_resolve, reject) => {
+        rejectAction = reject;
+      })),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
     const staleEntry = {
       client: staleClient,
       child: null,
       socketPath: "/tmp/old-ade.sock",
     };
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
     (pool as unknown as {
       connection: Promise<unknown>;
       activeClient: unknown;
       activeConnection: unknown;
-    }).connection = reconnect;
+    }).connection = Promise.resolve(staleEntry);
+    (pool as unknown as { activeClient: unknown }).activeClient = staleClient;
+    (pool as unknown as { activeConnection: unknown }).activeConnection = staleEntry;
+
+    const pending = pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "deleteSession",
+      args: { sessionId: "chat-1" },
+    });
+    while (staleClient.call.mock.calls.length === 0) await Promise.resolve();
+
+    (pool as unknown as { connection: Promise<unknown> }).connection = reconnect;
     (pool as unknown as { activeClient: unknown }).activeClient = null;
     (pool as unknown as { activeConnection: unknown }).activeConnection = null;
+    rejectAction(new Error(
+      "Remote ADE service timed out waiting for method ade/actions/call (30000ms).",
+    ));
 
-    (pool as unknown as {
-      resetConnectionAfterActionTimeout: (entry: typeof staleEntry) => void;
-    }).resetConnectionAfterActionTimeout(staleEntry);
-
+    await expect(pending).rejects.toThrow(/timed out waiting for method ade\/actions\/call/i);
     expect((pool as unknown as { connection: Promise<unknown> | null }).connection).toBe(reconnect);
-    expect(staleClient.close).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps ownership when reconnecting to an app-owned runtime kept alive after timeout", async () => {
-    const pool = new LocalRuntimeConnectionPool("1.2.3", {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    } as never, { disableSync: true });
-    const child = {
-      pid: 1234,
-      kill: vi.fn(),
-      once: vi.fn(),
-    };
-    const client = { call: vi.fn(), close: vi.fn(), isClosed: vi.fn(() => false) };
-    (pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild = child;
-    (pool as unknown as { preserveOwnedRuntimeChildOnNextConnect: boolean }).preserveOwnedRuntimeChildOnNextConnect = true;
-    (pool as unknown as { connectClient: (socketPath: string) => Promise<unknown> }).connectClient = vi.fn(async () => client);
-
-    const entry = await (pool as unknown as {
-      tryConnect: (socketPath: string) => Promise<{ client: unknown; child: unknown; socketPath: string } | null>;
-    }).tryConnect("/tmp/ade.sock");
-
-    expect(entry?.client).toBe(client);
-    expect(entry?.child).toBe(child);
-    expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBe(child);
+    expect(staleClient.close).not.toHaveBeenCalled();
   });
 
   it("does not attach a stale owned child when connecting to an external runtime", async () => {
@@ -1026,12 +1026,7 @@ describe("local runtime connection pool", () => {
     });
   });
 
-  it("retries an idempotent read after a per-call timeout tears down the connection", async () => {
-    // A per-call RPC timeout now fails the whole connection (failConnection),
-    // so a concurrent idempotent read can be collaterally rejected with the
-    // "timed out waiting for method" message. The pool must treat that as a
-    // transient drop and retry the read once on a fresh connection instead of
-    // surfacing the timeout to the renderer.
+  it("propagates a read timeout without resetting or retrying the shared client", async () => {
     const timedOut = new Error(
       "Remote ADE service timed out waiting for method ade/actions/call (30000ms).",
     );
@@ -1050,19 +1045,13 @@ describe("local runtime connection pool", () => {
       lastOpenedAt: 1,
       gitOriginUrl: null,
     };
-    const firstClient = {
-      call: vi.fn(async (method: string) => {
-        if (method === "projects.add") return project;
-        if (method === "ade/actions/call") throw timedOut;
-        throw new Error(`Unexpected method ${method}`);
-      }),
-      close: vi.fn(),
-      isClosed: vi.fn(() => false),
-    };
-    const secondClient = {
+    let actionCalls = 0;
+    const client = {
       call: vi.fn(async (method: string) => {
         if (method === "projects.add") return project;
         if (method === "ade/actions/call") {
+          actionCalls += 1;
+          if (actionCalls === 1) throw timedOut;
           return {
             domain: "lane",
             action: "list",
@@ -1075,21 +1064,20 @@ describe("local runtime connection pool", () => {
       close: vi.fn(),
       isClosed: vi.fn(() => false),
     };
-    const firstEntry = {
-      client: firstClient,
+    const entry = {
+      client,
       child: null,
       socketPath: "/tmp/ade-timeout.sock",
     };
-    const secondEntry = {
-      client: secondClient,
-      child: null,
-      socketPath: "/tmp/ade-fresh.sock",
-    };
-    const createConnection = vi.fn<[], Promise<unknown>>()
-      .mockResolvedValueOnce(firstEntry)
-      .mockResolvedValueOnce(secondEntry);
+    const createConnection = vi.fn<[], Promise<unknown>>().mockResolvedValue(entry);
     const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
     (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "lane",
+      action: "list",
+      args: {},
+    })).rejects.toThrow(timedOut.message);
 
     await expect(pool.callActionForRoot(rootPath, {
       domain: "lane",
@@ -1102,18 +1090,17 @@ describe("local runtime connection pool", () => {
       statusHints: {},
     });
 
-    // First connection timed out and was torn down; a second was created and
-    // served the retry.
-    expect(createConnection).toHaveBeenCalledTimes(2);
-    expect(firstClient.close).toHaveBeenCalledTimes(1);
-    expect(secondClient.call).toHaveBeenCalledWith(
+    expect(createConnection).toHaveBeenCalledTimes(1);
+    expect(client.close).not.toHaveBeenCalled();
+    expect(client.call).toHaveBeenLastCalledWith(
       "ade/actions/call",
       expect.objectContaining({ name: "run_ade_action" }),
       { timeoutMs: 30_000 },
     );
-    expect(logger.warn).toHaveBeenCalledWith(
-      "local_runtime.action_timeout_drop_client",
-      expect.objectContaining({ domain: "lane", action: "list", socketPath: "/tmp/ade-timeout.sock" }),
+    expect(actionCalls).toBe(2);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "local_runtime.action_connection_dropped",
+      expect.anything(),
     );
   });
 
@@ -2111,7 +2098,7 @@ describe("local runtime connection pool", () => {
     );
   });
 
-  it("bounds non-file action calls and drops a timed-out client without killing the runtime", async () => {
+  it("bounds mutations and propagates their timeout without closing or replaying the client", async () => {
     const timeout = new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms).");
     const call = vi.fn().mockRejectedValue(timeout);
     const close = vi.fn();
@@ -2166,15 +2153,15 @@ describe("local runtime connection pool", () => {
       },
       { timeoutMs: 30_000 },
     );
-    expect(close).toHaveBeenCalled();
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
-    expect((pool as unknown as { connection: unknown }).connection).toBeNull();
+    expect(await (pool as unknown as { connection: Promise<unknown> }).connection).toBe(entry);
     expect((pool as unknown as { ownedRuntimeChild: unknown }).ownedRuntimeChild).toBe(child);
-    expect(logger.warn).toHaveBeenCalledWith("local_runtime.action_timeout_drop_client", expect.objectContaining({
-      domain: "chat",
-      action: "deleteSession",
-      socketPath: "/tmp/ade.sock",
-    }));
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "local_runtime.action_connection_dropped",
+      expect.anything(),
+    );
   });
 
   it("does not spawn a primary sync runtime when service repair is configured but unavailable", async () => {
@@ -2524,21 +2511,6 @@ describe("local runtime action retry classification", () => {
     // Must NOT treat unrelated failures as a connection drop (would wrongly retry).
     expect(isLocalRuntimeConnectionDropped(new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."))).toBe(false);
     expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
-  });
-
-  it("recognizes per-call method timeouts as a transient reconnect trigger", () => {
-    // A per-call timeout tears down the shared client; the pool must treat it as
-    // transient so the next connect() reconnects and an idempotent read retries.
-    expect(
-      isLocalRuntimeMethodTimeout(
-        new Error("Remote ADE service timed out waiting for method ade/actions/call (5000ms)."),
-      ),
-    ).toBe(true);
-    // Must NOT classify a connection drop or unrelated failure as a method
-    // timeout — those are handled by isLocalRuntimeConnectionDropped, and
-    // misclassifying would retry on the wrong condition.
-    expect(isLocalRuntimeMethodTimeout(new Error("Remote ADE service connection closed."))).toBe(false);
-    expect(isLocalRuntimeMethodTimeout(new Error("Local ADE service action failed."))).toBe(false);
   });
 
   it("only retries idempotent read actions, never mutations", () => {
