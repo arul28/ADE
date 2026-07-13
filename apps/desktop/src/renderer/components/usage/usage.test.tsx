@@ -316,6 +316,59 @@ describe("usage components", () => {
       expect(await screen.findByText("44.0% used")).toBeTruthy();
     });
 
+    it("shows pacing for both Codex windows when both limits are reported", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      const resetsAt = "2099-05-15T07:00:00.000Z";
+      snapshot.windows = [
+        {
+          provider: "codex",
+          windowType: "five_hour",
+          percentUsed: 48,
+          resetsAt,
+          resetsInMs: 2.5 * 60 * 60_000,
+          windowDurationMs: 5 * 60 * 60_000,
+          pacing: {
+            status: "on-track",
+            projectedWeeklyPercent: 96,
+            weekElapsedPercent: 50,
+            expectedPercent: 50,
+            deltaPercent: -2,
+            etaHours: 2.7,
+            willLastToReset: true,
+            resetsInHours: 2.5,
+          },
+        },
+        {
+          provider: "codex",
+          windowType: "weekly",
+          percentUsed: 63,
+          resetsAt,
+          resetsInMs: 3.5 * 24 * 60 * 60_000,
+          windowDurationMs: 7 * 24 * 60 * 60_000,
+          pacing: {
+            status: "far-ahead",
+            projectedWeeklyPercent: 126,
+            weekElapsedPercent: 50,
+            expectedPercent: 50,
+            deltaPercent: 13,
+            etaHours: 49.3,
+            willLastToReset: false,
+            resetsInHours: 84,
+          },
+        },
+      ];
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<UsageQuotaPanel />);
+
+      expect(await screen.findByRole("progressbar", { name: "5-hour: 48.0% used" })).toBeTruthy();
+      expect(screen.getByRole("progressbar", { name: "Weekly: 63.0% used" })).toBeTruthy();
+      expect(screen.getByText("on track")).toBeTruthy();
+      expect(screen.getByText("13% ahead")).toBeTruthy();
+      expect(screen.getByText(/trending to 126% by reset/)).toBeTruthy();
+    });
+
     it("registers non-interactive quota demand on mount without forcing user auth", async () => {
       render(<UsageQuotaPanel />);
 

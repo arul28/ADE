@@ -314,6 +314,11 @@ Renderer — settings:
   awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
   and coalesces stale provider/GitHub revalidation in the background
   (`refreshStatsInBackground`, single-flight per range + source).
+- `apps/desktop/src/main/services/usage/providerQuotaParsers.ts` — normalizes
+  Claude and Codex live-quota response variants. Codex buckets use their
+  advertised duration (minute- or second-based fields) to determine whether a
+  window is five-hour, weekly, or monthly; primary/secondary position is only a
+  fallback for older payloads that omit duration metadata.
 - `apps/desktop/src/main/services/usage/ledgers/localUsageLedgers.ts` —
   read-only provider-history adapters. The Codex path selects recent JSONL
   files within per-file and aggregate byte budgets, discards oversized physical

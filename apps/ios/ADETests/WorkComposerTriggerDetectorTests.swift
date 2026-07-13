@@ -130,7 +130,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   }
 
   @MainActor
-  func testPlainComposerIgnoresInitialFalseFocusUpdate() {
+  func testPlainComposerDefersFocusTransitionsOutsideSwiftUIUpdate() async {
     var text = ""
     var isFocused = false
     var measuredHeight: CGFloat = 28
@@ -145,14 +145,22 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     textView.resetRecording()
 
     textView.fakeIsFirstResponder = true
-    coordinator.applyFocusRequest(false, to: textView)
+    let initialTask = coordinator.applyFocusRequest(false, to: textView)
+    await initialTask?.value
     XCTAssertEqual(textView.resignCount, 0)
     XCTAssertTrue(textView.fakeIsFirstResponder)
 
     textView.fakeIsFirstResponder = false
-    coordinator.applyFocusRequest(true, to: textView)
-    coordinator.applyFocusRequest(false, to: textView)
+    let focusTask = coordinator.applyFocusRequest(true, to: textView)
+    XCTAssertEqual(textView.becomeCount, 0)
+    await focusTask?.value
     XCTAssertEqual(textView.becomeCount, 1)
+    XCTAssertTrue(textView.fakeIsFirstResponder)
+
+    coordinator.applyFocusRequest(false, to: textView)
+    let dismissTask = coordinator.applyFocusRequest(false, to: textView)
+    XCTAssertEqual(textView.resignCount, 0)
+    await dismissTask?.value
     XCTAssertEqual(textView.resignCount, 1)
     XCTAssertFalse(textView.fakeIsFirstResponder)
   }
@@ -173,7 +181,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   }
 
   @MainActor
-  func testChatComposerAppliesRequestedFocusTransitions() {
+  func testChatComposerDefersAndCoalescesRequestedFocusTransitions() async {
     let draft = WorkChatComposerDraftState()
     let controller = WorkComposerSuggestionController()
     var measuredHeight: CGFloat = 24
@@ -188,13 +196,36 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     let textView = FocusRecordingTextView()
     textView.resetRecording()
 
-    coordinator.applyFocusRequest(false, to: textView)
-    coordinator.applyFocusRequest(true, to: textView)
-    coordinator.applyFocusRequest(false, to: textView)
+    let initialTask = coordinator.applyFocusRequest(false, to: textView)
+    await initialTask?.value
+    XCTAssertEqual(textView.resignCount, 0)
 
+    let focusTask = coordinator.applyFocusRequest(true, to: textView)
+    XCTAssertEqual(textView.becomeCount, 0)
+    await focusTask?.value
     XCTAssertEqual(textView.becomeCount, 1)
+    XCTAssertTrue(textView.fakeIsFirstResponder)
+
+    let dismissTask = coordinator.applyFocusRequest(false, to: textView)
+    XCTAssertEqual(textView.resignCount, 0)
+    await dismissTask?.value
     XCTAssertEqual(textView.resignCount, 1)
     XCTAssertFalse(textView.fakeIsFirstResponder)
+
+    // A failed send can restore focus before the queued dismissal runs. Only
+    // the latest request should win, so the keyboard never flickers closed.
+    textView.fakeIsFirstResponder = true
+    let refocusTask = coordinator.applyFocusRequest(true, to: textView)
+    await refocusTask?.value
+    textView.resetRecording(firstResponder: true)
+
+    coordinator.applyFocusRequest(false, to: textView)
+    let restoredFocusTask = coordinator.applyFocusRequest(true, to: textView)
+    await restoredFocusTask?.value
+
+    XCTAssertEqual(textView.becomeCount, 0)
+    XCTAssertEqual(textView.resignCount, 0)
+    XCTAssertTrue(textView.fakeIsFirstResponder)
   }
 }
 
@@ -219,9 +250,9 @@ private final class FocusRecordingTextView: UITextView {
     return true
   }
 
-  func resetRecording() {
+  func resetRecording(firstResponder: Bool = false) {
     becomeCount = 0
     resignCount = 0
-    fakeIsFirstResponder = false
+    fakeIsFirstResponder = firstResponder
   }
 }

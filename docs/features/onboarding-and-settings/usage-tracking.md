@@ -27,6 +27,15 @@ on 2026-07-10. The relevant upstream references are
 | Latency | User refresh could wait on every provider ledger and GitHub scan | Expensive storage scans do not block normal usage refresh | Quota refresh performs only provider credential/quota work. Large history scans can remain pending while a quota refresh completes. |
 | Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms. |
 
+Codex quota payloads are normalized in `providerQuotaParsers.ts`. Current HTTP
+responses can report only one weekly bucket in `primary_window`, while older
+responses and app-server snapshots may expose five-hour and weekly buckets in
+primary/secondary positions. ADE therefore prefers the bucket's advertised
+duration (`limit_window_seconds`, `window_duration_seconds`, or the equivalent
+minute fields) and uses position only when duration metadata is absent. This
+keeps the compact header and detailed Limits panel truthful when a provider
+omits one window or changes its ordering.
+
 ## Why Claude appeared to take forever
 
 The slow path was not only Anthropic's endpoint. An explicit refresh invalidated
@@ -136,7 +145,9 @@ The suite fixes the behavioral baseline: quota-only refresh must not start any
 ledger scanner, must complete while a deliberately pending large-ledger scan is
 still unresolved, Codex HTTP success must not spawn the CLI, and 401/403/409/429,
 timeout, schema drift, `Retry-After`, stale carry-forward, and Claude CLI parsing
-must remain covered.
+must remain covered. Codex parser coverage also pins duration-based window
+classification so weekly-only and reordered five-hour/weekly responses cannot
+be mislabeled by their primary/secondary positions.
 
 ## Provider strategy boundary
 
