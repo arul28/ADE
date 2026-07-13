@@ -22030,7 +22030,7 @@ export function createAgentChatService(args: {
       runtime.startedTurnId = null;
       runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.approvals.clear();
-      stopActiveCodexSubagents(managed, runtime, activeTurnId, "Codex thread was deleted upstream");
+      await interruptActiveCodexSubagentTurns(managed, runtime);
       markSessionIdleWithFreshCache(managed);
       if (managed.session.threadId === deletedThreadId) {
         delete managed.session.threadId;
@@ -34455,16 +34455,11 @@ export function createAgentChatService(args: {
               });
             }
           }
-          stopActiveCodexSubagents(
-            managed,
-            runtime,
-            interruptedTurnId,
-            "Interrupted while closing the session",
-          );
         }
       } catch {
         // ignore interrupt failures while disposing
       }
+      await interruptActiveCodexSubagentTurns(managed, runtime).catch(() => {});
 
       // Archive the Codex thread on the server
       if (managed.session.threadId) {
@@ -35978,8 +35973,9 @@ export function createAgentChatService(args: {
    *   app does). Falls back to filtering the parent session's
    *   `eventHistoryBySession` by `taskId === threadId` when the runtime is
    *   idle or the call fails.
-   * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
-   *   subagent's `agentId`; we filter the parent stream by that value.
+   * - **Cursor**: Task tool lifecycle envelopes use the returned child
+   *   `agentId` when present and always retain the Task call `taskId`; we
+   *   match either identity because startup failures may not return an agent.
    * - **Everything else (droid, lmstudio, …)**: `null`.
    *
    * Exposed via getSubagentTranscript, which byte-bounds whatever this
@@ -36107,14 +36103,16 @@ export function createAgentChatService(args: {
 
     if (treatAsCodexLike) {
       const envelopes = eventHistoryBySession.get(normalizedSessionId) ?? [];
-      const matchKey: "taskId" | "agentId" =
-        runtimeKind === "cursor" || provider === "cursor" ? "agentId" : "taskId";
+      const isCursorSession = runtimeKind === "cursor" || provider === "cursor";
       const matched: AgentChatSubagentTranscriptMessage[] = [];
       const metadata = provider === "codex" ? codexSubagentMetadataForThread(codexRuntime, normalizedAgentId) : null;
       for (const envelope of envelopes) {
         const event = envelope.event as Record<string, unknown> & { type: string };
-        const candidate = event[matchKey];
-        if (typeof candidate !== "string" || candidate !== normalizedAgentId) continue;
+        const matchesRequestedSubagent = isCursorSession
+          ? [event.agentId, event.taskId].some((candidate) =>
+              candidate === normalizedAgentId || (normalizedTaskId !== null && candidate === normalizedTaskId))
+          : event.taskId === normalizedAgentId;
+        if (!matchesRequestedSubagent) continue;
         const text = (() => {
           if (typeof event.summary === "string" && event.summary.length) return event.summary;
           if (typeof event.description === "string" && event.description.length) return event.description;

@@ -17560,6 +17560,79 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("interrupts a Codex child when disposing after the parent turn completes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-1",
+          turn: { id: "agent-turn-1", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+
+      mockState.codexRequestPayloads = [];
+      await service.dispose({ sessionId: session.id });
+
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "turn/interrupt",
+          params: {
+            threadId: "agent-thread-1",
+            turnId: "agent-turn-1",
+          },
+        }),
+      ]));
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "turn/interrupt"
+        && (payload.params as Record<string, unknown>).threadId === "thread-1"
+      )).toBe(false);
+    });
+
     it("interrupts a Codex child whose turn starts after the parent and Stop complete", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -27054,6 +27127,9 @@ describe("createAgentChatService", () => {
       const result = await service.dispatchSteer({ sessionId: session.id, steerId, mode: "interrupt" });
       expect(result.dispatchedAt).not.toBeNull();
 
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([arg]) => arg?.priority === "now" && arg?.shouldQuery === true)).toBe(true);
+      });
       const interruptPayload = send.mock.calls
         .map((call: any[]) => call[0])
         .find((arg: any) => arg?.priority === "now" && arg?.shouldQuery === true);
@@ -29656,6 +29732,72 @@ describe("createAgentChatService", () => {
         answers: {},
       },
     });
+  });
+
+  it("returns a failed Cursor Task transcript by call id when no agent id exists", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Delegate the failing check.",
+    }, { awaitDispatch: true });
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "tool_call",
+      call_id: "task-call-failed",
+      name: "task",
+      status: "running",
+      args: { description: "Inspect the failing check" },
+    });
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "tool_call",
+      call_id: "task-call-failed",
+      name: "task",
+      status: "error",
+      args: { description: "Inspect the failing check" },
+      result: {
+        status: "error",
+        error: { message: "Child agent could not start" },
+      },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "subagent_result"
+        && event.event.taskId === "task-call-failed"
+        && event.event.status === "failed",
+    );
+
+    const transcript = await service.getSubagentTranscript({
+      sessionId: session.id,
+      agentId: "task-call-failed",
+    });
+
+    expect(transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.objectContaining({
+          type: "subagent_started",
+          taskId: "task-call-failed",
+        }),
+      }),
+      expect.objectContaining({
+        text: "Child agent could not start",
+        message: expect.objectContaining({
+          type: "subagent_result",
+          taskId: "task-call-failed",
+          status: "failed",
+        }),
+      }),
+    ]));
   });
 
   it("renders Cursor SDK private plan control blocks without exposing them as chat text", async () => {
