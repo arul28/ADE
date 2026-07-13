@@ -157,6 +157,10 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(textView.becomeCount, 1)
     XCTAssertTrue(textView.fakeIsFirstResponder)
 
+    let settledFocusTask = coordinator.applyFocusRequest(true, to: textView)
+    XCTAssertNil(settledFocusTask)
+    XCTAssertEqual(textView.becomeCount, 1)
+
     coordinator.applyFocusRequest(false, to: textView)
     let dismissTask = coordinator.applyFocusRequest(false, to: textView)
     XCTAssertEqual(textView.resignCount, 0)
@@ -205,6 +209,10 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     await focusTask?.value
     XCTAssertEqual(textView.becomeCount, 1)
     XCTAssertTrue(textView.fakeIsFirstResponder)
+
+    let settledFocusTask = coordinator.applyFocusRequest(true, to: textView)
+    XCTAssertNil(settledFocusTask)
+    XCTAssertEqual(textView.becomeCount, 1)
 
     let dismissTask = coordinator.applyFocusRequest(false, to: textView)
     XCTAssertEqual(textView.resignCount, 0)

@@ -332,6 +332,11 @@ private final class WorkComposerFocusScheduler {
     // an unfocused binding must not dismiss a responder owned by another view.
     guard isFocused || previousRequest == true else { return nil }
 
+    // When UIKit already matches the latest binding and no transition remains
+    // queued, there is nothing to defer. This keeps routine SwiftUI updates
+    // from creating main-actor tasks after focus has settled.
+    guard textView.isFirstResponder != isFocused else { return nil }
+
     pendingTask = Task { @MainActor [weak self, weak textView] in
       await Task.yield()
       guard !Task.isCancelled,

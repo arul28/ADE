@@ -42,7 +42,9 @@ type ClaudeExtraUsage = {
 
 export function computeResetsInMs(resetsAt: string): number {
   if (!resetsAt) return 0;
-  return Math.max(0, new Date(resetsAt).getTime() - Date.now());
+  const target = new Date(resetsAt).getTime();
+  if (!Number.isFinite(target)) return 0;
+  return Math.max(0, target - Date.now());
 }
 
 function usagePercent(bucket: Record<string, unknown> | null | undefined): number {

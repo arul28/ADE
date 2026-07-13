@@ -1057,6 +1057,19 @@ describe("parseClaudeWindows", () => {
     expect(result.windows.find((window) => window.windowType === "weekly")?.modelBreakdown?.opus).toBe(5);
   });
 
+  it("uses a zero reset countdown for malformed provider timestamps", () => {
+    const result = parseClaudeWindows({
+      five_hour: { utilization: 35, resets_at: "not-a-date" },
+    });
+
+    expect(result.windows).toEqual([
+      expect.objectContaining({
+        resetsAt: "not-a-date",
+        resetsInMs: 0,
+      }),
+    ]);
+  });
+
   it("parses extra_usage when present", () => {
     const result = parseClaudeWindows({
       five_hour: { utilization: 15, resets_at: "2026-03-14T21:00:00+00:00" },
