@@ -502,6 +502,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let volatileOptOut = false;
   let optOutCanRecoverFromPersistedOptIn = false;
   let optOutWatcherStarted = false;
+  let optOutDirectoryWatcher: fs.FSWatcher | null = null;
 
   const cancelClientForOptOut = (canRecoverFromPersistedOptIn = false): void => {
     volatileOptOut = true;
@@ -544,12 +545,28 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const startOptOutWatcher = (): void => {
     if (optOutWatcherStarted) return;
     optOutWatcherStarted = true;
+    try {
+      const markerName = path.basename(optOutMarkerPath);
+      optOutDirectoryWatcher = fs.watch(path.dirname(optOutMarkerPath), { persistent: false }, (_event, filename) => {
+        if (filename == null || filename.toString() === markerName) reconcileOptOutMarker();
+      });
+      optOutDirectoryWatcher.on("error", () => {
+        optOutDirectoryWatcher?.close();
+        optOutDirectoryWatcher = null;
+      });
+    } catch {
+      optOutDirectoryWatcher = null;
+    }
+    // Polling remains as a portable fallback for filesystems that coalesce or
+    // do not support native directory notifications.
     fs.watchFile(optOutMarkerPath, { interval: 100, persistent: false }, onOptOutMarkerChanged);
   };
 
   const stopOptOutWatcher = (): void => {
     if (!optOutWatcherStarted) return;
     optOutWatcherStarted = false;
+    optOutDirectoryWatcher?.close();
+    optOutDirectoryWatcher = null;
     fs.unwatchFile(optOutMarkerPath, onOptOutMarkerChanged);
   };
 
