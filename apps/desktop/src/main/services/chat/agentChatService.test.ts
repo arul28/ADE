@@ -12552,6 +12552,59 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("locally tombstones legacy ownerless work when the chat cannot be woken", async () => {
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("test-uuid-1", {
+          provider: "claude",
+          providerScheduleId: "provider-unavailable-wakeup",
+          durable: true,
+        })],
+        pausedSessionIds: [],
+      });
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-legacy-owner-unavailable",
+        responseText: "Done.",
+      });
+      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the Claude session.",
+      });
+      await service.dispose({ sessionId: session.id });
+      const sessionRow = sessionService.get(session.id);
+      sessionService.get
+        .mockImplementationOnce(() => sessionRow)
+        .mockImplementationOnce(() => null)
+        .mockImplementation((sessionId: string) => sessionId === session.id ? sessionRow : null);
+
+      await expect(service.cancelScheduledWork({
+        sessionId: session.id,
+        scheduleId: `wakeup:${session.id}`,
+      })).resolves.toMatchObject({
+        schedule: { status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: false,
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "cancelled",
+          terminalAt: expect.any(Number),
+        }),
+      ]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_legacy_scheduled_work_cancel_request_failed",
+        expect.objectContaining({ sessionId: session.id, scheduleCount: 1 }),
+      );
+      service.forceDisposeAll();
+    });
+
     it("keeps the Claude SDK stream alive for scheduled wakeups after a foreground result", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -15013,6 +15066,58 @@ describe("createAgentChatService", () => {
   });
 
   describe("deleteSession", () => {
+    it.each([
+      { action: "delete" as const, warning: "agent_chat.scheduled_work_cancel_before_delete_failed" },
+      { action: "archive" as const, warning: "agent_chat.scheduled_work_cancel_before_archive_failed" },
+    ])("honors $action when provider schedule cancellation times out", async ({ action, warning }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("test-uuid-1", {
+          provider: "claude",
+          providerSessionId: "sdk-lifecycle-timeout",
+          providerScheduleId: "provider-lifecycle-timeout",
+          durable: true,
+        })],
+        pausedSessionIds: [],
+      });
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-lifecycle-timeout",
+        responseText: "I could not delete that schedule.",
+      });
+      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the Claude session.",
+      });
+
+      const operation = action === "delete"
+        ? service.deleteSession({ sessionId: session.id })
+        : service.archiveSession({ sessionId: session.id });
+      await vi.advanceTimersByTimeAsync(31_000);
+      await expect(operation).resolves.toBeUndefined();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        warning,
+        expect.objectContaining({ sessionId: session.id }),
+      );
+      if (action === "delete") {
+        expect(sessionService.get(session.id)).toBeNull();
+      } else {
+        expect(sessionService.get(session.id)?.archivedAt).toEqual(expect.any(String));
+      }
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ status: "cancelled", terminalAt: expect.any(Number) }),
+      ]);
+      service.forceDisposeAll();
+    });
+
     it("removes persisted chat artifacts and the stored session row", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({

@@ -33454,6 +33454,7 @@ export function createAgentChatService(args: {
       await messageSession({ sessionId, kind: "wake", text: instructions });
     } catch (error) {
       if (!confirmedOwnerSchedules.length) {
+        await forgetStaleOwnerSchedules();
         logger.warn("agent_chat.claude_legacy_scheduled_work_cancel_request_failed", {
           sessionId,
           scheduleCount: legacyProviderSchedules.length,
@@ -34967,7 +34968,14 @@ export function createAgentChatService(args: {
         schedule.provider === "claude"
         && schedule.status !== "done"
         && schedule.status !== "cancelled");
-      await requestClaudeScheduledWorkCancellation(providerSchedules, { awaitConfirmation: true });
+      try {
+        await requestClaudeScheduledWorkCancellation(providerSchedules, { awaitConfirmation: true });
+      } catch (error) {
+        logger.warn("agent_chat.scheduled_work_cancel_before_delete_failed", {
+          sessionId: trimmedSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     // Tombstone the session before any async work so in-flight persistence
@@ -35051,7 +35059,14 @@ export function createAgentChatService(args: {
         schedule.provider === "claude"
         && schedule.status !== "done"
         && schedule.status !== "cancelled");
-      await requestClaudeScheduledWorkCancellation(providerSchedules, { awaitConfirmation: true });
+      try {
+        await requestClaudeScheduledWorkCancellation(providerSchedules, { awaitConfirmation: true });
+      } catch (error) {
+        logger.warn("agent_chat.scheduled_work_cancel_before_archive_failed", {
+          sessionId: trimmedSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       await Promise.all(
         scheduledWorkScheduler.list(trimmedSessionId).map((schedule) =>
           scheduledWorkScheduler!.cancel(schedule.id)),
