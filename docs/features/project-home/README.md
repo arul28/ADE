@@ -386,10 +386,14 @@ populated on `ProjectDetail`, `RecentProjectSummary`, and
 `ProjectBrowseEntry`; the welcome recents rows, palette browse rows, and
 `BrowsePreview` render it via `WorktreeBadge` ("worktree of X", compact
 label in browse rows), and badged local recents rows expose the merge
-affordance. Known v1 bypasses: the OS "Open repository" dialog and inbound
-deeplinks reach the main process's `switchProjectFromDialog` directly, and
-TopBar warm-tab switches pass `skipWorktreeGate`, so none of them show the
-prompt. Local project rows open via
+affordance. The OS "Open repository" dialog (TopBar/AppShell Relocate) is
+also gated: `appStore.openRepo` picks the folder with
+`window.ade.project.chooseDirectory` first, runs the same inspect step, and
+either surfaces the prompt or binds the picked path via
+`openRepo({ rootPath })` — so the native dialog behaves like the in-app
+flows. Remaining bypasses: inbound deeplinks reach the main process's
+`switchProjectFromDialog` directly, and warm-tab switches pass
+`skipWorktreeGate`, so neither shows the prompt. Local project rows open via
 `appStore.switchProjectToPath(path)` and the normal project open flow
 (`adeProjectService.openProject`). Connected remote rows open via
 `appStore.switchRemoteProject(targetId, projectId)`; disconnected remote
