@@ -70,6 +70,7 @@ import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { resolveBuiltInBrowserActorCapability } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
+import { markRuntimeValidatedBuiltInBrowserPersonalScope } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
@@ -2451,7 +2452,7 @@ function scopeBuiltInBrowserAdeActionArgs(
     builtInBrowserAccessDenied(method);
   }
 
-  return {
+  const scopedArgs = {
     ...browserArgs,
     chatSessionId: actor.chatSessionId,
     ...(callerLaneId ? { laneId: callerLaneId } : {}),
@@ -2460,6 +2461,9 @@ function scopeBuiltInBrowserAdeActionArgs(
       : { projectRoot: undefined, tabCollection: actor.tabCollection }),
     force: false,
   };
+  return actor.tabCollection === "personal"
+    ? markRuntimeValidatedBuiltInBrowserPersonalScope(scopedArgs)
+    : scopedArgs;
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;

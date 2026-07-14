@@ -4,6 +4,7 @@ import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  isRuntimeValidatedBuiltInBrowserPersonalScope,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -122,13 +123,22 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     }
   }
 
-  const withProjectRoot = (params: unknown): unknown => {
-    if (!projectRoot) return params;
-    if (params == null) return { projectRoot };
-    if (typeof params === "object" && !Array.isArray(params)) {
-      return { ...(params as Record<string, unknown>), projectRoot };
+  const withRuntimeScope = (params: unknown): unknown => {
+    const record = params && typeof params === "object" && !Array.isArray(params)
+      ? params as Record<string, unknown>
+      : {};
+    if (isRuntimeValidatedBuiltInBrowserPersonalScope(params)) {
+      return {
+        ...record,
+        projectRoot: undefined,
+        tabCollection: "personal",
+      };
     }
-    return params;
+    return {
+      ...record,
+      projectRoot: projectRoot ?? undefined,
+      tabCollection: undefined,
+    };
   };
 
   const authenticatedParams = (params: unknown): Record<string, unknown> => {
@@ -136,7 +146,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     if (!bridgeAuthToken) {
       throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
     }
-    const scoped = withProjectRoot(params);
+    const scoped = withRuntimeScope(params);
     return {
       ...(scoped && typeof scoped === "object" && !Array.isArray(scoped)
         ? scoped as Record<string, unknown>
@@ -146,10 +156,11 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   };
 
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
+    const requestParams = authenticatedParams(params);
     const c = await ensureClient();
     try {
       return await raceWithTimeout(
-        c.request(`built_in_browser.${method}`, authenticatedParams(params)),
+        c.request(`built_in_browser.${method}`, requestParams),
         REQUEST_TIMEOUT_MS,
         `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
       );

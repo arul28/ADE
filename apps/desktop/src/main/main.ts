@@ -3294,6 +3294,7 @@ app.whenReady().then(async () => {
         db,
         projectId,
         projectRoot,
+        additionalAllowedImportRoots: [path.join(app.getPath("userData"), "browser-observations")],
         logger,
         onEvent: (payload) =>
           emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),

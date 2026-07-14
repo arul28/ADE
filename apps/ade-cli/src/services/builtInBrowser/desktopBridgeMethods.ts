@@ -2,6 +2,25 @@ import type { BuiltInBrowserService } from "../../../../desktop/src/main/service
 
 export const BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM = "__adeDesktopBridgeAuth";
 
+const runtimeValidatedPersonalScopes = new WeakSet<object>();
+
+/**
+ * Marks the exact params object produced by the runtime's actor-capability
+ * check. A caller cannot synthesize this marker through JSON-RPC input.
+ */
+export function markRuntimeValidatedBuiltInBrowserPersonalScope<
+  Params extends Record<string, unknown>,
+>(params: Params): Params {
+  runtimeValidatedPersonalScopes.add(params);
+  return params;
+}
+
+export function isRuntimeValidatedBuiltInBrowserPersonalScope(
+  params: unknown,
+): params is Record<string, unknown> {
+  return Boolean(params && typeof params === "object" && runtimeValidatedPersonalScopes.has(params));
+}
+
 type SourceWindowLike = {
   id: number;
   isDestroyed(): boolean;

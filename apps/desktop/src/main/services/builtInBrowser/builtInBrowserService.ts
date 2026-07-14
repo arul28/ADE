@@ -317,6 +317,9 @@ export function createBuiltInBrowserService(args: {
   const permissionFilePath = args.permissionFilePath === null
     ? null
     : args.permissionFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-permissions.json") : null);
+  const personalObservationRootPath = userDataPath
+    ? path.join(userDataPath, "browser-observations")
+    : null;
   const resolveParentWindow = (): BrowserWindow | null => {
     if (activeWindowId != null) {
       const activeWindow = windowClosedListeners.get(activeWindowId)?.win ?? null;
@@ -334,7 +337,6 @@ export function createBuiltInBrowserService(args: {
     getLogger: args.getLogger,
   });
   const agentAccessController = createBuiltInBrowserAgentAccessController({
-    getSession: () => session.fromPartition(BROWSER_PARTITION),
     hasAllowedPermissionForOrigin: (origin) => permissionController.hasAllowedDecisionForOrigin(origin),
     resolveParentWindow,
     getLogger: args.getLogger,
@@ -366,6 +368,9 @@ export function createBuiltInBrowserService(args: {
       collection,
       restoredState: stateStore?.restore(collection.key) ?? null,
       onStateChange: (state) => stateStore?.record(collection.key, state),
+      observationRootPath: collection.projectRoot
+        ? path.join(collection.projectRoot, OBSERVATION_CACHE_DIR)
+        : personalObservationRootPath,
       permissionController,
       agentAccessController,
       networkRouter,
@@ -483,6 +488,7 @@ export function createBuiltInBrowserService(args: {
         collection: collectionForProjectRoot(null, "window"),
         restoredState: stateStore?.restore("window") ?? null,
         onStateChange: (state) => stateStore?.record("window", state),
+        observationRootPath: personalObservationRootPath,
         permissionController,
         agentAccessController,
         networkRouter,
@@ -533,6 +539,7 @@ export function createBuiltInBrowserService(args: {
           collection: collectionForProjectRoot(null, "personal"),
           restoredState: stateStore?.restore("personal") ?? null,
           onStateChange: (state) => stateStore?.record("personal", state),
+          observationRootPath: personalObservationRootPath,
           permissionController,
           agentAccessController,
           networkRouter,
@@ -791,6 +798,7 @@ function createBuiltInBrowserWindowService(args: {
   collection: BrowserCollection;
   restoredState?: BuiltInBrowserRestoredCollection | null;
   onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
+  observationRootPath: string | null;
   permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
   agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
@@ -825,6 +833,19 @@ function createBuiltInBrowserWindowService(args: {
     } catch {
       return null;
     }
+  };
+
+  const observationRootPath = normalizedProjectRoot(args.observationRootPath);
+  const observationRelativeBasePath = args.collection.projectRoot ?? observationRootPath;
+  const observationDirectory = (tab: BrowserTabState): string => {
+    if (!observationRootPath) {
+      throw new Error("Browser observations are unavailable because no scratch root is configured.");
+    }
+    return path.join(
+      observationRootPath,
+      sanitizePathSegment(args.collection.key),
+      sanitizePathSegment(tab.id),
+    );
   };
 
   const emit = (payload: BuiltInBrowserEventPayload): void => {
@@ -1128,7 +1149,6 @@ function createBuiltInBrowserWindowService(args: {
       input,
       "The agent requested an interactive browser action.",
     );
-    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
   };
@@ -1447,7 +1467,7 @@ function createBuiltInBrowserWindowService(args: {
       const guard = opener?.agentNavigationGuard;
       if (
         guard
-        && args.agentAccessController.isKnownSensitiveUrlSync(popupUrl, guard)
+        && args.agentAccessController.isUrlAccessRequiredSync(popupUrl, guard)
       ) {
         emitError(new Error(
           `Blocked an agent-triggered popup to ${popupUrl}. Navigate to that origin explicitly so ADE can request human approval.`,
@@ -2039,6 +2059,7 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function setBounds(nextBounds: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> {
+    await tabRestorationPromise;
     const normalized: BuiltInBrowserFrame = {
       x: normalizeDimension(nextBounds.x),
       y: normalizeDimension(nextBounds.y),
@@ -2283,7 +2304,6 @@ function createBuiltInBrowserWindowService(args: {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested access to reload this browser tab.");
     reclaimTabForHumanNavigation(tab, input);
-    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     tab.webContents.reload();
     emitStatus();
@@ -2294,7 +2314,6 @@ function createBuiltInBrowserWindowService(args: {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested backward navigation in this browser tab.");
     reclaimTabForHumanNavigation(tab, input);
-    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoBack()) wc.goBack();
@@ -2306,7 +2325,6 @@ function createBuiltInBrowserWindowService(args: {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested forward navigation in this browser tab.");
     reclaimTabForHumanNavigation(tab, input);
-    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoForward()) wc.goForward();
@@ -3193,15 +3211,8 @@ function createBuiltInBrowserWindowService(args: {
     if (!parsed) {
       throw new Error("Browser element handle must look like obs-...:e:<index>.");
     }
-    const projectRoot = args.collection.projectRoot;
-    if (!projectRoot) {
-      throw new Error("Browser element handles require a project tab collection.");
-    }
     const jsonPath = path.join(
-      projectRoot,
-      OBSERVATION_CACHE_DIR,
-      sanitizePathSegment(args.collection.key),
-      sanitizePathSegment(tab.id),
+      observationDirectory(tab),
       `${sanitizePathSegment(parsed.observationId)}.json`,
     );
     let parsedObservation: unknown;
@@ -3254,20 +3265,19 @@ function createBuiltInBrowserWindowService(args: {
     diagnostics: BuiltInBrowserDiagnostics | null,
     sessionId: string | null,
   ): Promise<BuiltInBrowserObservation> => {
-    const projectRoot = args.collection.projectRoot;
-    if (!projectRoot) {
-      throw new Error("Browser observations require a project tab collection.");
+    if (!observationRelativeBasePath) {
+      throw new Error("Browser observations are unavailable because no scratch root is configured.");
     }
     const keepCount = normalizeObservationKeepCount(input.keepCount);
     const id = `obs-${Date.now()}-${randomUUID()}`;
-    const dir = path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.collection.key), sanitizePathSegment(tab.id));
+    const dir = observationDirectory(tab);
     const filePath = path.join(dir, `${id}.png`);
     const elementMapPath = path.join(dir, `${id}.map.png`);
     const jsonPath = path.join(dir, `${id}.json`);
     const image = decodeDataUrl(screenshot.dataUrl);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(filePath, image.buffer);
-    const relativePath = path.relative(projectRoot, filePath);
+    const relativePath = path.relative(observationRelativeBasePath, filePath);
     const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
     let elementMap: BuiltInBrowserObservationElementMap | null = null;
     if (elementMapScreenshot) {
@@ -3275,7 +3285,7 @@ function createBuiltInBrowserWindowService(args: {
       await fs.writeFile(elementMapPath, elementMapImage.buffer);
       elementMap = {
         filePath: elementMapPath,
-        relativePath: path.relative(projectRoot, elementMapPath),
+        relativePath: path.relative(observationRelativeBasePath, elementMapPath),
         width: elementMapScreenshot.width,
         height: elementMapScreenshot.height,
         mimeType: elementMapImage.mimeType,
@@ -3310,7 +3320,7 @@ function createBuiltInBrowserWindowService(args: {
     await fs.writeFile(jsonPath, `${JSON.stringify({ ...observation, filePath, relativePath }, null, 2)}\n`, "utf8");
     observation.cleanup = await pruneObservationDirectory(dir, keepCount);
     void pruneObservationCacheRoot(
-      path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.collection.key)),
+      path.join(observationRootPath!, sanitizePathSegment(args.collection.key)),
       DEFAULT_OBSERVATION_MAX_AGE_MS,
     ).catch((error) => {
       logger()?.debug("built_in_browser.observation_stale_prune_failed", {

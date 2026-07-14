@@ -11,7 +11,11 @@ import type {
   WebContents,
 } from "electron";
 import { JsonRpcClient } from "../../../../../ade-cli/src/tuiClient/jsonRpcClient";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { createBuiltInBrowserDesktopBridgeClient } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeClient";
+import {
+  BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  markRuntimeValidatedBuiltInBrowserPersonalScope,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import {
   issueBuiltInBrowserActorCapability,
   resetBuiltInBrowserActorCapabilitiesForTest,
@@ -331,23 +335,10 @@ describe("built-in browser navigation policy", () => {
   });
 });
 
-function fakeCookieSession(cookies: Array<{ domain: string }> = []): Session {
-  return {
-    cookies: {
-      get: vi.fn(async (filter: { url?: string }) => {
-        if (!filter.url) return cookies;
-        const host = new URL(filter.url).hostname;
-        return cookies.filter((cookie) => host === cookie.domain || host.endsWith(`.${cookie.domain}`));
-      }),
-    },
-  } as unknown as Session;
-}
-
 describe("built-in browser agent access", () => {
   it("allows unbound humans and local development origins without prompting", async () => {
     const prompt = vi.fn(async () => ({ granted: false }));
     const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => fakeCookieSession(),
       resolveParentWindow: () => null,
       prompt,
     });
@@ -358,10 +349,9 @@ describe("built-in browser agent access", () => {
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it("requires one chat-scoped human approval for high-risk origins", async () => {
+  it("requires one chat-scoped human approval for every remote origin", async () => {
     const prompt = vi.fn(async () => ({ granted: true }));
     const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => fakeCookieSession(),
       resolveParentWindow: () => null,
       prompt,
     });
@@ -379,27 +369,9 @@ describe("built-in browser agent access", () => {
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
-  it("treats any origin with global-profile cookies as authenticated", async () => {
-    const session = fakeCookieSession([{ domain: "example.com" }]);
-    const prompt = vi.fn(async () => ({ granted: false }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => session,
-      resolveParentWindow: () => null,
-      prompt,
-    });
-
-    await expect(controller.requireUrlAccess(
-      "https://app.example.com/dashboard",
-      { chatSessionId: "chat-1" },
-      "observe",
-    )).rejects.toThrow(/Human approval was denied/);
-    expect(prompt).toHaveBeenCalledTimes(1);
-  });
-
-  it("requires first-use approval even when a non-local origin has no cookies", async () => {
+  it("requires first-use approval before synchronous access to a remote origin", async () => {
     const prompt = vi.fn(async () => ({ granted: true }));
     const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => fakeCookieSession(),
       resolveParentWindow: () => null,
       prompt,
     });
@@ -414,7 +386,6 @@ describe("built-in browser agent access", () => {
   it("requires approval for local origins with a remembered privileged permission", async () => {
     const prompt = vi.fn(async () => ({ granted: false }));
     const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => fakeCookieSession(),
       hasAllowedPermissionForOrigin: (origin) => origin === "http://localhost:5173",
       resolveParentWindow: () => null,
       prompt,
@@ -430,7 +401,6 @@ describe("built-in browser agent access", () => {
 
   it("treats HTTP-authenticated origins as sensitive and grants only the prompting agent", async () => {
     const controller = createBuiltInBrowserAgentAccessController({
-      getSession: () => fakeCookieSession(),
       resolveParentWindow: () => null,
       prompt: vi.fn(),
     });
@@ -908,7 +878,7 @@ describe("built-in browser desktop bridge", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("accepts authenticated personal chat scopes without a project root", async () => {
+  it.skipIf(process.platform === "win32")("routes only runtime-validated personal chats through the real desktop bridge", async () => {
     const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
     const navigate = vi.fn(async (input: unknown) => input);
     const server = startBuiltInBrowserDesktopBridgeServer({
@@ -916,21 +886,33 @@ describe("built-in browser desktop bridge", () => {
       service: { navigate } as unknown as BuiltInBrowserService,
       logger: createLogger(),
     });
-    let client: JsonRpcClient | null = null;
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath,
+      getAuthToken: () => server.authToken,
+      projectRoot: "/trusted/project",
+      logger: createLogger(),
+    });
     try {
       await waitForPath(socketPath);
-      client = await JsonRpcClient.connect(socketPath);
-
-      await expect(client.request("built_in_browser.navigate", {
+      await expect(client.navigate(markRuntimeValidatedBuiltInBrowserPersonalScope({
         url: "https://example.test",
         chatSessionId: "chat-personal",
         tabCollection: "personal",
         force: true,
-        [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
-      })).resolves.toMatchObject({
+      }))).resolves.toMatchObject({
         url: "https://example.test",
         chatSessionId: "chat-personal",
         tabCollection: "personal",
+        force: false,
+      });
+      await expect(client.navigate({
+        url: "https://project.example.test",
+        chatSessionId: "chat-project",
+        tabCollection: "personal",
+      })).resolves.toMatchObject({
+        url: "https://project.example.test",
+        chatSessionId: "chat-project",
+        projectRoot: "/trusted/project",
         force: false,
       });
       expect(navigate).toHaveBeenCalledWith(expect.objectContaining({
@@ -939,8 +921,14 @@ describe("built-in browser desktop bridge", () => {
         tabCollection: "personal",
         force: false,
       }));
+      expect(navigate).toHaveBeenLastCalledWith(expect.objectContaining({
+        chatSessionId: "chat-project",
+        projectRoot: "/trusted/project",
+        tabCollection: undefined,
+        force: false,
+      }));
     } finally {
-      client?.close();
+      client.dispose();
       server.dispose();
     }
   });

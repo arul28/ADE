@@ -12,6 +12,7 @@ import {
   issueBuiltInBrowserActorCapability,
   resetBuiltInBrowserActorCapabilitiesForTest,
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
+import { isRuntimeValidatedBuiltInBrowserPersonalScope } from "./services/builtInBrowser/desktopBridgeMethods";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -3089,6 +3090,41 @@ describe("adeRpcServer", () => {
     });
     expect(permissionClear.isError).toBe(true);
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks actor-validated personal browser routing while erasing caller project scope", async () => {
+    const fixture = createRuntime();
+    const getStatus = vi.fn(async (args: unknown) => args);
+    fixture.runtime.builtInBrowserService = { getStatus };
+    const actorToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-personal",
+      laneId: null,
+      projectRoot: null,
+      tabCollection: "personal",
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "agent-personal",
+      role: "agent",
+      chatSessionId: "chat-personal",
+      browserActorToken: actorToken,
+    });
+
+    const status = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "getStatus",
+      args: { projectRoot: "/caller/spoof", tabCollection: "personal" },
+    });
+
+    expect(status?.isError).toBeUndefined();
+    const scopedArgs = getStatus.mock.calls[0]?.[0];
+    expect(scopedArgs).toEqual({
+      chatSessionId: "chat-personal",
+      projectRoot: undefined,
+      tabCollection: "personal",
+      force: false,
+    });
+    expect(isRuntimeValidatedBuiltInBrowserPersonalScope(scopedArgs)).toBe(true);
   });
 
   it("does not let the runtime daemon environment override the connecting browser actor", async () => {

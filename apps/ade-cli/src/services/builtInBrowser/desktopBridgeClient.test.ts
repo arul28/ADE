@@ -2,7 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   startJsonRpcServer,
@@ -13,6 +13,7 @@ import {
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./desktopBridgeClient";
+import { markRuntimeValidatedBuiltInBrowserPersonalScope } from "./desktopBridgeMethods";
 
 function silentLogger() {
   return {
@@ -25,6 +26,7 @@ function silentLogger() {
 
 type ServerHandle = {
   socketPath: string;
+  connectionCount: () => number;
   close: () => Promise<void>;
 };
 
@@ -37,7 +39,9 @@ async function startBridgeServer(
 ): Promise<ServerHandle> {
   const stopHandles = new Set<() => void>();
   const sockets = new Set<net.Socket>();
+  let connectionCount = 0;
   const server = net.createServer((conn) => {
+    connectionCount += 1;
     sockets.add(conn);
     const transport: JsonRpcTransport = {
       onData: (callback) => conn.on("data", callback),
@@ -61,6 +65,7 @@ async function startBridgeServer(
   });
   return {
     socketPath,
+    connectionCount: () => connectionCount,
     close: () =>
       new Promise<void>((resolve) => {
         for (const s of sockets) {
@@ -141,15 +146,32 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     })]);
   });
 
-  it("fails closed when the runtime has not received bridge authentication", async () => {
+  it("rejects missing authentication without opening or dropping a bridge connection", async () => {
     server = await startBridgeServer(async () => ({ ok: true }));
+    let authToken: string | null = null;
+    const warn = vi.fn();
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
-      getAuthToken: () => null,
-      logger: silentLogger(),
+      getAuthToken: () => authToken,
+      logger: { ...silentLogger(), warn },
     });
 
     await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    expect(server.connectionCount()).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+
+    authToken = "bridge-auth";
+    await expect(client.getStatus()).resolves.toEqual({ ok: true });
+    expect(server.connectionCount()).toBe(1);
+
+    authToken = null;
+    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    expect(server.connectionCount()).toBe(1);
+    expect(warn).not.toHaveBeenCalled();
+
+    authToken = "bridge-auth";
+    await expect(client.getStatus()).resolves.toEqual({ ok: true });
+    expect(server.connectionCount()).toBe(1);
     client.dispose();
   });
 
@@ -192,6 +214,46 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     expect(recorded[1]?.params).toEqual({
       url: "https://example.com",
+      projectRoot: "/Users/ade/project-alpha",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
+    client.dispose();
+  });
+
+  it("preserves only runtime-validated personal tab routing", async () => {
+    const recorded: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      recorded.push(request);
+      return { ok: true };
+    });
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
+      projectRoot: "/Users/ade/project-alpha",
+      logger: silentLogger(),
+    });
+
+    await client.navigate(markRuntimeValidatedBuiltInBrowserPersonalScope({
+      url: "https://personal.example.test",
+      chatSessionId: "chat-personal",
+      projectRoot: undefined,
+      tabCollection: "personal",
+    }));
+    await client.navigate({
+      url: "https://spoofed.example.test",
+      chatSessionId: "chat-project",
+      tabCollection: "personal",
+    });
+
+    expect(recorded[0]?.params).toEqual({
+      url: "https://personal.example.test",
+      chatSessionId: "chat-personal",
+      tabCollection: "personal",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
+    expect(recorded[1]?.params).toEqual({
+      url: "https://spoofed.example.test",
+      chatSessionId: "chat-project",
       projectRoot: "/Users/ade/project-alpha",
       __adeDesktopBridgeAuth: "bridge-auth",
     });

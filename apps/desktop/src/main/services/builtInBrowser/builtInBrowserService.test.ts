@@ -163,6 +163,7 @@ const fakes = vi.hoisted(() => {
   const requestErrorHandlers: RequestFinishedHandler[] = [];
   const sessionEventHandlers: Array<{ session: FakeSession; event: string; handler: (...args: unknown[]) => void }> = [];
   const appGetPath = vi.fn((name: string): string => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
+  const appIsReady = vi.fn(() => false);
   const permissionPrompt = vi.fn(async () => ({ response: 1, checkboxChecked: false }));
   let permissionCheckHandler: PermissionCheckHandler | null = null;
   let permissionRequestHandler: PermissionRequestHandler | null = null;
@@ -343,6 +344,7 @@ const fakes = vi.hoisted(() => {
     flushStorageData,
     sessionEventHandlers,
     appGetPath,
+    appIsReady,
     dispatchWillDownload: (
       item: FakeDownloadItem,
       downloadWebContents: FakeWebContents | null = webContentsInstances[0] ?? null,
@@ -401,7 +403,7 @@ const fakes = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   WebContentsView: fakes.WebContentsView,
-  app: { getPath: fakes.appGetPath },
+  app: { getPath: fakes.appGetPath, isReady: fakes.appIsReady },
   dialog: { showMessageBox: fakes.permissionPrompt },
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
   screen: fakes.screen,
@@ -428,6 +430,17 @@ function captureStatusEvents(): {
       events.push(payload);
     },
   };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
 }
 
 let fakeWindowId = 1;
@@ -479,6 +492,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.flushStorageData.mockClear();
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
+    fakes.appIsReady.mockReset();
+    fakes.appIsReady.mockReturnValue(false);
     fakes.permissionPrompt.mockClear();
     fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
@@ -814,6 +829,64 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         && tab.ownerChatSessionId === null
         && tab.ownerLeaseExpiresAt === null
       ))).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for tab restoration before visible bounds can create a browser view", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-restore-bounds-"));
+    const stateFilePath = path.join(tempDir, "browser-state.json");
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : tempDir
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const firstWin = fakeBrowserWindow();
+      projectRootByWindow.set(firstWin.id, "/Users/ade/project-alpha");
+      const firstBrowserWin = firstWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const firstService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      await firstService.createTab({ url: "https://restore-race.test", activate: true }, firstBrowserWin);
+      await firstService.flushStorage();
+      firstService.dispose();
+
+      fakes.clearWebContentsInstances();
+      fakes.getCookies.mockClear();
+      const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
+      fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      const restoredWin = fakeBrowserWindow();
+      projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
+      const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const restoredService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      restoredService.attachToWindow(restoredBrowserWin);
+      let boundsSettled = false;
+      const boundsPromise = restoredService.setBounds({
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+        visible: true,
+      }, restoredBrowserWin).then((status) => {
+        boundsSettled = true;
+        return status;
+      });
+
+      await vi.waitFor(() => expect(fakes.getCookies).toHaveBeenCalled());
+      expect(boundsSettled).toBe(false);
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+
+      migrationCookies.resolve([]);
+      const status = await boundsPromise;
+      expect(status.tabs.map((tab) => tab.url)).toEqual(["https://restore-race.test/"]);
+      expect(fakes.webContentsViewInstances).toHaveLength(1);
+      restoredService.dispose();
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -2127,6 +2200,48 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("stores default action observations for personal tabs in machine-local scratch space", async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-personal-observe-"));
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : userDataPath
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const service = createBuiltInBrowserService({
+        onEvent: collector.onEvent,
+        getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      });
+      const win = fakeBrowserWindow();
+      projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+      const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+      await service.createTab({
+        tabCollection: "personal",
+        url: "http://localhost:5173/personal",
+        activate: true,
+        chatSessionId: "chat-personal",
+      }, browserWin);
+
+      const result = await service.click({
+        tabCollection: "personal",
+        x: 10,
+        y: 20,
+        waitAfterMs: 0,
+        chatSessionId: "chat-personal",
+      }, browserWin);
+
+      const observation = result.observation;
+      expect(observation).not.toBeNull();
+      expect(observation?.filePath.startsWith(path.join(userDataPath, "browser-observations", "personal")))
+        .toBe(true);
+      expect(observation?.relativePath).toMatch(/^personal\//);
+      expect(fs.existsSync(observation?.filePath ?? "")).toBe(true);
+      service.dispose();
+    } finally {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
     }
   });
 

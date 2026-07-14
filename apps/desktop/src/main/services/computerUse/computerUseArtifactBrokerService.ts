@@ -236,6 +236,7 @@ export function createComputerUseArtifactBrokerService(args: {
   db: AdeDb;
   projectId: string;
   projectRoot: string;
+  additionalAllowedImportRoots?: readonly string[];
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
@@ -247,6 +248,10 @@ export function createComputerUseArtifactBrokerService(args: {
     layout.tmpDir,
     os.tmpdir(),
     path.join(os.homedir(), ".agent-browser"),
+    ...(args.additionalAllowedImportRoots ?? [])
+      .map((root) => root.trim())
+      .filter(Boolean)
+      .map((root) => path.resolve(root)),
   ]));
 
   const emit = (payload: ComputerUseEventPayload): void => {
