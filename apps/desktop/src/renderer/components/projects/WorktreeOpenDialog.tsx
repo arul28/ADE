@@ -93,6 +93,7 @@ export function WorktreeOpenDialog() {
   if (!inspection || !parent) return null;
 
   const existingLane = parent.existingLane;
+  const isDetached = !existingLane && !inspection.branchRef?.trim();
   const laneBusy = busy === "lane";
   const standaloneBusy = busy === "standalone";
   const subtitlePath = inspection.worktreeRoot
@@ -229,6 +230,23 @@ export function WorktreeOpenDialog() {
                       disabled={Boolean(busy)}
                       onOpen={() => void openAsLane()}
                     />
+                  ) : isDetached ? (
+                    <div
+                      style={{
+                        fontFamily: SANS_FONT,
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        color: COLORS.textSecondary,
+                        background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+                        borderRadius: 10,
+                        padding: "12px 14px",
+                      }}
+                    >
+                      This worktree has a detached HEAD, so it can't be added as a
+                      lane — a lane always tracks a branch. Check out a branch in
+                      it, or open it as a separate project below.
+                    </div>
                   ) : (
                     <RecommendedCard
                       title={

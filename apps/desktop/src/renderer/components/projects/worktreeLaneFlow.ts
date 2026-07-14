@@ -28,11 +28,23 @@ export async function openWorktreeAsLane(
     throw new Error("This worktree does not have a resolved owning project.");
   }
 
-  await deps.switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
   if (parent.existingLane) {
+    await deps.switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
     await deps.navigate(`/lanes?laneId=${parent.existingLane.id}&focus=single`);
     return;
   }
+
+  // A lane wraps a branch. A detached-HEAD worktree has none, so attach would
+  // fall back to the owning project's base ref and either collide with the
+  // primary lane ("Branch 'main' is already linked") or persist a lane pointing
+  // at the wrong branch. Refuse it before switching projects.
+  if (!inspection.branchRef?.trim()) {
+    throw new Error(
+      "This worktree has a detached HEAD, so it can't be added as a lane. Check out a branch in it, or open it as a separate project.",
+    );
+  }
+
+  await deps.switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
 
   let laneId: string | null = null;
   try {
