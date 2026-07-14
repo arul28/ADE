@@ -1697,7 +1697,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
   openRepo: async () => {
     // Invalidate in-flight lane refreshes before the async open so stale
-    // responses from the previous project are discarded immediately.
+    // responses from the previous project are discarded immediately. The
+    // "opening" transition is shown up front (it covers the native picker, as
+    // before) and cleared on any early exit below.
     ++laneRefreshVersion;
     set({
       projectTransition: {
@@ -1709,7 +1711,40 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       projectBinding: null,
     });
     try {
-      const project = await window.ade.project.openRepo();
+      // Pick the target folder first (native picker, no bind yet) so the
+      // worktree gate can run before we bind — the OS "Open repository" dialog
+      // must behave like the in-app open flows. chooseDirectory uses the same
+      // showOpenDialog(["openDirectory"]) as the fused openRepo picker; passing
+      // the matching title keeps it visually identical.
+      const picked = await window.ade.project.chooseDirectory({ title: "Open repository" });
+      if (!picked) {
+        set({ projectTransition: null, lanesLoading: false });
+        return null;
+      }
+
+      // Worktree gate (mirrors switchProjectToPath): if the picked folder is an
+      // external linked worktree whose owning repo resolves, surface the
+      // WorktreeOpenDialog instead of opening it as a standalone project, and
+      // defer the open until the user chooses. inspectPath resolves the worktree
+      // root even from a nested subfolder, and any failure falls through to a
+      // normal open so the gate can never break project opening.
+      if (!get().openProjectTabRoots.includes(picked)) {
+        try {
+          const inspection = await window.ade.project.inspectPath(picked);
+          if (inspection.kind === "linked-worktree" && inspection.parent !== null) {
+            set({
+              projectTransition: null,
+              lanesLoading: false,
+              worktreeOpenPrompt: { inspection },
+            });
+            return null;
+          }
+        } catch {
+          // Ignore — proceed with the normal open below.
+        }
+      }
+
+      const project = await window.ade.project.openRepo({ rootPath: picked });
       if (!project) {
         set({ projectTransition: null, lanesLoading: false });
         return null;

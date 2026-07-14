@@ -7,6 +7,8 @@ import type { ProjectPathInspection } from "../../shared/types";
 // ---------------------------------------------------------------------------
 const inspectPath = vi.fn<[string], Promise<ProjectPathInspection>>();
 const switchToPath = vi.fn<[string], Promise<unknown>>();
+const chooseDirectory = vi.fn<[unknown], Promise<string | null>>();
+const openRepo = vi.fn<[unknown], Promise<unknown>>();
 
 (globalThis as any).window = globalThis.window ?? {};
 Object.assign((globalThis as any).window, {
@@ -19,7 +21,8 @@ Object.assign((globalThis as any).window, {
     ai: { getStatus: vi.fn(async () => null) },
     keybindings: { get: vi.fn(async () => null) },
     project: {
-      openRepo: vi.fn(async () => null),
+      openRepo,
+      chooseDirectory,
       listRecent: vi.fn(async () => []),
       switchToPath,
       inspectPath,
@@ -52,6 +55,9 @@ describe("appStore worktree open gate", () => {
   beforeEach(() => {
     inspectPath.mockReset();
     switchToPath.mockReset();
+    chooseDirectory.mockReset();
+    openRepo.mockReset();
+    openRepo.mockResolvedValue(null);
     switchToPath.mockImplementation(async (rootPath: string) => ({
       rootPath,
       displayName: "Project",
@@ -134,6 +140,48 @@ describe("appStore worktree open gate", () => {
 
     expect(switchToPath).toHaveBeenCalledWith("/repos/plain");
     expect(useAppStore.getState().worktreeOpenPrompt).toBeNull();
+  });
+
+  it("openRepo (OS dialog) surfaces the prompt for a picked worktree and does not bind", async () => {
+    chooseDirectory.mockResolvedValueOnce("/repos/app-feature");
+    inspectPath.mockResolvedValueOnce(linkedWorktree());
+
+    const result = await useAppStore.getState().openRepo();
+
+    expect(chooseDirectory).toHaveBeenCalledWith({ title: "Open repository" });
+    expect(inspectPath).toHaveBeenCalledWith("/repos/app-feature");
+    expect(openRepo).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+    expect(useAppStore.getState().worktreeOpenPrompt?.inspection.parent?.displayName).toBe("app");
+  });
+
+  it("openRepo binds a plain repo through the picked rootPath (no prompt)", async () => {
+    chooseDirectory.mockResolvedValueOnce("/repos/plain");
+    inspectPath.mockResolvedValueOnce({
+      inputPath: "/repos/plain",
+      worktreeRoot: "/repos/plain",
+      kind: "repo-root",
+      branchRef: "main",
+      parent: null,
+      standaloneState: null,
+    });
+    openRepo.mockResolvedValueOnce({ rootPath: "/repos/plain", displayName: "plain", baseRef: "main" });
+
+    const result = await useAppStore.getState().openRepo();
+
+    expect(openRepo).toHaveBeenCalledWith({ rootPath: "/repos/plain" });
+    expect(useAppStore.getState().worktreeOpenPrompt).toBeNull();
+    expect((result as { rootPath: string } | null)?.rootPath).toBe("/repos/plain");
+  });
+
+  it("openRepo returns null without inspecting when the picker is cancelled", async () => {
+    chooseDirectory.mockResolvedValueOnce(null);
+
+    const result = await useAppStore.getState().openRepo();
+
+    expect(result).toBeNull();
+    expect(inspectPath).not.toHaveBeenCalled();
+    expect(openRepo).not.toHaveBeenCalled();
   });
 
   it("dismissWorktreeOpenPrompt clears the prompt", () => {
