@@ -1,6 +1,8 @@
 import type {
   AgentChatApproveArgs,
   AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelScheduledWorkArgs,
+  AgentChatCancelScheduledWorkResult,
   AgentChatCancelSteerArgs,
   AgentChatCreateArgs,
   AgentChatEventHistoryPage,
@@ -34,6 +36,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "interrupt",
   "respondToInput",
   "approve",
+  "cancelScheduledWork",
   "updateSession",
   "archive",
   "unarchive",
@@ -93,6 +96,7 @@ export type PersonalChatCallArgs =
   | { action: "interrupt"; args: AgentChatInterruptArgs }
   | { action: "respondToInput"; args: AgentChatRespondToInputArgs }
   | { action: "approve"; args: AgentChatApproveArgs }
+  | { action: "cancelScheduledWork"; args: AgentChatCancelScheduledWorkArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
   | { action: "archive" | "unarchive" | "delete"; args: { sessionId: string } }
   | { action: "models"; args?: { provider?: string } }
@@ -122,6 +126,7 @@ export type PersonalChatCallResult =
   | AgentChatSessionSummary[]
   | AgentChatEventHistorySnapshot
   | AgentChatEventHistoryPage
+  | AgentChatCancelScheduledWorkResult
   | AgentChatModelCatalog
   | PtyCreateResult
   | PtyDisposeResult

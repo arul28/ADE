@@ -224,6 +224,11 @@ describe("createSyncRemoteCommandService", () => {
       scope: "runtime",
       policy: { viewerAllowed: true, queueable: false },
     });
+    expect(service.getDescriptor("personalChats.cancelScheduledWork")).toEqual({
+      action: "personalChats.cancelScheduledWork",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
     expect(service.getDescriptor("personalChats.streamEvents")).toEqual({
       action: "personalChats.streamEvents",
       scope: "runtime",
@@ -244,6 +249,17 @@ describe("createSyncRemoteCommandService", () => {
     expect(personalChatScope.call).toHaveBeenCalledWith("send", {
       sessionId: "personal-1",
       text: "hello",
+    });
+    await expect(service.execute(makePayload("personalChats.cancelScheduledWork", {
+      sessionId: "personal-1",
+      scheduleId: "cron-1",
+    }))).resolves.toEqual({
+      action: "cancelScheduledWork",
+      args: { sessionId: "personal-1", scheduleId: "cron-1" },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("cancelScheduledWork", {
+      sessionId: "personal-1",
+      scheduleId: "cron-1",
     });
   });
 

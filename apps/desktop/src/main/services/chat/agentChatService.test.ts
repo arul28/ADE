@@ -13662,6 +13662,118 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules", async () => {
+      const sdkSessionId = "sdk-provider-snapshot-reconcile";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: sdkSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [
+          storedWakeup(session.id, {
+            id: "provider-wakeup",
+            prompt: "Check provider wakeup.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-wakeup-id",
+          }),
+          storedWakeup(session.id, {
+            id: "provider-loop",
+            kind: "loop",
+            prompt: "Continue provider loop.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-loop-id",
+          }),
+          storedWakeup(session.id, {
+            id: "ade-local-wakeup",
+            prompt: "Run ADE-local work.",
+            durable: true,
+          }),
+          storedWakeup(session.id, {
+            id: "other-provider-wakeup",
+            prompt: "Keep another provider session's work.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: "sdk-other-provider-session",
+            providerScheduleId: "other-provider-wakeup-id",
+          }),
+        ],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Reconcile the provider's scheduled-work snapshot.",
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const subagentStopHook = resumeOptions?.hooks?.SubagentStop?.[0]?.hooks[0];
+      const stopHook = resumeOptions?.hooks?.Stop?.[0]?.hooks[0];
+
+      await subagentStopHook?.({
+        hook_event_name: "SubagentStop",
+        session_id: sdkSessionId,
+        agent_id: "agent-1",
+        agent_type: "reviewer",
+        last_assistant_message: "Review complete.",
+        session_crons: [{
+          id: "provider-loop-id",
+          schedule: "once",
+          prompt: "Continue provider loop.",
+          recurring: false,
+        }],
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "provider-wakeup", status: "cancelled" }),
+        expect.objectContaining({ id: "provider-loop", status: "scheduled" }),
+        expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
+        expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
+      ]));
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_id: sdkSessionId,
+        session_crons: [],
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "provider-loop", status: "cancelled" }),
+        expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
+        expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
+      ]));
+      resumed.forceDisposeAll();
+      original.forceDisposeAll();
+    });
+
     it("cancels an unowned legacy wakeup when Claude confirms ScheduleWakeup stop", async () => {
       const sdkSessionId = "sdk-legacy-wakeup-stop";
       const sdkHandle = {

@@ -12180,8 +12180,13 @@ export function createAgentChatService(args: {
     }
     if (hasSessionCrons && scheduledWorkScheduler) {
       for (const schedule of scheduledWorkScheduler.list(managed.session.id)) {
+        // Claude's session_crons snapshot includes recurring crons and native
+        // one-shot wakeups/loops. Treat it as authoritative only for durable
+        // work owned by this exact provider session; ADE-local rows are not in it.
         if (
-          schedule.kind === "cron"
+          (schedule.kind === "cron" || schedule.kind === "wakeup" || schedule.kind === "loop")
+          && schedule.provider === "claude"
+          && schedule.durable === true
           && schedule.status !== "done"
           && schedule.status !== "cancelled"
           && providerSessionId != null
