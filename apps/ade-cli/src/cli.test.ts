@@ -127,6 +127,73 @@ function writeSyncHostSingletonLock(args: {
 }
 
 describe("ADE CLI", () => {
+  it("builds projectless account commands and reports the signed-out local-first message", () => {
+    const statusPlan = expectExecutePlan(buildCliPlan(["auth", "status"]));
+    expect(statusPlan).toMatchObject({
+      label: "auth status",
+      formatter: "account-auth",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [{
+        method: "account.call",
+        params: { action: "status", args: {} },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(statusPlan)).toBe(false);
+
+    const logoutPlan = expectExecutePlan(buildCliPlan(["logout"]));
+    expect(logoutPlan.steps[0]).toMatchObject({
+      method: "account.call",
+      params: { action: "signOut", args: {} },
+    });
+    expect(shouldAutoRegisterProjectForPlan(logoutPlan)).toBe(false);
+
+    expect(buildCliPlan(["login", "--max-wait", "42"])).toEqual({
+      kind: "account-login",
+      maxWaitSec: 42,
+    });
+    const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
+    expect(rawActionPlan.steps[0]).toMatchObject({
+      method: "account.call",
+      params: { action: "status", args: {} },
+    });
+
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const summarized = summarizeExecution({
+      plan: statusPlan,
+      connection,
+      values: {
+        result: {
+          domain: "account",
+          action: "status",
+          result: {
+            signedIn: false,
+            userId: null,
+            email: null,
+            name: null,
+            expiresAt: null,
+          },
+          statusHints: {},
+        },
+      },
+    });
+    expect(formatOutput(summarized, {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    }, inferFormatter(statusPlan))).toBe(
+      "Not signed in — local use does not require an account.\n",
+    );
+  });
+
   it("parses global options without stealing command flags", () => {
     const parsed = parseCliArgs([
       "--project-root",
@@ -2611,6 +2678,68 @@ describe("ADE CLI", () => {
       expect(requests.at(-1)).toEqual({
         method: "personalChats.call",
         params: { action: "list", args: {} },
+      });
+      expect(requests.some((request) => request.method === "projects.add")).toBe(false);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("reports signed-out account status over the machine socket in headless mode", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-status-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: unknown }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          return {
+            domain: "account",
+            action: "status",
+            result: {
+              signedIn: false,
+              userId: null,
+              email: null,
+              name: null,
+              expiresAt: null,
+            },
+            statusHints: {},
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await runCli([
+        "--socket",
+        socketPath,
+        "--headless",
+        "auth",
+        "status",
+        "--text",
+      ]);
+      expect(result).toEqual({
+        output: "Not signed in — local use does not require an account.\n",
+        exitCode: 0,
+      });
+      expect(requests.at(-1)).toEqual({
+        method: "account.call",
+        params: { action: "status", args: {} },
       });
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
     } finally {

@@ -1534,6 +1534,73 @@ describe("runtime AI actions", () => {
   });
 });
 
+describe("runtime account actions", () => {
+  it("registers the account domain and delegates every allowlisted action", async () => {
+    const accountAuthService = {
+      startLogin: vi.fn(async () => ({
+        sessionId: "account-session",
+        authorizeUrl: "https://clerk.example.test/oauth/authorize",
+        expiresAt: "2026-07-14T12:05:00.000Z",
+      })),
+      pollLogin: vi.fn(async (sessionId: string) => ({
+        status: "pending" as const,
+        message: null,
+        authStatus: { signedIn: false, userId: null, email: null, name: null, expiresAt: null },
+        sessionId,
+      })),
+      getStatus: vi.fn(() => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      })),
+      signOut: vi.fn(() => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      })),
+      getAccessToken: vi.fn(async () => "account-token"),
+      dispose: vi.fn(),
+    };
+    const service = getAdeActionDomainServices({
+      accountAuthService,
+    } as never).account as {
+      startLogin(): Promise<unknown>;
+      pollLogin(args: { sessionId: string }): Promise<unknown>;
+      status(): unknown;
+      signOut(): unknown;
+      getToken(): Promise<string>;
+    };
+
+    expect(listAllowedAdeActionNames("account", service as unknown as Record<string, unknown>)).toEqual([
+      "getToken",
+      "pollLogin",
+      "signOut",
+      "startLogin",
+      "status",
+    ]);
+    await service.startLogin();
+    await service.pollLogin({ sessionId: "account-session" });
+    service.status();
+    service.signOut();
+    await expect(service.getToken()).resolves.toBe("account-token");
+
+    expect(accountAuthService.startLogin).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.pollLogin).toHaveBeenCalledWith("account-session");
+    expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.signOut).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
+    expect(isCtoOnlyAdeAction("account", "startLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "pollLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "signOut")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "getToken")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "status")).toBe(false);
+  });
+});
+
 describe("runtime GitHub actions", () => {
   it("allowlists github.detectRepo when the runtime service exposes it", () => {
     const runtime = {

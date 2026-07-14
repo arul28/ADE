@@ -36,6 +36,14 @@ import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
+import {
+  callAccountAction,
+  type AccountAuthService,
+} from "./services/account/accountAuthService";
+import {
+  getSharedAccountAuthService,
+  registerAccountConfigProjectRoot,
+} from "./services/account/sharedAccountAuthService";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -56,6 +64,7 @@ export type MultiProjectRpcHandlerOptions = {
   disposeScopesOnDispose?: boolean;
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
+  accountAuthService?: AccountAuthService;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -65,6 +74,7 @@ const RUNTIME_METHODS = new Set([
   "shutdown",
   "exit",
   "runtime/info",
+  "account.call",
   "personalChats.call",
   "personalChats.streamEvents",
   "machineInfo.get",
@@ -437,6 +447,15 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const registerAccountProjects = (): void => {
+    for (const project of projectRegistry.list()) {
+      registerAccountConfigProjectRoot(project.rootPath);
+    }
+  };
+  registerAccountProjects();
+  const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
+    projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+  });
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? new PersonalChatScope();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
@@ -674,6 +693,7 @@ export function createMultiProjectRpcRequestHandler(
             listMyGitHubRepos: true,
           },
           personalChats: personalChatScope.capabilities(),
+          account: true,
         },
       };
     }
@@ -712,6 +732,22 @@ export function createMultiProjectRpcRequestHandler(
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,
       };
+    }
+
+    if (method === "account.call") {
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!action) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "account.call requires action.",
+        );
+      }
+      registerAccountProjects();
+      return await callAccountAction({
+        service: accountAuthService,
+        action,
+        actionArgs: isRecord(params.args) ? params.args : {},
+      });
     }
 
     if (method === "personalChats.call") {

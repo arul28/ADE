@@ -50,6 +50,58 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("exposes the machine account action domain without a project id", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = {
+      startLogin: vi.fn(),
+      pollLogin: vi.fn(),
+      getStatus: vi.fn(() => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      })),
+      getAccessToken: vi.fn(),
+      signOut: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      accountAuthService,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    const result = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "account.call",
+      params: { action: "status" },
+    });
+
+    expect(result).toEqual({
+      domain: "account",
+      action: "status",
+      result: {
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      },
+      statusHints: {},
+    });
+    expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
+    expect(registry.list()).toHaveLength(0);
+    handler.dispose();
+  });
+
   it("reports a build hash for manually-started CLI entrypoints", async () => {
     const { registry, root } = createRegistry();
     const cliPath = path.join(root, "manual-cli.cjs");
