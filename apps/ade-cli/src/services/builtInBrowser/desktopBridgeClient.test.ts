@@ -9,7 +9,10 @@ import {
   type JsonRpcRequest,
   type JsonRpcTransport,
 } from "../../jsonrpc";
-import { createBuiltInBrowserDesktopBridgeClient } from "./desktopBridgeClient";
+import {
+  createBuiltInBrowserDesktopBridgeClient,
+  verifyBuiltInBrowserDesktopBridgeAuth,
+} from "./desktopBridgeClient";
 
 function silentLogger() {
   return {
@@ -107,17 +110,50 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     const result = await client.navigate({ url: "https://example.com" });
     expect(result).toEqual({ ok: true, url: "https://example.com" });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.method).toBe("built_in_browser.navigate");
-    expect(seen[0]?.params).toEqual({ url: "https://example.com" });
+    expect(seen[0]?.params).toEqual({
+      url: "https://example.com",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
     client.dispose();
   });
 
-  it("dispatches no-arg methods without params field", async () => {
+  it("verifies an in-memory desktop bridge credential without persisting it", async () => {
+    const seen: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      seen.push(request);
+      return { authenticated: true };
+    });
+
+    await expect(verifyBuiltInBrowserDesktopBridgeAuth({
+      socketPath: server.socketPath,
+      authToken: "ephemeral-secret",
+    })).resolves.toBe(true);
+    expect(seen).toEqual([expect.objectContaining({
+      method: "built_in_browser.authenticate",
+      params: { __adeDesktopBridgeAuth: "ephemeral-secret" },
+    })]);
+  });
+
+  it("fails closed when the runtime has not received bridge authentication", async () => {
+    server = await startBridgeServer(async () => ({ ok: true }));
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: server.socketPath,
+      getAuthToken: () => null,
+      logger: silentLogger(),
+    });
+
+    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    client.dispose();
+  });
+
+  it("authenticates no-arg methods", async () => {
     const recorded: JsonRpcRequest[] = [];
     server = await startBridgeServer(async (request) => {
       recorded.push(request);
@@ -125,11 +161,12 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await client.getStatus();
     expect(recorded[0]?.method).toBe("built_in_browser.getStatus");
-    expect(recorded[0]?.params).toBeUndefined();
+    expect(recorded[0]?.params).toEqual({ __adeDesktopBridgeAuth: "bridge-auth" });
     client.dispose();
   });
 
@@ -141,6 +178,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       projectRoot: "/Users/ade/project-alpha",
       logger: silentLogger(),
     });
@@ -148,10 +186,14 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     await client.getStatus();
     await client.navigate({ url: "https://example.com", projectRoot: "/tmp/spoof" });
 
-    expect(recorded[0]?.params).toEqual({ projectRoot: "/Users/ade/project-alpha" });
+    expect(recorded[0]?.params).toEqual({
+      projectRoot: "/Users/ade/project-alpha",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
     expect(recorded[1]?.params).toEqual({
       url: "https://example.com",
       projectRoot: "/Users/ade/project-alpha",
+      __adeDesktopBridgeAuth: "bridge-auth",
     });
     client.dispose();
   });
@@ -163,6 +205,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     );
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: missingPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(
@@ -177,6 +220,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/Browser pane is offline/);
@@ -192,6 +236,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/temporary/);
@@ -210,6 +255,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     server = await startBridgeServer(async () => ({ generation }), socketPath);
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
 

@@ -108,6 +108,7 @@ import {
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBuiltInBrowserDesktopBridgeClient,
+  verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
@@ -230,6 +231,7 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
@@ -965,12 +967,15 @@ export async function createAdeRuntime(args: {
   // individual calls fail clearly. Override the socket path with
   // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
   // ADE home.
+  let builtInBrowserBridgeAuthToken: string | null = null;
+  const builtInBrowserBridgeSocketPath =
+    process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || resolveMachineAdeLayout().desktopBridgeSocketPath;
   const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
     ? null
     : createBuiltInBrowserDesktopBridgeClient({
-        socketPath:
-          process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-          || resolveMachineAdeLayout().desktopBridgeSocketPath,
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
         projectRoot,
         logger,
       });
@@ -1640,6 +1645,15 @@ export async function createAdeRuntime(args: {
     iosSimulatorService,
     appControlService,
     builtInBrowserService: builtInBrowserBridge,
+    configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
+      if (!builtInBrowserBridge) return false;
+      const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
+        socketPath: builtInBrowserBridgeSocketPath,
+        authToken,
+      });
+      if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
+      return verified;
+    },
     eventBuffer,
     isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
     dispose: () => {

@@ -8,6 +8,10 @@ import {
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
+import {
+  issueBuiltInBrowserActorCapability,
+  resetBuiltInBrowserActorCapabilitiesForTest,
+} from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -18,6 +22,7 @@ const ADE_ENV_KEYS = [
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",
   "ADE_OWNER_ID",
+  "ADE_BROWSER_ACTOR_TOKEN",
 ] as const;
 const originalAdeEnv = new Map<string, string | undefined>(
   ADE_ENV_KEYS.map((key) => [key, process.env[key]]),
@@ -31,6 +36,7 @@ function setPlatform(value: NodeJS.Platform): void {
 }
 
 beforeEach(() => {
+  resetBuiltInBrowserActorCapabilitiesForTest();
   for (const key of ADE_ENV_KEYS) {
     delete process.env[key];
   }
@@ -2930,7 +2936,11 @@ describe("adeRpcServer", () => {
     });
     fixture.runtime.ptyService.list.mockReturnValue([ownTerminal, otherTerminal]);
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+    await initialize(handler, {
+      callerId: "agent-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+    });
 
     const listed = await callTool(handler, "run_ade_action", {
       domain: "pty",
@@ -3025,8 +3035,19 @@ describe("adeRpcServer", () => {
     ));
     const captureScreenshot = vi.fn(async (args: unknown) => args);
     fixture.runtime.builtInBrowserService = { captureScreenshot };
+    const actorToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+    await initialize(handler, {
+      callerId: "agent-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+      browserActorToken: actorToken,
+    });
 
     const captured = await callTool(handler, "run_ade_action", {
       domain: "built_in_browser",
@@ -3039,6 +3060,7 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
       chatSessionId: "chat-1",
       force: false,
+      projectRoot: fixture.runtime.projectRoot,
     });
 
     const forced = await callTool(handler, "run_ade_action", {
@@ -3067,6 +3089,59 @@ describe("adeRpcServer", () => {
     });
     expect(permissionClear.isError).toBe(true);
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies unbound and elevated local callers without a browser actor capability", async () => {
+    const fixture = createRuntime();
+    const getStatus = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.builtInBrowserService = { getStatus };
+
+    const unboundHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(unboundHandler, { callerId: "ade-cli:123", role: "agent" });
+    const unbound = await callTool(unboundHandler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "getStatus",
+      args: {},
+    });
+    expect(unbound.isError).toBe(true);
+
+    const elevatedHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(elevatedHandler, { callerId: "local-cto", role: "cto" });
+    const elevated = await callTool(elevatedHandler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "getStatus",
+      args: {},
+    });
+    expect(elevated.isError).toBe(true);
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+
+  it("accepts a bridge credential only from the local desktop client", async () => {
+    const trustedFixture = createRuntime();
+    const configureTrusted = vi.fn(async () => true);
+    trustedFixture.runtime.configureBuiltInBrowserDesktopBridgeAuth = configureTrusted;
+    const trustedHandler = createAdeRpcRequestHandler({
+      runtime: trustedFixture.runtime,
+      serverVersion: "test",
+    });
+    await initialize(trustedHandler, { callerId: "desktop", role: "cto" }, {
+      clientInfo: { name: "ade-desktop-local", version: "test" },
+      desktopBridgeAuthToken: "ephemeral-desktop-token",
+    });
+    expect(configureTrusted).toHaveBeenCalledWith("ephemeral-desktop-token");
+
+    const untrustedFixture = createRuntime();
+    const configureUntrusted = vi.fn(async () => true);
+    untrustedFixture.runtime.configureBuiltInBrowserDesktopBridgeAuth = configureUntrusted;
+    const untrustedHandler = createAdeRpcRequestHandler({
+      runtime: untrustedFixture.runtime,
+      serverVersion: "test",
+    });
+    await initialize(untrustedHandler, { callerId: "raw-cli", role: "cto" }, {
+      clientInfo: { name: "ade-cli", version: "test" },
+      desktopBridgeAuthToken: "spoofed-token",
+    });
+    expect(configureUntrusted).not.toHaveBeenCalled();
   });
 
   it("scopes external-sessions ADE actions to the caller's lane", async () => {

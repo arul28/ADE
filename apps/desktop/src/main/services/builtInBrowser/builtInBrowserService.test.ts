@@ -480,7 +480,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
     fakes.permissionPrompt.mockClear();
-    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   });
 
@@ -1270,6 +1270,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await expect(fakes.dispatchPermissionRequest("top-level-storage-access", {
       requestingUrl: "https://accounts.google.com/v3/signin/identifier",
     })).resolves.toBe(true);
+    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
     await expect(fakes.dispatchPermissionRequest("media", {
       requestingUrl: "https://accounts.google.com/v3/signin/identifier",
     })).resolves.toBe(false);
@@ -1325,7 +1326,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({
-      url: "https://example.test",
+      url: "http://localhost:5173",
       activate: true,
     });
     const firstTabId = service.getStatus().activeTabId;
@@ -1423,7 +1424,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   it("blocks a high-risk redirect triggered by an agent page action", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({
-      url: "https://example.test",
+      url: "http://localhost:5173",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
@@ -1439,13 +1440,116 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       observe: false,
     });
 
-    await fakes.webContentsInstances[0]?.loadURL("https://console.aws.amazon.com/");
+    const wc = fakes.webContentsInstances[0];
+    const loadCountBeforeRedirect = wc?.loadURLCalls.length ?? 0;
+    const redirectEvent = { preventDefault: vi.fn() };
+    wc?.emit("will-redirect", redirectEvent, "https://console.aws.amazon.com/");
+    expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
-    expect(fakes.webContentsInstances[0]?.getURL()).toBe("https://example.test/");
+    expect(wc?.getURL()).toBe("http://localhost:5173/");
+    expect(wc?.loadURLCalls).toHaveLength(loadCountBeforeRedirect);
     await vi.waitFor(() => expect(collector.events.at(-1)).toMatchObject({
       type: "error",
-      message: expect.stringContaining("Blocked agent-triggered navigation"),
+      message: expect.stringContaining("Blocked agent-triggered redirect"),
     }));
+  });
+
+  it("keeps delayed agent redirects behind the human approval boundary", async () => {
+    const realDateNow = Date.now.bind(Date);
+    let dateNow: { mockRestore(): void } | null = null;
+    try {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({
+        url: "http://localhost:5173",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      });
+      fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+      const tabId = service.getStatus().activeTabId ?? "";
+      await service.click({
+        tabId,
+        x: 10,
+        y: 20,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        observe: false,
+      });
+      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
+
+      const redirectEvent = { preventDefault: vi.fn() };
+      fakes.webContentsInstances[0]?.emit(
+        "will-redirect",
+        redirectEvent,
+        "https://console.aws.amazon.com/",
+      );
+
+      expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    } finally {
+      dateNow?.mockRestore();
+    }
+  });
+
+  it("keeps delayed agent popups behind the human approval boundary", async () => {
+    const realDateNow = Date.now.bind(Date);
+    let dateNow: { mockRestore(): void } | null = null;
+    try {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({
+        url: "http://localhost:5173",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      });
+      const tabId = service.getStatus().activeTabId ?? "";
+      await service.click({
+        tabId,
+        x: 10,
+        y: 20,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        observe: false,
+      });
+      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
+
+      const response = fakes.webContentsInstances[0]?.openWindow(
+        "https://accounts.google.com/gsi/select",
+      );
+
+      expect(response?.action).toBe("deny");
+    } finally {
+      dateNow?.mockRestore();
+    }
+  });
+
+  it("clears the persistent agent navigation guard on explicit human navigation", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const agentStatus = await service.createTab({
+      url: "http://localhost:5173",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = agentStatus.activeTabId ?? "";
+    await service.click({
+      tabId,
+      x: 10,
+      y: 20,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      observe: false,
+    });
+
+    await service.navigate({ tabId, url: "http://localhost:5174/human" });
+
+    expect(service.getStatus()).toMatchObject({
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerLeaseExpiresAt: null,
+    });
+    const popup = fakes.webContentsInstances[0]?.openWindow("https://example.test/human-popup");
+    expect(popup?.action).toBe("allow");
   });
 
   it("assigns ADE browser downloads to the user's Downloads folder", async () => {
@@ -1758,7 +1862,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
 
     await service.createTab({
-      url: "https://first.test",
+      url: "http://localhost:4201/first",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
@@ -1766,7 +1870,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const firstTabId = service.getStatus().activeTabId;
 
     await service.createTab({
-      url: "https://second.test",
+      url: "http://localhost:4202/second",
       activate: true,
       laneId: "lane-2",
       chatSessionId: "chat-2",
@@ -1831,7 +1935,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: true,
     });
 
-    expect(status.tabs).toHaveLength(2);
+    expect(status.tabs).toHaveLength(1);
     expect(status.activeTabId).toBe(firstTabId);
     expect(status.url).toBe("https://reused.test/");
     expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
@@ -1839,11 +1943,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
-    expect(status.tabs.find((tab) => tab.id === secondTabId)).toMatchObject({
-      url: "https://second.test/",
-      ownerLaneId: "lane-2",
-      ownerChatSessionId: "chat-2",
-    });
+    expect(status.tabs.find((tab) => tab.id === secondTabId)).toBeUndefined();
 
     status = await service.navigate({
       url: "https://fresh.test",
@@ -1852,13 +1952,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(3);
+    expect(status.tabs).toHaveLength(1);
     expect(status.url).toBe("https://fresh.test/");
     expect(status.tabs.at(-1)).toMatchObject({
       url: "https://fresh.test/",
       ownerLaneId: "lane-3",
       ownerChatSessionId: "chat-3",
     });
+    expect(service.getStatus().tabs).toHaveLength(3);
   });
 
   it("does not reuse a same-lane tab owned by another chat when chat identity is missing", async () => {
@@ -1878,9 +1979,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(2);
+    expect(status.tabs).toHaveLength(1);
     expect(status.activeTabId).not.toBe(firstTabId);
-    expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
+    expect(status.tabs.find((tab) => tab.id === firstTabId)).toBeUndefined();
+    expect(service.getStatus().tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
       url: "https://chat-owned.test/",
       ownerChatSessionId: "chat-1",
     });
@@ -1919,8 +2021,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: false,
     });
 
-    expect(status.tabs).toHaveLength(2);
-    expect(status.activeTabId).toBe(visibleTabId);
+    expect(status.tabs).toHaveLength(1);
+    expect(status.activeTabId).toBeNull();
     expect(status.tabs.find((tab) => tab.id === ownedTabId)).toMatchObject({
       url: "https://background.test/",
       ownerLaneId: "lane-1",
@@ -2556,6 +2658,57 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  it("filters other agents' tab metadata from status and action results", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const first = await service.createTab({
+      url: "http://localhost:4101/private-one",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const firstTabId = first.activeTabId ?? "";
+    const second = await service.createTab({
+      url: "http://localhost:4102/private-two",
+      activate: true,
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+    });
+    const secondTabId = second.activeTabId ?? "";
+
+    const scoped = service.getStatus({
+      tabId: firstTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(scoped.activeTabId).toBeNull();
+    expect(scoped.url).toBeNull();
+    expect(scoped.tabs).toEqual([
+      expect.objectContaining({
+        id: firstTabId,
+        url: "http://localhost:4101/private-one",
+        ownerChatSessionId: "chat-1",
+      }),
+    ]);
+    expect(JSON.stringify(scoped)).not.toContain(secondTabId);
+    expect(JSON.stringify(scoped)).not.toContain("private-two");
+    expect(JSON.stringify(scoped)).not.toContain("chat-2");
+
+    const implicitScoped = service.getStatus({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(implicitScoped.tabs.map((tab) => tab.id)).toEqual([firstTabId]);
+    expect(implicitScoped.activeTabId).toBeNull();
+
+    const actionStatus = await service.reload({
+      tabId: firstTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(actionStatus.tabs).toHaveLength(1);
+    expect(JSON.stringify(actionStatus)).not.toContain("private-two");
   });
 
   it("blocks another lane from driving a leased tab unless forced", async () => {

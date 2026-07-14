@@ -3,6 +3,7 @@ import path from "node:path";
 import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
+  BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -50,6 +51,7 @@ function isClosedSocketError(error: unknown): boolean {
 
 export function createBuiltInBrowserDesktopBridgeClient(args: {
   socketPath: string;
+  getAuthToken: () => string | null;
   projectRoot?: string | null;
   logger: Logger;
 }): BuiltInBrowserDesktopBridgeClient {
@@ -129,11 +131,25 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     return params;
   };
 
+  const authenticatedParams = (params: unknown): Record<string, unknown> => {
+    const bridgeAuthToken = args.getAuthToken()?.trim() ?? "";
+    if (!bridgeAuthToken) {
+      throw new Error("Desktop browser bridge authentication is unavailable. Restart ADE Desktop and try again.");
+    }
+    const scoped = withProjectRoot(params);
+    return {
+      ...(scoped && typeof scoped === "object" && !Array.isArray(scoped)
+        ? scoped as Record<string, unknown>
+        : {}),
+      [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: bridgeAuthToken,
+    };
+  };
+
   async function callBridge(method: string, params?: unknown, retried = false): Promise<unknown> {
     const c = await ensureClient();
     try {
       return await raceWithTimeout(
-        c.request(`built_in_browser.${method}`, withProjectRoot(params)),
+        c.request(`built_in_browser.${method}`, authenticatedParams(params)),
         REQUEST_TIMEOUT_MS,
         `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
       );
@@ -162,4 +178,36 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       return Reflect.get(target, property, receiver);
     },
   }) as BuiltInBrowserDesktopBridgeClient;
+}
+
+export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {
+  socketPath: string;
+  authToken: string;
+}): Promise<boolean> {
+  const authToken = args.authToken.trim();
+  if (!authToken) return false;
+  let client: JsonRpcClient | null = null;
+  try {
+    client = await raceWithTimeout(
+      JsonRpcClient.connect(args.socketPath),
+      CONNECT_TIMEOUT_MS,
+      "Timed out validating desktop browser bridge authentication.",
+    );
+    const result = await raceWithTimeout(
+      client.request("built_in_browser.authenticate", {
+        [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: authToken,
+      }),
+      CONNECT_TIMEOUT_MS,
+      "Timed out validating desktop browser bridge authentication.",
+    );
+    return Boolean(
+      result
+      && typeof result === "object"
+      && (result as { authenticated?: unknown }).authenticated === true
+    );
+  } catch {
+    return false;
+  } finally {
+    client?.close();
+  }
 }

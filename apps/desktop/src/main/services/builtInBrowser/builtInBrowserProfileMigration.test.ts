@@ -118,4 +118,36 @@ describe("builtInBrowserProfileMigration", () => {
       migratedCookieCount: 0,
     });
   });
+
+  it("keeps the global cookie when legacy hostOnly metadata differs", async () => {
+    const root = userDataPath();
+    const legacyName = "ade-browser-project-fedcba9876543210";
+    fs.mkdirSync(path.join(root, "Partitions", legacyName), { recursive: true });
+    const global = sessionWithCookies([cookie({
+      name: "session",
+      value: "current-global",
+      domain: "example.com",
+      hostOnly: true,
+    })]);
+    const legacy = sessionWithCookies([cookie({
+      name: "session",
+      value: "stale-legacy",
+      domain: ".example.com",
+      hostOnly: false,
+    })]);
+    const sessions = new Map<string, Session>([
+      ["persist:ade-browser", global.session],
+      [`persist:${legacyName}`, legacy.session],
+    ]);
+
+    await expect(migrateLegacyBuiltInBrowserProfiles({
+      userDataPath: root,
+      getSession: (partition) => sessions.get(partition)!,
+    })).resolves.toMatchObject({
+      migratedCookieCount: 0,
+      skippedCookieCount: 1,
+    });
+    expect(global.set).not.toHaveBeenCalled();
+    expect(global.cookies[0]?.value).toBe("current-global");
+  });
 });

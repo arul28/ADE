@@ -112,6 +112,8 @@ describe("builtInBrowserPermissions", () => {
       origin: "https://example.com",
       decision: "allow",
     }]);
+    expect(controller.hasAllowedDecisionForOrigin("https://example.com/account")).toBe(true);
+    expect(controller.hasAllowedDecisionForOrigin("https://other.example.com")).toBe(false);
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
 
     const restored = createBuiltInBrowserPermissionController({

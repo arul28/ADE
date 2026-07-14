@@ -458,10 +458,6 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
   }
 }
 
-function normalizeAdeBrowserWebviewPartition(_value: unknown): string {
-  return BUILT_IN_BROWSER_PARTITION;
-}
-
 async function createWindow(args: {
   logger?: Logger;
   onCreated?: (win: BrowserWindow) => void;
@@ -520,7 +516,7 @@ async function createWindow(args: {
     }
     delete webPreferences.preload;
     delete (webPreferences as Record<string, unknown>).preloadURL;
-    webPreferences.partition = normalizeAdeBrowserWebviewPartition(webPreferences.partition);
+    webPreferences.partition = BUILT_IN_BROWSER_PARTITION;
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
@@ -1276,6 +1272,7 @@ app.whenReady().then(async () => {
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
+    desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
       if (!Notification.isSupported()) return;

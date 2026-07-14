@@ -69,6 +69,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
+import { resolveBuiltInBrowserActorCapability } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
@@ -161,6 +162,7 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
+  browserActorToken: string | null;
 };
 
 type SessionState = {
@@ -2418,15 +2420,17 @@ function scopeSearchAdeActionArgs(
 }
 
 function scopeBuiltInBrowserAdeActionArgs(
-  runtime: AdeRuntime,
   session: SessionState,
   action: string,
   browserArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  if (!callerChatSessionId) return browserArgs;
-
   const method = `run_ade_action:built_in_browser.${action}`;
+  const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
+  const actor = resolveBuiltInBrowserActorCapability(browserActorToken);
+  if (!callerChatSessionId || !actor || actor.chatSessionId !== callerChatSessionId) {
+    builtInBrowserAccessDenied(method);
+  }
   if (
     action === "getProfileDiagnostics"
     || action === "listPermissions"
@@ -2434,7 +2438,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   ) {
     builtInBrowserAccessDenied(method);
   }
-  const callerLaneId = resolveChatSessionLaneId(runtime, session);
+  const callerLaneId = actor.laneId;
   const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
   const requestedLaneId = asOptionalTrimmedString(browserArgs.laneId);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
@@ -2449,8 +2453,11 @@ function scopeBuiltInBrowserAdeActionArgs(
 
   return {
     ...browserArgs,
-    chatSessionId: callerChatSessionId,
+    chatSessionId: actor.chatSessionId,
     ...(callerLaneId ? { laneId: callerLaneId } : {}),
+    ...(actor.projectRoot
+      ? { projectRoot: actor.projectRoot, tabCollection: undefined }
+      : { projectRoot: undefined, tabCollection: actor.tabCollection }),
     force: false,
   };
 }
@@ -2986,6 +2993,8 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  const browserActorToken = process.env.ADE_BROWSER_ACTOR_TOKEN?.trim()
+    || asOptionalTrimmedString(identity.browserActorToken);
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !resolvedRunId
@@ -3001,6 +3010,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
+    browserActorToken,
   };
 }
 
@@ -3458,9 +3468,8 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (!callerIsCto && domain === "built_in_browser") {
+    } else if (domain === "built_in_browser") {
       scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
-        runtime,
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
@@ -5009,6 +5018,7 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
+      browserActorToken: null,
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -5051,6 +5061,19 @@ export function createAdeRpcRequestHandler(args: {
         ?? asOptionalTrimmedString(clientInfo.name)
         ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
+      const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
+      if (
+        session.clientName === "ade-desktop-local"
+        && desktopBridgeAuthToken
+        && runtime.configureBuiltInBrowserDesktopBridgeAuth
+      ) {
+        const configured = await runtime.configureBuiltInBrowserDesktopBridgeAuth(desktopBridgeAuthToken);
+        if (!configured) {
+          runtime.logger.warn("built_in_browser_bridge.runtime_auth_rejected", {
+            clientName: session.clientName,
+          });
+        }
+      }
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,

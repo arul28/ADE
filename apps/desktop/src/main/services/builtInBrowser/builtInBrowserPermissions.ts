@@ -214,6 +214,14 @@ export function createBuiltInBrowserPermissionController(args: {
     count(): number {
       return decisions.size;
     },
+    hasAllowedDecisionForOrigin(value: string): boolean {
+      const origin = normalizedOrigin(value);
+      if (!origin) return false;
+      return [...decisions.values(), ...sessionDecisions.values()].some((decision) => (
+        decision.decision === "allow"
+        && (decision.origin === origin || decision.embeddingOrigin === origin)
+      ));
+    },
     async flush(): Promise<void> {
       await writeChain;
     },

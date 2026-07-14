@@ -30,6 +30,7 @@ type AccessPromptResult = {
 
 export function createBuiltInBrowserAgentAccessController(args: {
   getSession: () => Session;
+  hasAllowedPermissionForOrigin?: (origin: string) => boolean;
   resolveParentWindow: () => BrowserWindow | null;
   getLogger?: () => Logger | null;
   prompt?: (input: {
@@ -42,7 +43,6 @@ export function createBuiltInBrowserAgentAccessController(args: {
 }) {
   const authenticatedCookieDomains = new Set<string>();
   const authenticatedOrigins = new Set<string>();
-  const evaluatedSafeOrigins = new Set<string>();
   const grants = new Set<string>();
   const pendingPrompts = new Map<string, Promise<boolean>>();
 
@@ -73,7 +73,9 @@ export function createBuiltInBrowserAgentAccessController(args: {
   const inspectOrigin = async (origin: string): Promise<boolean> => {
     const host = new URL(origin).hostname.toLowerCase();
     if (
-      authenticatedOrigins.has(origin)
+      args.hasAllowedPermissionForOrigin?.(origin)
+      || !isLocalBrowserOrigin(origin)
+      || authenticatedOrigins.has(origin)
       || isHighRiskHost(host)
       || cookieDomainsContainHost(authenticatedCookieDomains, host)
     ) return true;
@@ -86,8 +88,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
         }
         return true;
       }
-      evaluatedSafeOrigins.add(origin);
-      return false;
+      return !isLocalBrowserOrigin(origin);
     } catch (error) {
       logger()?.warn("built_in_browser.agent_access_cookie_check_failed", {
         origin,
@@ -104,7 +105,11 @@ export function createBuiltInBrowserAgentAccessController(args: {
   ): Promise<{ origin: string | null; required: boolean; granted: boolean }> => {
     const agentKey = agentIdentityKey(identity);
     const origin = browserOrigin(url);
-    if (!agentKey || !origin || isLocalBrowserOrigin(origin)) {
+    if (
+      !agentKey
+      || !origin
+      || (isLocalBrowserOrigin(origin) && !args.hasAllowedPermissionForOrigin?.(origin))
+    ) {
       return { origin, required: false, granted: true };
     }
     const grantKey = accessGrantKey(agentKey, origin);
@@ -141,14 +146,13 @@ export function createBuiltInBrowserAgentAccessController(args: {
   const assertUrlAccessSync = (url: string | null | undefined, identity: AgentIdentity): void => {
     const agentKey = agentIdentityKey(identity);
     const origin = browserOrigin(url);
-    if (!agentKey || !origin || isLocalBrowserOrigin(origin)) return;
+    if (
+      !agentKey
+      || !origin
+      || (isLocalBrowserOrigin(origin) && !args.hasAllowedPermissionForOrigin?.(origin))
+    ) return;
     const grantKey = accessGrantKey(agentKey, origin);
     if (grants.has(grantKey)) return;
-    const host = new URL(origin).hostname.toLowerCase();
-    const knownSafe = evaluatedSafeOrigins.has(origin)
-      && !isHighRiskHost(host)
-      && !cookieDomainsContainHost(authenticatedCookieDomains, host);
-    if (knownSafe) return;
     throw new Error(
       `ADE agent access to ${origin} requires a browser human-approval check. Run ade --socket browser authorize${normalizedString(identity.chatSessionId) ? " from this chat" : ""} and try again.`,
     );
@@ -178,10 +182,13 @@ export function createBuiltInBrowserAgentAccessController(args: {
     isKnownSensitiveUrlSync(url: string | null | undefined, identity: AgentIdentity): boolean {
       const agentKey = agentIdentityKey(identity);
       const origin = browserOrigin(url);
-      if (!agentKey || !origin || isLocalBrowserOrigin(origin)) return false;
+      if (!agentKey || !origin) return false;
       if (grants.has(accessGrantKey(agentKey, origin))) return false;
+      if (isLocalBrowserOrigin(origin) && !args.hasAllowedPermissionForOrigin?.(origin)) return false;
       const host = new URL(origin).hostname.toLowerCase();
-      return authenticatedOrigins.has(origin)
+      return !isLocalBrowserOrigin(origin)
+        || Boolean(args.hasAllowedPermissionForOrigin?.(origin))
+        || authenticatedOrigins.has(origin)
         || isHighRiskHost(host)
         || cookieDomainsContainHost(authenticatedCookieDomains, host);
     },
@@ -189,7 +196,6 @@ export function createBuiltInBrowserAgentAccessController(args: {
       const origin = browserOrigin(url);
       if (!origin || isLocalBrowserOrigin(origin)) return;
       authenticatedOrigins.add(origin);
-      evaluatedSafeOrigins.delete(origin);
       const agentKey = identity ? agentIdentityKey(identity) : null;
       if (agentKey) grants.add(accessGrantKey(agentKey, origin));
       logger()?.info("built_in_browser.authenticated_origin_recorded", {

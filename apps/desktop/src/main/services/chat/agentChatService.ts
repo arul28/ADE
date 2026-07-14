@@ -114,6 +114,10 @@ import {
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
 import type { Logger } from "../logging/logger";
+import {
+  issueBuiltInBrowserActorCapability,
+  revokeBuiltInBrowserActorCapability,
+} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -6168,10 +6172,17 @@ export function createAgentChatService(args: {
   };
 
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
+    const personalSession = isPersonalSession(managed.session);
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
       ADE_CHAT_SESSION_ID: managed.session.id,
-      ...(isPersonalSession(managed.session)
+      ADE_BROWSER_ACTOR_TOKEN: issueBuiltInBrowserActorCapability({
+        chatSessionId: managed.session.id,
+        laneId: personalSession ? null : managed.session.laneId,
+        projectRoot: personalSession ? null : projectRoot,
+        tabCollection: personalSession ? "personal" : null,
+      }),
+      ...(personalSession
         ? { ADE_CHAT_SCOPE: "personal" }
         : {
             ADE_LANE_ID: managed.session.laneId,
@@ -6179,7 +6190,7 @@ export function createAgentChatService(args: {
             ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
           }),
     };
-    if (isPersonalSession(managed.session)) {
+    if (personalSession) {
       delete env.ADE_LANE_ID;
       delete env.ADE_PROJECT_ROOT;
       delete env.ADE_WORKSPACE_ROOT;
@@ -13295,6 +13306,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    revokeBuiltInBrowserActorCapability(managed.session.id);
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
@@ -32935,6 +32947,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    revokeBuiltInBrowserActorCapability(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
   };
@@ -34397,6 +34410,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore emergency shutdown failures
       }
+      revokeBuiltInBrowserActorCapability(sessionId);
     }
     managedSessions.clear();
     pendingNativeScheduledWakeBySession.clear();

@@ -9,6 +9,7 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
+import { issueBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -366,8 +367,15 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
   if (terminalOwnerSessionId) {
     next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
+    next.ADE_BROWSER_ACTOR_TOKEN = issueBuiltInBrowserActorCapability({
+      chatSessionId: terminalOwnerSessionId,
+      laneId: args.laneId,
+      projectRoot: args.projectRoot,
+      tabCollection: null,
+    });
   } else {
     delete next.ADE_CHAT_SESSION_ID;
+    delete next.ADE_BROWSER_ACTOR_TOKEN;
   }
   return next;
 }

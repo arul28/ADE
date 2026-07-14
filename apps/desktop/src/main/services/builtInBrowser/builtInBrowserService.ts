@@ -186,7 +186,6 @@ type BrowserTabState = {
   agentNavigationGuard: {
     laneId: string | null;
     chatSessionId: string | null;
-    expiresAtMs: number;
   } | null;
 };
 
@@ -336,6 +335,7 @@ export function createBuiltInBrowserService(args: {
   });
   const agentAccessController = createBuiltInBrowserAgentAccessController({
     getSession: () => session.fromPartition(BROWSER_PARTITION),
+    hasAllowedPermissionForOrigin: (origin) => permissionController.hasAllowedDecisionForOrigin(origin),
     resolveParentWindow,
     getLogger: args.getLogger,
   });
@@ -1102,8 +1102,19 @@ function createBuiltInBrowserWindowService(args: {
     tab.agentNavigationGuard = {
       laneId,
       chatSessionId,
-      expiresAtMs: Date.now() + 15_000,
     };
+  };
+
+  const reclaimTabForHumanNavigation = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId">,
+  ): void => {
+    if (stringOrNull(input.laneId) || stringOrNull(input.chatSessionId)) return;
+    tab.ownerLaneId = null;
+    tab.ownerChatSessionId = null;
+    tab.ownerClaimedAt = null;
+    tab.ownerLeaseExpiresAt = null;
+    tab.agentNavigationGuard = null;
   };
 
   const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
@@ -1436,7 +1447,6 @@ function createBuiltInBrowserWindowService(args: {
       const guard = opener?.agentNavigationGuard;
       if (
         guard
-        && guard.expiresAtMs > Date.now()
         && args.agentAccessController.isKnownSensitiveUrlSync(popupUrl, guard)
       ) {
         emitError(new Error(
@@ -1454,7 +1464,11 @@ function createBuiltInBrowserWindowService(args: {
         },
       };
     });
-    wc.on("will-navigate", (event, url) => {
+    const enforceAgentNavigation = (
+      event: Electron.Event,
+      url: string,
+      kind: "navigation" | "redirect",
+    ): void => {
       if (!isAllowedNavigationUrl(url)) {
         event.preventDefault();
         emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
@@ -1464,7 +1478,6 @@ function createBuiltInBrowserWindowService(args: {
       const guard = tab?.agentNavigationGuard;
       if (
         !guard
-        || guard.expiresAtMs <= Date.now()
         || !args.agentAccessController.isUrlAccessRequiredSync(url, guard)
       ) {
         return;
@@ -1473,17 +1486,29 @@ function createBuiltInBrowserWindowService(args: {
       void args.agentAccessController.authorizeUrl(
         url,
         guard,
-        "An agent-triggered page action is navigating to another browser origin.",
+        kind === "redirect"
+          ? "An agent-triggered request is redirecting to another browser origin."
+          : "An agent-triggered page action is navigating to another browser origin.",
       ).then(async (result) => {
         if (!result.granted || wc.isDestroyed()) {
           if (!result.granted) {
-            emitError(new Error(`Blocked agent-triggered navigation to ${result.origin ?? url}.`));
+            emitError(new Error(
+              `Blocked agent-triggered ${kind} to ${result.origin ?? url}.`,
+            ));
           }
+          return;
+        }
+        if (kind === "redirect") {
+          emitError(new Error(
+            `Blocked agent-triggered redirect to ${result.origin ?? url} after recording approval. Retry the original navigation to continue safely.`,
+          ));
           return;
         }
         await wc.loadURL(url);
       }).catch(emitError);
-    });
+    };
+    wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
+    wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
       noteNetworkActivity(tabForWebContents(wc));
       emitStatus();
@@ -1828,12 +1853,47 @@ function createBuiltInBrowserWindowService(args: {
     };
   }
 
+  function scopeStatusForInput(status: BuiltInBrowserStatus, input: unknown): BuiltInBrowserStatus {
+    const record = isRecord(input) ? input : {};
+    const identity = {
+      laneId: stringOrNull(record.laneId),
+      chatSessionId: stringOrNull(record.chatSessionId),
+    };
+    if (!identity.laneId && !identity.chatSessionId) return status;
+    const visibleTabIds = new Set(
+      tabs
+        .filter((tab) => !tab.webContents.isDestroyed() && tabMatchesOwnerInput(tab, identity))
+        .map((tab) => tab.id),
+    );
+    const scopedTabs = status.tabs.filter((tab) => visibleTabIds.has(tab.id));
+    if (status.activeTabId && visibleTabIds.has(status.activeTabId)) {
+      return { ...status, tabs: scopedTabs };
+    }
+    return {
+      ...status,
+      attached: false,
+      activeTabId: null,
+      tabs: scopedTabs,
+      url: null,
+      title: null,
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      isInspecting: false,
+      hasSelection: false,
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerClaimedAt: null,
+      ownerLeaseExpiresAt: null,
+    };
+  }
+
   function getStatusForInput(input: BuiltInBrowserTabTargetArgs = {}): BuiltInBrowserStatus {
-    if (tabs.length > 0 && (input.tabId || input.sessionId || input.laneId || input.chatSessionId)) {
+    if (tabs.length > 0 && (input.tabId || input.sessionId)) {
       const tab = targetTabFromInput(input, "No active browser tab.");
       prepareAgentReadTab(tab, input);
     }
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function requestOriginAccess(
@@ -1851,9 +1911,10 @@ function createBuiltInBrowserWindowService(args: {
     if (!result.granted) {
       throw new Error(`Human approval was denied for ADE agent access to ${result.origin ?? "this browser origin"}.`);
     }
+    reclaimTabForHumanNavigation(tab, input);
     claimTabOwnerFromInput(tab, input);
     emitStatus();
-    return { ...result, status: getStatus() };
+    return { ...result, status: scopeStatusForInput(getStatus(), input) };
   }
 
   function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
@@ -1862,7 +1923,7 @@ function createBuiltInBrowserWindowService(args: {
     if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
     if (tab) prepareAgentReadTab(tab, input);
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   function startSession(input: BuiltInBrowserStartSessionArgs = {}): BuiltInBrowserSessionResult {
@@ -1883,7 +1944,7 @@ function createBuiltInBrowserWindowService(args: {
     browserSessions = [...browserSessions, sessionEntry];
     pruneBrowserSessions();
     emitStatus();
-    return { session: sessionSnapshot(sessionEntry), status: getStatus() };
+    return { session: sessionSnapshot(sessionEntry), status: scopeStatusForInput(getStatus(), input) };
   }
 
   function listSessions(input: BuiltInBrowserListSessionsArgs = {}): BuiltInBrowserSessionsResult {
@@ -1930,7 +1991,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     pruneBrowserSessions();
     emitStatus();
-    return { session: sessionSnapshot(entry), status: getStatus() };
+    return { session: sessionSnapshot(entry), status: scopeStatusForInput(getStatus(), input) };
   }
 
   const requestOpenPanel = (input: BuiltInBrowserOpenPanelArgs = {}): BuiltInBrowserStatus => {
@@ -1945,7 +2006,7 @@ function createBuiltInBrowserWindowService(args: {
       url,
       requestedAt: new Date().toISOString(),
     });
-    return status;
+    return scopeStatusForInput(status, input);
   };
 
   async function showPanel(input: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -1992,7 +2053,7 @@ function createBuiltInBrowserWindowService(args: {
       && normalized.height === bounds.height
       && nextVisible === visible
     );
-    if (unchanged) return getStatus();
+    if (unchanged) return scopeStatusForInput(getStatus(), nextBounds);
     bounds = normalized;
     visible = nextVisible;
     if (visible || tabs.length) {
@@ -2000,7 +2061,7 @@ function createBuiltInBrowserWindowService(args: {
       attachViewsToCurrentWindow();
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), nextBounds);
   }
 
   async function attachWebview(input: BuiltInBrowserAttachWebviewArgs): Promise<BuiltInBrowserStatus> {
@@ -2023,7 +2084,7 @@ function createBuiltInBrowserWindowService(args: {
     if (tab.webContents.id === nextWebContents.id && !tab.ownsWebContents && !tab.view) {
       attachViewsToCurrentWindow();
       emitStatus();
-      return getStatus();
+      return scopeStatusForInput(getStatus(), input);
     }
 
     if (tab.id === activeTabId) {
@@ -2061,7 +2122,7 @@ function createBuiltInBrowserWindowService(args: {
     clearSelectionInternal();
     attachViewsToCurrentWindow();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
@@ -2112,6 +2173,7 @@ function createBuiltInBrowserWindowService(args: {
     } else {
       tab = ensureActiveTab();
     }
+    reclaimTabForHumanNavigation(tab, input);
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
@@ -2121,7 +2183,7 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -2155,7 +2217,7 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function switchTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
@@ -2177,7 +2239,7 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function closeTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
@@ -2214,39 +2276,42 @@ function createBuiltInBrowserWindowService(args: {
     }
     attachViewsToCurrentWindow();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested access to reload this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
     await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     tab.webContents.reload();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested backward navigation in this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
     await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
     await prepareAgentReadTabAsync(tab, input, "The agent requested forward navigation in this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
     await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -2255,7 +2320,7 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -2277,7 +2342,7 @@ function createBuiltInBrowserWindowService(args: {
       });
       inspecting = true;
       emitStatus();
-      return getStatus();
+      return scopeStatusForInput(getStatus(), input);
     } catch (error) {
       inspecting = false;
       if (debuggerAttachedForInspect) {
@@ -2315,7 +2380,7 @@ function createBuiltInBrowserWindowService(args: {
       detachDebuggerIfOwned(wc);
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
@@ -3174,7 +3239,7 @@ function createBuiltInBrowserWindowService(args: {
     return {
       ok: true,
       observation: input.observe === false ? null : await observe({ ...input, tabId: tab.id }),
-      status: getStatus(),
+      status: scopeStatusForInput(getStatus(), input),
       trace: null,
       session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
     };

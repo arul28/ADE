@@ -71,17 +71,36 @@ describe("builtInBrowserAgentAccess", () => {
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
-  it("marks inspected cookie-free origins safe for synchronous follow-up reads", async () => {
+  it("requires first-use approval even when a non-local origin has no cookies", async () => {
+    const prompt = vi.fn(async () => ({ granted: true }));
     const controller = createBuiltInBrowserAgentAccessController({
       getSession: () => fakeSession(),
       resolveParentWindow: () => null,
-      prompt: vi.fn(async () => ({ granted: false })),
+      prompt,
     });
     const identity = { chatSessionId: "chat-1" };
 
     expect(() => controller.assertUrlAccessSync("https://example.test", identity)).toThrow();
     await expect(controller.requireUrlAccess("https://example.test", identity, "navigate")).resolves.toBeUndefined();
     expect(() => controller.assertUrlAccessSync("https://example.test", identity)).not.toThrow();
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires approval for local origins with a remembered privileged permission", async () => {
+    const prompt = vi.fn(async () => ({ granted: false }));
+    const controller = createBuiltInBrowserAgentAccessController({
+      getSession: () => fakeSession(),
+      hasAllowedPermissionForOrigin: (origin) => origin === "http://localhost:5173",
+      resolveParentWindow: () => null,
+      prompt,
+    });
+
+    await expect(controller.requireUrlAccess(
+      "http://localhost:5173/account",
+      { chatSessionId: "chat-1" },
+      "navigate",
+    )).rejects.toThrow(/Human approval was denied/);
+    expect(prompt).toHaveBeenCalledTimes(1);
   });
 
   it("treats HTTP-authenticated origins as sensitive and grants only the prompting agent", async () => {
@@ -92,8 +111,6 @@ describe("builtInBrowserAgentAccess", () => {
     });
     const owner = { laneId: "lane-1", chatSessionId: "chat-1" };
 
-    await expect(controller.authorizeUrl("https://basic.example.com/", owner, "read"))
-      .resolves.toMatchObject({ required: false, granted: true });
     controller.recordHumanAuthentication("https://basic.example.com/private", owner);
 
     expect(() => controller.assertUrlAccessSync("https://basic.example.com/private", owner)).not.toThrow();

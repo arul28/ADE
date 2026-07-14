@@ -141,7 +141,6 @@ function cookieKey(cookie: Cookie): string {
     normalizedCookieDomain(cookie.domain),
     cookie.path ?? "/",
     cookie.name,
-    cookie.hostOnly === true,
   ]);
 }
 

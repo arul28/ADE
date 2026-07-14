@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +11,10 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
-import { isBuiltInBrowserDesktopBridgeMethod } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
+  isBuiltInBrowserDesktopBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 
@@ -27,6 +31,7 @@ import type { BuiltInBrowserService } from "./builtInBrowserService";
 
 export type BuiltInBrowserDesktopBridgeServer = {
   socketPath: string;
+  authToken: string;
   dispose: () => void;
 };
 
@@ -37,6 +42,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
+  const bridgeAuthToken = randomBytes(32).toString("base64url");
 
   if (!isNamedPipe) {
     const socketDir = path.dirname(socketPath);
@@ -135,12 +141,53 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       );
     }
     const name = method.slice("built_in_browser.".length);
+    const rawParams = isRecord(request.params) ? { ...request.params } : {};
+    const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
+      ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
+      : "";
+    if (!safeTokenEquals(providedBridgeAuth, bridgeAuthToken)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "Built-in browser bridge authentication failed.",
+      );
+    }
+    if (name === "authenticate") {
+      return { authenticated: true };
+    }
+    if (
+      name === "getProfileDiagnostics"
+      || name === "listPermissions"
+      || name === "clearPermissions"
+    ) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        `Action 'built_in_browser.${name}' is only available to the trusted ADE renderer.`,
+      );
+    }
     if (!isBuiltInBrowserDesktopBridgeMethod(name)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
         `Action 'built_in_browser.${name}' is not exposed by the desktop bridge.`,
       );
     }
+    delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
+    const chatSessionId = normalizedString(rawParams.chatSessionId);
+    const projectRoot = normalizedString(rawParams.projectRoot);
+    const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
+    if (!chatSessionId || (!projectRoot && !tabCollection)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "Built-in browser automation requires a runtime-validated chat and tab collection.",
+      );
+    }
+    const params = {
+      ...rawParams,
+      chatSessionId,
+      ...(projectRoot
+        ? { projectRoot, tabCollection: undefined }
+        : { projectRoot: undefined, tabCollection }),
+      force: false,
+    };
     const callable = (service as unknown as Record<string, unknown>)[name];
     if (typeof callable !== "function") {
       throw new JsonRpcError(
@@ -148,12 +195,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Desktop bridge cannot dispatch built_in_browser.${name}.`,
       );
     }
-    const params = request.params;
     try {
-      // The real service methods accept either an args object or no args at all.
-      if (params === undefined) {
-        return await (callable as () => Promise<unknown>).call(service);
-      }
       return await (callable as (input: unknown) => Promise<unknown>).call(service, params);
     } catch (error) {
       if (error instanceof JsonRpcError) throw error;
@@ -166,6 +208,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   return {
     socketPath,
+    authToken: bridgeAuthToken,
     dispose: () => {
       for (const stop of activeServerHandles) {
         try {
@@ -197,6 +240,20 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
     },
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function safeTokenEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function isSystemTempDir(dirPath: string): boolean {

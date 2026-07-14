@@ -1,5 +1,7 @@
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 
+export const BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM = "__adeDesktopBridgeAuth";
+
 type SourceWindowLike = {
   id: number;
   isDestroyed(): boolean;
@@ -22,9 +24,6 @@ type BridgeReturn<Method extends BuiltInBrowserDesktopBridgeMethod> =
 export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "getStatus",
   "requestOriginAccess",
-  "getProfileDiagnostics",
-  "listPermissions",
-  "clearPermissions",
   "claim",
   "startSession",
   "listSessions",

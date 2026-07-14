@@ -2424,6 +2424,16 @@ export function registerIpc({
     return undefined;
   }
 
+  function optionalBuiltInBrowserNumber(
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    options: { min?: number; max?: number } = {},
+  ): number | undefined {
+    if (record[field] == null) return undefined;
+    return builtInBrowserNumber(record, field, channel, options);
+  }
+
   const parseBuiltInBrowserProjectScopeArgs = (
     record: Record<string, unknown>,
     channel: string,
@@ -2465,23 +2475,35 @@ export function registerIpc({
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
     const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
+    const force = optionalBoolean(record.force);
+    const leaseTtlMs = optionalBuiltInBrowserNumber(record, "leaseTtlMs", channel, {
+      min: 1_000,
+      max: 60 * 60_000,
+    });
     return {
       ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
+      ...(force !== undefined ? { force } : {}),
+      ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
+    };
+  };
+
+  const parseBuiltInBrowserTabTargetRecord = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): BuiltInBrowserTabTargetArgs => {
+    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
+    return {
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+      ...(sessionId ? { sessionId } : {}),
     };
   };
 
   const parseBuiltInBrowserTabTargetArgs = (value: unknown, channel: string): BuiltInBrowserTabTargetArgs => {
     const record = builtInBrowserRecord(value, channel, false);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(sessionId ? { sessionId } : {}),
-    };
+    return parseBuiltInBrowserTabTargetRecord(record, channel);
   };
 
   const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
@@ -2509,13 +2531,9 @@ export function registerIpc({
 
   const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
     const record = builtInBrowserRecord(value, channel, true);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
     const includeScreenshot = record.includeScreenshot === false ? false : undefined;
     return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(sessionId ? { sessionId } : {}),
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       includeScreenshot,
