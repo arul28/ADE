@@ -56,6 +56,7 @@ type RuntimeServiceManagerOutput = {
 type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
+  desktopBridgeAuthToken?: string | null;
   queryServiceStatus?: () => ServiceManagerStatusResult;
   /**
    * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
@@ -1836,7 +1837,9 @@ export class LocalRuntimeConnectionPool {
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     try {
-      initializeResult = await client.initialize("ade-desktop-local", this.appVersion);
+      initializeResult = await client.initialize("ade-desktop-local", this.appVersion, {
+        desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
+      });
     } catch (error) {
       closeRuntimeClient(client);
       throw error;

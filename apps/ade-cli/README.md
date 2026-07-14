@@ -353,7 +353,8 @@ ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --ind
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control focus --text
 ade --socket app-control minimize --text
-ade --socket browser open http://localhost:5173 --new-tab --text
+ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
+ade --socket browser authorize --tab tab-id --text                # native human grant for the current agent + origin
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text

@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   Selection,
+  ShieldCheck,
   SpinnerGap,
   Stop,
   WarningCircle,
@@ -18,11 +19,14 @@ import {
 import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
+  BuiltInBrowserPermissionDecision,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserTab,
   BuiltInBrowserTabTargetArgs,
 } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
+import { formatBytes } from "../../lib/format";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -130,6 +134,12 @@ type BuiltInBrowserEventPayload = {
 
 type BuiltInBrowserApi = {
   getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  getProfileDiagnostics?: () => Promise<BuiltInBrowserProfileDiagnostics>;
+  listPermissions?: () => Promise<{ permissions: BuiltInBrowserPermissionDecision[] }>;
+  clearPermissions?: (args?: {
+    origin?: string | null;
+    permission?: string | null;
+  }) => Promise<{ removed: number; permissions: BuiltInBrowserPermissionDecision[] }>;
   setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs) => Promise<void>;
   attachWebview?: (args: { tabId: string; webContentsId: number } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
   navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
@@ -160,7 +170,7 @@ type BrowserWebviewElement = HTMLElement & {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
-  /** Override the project browser profile. `null` selects the machine-wide profile. */
+  /** Override project tab routing. `null` selects the personal-chat tab collection. */
   projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
@@ -418,8 +428,8 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
 
 function eventProjectRoot(value: unknown): string | null | undefined {
   if (!isRecord(value)) return undefined;
-  if ("profileProjectRoot" in value) {
-    const root = value.profileProjectRoot;
+  if ("collectionProjectRoot" in value) {
+    const root = value.collectionProjectRoot;
     return typeof root === "string" && root.trim().length > 0 ? root : null;
   }
   if (isRecord(value.status)) return eventProjectRoot(value.status);
@@ -755,9 +765,13 @@ export function ChatBuiltInBrowserPanel({
   const [captureSelection, setCaptureSelection] = useState<BrowserCaptureSelection | null>(null);
   const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileDiagnostics, setProfileDiagnostics] = useState<BuiltInBrowserProfileDiagnostics | null>(null);
+  const [permissionDecisions, setPermissionDecisions] = useState<BuiltInBrowserPermissionDecision[]>([]);
   const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
     () => (projectRootOverride === null
-      ? { profileScope: "global" }
+      ? { tabCollection: "personal" }
       : projectRoot
         ? { projectRoot }
         : {}),
@@ -1699,6 +1713,65 @@ export function ChatBuiltInBrowserPanel({
     setCaptureSelection(null);
   }, []);
 
+  const refreshProfileSecurity = useCallback(async () => {
+    const api = requireBrowserApi();
+    if (!api.getProfileDiagnostics || !api.listPermissions) {
+      throw new Error("This ADE build does not expose browser profile diagnostics.");
+    }
+    setProfileBusy(true);
+    try {
+      const [diagnostics, permissions] = await Promise.all([
+        api.getProfileDiagnostics(),
+        api.listPermissions(),
+      ]);
+      setProfileDiagnostics(diagnostics);
+      setPermissionDecisions(permissions.permissions);
+    } finally {
+      setProfileBusy(false);
+    }
+  }, []);
+
+  const handleToggleProfile = useCallback(() => {
+    if (profileOpen) {
+      setProfileOpen(false);
+      return;
+    }
+    setProfileOpen(true);
+    void refreshProfileSecurity().catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [profileOpen, refreshProfileSecurity]);
+
+  const clearRememberedPermission = useCallback((
+    decision?: Pick<BuiltInBrowserPermissionDecision, "origin" | "permission">,
+  ) => {
+    if (!decision && !window.confirm("Clear all remembered ADE browser permission decisions?")) return;
+    void (async () => {
+      const api = requireBrowserApi();
+      if (!api.clearPermissions) throw new Error("This ADE build does not support clearing browser permissions.");
+      setProfileBusy(true);
+      try {
+        const result = await api.clearPermissions(decision
+          ? { origin: decision.origin, permission: decision.permission }
+          : {});
+        setPermissionDecisions(result.permissions);
+        if (api.getProfileDiagnostics) {
+          setProfileDiagnostics(await api.getProfileDiagnostics());
+        }
+        setMessage({
+          tone: "info",
+          text: result.removed === 1
+            ? "Cleared one remembered browser permission."
+            : `Cleared ${result.removed} remembered browser permissions.`,
+        });
+      } finally {
+        setProfileBusy(false);
+      }
+    })().catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, []);
+
   const handleOpenExternal = useCallback(() => {
     const url = currentUrl.trim();
     if (!url) return;
@@ -1914,6 +1987,21 @@ export function ChatBuiltInBrowserPanel({
             <ArrowSquareOut size={12} />
             External
           </button>
+          <button
+            type="button"
+            disabled={!apiAvailable || profileBusy}
+            onClick={handleToggleProfile}
+            className={cn(
+              "inline-flex h-6 shrink-0 items-center justify-center gap-1 rounded border px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+              profileOpen
+                ? "border-emerald-300/25 bg-emerald-500/12 text-emerald-100/85"
+                : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
+            )}
+            title="Global browser profile and remembered site permissions"
+          >
+            {profileBusy ? <SpinnerGap size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+            Profile
+          </button>
         </div>
 
         {message ? (
@@ -1936,6 +2024,99 @@ export function ChatBuiltInBrowserPanel({
             >
               ×
             </button>
+          </div>
+        ) : null}
+
+        {profileOpen ? (
+          <div className="grid max-h-[190px] shrink-0 grid-cols-[minmax(220px,0.9fr)_minmax(280px,1.1fr)] overflow-hidden border-b border-emerald-300/12 bg-emerald-950/15 text-[10px]">
+            <section className="min-w-0 border-r border-white/[0.06] px-2.5 py-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-100/90">
+                <ShieldCheck size={13} />
+                Global authenticated profile
+                <button
+                  type="button"
+                  onClick={() => void refreshProfileSecurity().catch((error: unknown) => {
+                    setMessage({ tone: "error", text: errorMessage(error) });
+                  })}
+                  disabled={profileBusy}
+                  className="ml-auto rounded border border-white/[0.08] px-1.5 py-0.5 text-[9px] text-fg/65 hover:bg-white/[0.06] disabled:opacity-40"
+                >
+                  Refresh
+                </button>
+              </div>
+              {profileDiagnostics ? (
+                <div className="mt-1.5 space-y-1 text-muted-fg/70">
+                  <div>
+                    {profileDiagnostics.cookieCount} cookies · {profileDiagnostics.persistentCookieCount} persistent · {profileDiagnostics.sessionCookieCount} session
+                  </div>
+                  <div>
+                    Cache {profileDiagnostics.cacheSizeBytes == null ? "unavailable" : formatBytes(profileDiagnostics.cacheSizeBytes)} · {profileDiagnostics.persistedPermissionDecisionCount} remembered permissions
+                  </div>
+                  <div>
+                    Last safe flush {profileDiagnostics.lastStorageFlushAt
+                      ? new Date(profileDiagnostics.lastStorageFlushAt).toLocaleString()
+                      : "not yet recorded this run"}
+                  </div>
+                  <div className="truncate" title={profileDiagnostics.cookieDomains.join(", ")}>
+                    Signed-in domains: {profileDiagnostics.cookieDomains.length > 0
+                      ? profileDiagnostics.cookieDomains.slice(0, 8).join(", ")
+                      : "none detected"}
+                    {profileDiagnostics.cookieDomains.length > 8
+                      ? ` +${profileDiagnostics.cookieDomains.length - 8}`
+                      : ""}
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 text-muted-fg/55">Loading profile diagnostics…</div>
+              )}
+            </section>
+            <section className="min-w-0 overflow-y-auto px-2.5 py-2">
+              <div className="flex items-center gap-2 text-[11px] font-medium text-fg/82">
+                Remembered site permissions
+                {permissionDecisions.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => clearRememberedPermission()}
+                    disabled={profileBusy}
+                    className="ml-auto rounded border border-rose-300/15 px-1.5 py-0.5 text-[9px] text-rose-100/70 hover:bg-rose-500/10 disabled:opacity-40"
+                  >
+                    Clear all
+                  </button>
+                ) : null}
+              </div>
+              {permissionDecisions.length > 0 ? (
+                <div className="mt-1.5 space-y-1">
+                  {permissionDecisions.map((decision) => (
+                    <div
+                      key={`${decision.origin}:${decision.embeddingOrigin ?? ""}:${decision.permission}`}
+                      className="flex min-w-0 items-center gap-2 rounded border border-white/[0.05] bg-black/15 px-1.5 py-1"
+                    >
+                      <span className={cn(
+                        "rounded px-1 py-0.5 text-[8px] font-semibold uppercase",
+                        decision.decision === "allow"
+                          ? "bg-emerald-400/10 text-emerald-100/70"
+                          : "bg-rose-400/10 text-rose-100/70",
+                      )}>
+                        {decision.decision}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate" title={`${decision.origin} · ${decision.permission}`}>
+                        {decision.origin} · {decision.permission}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => clearRememberedPermission(decision)}
+                        disabled={profileBusy}
+                        className="shrink-0 rounded px-1 py-0.5 text-[9px] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 text-muted-fg/55">No remembered allow or block decisions.</div>
+              )}
+            </section>
           </div>
         ) : null}
 

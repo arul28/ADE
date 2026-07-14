@@ -278,8 +278,10 @@ const appControlContextItem: AppControlContextItem = {
 const defaultBrowserStatus: BuiltInBrowserStatus = {
   attached: false,
   partition: "persist:ade-browser",
-  profileKey: "global",
-  profileProjectRoot: null,
+  storageProfileKey: "global",
+  collectionKey: "window",
+  collectionProjectRoot: null,
+  persistentProfile: true,
   visible: false,
   bounds: { x: 0, y: 0, width: 0, height: 0 },
   activeTabId: null,
@@ -584,7 +586,7 @@ describe("WorkSidebar context targets", () => {
     installAdeMock({
       browserStatus: {
         ...defaultBrowserStatus,
-        profileProjectRoot: "/repo-one",
+        collectionProjectRoot: "/repo-one",
       },
     });
     useAppStore.setState({
@@ -614,7 +616,7 @@ describe("WorkSidebar context targets", () => {
       type: "status",
       status: {
         ...defaultBrowserStatus,
-        profileProjectRoot: "/repo-two",
+        collectionProjectRoot: "/repo-two",
       },
     })).not.toThrow();
   });

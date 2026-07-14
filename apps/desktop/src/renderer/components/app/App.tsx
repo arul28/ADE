@@ -330,8 +330,8 @@ type ProjectSurfaceEntry = {
 function browserEventProjectRoot(value: unknown): string | null | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  if ("profileProjectRoot" in record) {
-    const root = record.profileProjectRoot;
+  if ("collectionProjectRoot" in record) {
+    const root = record.collectionProjectRoot;
     return typeof root === "string" && root.trim().length > 0 ? root : null;
   }
   return browserEventProjectRoot(record.status);

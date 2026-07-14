@@ -22,6 +22,7 @@ import {
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
+import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -6664,6 +6665,16 @@ describe("createAgentChatService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: tmpRoot,
       }));
+      const actorToken = baseEnv?.ADE_BROWSER_ACTOR_TOKEN;
+      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
+        chatSessionId: session.id,
+        laneId: "lane-1",
+        projectRoot: tmpRoot,
+      });
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
   });
 

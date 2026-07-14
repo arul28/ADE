@@ -82,6 +82,29 @@ function installBrowserApi() {
   let eventListener: ((event: unknown) => void) | null = null;
   const api = {
     getStatus: vi.fn().mockResolvedValue(browserStatus),
+    getProfileDiagnostics: vi.fn().mockResolvedValue({
+      partition: "persist:ade-browser",
+      storageProfileKey: "global",
+      persistentProfile: true,
+      cookieCount: 4,
+      persistentCookieCount: 3,
+      sessionCookieCount: 1,
+      cookieDomains: ["github.com", "aws.amazon.com"],
+      cacheSizeBytes: 2048,
+      persistedPermissionDecisionCount: 1,
+      tabRestorationEnabled: true,
+      lastStorageFlushAt: "2026-05-12T00:00:00.000Z",
+    }),
+    listPermissions: vi.fn().mockResolvedValue({
+      permissions: [{
+        permission: "geolocation",
+        origin: "https://example.test",
+        embeddingOrigin: null,
+        decision: "block",
+        updatedAt: "2026-05-12T00:00:00.000Z",
+      }],
+    }),
+    clearPermissions: vi.fn().mockResolvedValue({ removed: 1, permissions: [] }),
     setBounds: vi.fn().mockResolvedValue(browserStatus),
     attachWebview: vi.fn().mockResolvedValue(browserStatus),
     navigate: vi.fn().mockResolvedValue(browserStatus),
@@ -168,6 +191,28 @@ afterEach(() => {
 });
 
 describe("ChatBuiltInBrowserPanel", () => {
+  it("exposes global profile diagnostics and permission removal only through the trusted renderer", async () => {
+    const { api } = installBrowserApi();
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    fireEvent.click(await screen.findByText("Profile"));
+
+    expect(await screen.findByText("Global authenticated profile")).toBeTruthy();
+    expect(await screen.findByText(/4 cookies · 3 persistent · 1 session/)).toBeTruthy();
+    expect(screen.getByText(/github\.com, aws\.amazon\.com/)).toBeTruthy();
+    expect(screen.getByText(/https:\/\/example\.test · geolocation/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Remove"));
+
+    await waitFor(() => {
+      expect(api.clearPermissions).toHaveBeenCalledWith({
+        origin: "https://example.test",
+        permission: "geolocation",
+      });
+    });
+    expect(await screen.findByText("No remembered allow or block decisions.")).toBeTruthy();
+  });
+
   it("keeps tab webContents owned by the main browser service across panel mounts", async () => {
     const { api } = installBrowserApi();
 
@@ -183,6 +228,19 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(api.attachWebview).not.toHaveBeenCalled();
     expect(api.createTab).not.toHaveBeenCalled();
     expect(document.querySelector("webview")).toBeNull();
+  });
+
+  it("routes personal chat browser calls to the personal tab collection", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="personal-chat-1" projectRootOverride={null} />);
+
+    await waitFor(() => {
+      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" });
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        tabCollection: "personal",
+      }));
+    });
   });
 
   it("temporarily hides the browser while the Work sidebar splitter is being dragged", async () => {

@@ -13,8 +13,8 @@ export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
 
 export type BuiltInBrowserProjectScopeArgs = {
   projectRoot?: string | null;
-  /** Use the machine-level browser profile even when the sender window has an active project. */
-  profileScope?: "global";
+  /** Keep personal-chat tabs separate without changing the global storage profile. */
+  tabCollection?: "personal";
 };
 
 export type BuiltInBrowserAttachWebviewArgs = BuiltInBrowserProjectScopeArgs & {
@@ -67,8 +67,10 @@ export type BuiltInBrowserSession = {
 export type BuiltInBrowserStatus = {
   attached: boolean;
   partition: string;
-  profileKey: string;
-  profileProjectRoot: string | null;
+  storageProfileKey: "global";
+  collectionKey: string;
+  collectionProjectRoot: string | null;
+  persistentProfile: true;
   visible: boolean;
   bounds: BuiltInBrowserFrame;
   activeTabId: string | null;
@@ -84,6 +86,41 @@ export type BuiltInBrowserStatus = {
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
   ownerLeaseExpiresAt: string | null;
+};
+
+export type BuiltInBrowserPermissionDecision = {
+  permission: string;
+  origin: string;
+  embeddingOrigin: string | null;
+  decision: "allow" | "block";
+  updatedAt: string;
+};
+
+export type BuiltInBrowserPermissionsResult = {
+  permissions: BuiltInBrowserPermissionDecision[];
+};
+
+export type BuiltInBrowserClearPermissionsArgs = {
+  origin?: string | null;
+  permission?: string | null;
+};
+
+export type BuiltInBrowserClearPermissionsResult = BuiltInBrowserPermissionsResult & {
+  removed: number;
+};
+
+export type BuiltInBrowserProfileDiagnostics = {
+  partition: string;
+  storageProfileKey: "global";
+  persistentProfile: true;
+  cookieCount: number;
+  persistentCookieCount: number;
+  sessionCookieCount: number;
+  cookieDomains: string[];
+  cacheSizeBytes: number | null;
+  persistedPermissionDecisionCount: number;
+  tabRestorationEnabled: boolean;
+  lastStorageFlushAt: string | null;
 };
 
 export type BuiltInBrowserElementTargetArgs = {
@@ -104,15 +141,26 @@ export type BuiltInBrowserTabTargetArgs = BuiltInBrowserProjectScopeArgs & {
   sessionId?: string | null;
   laneId?: string | null;
   chatSessionId?: string | null;
+  force?: boolean;
+  leaseTtlMs?: number | null;
 };
 
 export type BuiltInBrowserStartSessionArgs = BuiltInBrowserClaimArgs;
 
-export type BuiltInBrowserEndSessionArgs = BuiltInBrowserProjectScopeArgs & {
+export type BuiltInBrowserRequestOriginAccessArgs = BuiltInBrowserTabTargetArgs;
+
+export type BuiltInBrowserOriginAccessResult = {
+  origin: string | null;
+  required: boolean;
+  granted: boolean;
+  status: BuiltInBrowserStatus;
+};
+
+export type BuiltInBrowserEndSessionArgs = BuiltInBrowserClaimArgs & {
   sessionId: string;
 };
 
-export type BuiltInBrowserListSessionsArgs = BuiltInBrowserProjectScopeArgs & {
+export type BuiltInBrowserListSessionsArgs = BuiltInBrowserTabTargetArgs & {
   tabId?: string | null;
   includeEnded?: boolean;
 };

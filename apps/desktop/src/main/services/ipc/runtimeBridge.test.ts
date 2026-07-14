@@ -1349,6 +1349,65 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("preserves browser actor identity and lease fields across renderer IPC parsing", async () => {
+    const previousDevServerUrl = process.env.VITE_DEV_SERVER_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    const requestOriginAccess = vi.fn(async (input: unknown) => input);
+    browserWindowFromWebContents.mockReturnValue({ id: 7, isDestroyed: () => false });
+    try {
+      registerIpc({
+        getCtx: () => ({
+          logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        }) as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: { rootPath: "/repo", displayName: "Repo" } as any,
+          binding: localBinding("/repo"),
+        }),
+        switchProjectFromDialog: vi.fn(),
+        closeCurrentProject: vi.fn(),
+        closeProjectByPath: vi.fn(),
+        globalStatePath: "/tmp/ade-state.json",
+        builtInBrowserService: { requestOriginAccess } as any,
+      });
+      const handler = ipcHandlers.get(IPC.builtInBrowserRequestOriginAccess)!;
+      const senderWebContents = {
+        ...sender(),
+        getURL: () => "http://localhost:5173/work",
+      };
+
+      await expect(handler({
+        sender: senderWebContents,
+        senderFrame: { url: "http://localhost:5173/work" },
+      }, {
+        projectRoot: "/repo",
+        tabId: "tab-1",
+        sessionId: "browser-session-1",
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        force: true,
+        leaseTtlMs: 5_000,
+      })).resolves.toMatchObject({
+        projectRoot: "/repo",
+        tabId: "tab-1",
+        sessionId: "browser-session-1",
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        force: true,
+        leaseTtlMs: 5_000,
+      });
+      expect(requestOriginAccess).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        force: true,
+        leaseTtlMs: 5_000,
+      }), expect.objectContaining({ id: 7 }));
+    } finally {
+      if (previousDevServerUrl == null) delete process.env.VITE_DEV_SERVER_URL;
+      else process.env.VITE_DEV_SERVER_URL = previousDevServerUrl;
+    }
+  });
+
   it("validates usage range arguments before forwarding renderer IPC", async () => {
     const getAdeUsageStats = vi.fn(async () => ({ generatedAt: "2026-07-09T12:00:00.000Z" }));
     registerIpc({

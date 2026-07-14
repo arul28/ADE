@@ -58,6 +58,25 @@ function requestId(write: string): number {
 }
 
 describe("RuntimeRpcClient", () => {
+  it("passes the ephemeral desktop bridge credential only during initialization", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    const pending = client.initialize("ade-desktop-local", "1.2.3", {
+      desktopBridgeAuthToken: "bridge-secret",
+    });
+    const request = JSON.parse(transport.writes[0]!.trim()) as {
+      id: number;
+      params: Record<string, unknown>;
+    };
+    expect(request.params).toMatchObject({
+      clientInfo: { name: "ade-desktop-local", version: "1.2.3" },
+      desktopBridgeAuthToken: "bridge-secret",
+    });
+    transport.emitData({ jsonrpc: "2.0", id: request.id, result: { ok: true } });
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
   it("resolves calls from JSON-RPC responses", async () => {
     const transport = new MockTransport();
     const client = new RuntimeRpcClient(transport);

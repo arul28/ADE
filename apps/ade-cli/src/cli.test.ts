@@ -6821,6 +6821,24 @@ describe("ADE CLI", () => {
       arguments: { domain: "built_in_browser", action: "showPanel", args: {} },
     });
 
+    const authorize = buildCliPlan([
+      "browser",
+      "authorize",
+      "--tab",
+      "tab-1",
+      "--lease-ttl-ms",
+      "4500",
+    ]);
+    expect(authorize.kind).toBe("execute");
+    if (authorize.kind !== "execute") return;
+    expect(authorize.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "requestOriginAccess",
+        args: { tabId: "tab-1", leaseTtlMs: 4500 },
+      },
+    });
+
     const panelWithUrl = buildCliPlan([
       "browser",
       "panel",
@@ -6982,6 +7000,8 @@ describe("ADE CLI", () => {
       "tab-1",
       "--lane",
       "lane-1",
+      "--lease-ttl-ms",
+      "6000",
     ]);
     expect(sessionStart.kind).toBe("execute");
     if (sessionStart.kind !== "execute") return;
@@ -6989,7 +7009,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "built_in_browser",
         action: "startSession",
-        args: { tabId: "tab-1", laneId: "lane-1" },
+        args: { tabId: "tab-1", laneId: "lane-1", leaseTtlMs: 6000 },
       },
     });
 
@@ -7418,6 +7438,9 @@ describe("ADE CLI", () => {
         "chat-explicit",
         "--tab",
         "tab-1",
+        "--force",
+        "--lease-ttl-ms",
+        "7000",
       ]);
       expect(claim.kind).toBe("execute");
       if (claim.kind !== "execute") return;
@@ -7429,6 +7452,8 @@ describe("ADE CLI", () => {
             laneId: "lane-explicit",
             chatSessionId: "chat-explicit",
             tabId: "tab-1",
+            force: true,
+            leaseTtlMs: 7000,
           },
         },
       });

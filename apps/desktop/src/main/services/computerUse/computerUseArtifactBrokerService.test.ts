@@ -191,6 +191,35 @@ describe("computerUseArtifactBrokerService", () => {
     });
   });
 
+  it("allows only the configured machine-local personal browser scratch root to be promoted", () => {
+    const personalObservationRoot = fs.mkdtempSync(path.join(process.cwd(), ".browser-personal-proof-"));
+    try {
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        additionalAllowedImportRoots: [personalObservationRoot],
+        logger: createLogger(),
+      });
+      const observationPath = path.join(personalObservationRoot, "personal", "tab-1", "obs.png");
+      fs.mkdirSync(path.dirname(observationPath), { recursive: true });
+      fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      const ingested = broker.ingest({
+        backend: { name: "ade-browser", style: "manual" },
+        inputs: [{ kind: "screenshot", title: "Personal browser proof", path: observationPath }],
+      });
+
+      expect(ingested.artifacts[0]).toMatchObject({
+        backendName: "ade-browser",
+        kind: "screenshot",
+        title: "Personal browser proof",
+      });
+    } finally {
+      fs.rmSync(personalObservationRoot, { recursive: true, force: true });
+    }
+  });
+
   it("persists the declared backend style for ingested artifacts", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,

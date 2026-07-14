@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => {
   const fileStats = new Map<string, { size?: number; mtimeMs?: number; mode?: number; isDirectory?: boolean }>();
   const openFiles = new Map<number, string>();
   let nextFd = 100;
+  let nextRandomByte = 1;
   return {
     existsSyncResults,
     realpathOverrides,
@@ -122,6 +123,7 @@ const mocks = vi.hoisted(() => {
     writeFileSync: vi.fn(),
     renameSync: vi.fn(),
     randomUUID: vi.fn(() => "uuid-" + Math.random().toString(36).slice(2, 10)),
+    randomBytes: vi.fn(() => Buffer.alloc(32, nextRandomByte++ % 256)),
     runGit: vi.fn(async () => ({ exitCode: 0, stdout: "abc123\n", stderr: "" })),
     stripAnsi: vi.fn((t: string) => t),
     summarizeTerminalSession: vi.fn(() => "test summary"),
@@ -177,6 +179,7 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:crypto", () => ({
+  randomBytes: mocks.randomBytes,
   randomUUID: mocks.randomUUID,
 }));
 
@@ -228,6 +231,7 @@ import {
   PTY_AI_TITLE_TIMEOUT_MS,
   EARLY_CLI_AI_TITLE_DELAY_MS,
 } from "./ptyService";
+import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 
 const originalPlatform = process.platform;
 
@@ -869,6 +873,16 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
+      const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
+      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
+        chatSessionId: result.sessionId,
+        laneId: "lane-1",
+        projectRoot: "/tmp/test-project",
+      });
+
+      service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+
+      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
     it("refuses only new tracked CLI launches when storage is exhausted", async () => {

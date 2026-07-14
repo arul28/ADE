@@ -612,11 +612,17 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearPermissionsArgs,
+  BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserOriginAccessResult,
+  BuiltInBrowserPermissionsResult,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -6114,6 +6120,21 @@ contextBridge.exposeInMainWorld("ade", {
       args: BuiltInBrowserProjectScopeArgs = {},
     ): Promise<BuiltInBrowserStatus> =>
       builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+    requestOriginAccess: async (
+      args: BuiltInBrowserRequestOriginAccessArgs = {},
+    ): Promise<BuiltInBrowserOriginAccessResult> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserRequestOriginAccess, args),
+      ),
+    getProfileDiagnostics: async (): Promise<BuiltInBrowserProfileDiagnostics> =>
+      ipcRenderer.invoke(IPC.builtInBrowserGetProfileDiagnostics),
+    listPermissions: async (): Promise<BuiltInBrowserPermissionsResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserListPermissions),
+    clearPermissions: async (
+      args: BuiltInBrowserClearPermissionsArgs = {},
+    ): Promise<BuiltInBrowserClearPermissionsResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
     ): Promise<BuiltInBrowserStatus> =>

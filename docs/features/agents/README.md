@@ -14,6 +14,7 @@ The former worker/hiring agents were removed. There is one persistent identity â
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family â€” see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser. `ade secrets list|get|set|delete` is the typed surface for encrypted project-scoped ADE secrets that agents may read when the user names a secret. `ade new chat --mode chat|cli --lane <lane|auto> --provider codex --model <id> --reasoning-effort <tier> --no-fast --permissions full-auto --prompt "..."` mirrors the desktop New Chat toggle. `ade chat create` / `ade new --mode chat` default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID` so agent-spawned chats link back to the spawning chat (`--parent <sessionId>` overrides, `--no-parent` opts out). `ade chat read <session> --text` reads recent transcript messages. `ade chat ... --personal` lists, creates, reads, sends to, interrupts, archives, and deletes machine-owned projectless chats through the running brain. `ade lanes link-linear-issue <laneId> --linear-issue-json '{...}'` (aliases `link-linear`, `linear-link`) links Linear issues to an existing lane. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering, builds lane-scoped ADE guidance / `ADE_AGENT_SKILLS_DIRS` for CLI launches, injects an explicitly enabled and verified direct Computer Use MCP client into tracked Codex launches, and returns GitHub + ADE PR URLs from PR creation tools when available. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
 | `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Discovered on demand rather than named in the `adeBundledAgentSkills` bootstrap list; parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
@@ -36,6 +37,13 @@ New Codex agents default to GPT-5.6 Sol, with Terra and Luna immediately below
 it and GPT-5.5 retained. Provider-native web, MCP/connector, image, and
 subagent activity is normalized into compact transcript events so every client
 can show what the agent did without dumping raw SDK/app-server envelopes.
+
+The `ade --socket browser ...` driver is available only to an ADE-launched,
+chat-bound agent or owned terminal. Its opaque browser actor capability binds
+the call to that chat's lane/project or personal tab collection. The runtime
+rejects missing capabilities and strips forged routing; Electron validates the
+opaque token in its issuing process before restoring the bound scope. Neither
+path exposes renderer-only profile diagnostics or permission administration.
 
 On macOS, Codex agents can use the canonical `mcp__computer_use` tool when the
 user explicitly enabled the bundled Computer Use plugin or MCP server and the

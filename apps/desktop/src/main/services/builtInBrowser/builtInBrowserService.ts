@@ -11,6 +11,8 @@ import type {
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserClearArgs,
+  BuiltInBrowserClearPermissionsArgs,
+  BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserClaimArgs,
   BuiltInBrowserClickArgs,
   BuiltInBrowserContextItem,
@@ -29,7 +31,11 @@ import type {
   BuiltInBrowserObservationArgs,
   BuiltInBrowserObservationElementMap,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserOriginAccessResult,
+  BuiltInBrowserPermissionsResult,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScrollArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
@@ -52,14 +58,19 @@ import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import {
   BUILT_IN_BROWSER_PARTITION,
-  BUILT_IN_BROWSER_PROFILE_PREFIX,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
+import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
+import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
 import {
-  shouldAllowGoogleAuthPermissionCheck,
-  shouldAllowGoogleAuthPermissionRequest,
+  createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
 import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
+import {
+  createBuiltInBrowserStateStore,
+  type BuiltInBrowserRestoredCollection,
+} from "./builtInBrowserStateStore";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
@@ -92,9 +103,8 @@ const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
 
-type BrowserProfile = {
+type BrowserCollection = {
   key: string;
-  partition: string;
   projectRoot: string | null;
 };
 
@@ -173,6 +183,10 @@ type BrowserTabState = {
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
   ownerLeaseExpiresAt: string | null;
+  agentNavigationGuard: {
+    laneId: string | null;
+    chatSessionId: string | null;
+  } | null;
 };
 
 type BrowserPendingNetworkRequest = {
@@ -212,25 +226,63 @@ type BrowserDownloadListener = (
   downloadWebContents: WebContents,
 ) => void;
 
+type BrowserNetworkObserver = {
+  onRequestStarted: (details: Record<string, unknown>) => void;
+  onRequestFinished: (details: Record<string, unknown>, error: string | null) => void;
+};
+
+function createBrowserNetworkRouter() {
+  const configuredSessions = new WeakSet<Electron.Session>();
+  const observers = new Set<BrowserNetworkObserver>();
+
+  return {
+    configureSession(browserSession: Electron.Session): void {
+      if (configuredSessions.has(browserSession)) return;
+      configuredSessions.add(browserSession);
+      const webRequest = browserSession.webRequest as unknown as {
+        onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
+        onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
+        onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
+      };
+      webRequest.onBeforeRequest?.((details, callback) => {
+        for (const observer of observers) observer.onRequestStarted(details);
+        callback?.({});
+      });
+      webRequest.onCompleted?.((details) => {
+        for (const observer of observers) observer.onRequestFinished(details, null);
+      });
+      webRequest.onErrorOccurred?.((details) => {
+        const error = stringOrNull(details.error) ?? "request failed";
+        for (const observer of observers) observer.onRequestFinished(details, error);
+      });
+    },
+    subscribe(observer: BrowserNetworkObserver): () => void {
+      observers.add(observer);
+      return () => observers.delete(observer);
+    },
+  };
+}
+
 function normalizedProjectRoot(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
 }
 
-function profileForProjectRoot(projectRoot: string | null | undefined): BrowserProfile {
+function collectionForProjectRoot(
+  projectRoot: string | null | undefined,
+  kind: "personal" | "window" = "window",
+): BrowserCollection {
   const normalized = normalizedProjectRoot(projectRoot);
   if (!normalized) {
     return {
-      key: "global",
-      partition: BROWSER_PARTITION,
+      key: kind,
       projectRoot: null,
     };
   }
   const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
   return {
-    key,
-    partition: `${BUILT_IN_BROWSER_PROFILE_PREFIX}${key}`,
+    key: `project-${key}`,
     projectRoot: normalized,
   };
 }
@@ -240,6 +292,8 @@ export function createBuiltInBrowserService(args: {
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
+  stateFilePath?: string | null;
+  permissionFilePath?: string | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -251,20 +305,87 @@ export function createBuiltInBrowserService(args: {
   const activeServiceKeyByWindow = new Map<number, string>();
   const windowClosedListeners = new Map<number, { win: BrowserWindow; listener: () => void }>();
   let activeWindowId: number | null = null;
-  let fallbackService: WindowBrowserService | null = null;
+  const fallbackServices = new Map<"window" | "personal", WindowBrowserService>();
+  let lastStorageFlushAt: string | null = null;
+  const userDataPath = app.isReady?.() ? app.getPath("userData") : null;
+  const stateFilePath = args.stateFilePath === null
+    ? null
+    : args.stateFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-state.json") : null);
+  const stateStore = stateFilePath
+    ? createBuiltInBrowserStateStore({ filePath: stateFilePath, getLogger: args.getLogger })
+    : null;
+  const permissionFilePath = args.permissionFilePath === null
+    ? null
+    : args.permissionFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-permissions.json") : null);
+  const personalObservationRootPath = userDataPath
+    ? path.join(userDataPath, "browser-observations")
+    : null;
+  const resolveParentWindow = (): BrowserWindow | null => {
+    if (activeWindowId != null) {
+      const activeWindow = windowClosedListeners.get(activeWindowId)?.win ?? null;
+      if (activeWindow && !activeWindow.isDestroyed()) return activeWindow;
+    }
+    for (const { win } of windowClosedListeners.values()) {
+      if (!win.isDestroyed()) return win;
+    }
+    return null;
+  };
+  const permissionController = createBuiltInBrowserPermissionController({
+    filePath: permissionFilePath,
+    isManagedWebContents: (webContents) => Boolean(webContents && MANAGED_BROWSER_WEB_CONTENTS.has(webContents)),
+    resolveParentWindow,
+    getLogger: args.getLogger,
+  });
+  const agentAccessController = createBuiltInBrowserAgentAccessController({
+    hasAllowedPermissionForOrigin: (origin) => permissionController.hasAllowedDecisionForOrigin(origin),
+    resolveParentWindow,
+    getLogger: args.getLogger,
+  });
+  const networkRouter = createBrowserNetworkRouter();
+  const profileMigrationPromise = userDataPath
+    ? migrateLegacyBuiltInBrowserProfiles({
+        userDataPath,
+        getSession: (partition) => session.fromPartition(partition),
+        getLogger: args.getLogger,
+      }).catch((error) => {
+        let migrationLogger = null;
+        try {
+          migrationLogger = args.getLogger?.() ?? null;
+        } catch {
+          // Logging must never prevent the browser profile from opening.
+        }
+        migrationLogger?.warn("built_in_browser.profile_migration_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      })
+    : Promise.resolve(null);
 
-  const createServiceForWindow = (win: BrowserWindow, profile: BrowserProfile): WindowBrowserService =>
+  const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
     createBuiltInBrowserWindowService({
       getLogger: args.getLogger,
       onEvent: (payload) => args.onEvent?.(payload, win),
-      profile,
+      collection,
+      restoredState: stateStore?.restore(collection.key) ?? null,
+      onStateChange: (state) => stateStore?.record(collection.key, state),
+      observationRootPath: collection.projectRoot
+        ? path.join(collection.projectRoot, OBSERVATION_CACHE_DIR)
+        : personalObservationRootPath,
+      permissionController,
+      agentAccessController,
+      networkRouter,
+      waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
     });
 
-  const serviceKey = (windowId: number, profile: BrowserProfile): string =>
-    `${windowId}:${profile.partition}`;
+  const serviceKey = (windowId: number, collection: BrowserCollection): string =>
+    `${windowId}:${collection.key}`;
 
-  const profileForWindow = (win: BrowserWindow): BrowserProfile =>
-    profileForProjectRoot(args.getProjectRootForWindow?.(win));
+  const collectionForWindow = (win: BrowserWindow): BrowserCollection => {
+    const projectRoot = args.getProjectRootForWindow?.(win);
+    return normalizedProjectRoot(projectRoot)
+      ? collectionForProjectRoot(projectRoot)
+      : collectionForProjectRoot(null, "window");
+  };
 
   const projectRootForWindow = (win: BrowserWindow): string | null =>
     normalizedProjectRoot(args.getProjectRootForWindow?.(win));
@@ -281,8 +402,8 @@ export function createBuiltInBrowserService(args: {
     return typeof projectRoot === "string" ? normalizedProjectRoot(projectRoot) : null;
   };
 
-  const requestsGlobalProfile = (input: unknown): boolean =>
-    isRecord(input) && input.profileScope === "global";
+  const requestsPersonalCollection = (input: unknown): boolean =>
+    isRecord(input) && input.tabCollection === "personal";
 
   const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
@@ -325,12 +446,12 @@ export function createBuiltInBrowserService(args: {
     win.once("closed", listener);
   };
 
-  const serviceForWindowProfile = (
+  const serviceForWindowCollection = (
     win: BrowserWindow,
-    profile: BrowserProfile,
+    collection: BrowserCollection,
     options: { markActive?: boolean } = {},
   ): WindowBrowserService => {
-    const key = serviceKey(win.id, profile);
+    const key = serviceKey(win.id, collection);
     const existing = windowServices.get(key);
     if (options.markActive) {
       activeServiceKeyByWindow.set(win.id, key);
@@ -338,16 +459,16 @@ export function createBuiltInBrowserService(args: {
     }
     if (existing) return existing.service;
 
-    fallbackService?.dispose();
-    fallbackService = null;
+    for (const fallback of fallbackServices.values()) fallback.dispose();
+    fallbackServices.clear();
     ensureWindowClosedListener(win);
-    const service = createServiceForWindow(win, profile);
+    const service = createServiceForWindow(win, collection);
     windowServices.set(key, { win, service });
     return service;
   };
 
   const serviceForWindow = (win: BrowserWindow): WindowBrowserService =>
-    serviceForWindowProfile(win, profileForWindow(win), { markActive: true });
+    serviceForWindowCollection(win, collectionForWindow(win), { markActive: true });
 
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
@@ -359,12 +480,21 @@ export function createBuiltInBrowserService(args: {
     }
     const first = windowServices.values().next().value as WindowBrowserEntry | undefined;
     if (first) return first.service;
+    let fallbackService = fallbackServices.get("window") ?? null;
     if (!fallbackService) {
       fallbackService = createBuiltInBrowserWindowService({
         getLogger: args.getLogger,
         onEvent: (payload) => args.onEvent?.(payload, null),
-        profile: profileForProjectRoot(null),
+        collection: collectionForProjectRoot(null, "window"),
+        restoredState: stateStore?.restore("window") ?? null,
+        onStateChange: (state) => stateStore?.record("window", state),
+        observationRootPath: personalObservationRootPath,
+        permissionController,
+        agentAccessController,
+        networkRouter,
+        waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       });
+      fallbackServices.set("window", fallbackService);
     }
     return fallbackService;
   };
@@ -384,14 +514,14 @@ export function createBuiltInBrowserService(args: {
     if (!win) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
-    const service = serviceForWindowProfile(win, profileForProjectRoot(normalized), {
+    const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
       markActive: projectRootsMatch(projectRootForWindow(win), normalized),
     });
     service.attachToWindow(win);
     return service;
   };
 
-  const serviceForGlobalProfile = (sourceWindow?: BrowserWindow | null): WindowBrowserService => {
+  const serviceForPersonalCollection = (sourceWindow?: BrowserWindow | null): WindowBrowserService => {
     const activeWindow = activeWindowId == null
       ? null
       : windowClosedListeners.get(activeWindowId)?.win ?? null;
@@ -401,17 +531,26 @@ export function createBuiltInBrowserService(args: {
         ? activeWindow
         : null;
     if (!win) {
+      let fallbackService = fallbackServices.get("personal") ?? null;
       if (!fallbackService) {
         fallbackService = createBuiltInBrowserWindowService({
           getLogger: args.getLogger,
           onEvent: (payload) => args.onEvent?.(payload, null),
-          profile: profileForProjectRoot(null),
+          collection: collectionForProjectRoot(null, "personal"),
+          restoredState: stateStore?.restore("personal") ?? null,
+          onStateChange: (state) => stateStore?.record("personal", state),
+          observationRootPath: personalObservationRootPath,
+          permissionController,
+          agentAccessController,
+          networkRouter,
+          waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         });
+        fallbackServices.set("personal", fallbackService);
       }
       return fallbackService;
     }
     activeWindowId = win.id;
-    const service = serviceForWindowProfile(win, profileForProjectRoot(null), { markActive: true });
+    const service = serviceForWindowCollection(win, collectionForProjectRoot(null, "personal"), { markActive: true });
     service.attachToWindow(win);
     return service;
   };
@@ -420,25 +559,97 @@ export function createBuiltInBrowserService(args: {
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
   ): WindowBrowserService => {
-    if (requestsGlobalProfile(input)) return serviceForGlobalProfile(sourceWindow);
+    if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
     if (projectRoot) return serviceForProjectRoot(projectRoot);
     if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
     return activeService();
   };
 
+  const flushStorage = async (): Promise<void> => {
+    const startedAt = Date.now();
+    await profileMigrationPromise;
+    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    const results = await Promise.allSettled([
+      stateStore?.flush() ?? Promise.resolve(),
+      permissionController.flush(),
+      Promise.resolve().then(() => browserSession.cookies.flushStore()),
+      Promise.resolve().then(() => browserSession.flushStorageData()),
+    ]);
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Failed to flush ADE browser storage.");
+    }
+    lastStorageFlushAt = new Date().toISOString();
+    try {
+      args.getLogger?.().info("built_in_browser.storage_flushed", {
+        partition: BROWSER_PARTITION,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch {
+      // Storage is already flushed; logging must not turn a successful flush into a shutdown failure.
+    }
+  };
+
   return {
+    flushStorage,
+    listPermissions(): BuiltInBrowserPermissionsResult {
+      return { permissions: permissionController.list() };
+    },
+    async clearPermissions(input: BuiltInBrowserClearPermissionsArgs = {}): Promise<BuiltInBrowserClearPermissionsResult> {
+      const removed = await permissionController.clear(input);
+      return { removed, permissions: permissionController.list() };
+    },
+    async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
+      await profileMigrationPromise;
+      const browserSession = session.fromPartition(BROWSER_PARTITION);
+      const cookies = await browserSession.cookies.get({});
+      let cacheSizeBytes: number | null = null;
+      try {
+        cacheSizeBytes = await browserSession.getCacheSize();
+      } catch (error) {
+        args.getLogger?.().debug("built_in_browser.cache_size_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const cookieDomains = [...new Set(cookies
+        .map((cookie) => cookie.domain?.replace(/^\./, "").toLowerCase())
+        .filter((domain): domain is string => Boolean(domain)))]
+        .sort();
+      const persistentCookieCount = cookies.filter((cookie) => cookie.expirationDate != null).length;
+      return {
+        partition: BROWSER_PARTITION,
+        storageProfileKey: "global",
+        persistentProfile: true,
+        cookieCount: cookies.length,
+        persistentCookieCount,
+        sessionCookieCount: cookies.length - persistentCookieCount,
+        cookieDomains,
+        cacheSizeBytes,
+        persistedPermissionDecisionCount: permissionController.count(),
+        tabRestorationEnabled: Boolean(stateStore),
+        lastStorageFlushAt,
+      };
+    },
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
     },
     getStatus(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).getStatus();
+      return serviceForInput(input, win).getStatusForInput(input ?? {});
+    },
+    requestOriginAccess(
+      input: BuiltInBrowserRequestOriginAccessArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserOriginAccessResult> {
+      return serviceForInput(input, sourceWindow).requestOriginAccess(input);
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
@@ -520,20 +731,20 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).wait(input);
     },
     startInspect(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserStatus> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).startInspect();
+      return serviceForInput(input, win).startInspect(input ?? {});
     },
     stopInspect(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserStatus> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).stopInspect();
+      return serviceForInput(input, win).stopInspect(input ?? {});
     },
     captureScreenshot(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
       const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
@@ -543,20 +754,20 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).selectPoint(input);
     },
     selectCurrent(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserSelectResult> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).selectCurrent();
+      return serviceForInput(input, win).selectCurrent(input ?? {});
     },
     clearSelection(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<{ ok: true }> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).clearSelection();
+      return serviceForInput(input, win).clearSelection(input ?? {});
     },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {
@@ -574,8 +785,8 @@ export function createBuiltInBrowserService(args: {
       }
       windowServices.clear();
       activeServiceKeyByWindow.clear();
-      fallbackService?.dispose();
-      fallbackService = null;
+      for (const fallback of fallbackServices.values()) fallback.dispose();
+      fallbackServices.clear();
       activeWindowId = null;
     },
   };
@@ -584,7 +795,14 @@ export function createBuiltInBrowserService(args: {
 function createBuiltInBrowserWindowService(args: {
   getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
-  profile: BrowserProfile;
+  collection: BrowserCollection;
+  restoredState?: BuiltInBrowserRestoredCollection | null;
+  onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
+  observationRootPath: string | null;
+  permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
+  agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
+  networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
+  waitForProfileMigration: () => Promise<void>;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
@@ -599,10 +817,14 @@ function createBuiltInBrowserWindowService(args: {
   let debuggerDetachListener: DebuggerDetachListener | null = null;
   let inspectListenerWebContents: WebContents | null = null;
   let browserDownloadListener: BrowserDownloadListener | null = null;
+  let unsubscribeNetworkObserver: (() => void) | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
+  let lastSelectedTabId: string | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
+  let restoringTabs = false;
+  let disposed = false;
   const configuredWebContents = new WeakSet<WebContents>();
   const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
@@ -613,6 +835,19 @@ function createBuiltInBrowserWindowService(args: {
     } catch {
       return null;
     }
+  };
+
+  const observationRootPath = normalizedProjectRoot(args.observationRootPath);
+  const observationRelativeBasePath = args.collection.projectRoot ?? observationRootPath;
+  const observationDirectory = (tab: BrowserTabState): string => {
+    if (!observationRootPath) {
+      throw new Error("Browser observations are unavailable because no scratch root is configured.");
+    }
+    return path.join(
+      observationRootPath,
+      sanitizePathSegment(args.collection.key),
+      sanitizePathSegment(tab.id),
+    );
   };
 
   const emit = (payload: BuiltInBrowserEventPayload): void => {
@@ -627,6 +862,14 @@ function createBuiltInBrowserWindowService(args: {
 
   const emitStatus = (): void => {
     const status = getStatus();
+    if (!restoringTabs && args.onStateChange) {
+      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+      const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
+      args.onStateChange({
+        tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
+        activeIndex,
+      });
+    }
     let key: string | null = null;
     try {
       key = JSON.stringify(status);
@@ -760,9 +1003,11 @@ function createBuiltInBrowserWindowService(args: {
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
     pruneBrowserSessions();
+    if (lastSelectedTabId && !tabs.some((tab) => tab.id === lastSelectedTabId)) {
+      clearSelectionInternal();
+    }
     if (activeTabId && !tabs.some((tab) => tab.id === activeTabId)) {
       activeTabId = tabs[0]?.id ?? null;
-      clearSelectionInternal();
     }
   };
 
@@ -872,18 +1117,64 @@ function createBuiltInBrowserWindowService(args: {
     );
   };
 
-  const prepareAgentActionTab = <T extends BuiltInBrowserAgentActionArgs>(
+  const armAgentNavigationGuard = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId">,
+  ): void => {
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (!laneId && !chatSessionId) return;
+    tab.agentNavigationGuard = {
+      laneId,
+      chatSessionId,
+    };
+  };
+
+  const reclaimTabForHumanNavigation = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId">,
+  ): void => {
+    if (stringOrNull(input.laneId) || stringOrNull(input.chatSessionId)) return;
+    tab.ownerLaneId = null;
+    tab.ownerChatSessionId = null;
+    tab.ownerClaimedAt = null;
+    tab.ownerLeaseExpiresAt = null;
+    tab.agentNavigationGuard = null;
+  };
+
+  const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
+  ): Promise<void> => {
+    await args.waitForProfileMigration();
+    assertTabLeaseAvailable(tab, input);
+    await args.agentAccessController.requireUrlAccess(
+      tab.webContents.getURL(),
+      input,
+      "The agent requested an interactive browser action.",
+    );
+    claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
+  };
+
+  const prepareAgentReadTab = (
+    tab: BrowserTabState,
+    input: BuiltInBrowserTabTargetArgs,
   ): void => {
+    assertTabLeaseAvailable(tab, input);
+    args.agentAccessController.assertUrlAccessSync(tab.webContents.getURL(), input);
     claimTabOwnerFromInput(tab, input);
   };
 
-  const claimTargetOwnerFromInput = (input: BuiltInBrowserClaimArgs = {}): boolean => {
-    const tabId = stringOrNull(input.tabId);
-    const tab = tabId ? tabById(tabId) : activeTab();
-    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
-    return claimTabOwnerFromInput(tab, input);
+  const prepareAgentReadTabAsync = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserTabTargetArgs,
+    reason: string,
+  ): Promise<void> => {
+    await args.waitForProfileMigration();
+    assertTabLeaseAvailable(tab, input);
+    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason);
+    claimTabOwnerFromInput(tab, input);
   };
 
   const copyTabOwner = (from: BrowserTabState | null, to: BrowserTabState): void => {
@@ -892,6 +1183,7 @@ function createBuiltInBrowserWindowService(args: {
     to.ownerChatSessionId = from.ownerChatSessionId;
     to.ownerClaimedAt = from.ownerClaimedAt;
     to.ownerLeaseExpiresAt = from.ownerLeaseExpiresAt;
+    to.agentNavigationGuard = from.agentNavigationGuard ? { ...from.agentNavigationGuard } : null;
   };
 
   const tabMatchesOwnerInput = (
@@ -918,8 +1210,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const clearSelectionInternal = (): void => {
-    if (!lastSelectedItem) return;
+    const hadSelection = Boolean(lastSelectedItem);
     lastSelectedItem = null;
+    lastSelectedTabId = null;
+    if (!hadSelection) return;
     emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
   };
 
@@ -1066,6 +1360,7 @@ function createBuiltInBrowserWindowService(args: {
     const sessionEntry = sessionFromInput(input);
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
     try {
+      await prepareAgentActionTab(tab, input);
       const result = await fn();
       const trace = finishActionTrace(tab, traceDraft, "ok", {
         sessionId: sessionEntry?.id ?? null,
@@ -1147,6 +1442,18 @@ function createBuiltInBrowserWindowService(args: {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
     MANAGED_BROWSER_WEB_CONTENTS.add(wc);
+    wc.once("destroyed", () => {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
+    });
+    configureBuiltInBrowserAuthentication({
+      webContents: wc,
+      resolveParentWindow: () => (win && !win.isDestroyed() ? win : null),
+      getAgentIdentity: () => tabForWebContents(wc)?.agentNavigationGuard ?? null,
+      recordAuthenticatedOrigin: (url, identity) => {
+        args.agentAccessController.recordHumanAuthentication(url, identity);
+      },
+      getLogger: args.getLogger,
+    });
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -1163,6 +1470,16 @@ function createBuiltInBrowserWindowService(args: {
       const opener = tabForWebContents(wc) ?? activeTab();
       const popupUrl = popupUrlForOpen(details.url);
       if (!popupUrl) return { action: "deny" };
+      const guard = opener?.agentNavigationGuard;
+      if (
+        guard
+        && args.agentAccessController.isUrlAccessRequiredSync(popupUrl, guard)
+      ) {
+        emitError(new Error(
+          `Blocked an agent-triggered popup to ${popupUrl}. Navigate to that origin explicitly so ADE can request human approval.`,
+        ));
+        return { action: "deny" };
+      }
       return {
         action: "allow",
         createWindow: () => {
@@ -1173,11 +1490,51 @@ function createBuiltInBrowserWindowService(args: {
         },
       };
     });
-    wc.on("will-navigate", (event, url) => {
-      if (isAllowedNavigationUrl(url)) return;
+    const enforceAgentNavigation = (
+      event: Electron.Event,
+      url: string,
+      kind: "navigation" | "redirect",
+    ): void => {
+      if (!isAllowedNavigationUrl(url)) {
+        event.preventDefault();
+        emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
+        return;
+      }
+      const tab = tabForWebContents(wc);
+      const guard = tab?.agentNavigationGuard;
+      if (
+        !guard
+        || !args.agentAccessController.isUrlAccessRequiredSync(url, guard)
+      ) {
+        return;
+      }
       event.preventDefault();
-      emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
-    });
+      void args.agentAccessController.authorizeUrl(
+        url,
+        guard,
+        kind === "redirect"
+          ? "An agent-triggered request is redirecting to another browser origin."
+          : "An agent-triggered page action is navigating to another browser origin.",
+      ).then(async (result) => {
+        if (!result.granted || wc.isDestroyed()) {
+          if (!result.granted) {
+            emitError(new Error(
+              `Blocked agent-triggered ${kind} to ${result.origin ?? url}.`,
+            ));
+          }
+          return;
+        }
+        if (kind === "redirect") {
+          emitError(new Error(
+            `Blocked agent-triggered redirect to ${result.origin ?? url} after recording approval. Retry the original navigation to continue safely.`,
+          ));
+          return;
+        }
+        await wc.loadURL(url);
+      }).catch(emitError);
+    };
+    wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
+    wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
       noteNetworkActivity(tabForWebContents(wc));
       emitStatus();
@@ -1244,7 +1601,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const browserWebPreferences = (): Electron.WebPreferences => ({
-    partition: args.profile.partition,
+    partition: BROWSER_PARTITION,
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -1274,6 +1631,7 @@ function createBuiltInBrowserWindowService(args: {
       ownerChatSessionId: null,
       ownerClaimedAt: null,
       ownerLeaseExpiresAt: null,
+      agentNavigationGuard: null,
     };
   };
 
@@ -1361,7 +1719,7 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const browserSessionForProfile = () => session.fromPartition(args.profile.partition);
+  const browserSessionForProfile = () => session.fromPartition(BROWSER_PARTITION);
 
   const removeBrowserDownloadListener = (): void => {
     if (!browserDownloadListener) return;
@@ -1386,21 +1744,12 @@ function createBuiltInBrowserWindowService(args: {
     const browserSession = browserSessionForProfile();
     configuredBrowserSession = browserSession;
     configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
-    const webRequest = browserSession.webRequest as unknown as {
-      onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
-      onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
-      onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
-    };
-    webRequest.onBeforeRequest?.((details, callback) => {
-      trackNetworkRequestStart(details);
-      callback?.({});
+    args.permissionController.configureSession(browserSession);
+    unsubscribeNetworkObserver = args.networkRouter.subscribe({
+      onRequestStarted: trackNetworkRequestStart,
+      onRequestFinished: trackNetworkRequestEnd,
     });
-    webRequest.onCompleted?.((details) => {
-      trackNetworkRequestEnd(details, null);
-    });
-    webRequest.onErrorOccurred?.((details) => {
-      trackNetworkRequestEnd(details, stringOrNull(details.error) ?? "request failed");
-    });
+    args.networkRouter.configureSession(browserSession);
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) {
@@ -1456,38 +1805,6 @@ function createBuiltInBrowserWindowService(args: {
       });
     };
     browserSession.on("will-download", browserDownloadListener);
-    browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
-      if (shouldAllowGoogleAuthPermissionCheck(permission, requestingOrigin, details)) {
-        logger()?.debug("built_in_browser.permission_check_allowed", {
-          permission,
-          requestingOrigin,
-          requestingUrl: details.requestingUrl ?? null,
-        });
-        return true;
-      }
-      logger()?.debug("built_in_browser.permission_check_denied", {
-        permission,
-        requestingOrigin,
-        requestingUrl: details.requestingUrl ?? null,
-      });
-      return false;
-    });
-    browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-      if (shouldAllowGoogleAuthPermissionRequest(permission, details)) {
-        logger()?.debug("built_in_browser.permission_request_allowed", {
-          permission,
-          requestingUrl: stringOrNull(details.requestingUrl),
-        });
-        callback(true);
-        return;
-      }
-      logger()?.debug("built_in_browser.permission_request_denied", {
-        permission,
-        requestingOrigin: "requestingOrigin" in details ? details.requestingOrigin : null,
-        requestingUrl: stringOrNull(details.requestingUrl),
-      });
-      callback(false);
-    });
     browserSessionConfigured = true;
   };
 
@@ -1539,9 +1856,11 @@ function createBuiltInBrowserWindowService(args: {
         && currentTab
         && (!currentTab.view || win.contentView.children.includes(currentTab.view))
       ),
-      partition: args.profile.partition,
-      profileKey: args.profile.key,
-      profileProjectRoot: args.profile.projectRoot,
+      partition: BROWSER_PARTITION,
+      storageProfileKey: "global",
+      collectionKey: args.collection.key,
+      collectionProjectRoot: args.collection.projectRoot,
+      persistentProfile: true,
       visible,
       bounds,
       activeTabId: currentTab?.id ?? null,
@@ -1560,15 +1879,82 @@ function createBuiltInBrowserWindowService(args: {
     };
   }
 
-  function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
-    claimTargetOwnerFromInput(input);
+  function scopeStatusForInput(status: BuiltInBrowserStatus, input: unknown): BuiltInBrowserStatus {
+    const record = isRecord(input) ? input : {};
+    const identity = {
+      laneId: stringOrNull(record.laneId),
+      chatSessionId: stringOrNull(record.chatSessionId),
+    };
+    if (!identity.laneId && !identity.chatSessionId) return status;
+    const visibleTabIds = new Set(
+      tabs
+        .filter((tab) => !tab.webContents.isDestroyed() && tabMatchesOwnerInput(tab, identity))
+        .map((tab) => tab.id),
+    );
+    const scopedTabs = status.tabs.filter((tab) => visibleTabIds.has(tab.id));
+    if (status.activeTabId && visibleTabIds.has(status.activeTabId)) {
+      return { ...status, tabs: scopedTabs };
+    }
+    return {
+      ...status,
+      attached: false,
+      activeTabId: null,
+      tabs: scopedTabs,
+      url: null,
+      title: null,
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      isInspecting: false,
+      hasSelection: false,
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerClaimedAt: null,
+      ownerLeaseExpiresAt: null,
+    };
+  }
+
+  function getStatusForInput(input: BuiltInBrowserTabTargetArgs = {}): BuiltInBrowserStatus {
+    if (tabs.length > 0 && (input.tabId || input.sessionId)) {
+      const tab = targetTabFromInput(input, "No active browser tab.");
+      prepareAgentReadTab(tab, input);
+    }
+    return scopeStatusForInput(getStatus(), input);
+  }
+
+  async function requestOriginAccess(
+    input: BuiltInBrowserRequestOriginAccessArgs = {},
+  ): Promise<BuiltInBrowserOriginAccessResult> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before requesting origin access.");
+    assertTabLeaseAvailable(tab, input);
+    const result = await args.agentAccessController.authorizeUrl(
+      tab.webContents.getURL(),
+      input,
+      "The agent requested access to inspect or control this browser tab.",
+    );
+    if (!result.granted) {
+      throw new Error(`Human approval was denied for ADE agent access to ${result.origin ?? "this browser origin"}.`);
+    }
+    reclaimTabForHumanNavigation(tab, input);
+    claimTabOwnerFromInput(tab, input);
     emitStatus();
-    return getStatus();
+    return { ...result, status: scopeStatusForInput(getStatus(), input) };
+  }
+
+  function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
+    const tabId = stringOrNull(input.tabId);
+    const tab = tabId ? tabById(tabId) : activeTab();
+    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab) prepareAgentReadTab(tab, input);
+    emitStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   function startSession(input: BuiltInBrowserStartSessionArgs = {}): BuiltInBrowserSessionResult {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting a browser session.");
-    claimTabOwnerFromInput(tab, input);
+    prepareAgentReadTab(tab, input);
     const now = new Date().toISOString();
     const sessionEntry: BrowserSessionState = {
       id: `bs-${Date.now()}-${randomUUID()}`,
@@ -1584,15 +1970,24 @@ function createBuiltInBrowserWindowService(args: {
     browserSessions = [...browserSessions, sessionEntry];
     pruneBrowserSessions();
     emitStatus();
-    return { session: sessionSnapshot(sessionEntry), status: getStatus() };
+    return { session: sessionSnapshot(sessionEntry), status: scopeStatusForInput(getStatus(), input) };
   }
 
   function listSessions(input: BuiltInBrowserListSessionsArgs = {}): BuiltInBrowserSessionsResult {
     pruneDestroyedTabs();
     const tabId = stringOrNull(input.tabId);
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (tabId) {
+      const tab = tabById(tabId);
+      if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+      prepareAgentReadTab(tab, input);
+    }
     const sessions = browserSessions
       .filter((entry) => (input.includeEnded ? true : !entry.endedAt))
       .filter((entry) => (tabId ? entry.tabId === tabId : true))
+      .filter((entry) => (chatSessionId ? entry.ownerChatSessionId === chatSessionId : true))
+      .filter((entry) => (laneId ? entry.ownerLaneId === laneId : true))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(sessionSnapshot);
     return { sessions };
@@ -1603,6 +1998,18 @@ function createBuiltInBrowserWindowService(args: {
     if (!sessionId) throw new Error("Browser session id is required.");
     const entry = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
     if (!entry) throw new Error(`Browser session not found: ${sessionId}`);
+    const tab = tabById(entry.tabId);
+    if (tab) prepareAgentReadTab(tab, input);
+    if (!input.force) {
+      const laneId = stringOrNull(input.laneId);
+      const chatSessionId = stringOrNull(input.chatSessionId);
+      if (chatSessionId && entry.ownerChatSessionId && chatSessionId !== entry.ownerChatSessionId) {
+        throw new Error(`Browser session ${sessionId} is owned by chat ${entry.ownerChatSessionId}.`);
+      }
+      if (laneId && entry.ownerLaneId && laneId !== entry.ownerLaneId) {
+        throw new Error(`Browser session ${sessionId} is owned by lane ${entry.ownerLaneId}.`);
+      }
+    }
     if (!entry.endedAt) {
       const now = new Date().toISOString();
       entry.endedAt = now;
@@ -1610,7 +2017,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     pruneBrowserSessions();
     emitStatus();
-    return { session: sessionSnapshot(entry), status: getStatus() };
+    return { session: sessionSnapshot(entry), status: scopeStatusForInput(getStatus(), input) };
   }
 
   const requestOpenPanel = (input: BuiltInBrowserOpenPanelArgs = {}): BuiltInBrowserStatus => {
@@ -1625,7 +2032,7 @@ function createBuiltInBrowserWindowService(args: {
       url,
       requestedAt: new Date().toISOString(),
     });
-    return status;
+    return scopeStatusForInput(status, input);
   };
 
   async function showPanel(input: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -1639,6 +2046,8 @@ function createBuiltInBrowserWindowService(args: {
         openPanel: true,
         laneId: input.laneId,
         chatSessionId: input.chatSessionId,
+        force: input.force,
+        leaseTtlMs: input.leaseTtlMs,
       });
     }
     if (tabId) {
@@ -1648,12 +2057,16 @@ function createBuiltInBrowserWindowService(args: {
         openPanel: true,
         laneId: input.laneId,
         chatSessionId: input.chatSessionId,
+        force: input.force,
+        leaseTtlMs: input.leaseTtlMs,
       });
     }
     return requestOpenPanel(input);
   }
 
   async function setBounds(nextBounds: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> {
+    await tabRestorationPromise;
+    if (disposed) return scopeStatusForInput(getStatus(), nextBounds);
     const normalized: BuiltInBrowserFrame = {
       x: normalizeDimension(nextBounds.x),
       y: normalizeDimension(nextBounds.y),
@@ -1668,7 +2081,7 @@ function createBuiltInBrowserWindowService(args: {
       && normalized.height === bounds.height
       && nextVisible === visible
     );
-    if (unchanged) return getStatus();
+    if (unchanged) return scopeStatusForInput(getStatus(), nextBounds);
     bounds = normalized;
     visible = nextVisible;
     if (visible || tabs.length) {
@@ -1676,7 +2089,7 @@ function createBuiltInBrowserWindowService(args: {
       attachViewsToCurrentWindow();
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), nextBounds);
   }
 
   async function attachWebview(input: BuiltInBrowserAttachWebviewArgs): Promise<BuiltInBrowserStatus> {
@@ -1690,7 +2103,7 @@ function createBuiltInBrowserWindowService(args: {
       throw new Error("Browser webview is not available.");
     }
     if (nextWebContents.session !== browserSessionForProfile()) {
-      throw new Error("Browser webview partition does not match the current project browser profile.");
+      throw new Error("Browser webview partition does not match the global ADE browser profile.");
     }
 
     configureBrowserSession();
@@ -1699,7 +2112,7 @@ function createBuiltInBrowserWindowService(args: {
     if (tab.webContents.id === nextWebContents.id && !tab.ownsWebContents && !tab.view) {
       attachViewsToCurrentWindow();
       emitStatus();
-      return getStatus();
+      return scopeStatusForInput(getStatus(), input);
     }
 
     if (tab.id === activeTabId) {
@@ -1721,6 +2134,9 @@ function createBuiltInBrowserWindowService(args: {
     tab.view = null;
     tab.webContents = nextWebContents;
     tab.ownsWebContents = false;
+    if (previousWebContents.id !== nextWebContents.id) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(previousWebContents);
+    }
     if (!activeTabId) activeTabId = tab.id;
 
     if (previousOwned && previousWebContents.id !== nextWebContents.id && !previousWebContents.isDestroyed()) {
@@ -1734,10 +2150,12 @@ function createBuiltInBrowserWindowService(args: {
     clearSelectionInternal();
     attachViewsToCurrentWindow();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
@@ -1758,6 +2176,11 @@ function createBuiltInBrowserWindowService(args: {
     }
     const leaseTarget = createNewTab ? null : existingTab ?? activeTab();
     if (leaseTarget) assertTabLeaseAvailable(leaseTarget, input);
+    await args.agentAccessController.requireUrlAccess(
+      targetUrl,
+      input,
+      "The agent requested navigation to this browser origin.",
+    );
     const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
     const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
     const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
@@ -1778,7 +2201,9 @@ function createBuiltInBrowserWindowService(args: {
     } else {
       tab = ensureActiveTab();
     }
+    reclaimTabForHumanNavigation(tab, input);
     claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
@@ -1786,15 +2211,22 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    await args.agentAccessController.requireUrlAccess(
+      normalizedUrl,
+      input,
+      "The agent requested a new tab at this browser origin.",
+    );
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -1802,6 +2234,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const tab = createTabState();
     claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
     tabs = [...tabs, tab];
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
@@ -1812,7 +2245,7 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function switchTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
@@ -1820,13 +2253,12 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
-    assertTabLeaseAvailable(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to switch to this browser tab.");
     const wasDifferentTab = tab.id !== activeTabId;
     if (wasDifferentTab) {
       await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
     }
     activeTabId = tab.id;
-    claimTabOwnerFromInput(tab, input);
     if (wasDifferentTab) {
       clearSelectionInternal();
     }
@@ -1835,7 +2267,7 @@ function createBuiltInBrowserWindowService(args: {
       requestOpenPanel({ tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function closeTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
@@ -1843,12 +2275,13 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const index = tabs.findIndex((entry) => entry.id === tabId);
     if (index < 0) throw new Error(`Browser tab not found: ${tabId}`);
-    assertTabLeaseAvailable(tabs[index]!, input);
+    await prepareAgentReadTabAsync(tabs[index]!, input, "The agent requested access to close this browser tab.");
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
       endSessionsForTab(removed.id);
       if (removed.view && win && !win.isDestroyed()) {
         try {
@@ -1865,48 +2298,62 @@ function createBuiltInBrowserWindowService(args: {
         }
       }
     }
+    if (lastSelectedTabId === tabId) {
+      clearSelectionInternal();
+    }
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
-      clearSelectionInternal();
     }
     attachViewsToCurrentWindow();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to reload this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
+    armAgentNavigationGuard(tab, input);
     tab.webContents.reload();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested backward navigation in this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
+    armAgentNavigationGuard(tab, input);
+    const wc = tab.webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested forward navigation in this browser tab.");
+    reclaimTabForHumanNavigation(tab, input);
+    armAgentNavigationGuard(tab, input);
+    const wc = tab.webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop this browser tab.");
+    const wc = tab.webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
-  async function startInspect(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before starting inspect.");
-    }
+  async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting inspect.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested DOM inspection for this browser tab.");
+    const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
     try {
@@ -1922,7 +2369,7 @@ function createBuiltInBrowserWindowService(args: {
       });
       inspecting = true;
       emitStatus();
-      return getStatus();
+      return scopeStatusForInput(getStatus(), input);
     } catch (error) {
       inspecting = false;
       if (debuggerAttachedForInspect) {
@@ -1935,11 +2382,13 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function stopInspect(): Promise<BuiltInBrowserStatus> {
+  async function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const inspectWc = inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()
       ? inspectListenerWebContents
       : null;
     const wc = inspectWc ?? currentWebContents();
+    const tab = wc ? tabForWebContents(wc) : null;
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop DOM inspection.");
     inspecting = false;
     if (wc?.debugger.isAttached()) {
       try {
@@ -1958,11 +2407,13 @@ function createBuiltInBrowserWindowService(args: {
       detachDebuggerIfOwned(wc);
     }
     emitStatus();
-    return getStatus();
+    return scopeStatusForInput(getStatus(), input);
   }
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested a screenshot of this browser tab.");
+    const wc = tab.webContents;
     try {
       return await capturePageScreenshot(wc);
     } catch (error) {
@@ -1976,6 +2427,7 @@ function createBuiltInBrowserWindowService(args: {
   async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
     const sessionEntry = sessionFromInput(input);
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before observing.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested page content from this browser tab.");
     const screenshot = await captureScreenshot({ tabId: tab.id });
     const dom = input.includeDom === false
       ? null
@@ -2002,6 +2454,7 @@ function createBuiltInBrowserWindowService(args: {
   function getTrace(input: BuiltInBrowserTraceArgs = {}): BuiltInBrowserTraceResult {
     const sessionEntry = sessionFromInput(input);
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reading browser trace.");
+    prepareAgentReadTab(tab, input);
     const limit = normalizeTraceLimit(input.limit);
     const entries = sessionEntry
       ? tab.actionTrace.filter((entry) => entry.sessionId === sessionEntry.id)
@@ -2016,7 +2469,6 @@ function createBuiltInBrowserWindowService(args: {
   async function click(input: BuiltInBrowserClickArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clicking.");
     return runTracedAgentAction(tab, "click", input, async () => {
-      prepareAgentActionTab(tab, input);
       const wc = tab.webContents;
       const { x, y } = await resolveClickTarget(tab, input);
       const button = normalizeMouseButton(input.button);
@@ -2045,7 +2497,6 @@ function createBuiltInBrowserWindowService(args: {
   async function typeText(input: BuiltInBrowserTypeTextArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before typing.");
     return runTracedAgentAction(tab, "typeText", input, async () => {
-      prepareAgentActionTab(tab, input);
       const text = stringOrNull(input.text);
       if (!text) throw new Error("Text is required.");
       await withTemporaryDebugger(tab.webContents, async () => {
@@ -2059,7 +2510,6 @@ function createBuiltInBrowserWindowService(args: {
   async function dispatchKey(input: BuiltInBrowserDispatchKeyArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before dispatching a key.");
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
-      prepareAgentActionTab(tab, input);
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
       if (hasElementTarget(input)) {
@@ -2086,7 +2536,6 @@ function createBuiltInBrowserWindowService(args: {
   async function scroll(input: BuiltInBrowserScrollArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before scrolling.");
     return runTracedAgentAction(tab, "scroll", input, async () => {
-      prepareAgentActionTab(tab, input);
       const deltaX = finiteNumber(input.deltaX) ?? 0;
       const deltaY = finiteNumber(input.deltaY) ?? 0;
       if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
@@ -2108,7 +2557,6 @@ function createBuiltInBrowserWindowService(args: {
   async function fill(input: BuiltInBrowserFillArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before filling.");
     return runTracedAgentAction(tab, "fill", input, async () => {
-      prepareAgentActionTab(tab, input);
       const text = typeof input.value === "string"
         ? input.value
         : (typeof input.text === "string" ? input.text : null);
@@ -2125,7 +2573,6 @@ function createBuiltInBrowserWindowService(args: {
   async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clearing.");
     return runTracedAgentAction(tab, "clear", input, async () => {
-      prepareAgentActionTab(tab, input);
       await focusElementTarget(tab, input, { select: true, clear: true });
       emitStatus();
       return actionResult(tab, input);
@@ -2135,7 +2582,6 @@ function createBuiltInBrowserWindowService(args: {
   async function wait(input: BuiltInBrowserWaitArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before waiting.");
     return runTracedAgentAction(tab, "wait", input, async () => {
-      prepareAgentActionTab(tab, input);
       await waitForBrowserCondition(tab, input);
       emitStatus();
       return actionResult(tab, input);
@@ -2143,7 +2589,9 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.");
+    await prepareAgentReadTabAsync(tab, input, "The agent requested element inspection in this browser tab.");
+    const wc = tab.webContents;
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
     const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
@@ -2170,6 +2618,7 @@ function createBuiltInBrowserWindowService(args: {
           });
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
+      lastSelectedTabId = tab.id;
       emit({ type: "selection", item });
       emitStatus();
       return { item };
@@ -2184,14 +2633,20 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function selectCurrent(): Promise<BuiltInBrowserSelectResult> {
+  async function selectCurrent(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserSelectResult> {
+    const tab = lastSelectedItem && lastSelectedTabId ? tabById(lastSelectedTabId) : activeTab();
+    if (lastSelectedItem && !tab) clearSelectionInternal();
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested selected page content.");
     if (lastSelectedItem) {
       emit({ type: "selection", item: lastSelectedItem });
     }
     return { item: lastSelectedItem };
   }
 
-  async function clearSelection(): Promise<{ ok: true }> {
+  async function clearSelection(input: BuiltInBrowserTabTargetArgs = {}): Promise<{ ok: true }> {
+    const tab = lastSelectedItem && lastSelectedTabId ? tabById(lastSelectedTabId) : activeTab();
+    if (lastSelectedItem && !tab) clearSelectionInternal();
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to clear browser selection.");
     if (lastSelectedItem) {
       clearSelectionInternal();
     } else {
@@ -2202,6 +2657,7 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   function dispose(): void {
+    disposed = true;
     // Clear inspecting flags up front so any in-flight debugger callbacks that fire
     // during teardown don't act on torn-down state. stopInspect() is async, but the
     // synchronous flag flip here protects the message listener (handleInspectNodeRequested
@@ -2221,8 +2677,11 @@ function createBuiltInBrowserWindowService(args: {
       winClosedListener = null;
     }
     removeBrowserDownloadListener();
+    unsubscribeNetworkObserver?.();
+    unsubscribeNetworkObserver = null;
     removeTabViewsFromWindow();
     for (const tab of tabs) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(tab.webContents);
       if (tab.ownsWebContents) {
         try {
           tab.webContents.close();
@@ -2362,6 +2821,8 @@ function createBuiltInBrowserWindowService(args: {
     backendNodeId: number,
   ): Promise<void> => {
     if (handlingInspectNode) return;
+    const ownerTab = tabForWebContents(wc);
+    if (!ownerTab) return;
     handlingInspectNode = true;
     try {
       const metadata = await readNodeMetadata(wc, backendNodeId, currentCursorPointInView());
@@ -2373,6 +2834,7 @@ function createBuiltInBrowserWindowService(args: {
       });
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
+      lastSelectedTabId = ownerTab.id;
       emit({ type: "selection", item });
     } finally {
       if (inspecting) {
@@ -2765,15 +3227,8 @@ function createBuiltInBrowserWindowService(args: {
     if (!parsed) {
       throw new Error("Browser element handle must look like obs-...:e:<index>.");
     }
-    const projectRoot = args.profile.projectRoot;
-    if (!projectRoot) {
-      throw new Error("Browser element handles require a project-scoped ADE browser profile.");
-    }
     const jsonPath = path.join(
-      projectRoot,
-      OBSERVATION_CACHE_DIR,
-      sanitizePathSegment(args.profile.key),
-      sanitizePathSegment(tab.id),
+      observationDirectory(tab),
       `${sanitizePathSegment(parsed.observationId)}.json`,
     );
     let parsedObservation: unknown;
@@ -2811,7 +3266,7 @@ function createBuiltInBrowserWindowService(args: {
     return {
       ok: true,
       observation: input.observe === false ? null : await observe({ ...input, tabId: tab.id }),
-      status: getStatus(),
+      status: scopeStatusForInput(getStatus(), input),
       trace: null,
       session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
     };
@@ -2826,20 +3281,19 @@ function createBuiltInBrowserWindowService(args: {
     diagnostics: BuiltInBrowserDiagnostics | null,
     sessionId: string | null,
   ): Promise<BuiltInBrowserObservation> => {
-    const projectRoot = args.profile.projectRoot;
-    if (!projectRoot) {
-      throw new Error("Browser observations require a project-scoped ADE browser profile.");
+    if (!observationRelativeBasePath) {
+      throw new Error("Browser observations are unavailable because no scratch root is configured.");
     }
     const keepCount = normalizeObservationKeepCount(input.keepCount);
     const id = `obs-${Date.now()}-${randomUUID()}`;
-    const dir = path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key), sanitizePathSegment(tab.id));
+    const dir = observationDirectory(tab);
     const filePath = path.join(dir, `${id}.png`);
     const elementMapPath = path.join(dir, `${id}.map.png`);
     const jsonPath = path.join(dir, `${id}.json`);
     const image = decodeDataUrl(screenshot.dataUrl);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(filePath, image.buffer);
-    const relativePath = path.relative(projectRoot, filePath);
+    const relativePath = path.relative(observationRelativeBasePath, filePath);
     const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
     let elementMap: BuiltInBrowserObservationElementMap | null = null;
     if (elementMapScreenshot) {
@@ -2847,7 +3301,7 @@ function createBuiltInBrowserWindowService(args: {
       await fs.writeFile(elementMapPath, elementMapImage.buffer);
       elementMap = {
         filePath: elementMapPath,
-        relativePath: path.relative(projectRoot, elementMapPath),
+        relativePath: path.relative(observationRelativeBasePath, elementMapPath),
         width: elementMapScreenshot.width,
         height: elementMapScreenshot.height,
         mimeType: elementMapImage.mimeType,
@@ -2882,7 +3336,7 @@ function createBuiltInBrowserWindowService(args: {
     await fs.writeFile(jsonPath, `${JSON.stringify({ ...observation, filePath, relativePath }, null, 2)}\n`, "utf8");
     observation.cleanup = await pruneObservationDirectory(dir, keepCount);
     void pruneObservationCacheRoot(
-      path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key)),
+      path.join(observationRootPath!, sanitizePathSegment(args.collection.key)),
       DEFAULT_OBSERVATION_MAX_AGE_MS,
     ).catch((error) => {
       logger()?.debug("built_in_browser.observation_stale_prune_failed", {
@@ -2893,10 +3347,48 @@ function createBuiltInBrowserWindowService(args: {
     return observation;
   };
 
+  const restorePersistedTabs = async (): Promise<void> => {
+    if (disposed) return;
+    const restored = args.restoredState;
+    if (!restored?.tabs.length) return;
+    restoringTabs = true;
+    const restoredTabs = restored.tabs.slice(0, MAX_BROWSER_TABS).map(() => createTabState());
+    tabs = restoredTabs;
+    activeTabId = restoredTabs[restored.activeIndex]?.id ?? restoredTabs[0]?.id ?? null;
+    logger()?.info("built_in_browser.tabs_restore_started", {
+      collectionKey: args.collection.key,
+      tabCount: restoredTabs.length,
+    });
+    const results = await Promise.allSettled(restoredTabs.map((tab, index) => (
+      tab.webContents.loadURL(restored.tabs[index]?.url ?? "about:blank")
+    )));
+    restoringTabs = false;
+    if (disposed) return;
+    logger()?.info("built_in_browser.tabs_restore_completed", {
+      collectionKey: args.collection.key,
+      tabCount: restoredTabs.length,
+      failedCount: results.filter((result) => result.status === "rejected").length,
+    });
+    emitStatus();
+  };
+
+  const tabRestorationPromise = args.waitForProfileMigration()
+    .then(restorePersistedTabs)
+    .catch((error) => {
+      restoringTabs = false;
+      if (disposed) return;
+      logger()?.warn("built_in_browser.tabs_restore_failed", {
+        collectionKey: args.collection.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
   return {
     attachToWindow,
     detachFromWindow,
     getStatus,
+    getStatusForInput,
+    requestOriginAccess,
     claim,
     startSession,
     listSessions,

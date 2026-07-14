@@ -2,14 +2,18 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   startJsonRpcServer,
   type JsonRpcRequest,
   type JsonRpcTransport,
 } from "../../jsonrpc";
-import { createBuiltInBrowserDesktopBridgeClient } from "./desktopBridgeClient";
+import {
+  createBuiltInBrowserDesktopBridgeClient,
+  verifyBuiltInBrowserDesktopBridgeAuth,
+} from "./desktopBridgeClient";
+import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 
 function silentLogger() {
   return {
@@ -22,6 +26,7 @@ function silentLogger() {
 
 type ServerHandle = {
   socketPath: string;
+  connectionCount: () => number;
   close: () => Promise<void>;
 };
 
@@ -34,7 +39,9 @@ async function startBridgeServer(
 ): Promise<ServerHandle> {
   const stopHandles = new Set<() => void>();
   const sockets = new Set<net.Socket>();
+  let connectionCount = 0;
   const server = net.createServer((conn) => {
+    connectionCount += 1;
     sockets.add(conn);
     const transport: JsonRpcTransport = {
       onData: (callback) => conn.on("data", callback),
@@ -58,6 +65,7 @@ async function startBridgeServer(
   });
   return {
     socketPath,
+    connectionCount: () => connectionCount,
     close: () =>
       new Promise<void>((resolve) => {
         for (const s of sockets) {
@@ -107,17 +115,67 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     const result = await client.navigate({ url: "https://example.com" });
     expect(result).toEqual({ ok: true, url: "https://example.com" });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.method).toBe("built_in_browser.navigate");
-    expect(seen[0]?.params).toEqual({ url: "https://example.com" });
+    expect(seen[0]?.params).toEqual({
+      url: "https://example.com",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
     client.dispose();
   });
 
-  it("dispatches no-arg methods without params field", async () => {
+  it("verifies an in-memory desktop bridge credential without persisting it", async () => {
+    const seen: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      seen.push(request);
+      return { authenticated: true };
+    });
+
+    await expect(verifyBuiltInBrowserDesktopBridgeAuth({
+      socketPath: server.socketPath,
+      authToken: "ephemeral-secret",
+    })).resolves.toBe(true);
+    expect(seen).toEqual([expect.objectContaining({
+      method: "built_in_browser.authenticate",
+      params: { __adeDesktopBridgeAuth: "ephemeral-secret" },
+    })]);
+  });
+
+  it("rejects missing authentication without opening or dropping a bridge connection", async () => {
+    server = await startBridgeServer(async () => ({ ok: true }));
+    let authToken: string | null = null;
+    const warn = vi.fn();
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: server.socketPath,
+      getAuthToken: () => authToken,
+      logger: { ...silentLogger(), warn },
+    });
+
+    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    expect(server.connectionCount()).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+
+    authToken = "bridge-auth";
+    await expect(client.getStatus()).resolves.toEqual({ ok: true });
+    expect(server.connectionCount()).toBe(1);
+
+    authToken = null;
+    await expect(client.getStatus()).rejects.toThrow(/authentication is unavailable/);
+    expect(server.connectionCount()).toBe(1);
+    expect(warn).not.toHaveBeenCalled();
+
+    authToken = "bridge-auth";
+    await expect(client.getStatus()).resolves.toEqual({ ok: true });
+    expect(server.connectionCount()).toBe(1);
+    client.dispose();
+  });
+
+  it("authenticates no-arg methods", async () => {
     const recorded: JsonRpcRequest[] = [];
     server = await startBridgeServer(async (request) => {
       recorded.push(request);
@@ -125,11 +183,12 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await client.getStatus();
     expect(recorded[0]?.method).toBe("built_in_browser.getStatus");
-    expect(recorded[0]?.params).toBeUndefined();
+    expect(recorded[0]?.params).toEqual({ __adeDesktopBridgeAuth: "bridge-auth" });
     client.dispose();
   });
 
@@ -141,6 +200,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       projectRoot: "/Users/ade/project-alpha",
       logger: silentLogger(),
     });
@@ -148,10 +208,47 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     await client.getStatus();
     await client.navigate({ url: "https://example.com", projectRoot: "/tmp/spoof" });
 
-    expect(recorded[0]?.params).toEqual({ projectRoot: "/Users/ade/project-alpha" });
+    expect(recorded[0]?.params).toEqual({
+      projectRoot: "/Users/ade/project-alpha",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
     expect(recorded[1]?.params).toEqual({
       url: "https://example.com",
       projectRoot: "/Users/ade/project-alpha",
+      __adeDesktopBridgeAuth: "bridge-auth",
+    });
+    client.dispose();
+  });
+
+  it("forwards the runtime-bound actor capability while erasing caller routing", async () => {
+    const recorded: JsonRpcRequest[] = [];
+    server = await startBridgeServer(async (request) => {
+      recorded.push(request);
+      return { ok: true };
+    });
+    const client = createBuiltInBrowserDesktopBridgeClient({
+      socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
+      projectRoot: "/Users/ade/project-alpha",
+      logger: silentLogger(),
+    });
+
+    const runtimeScopedNavigate = {
+      url: "https://personal.example.test",
+      chatSessionId: "chat-personal",
+      projectRoot: "/tmp/spoofed-project",
+      tabCollection: "personal" as const,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
+    };
+    await client.navigate(runtimeScopedNavigate);
+
+    expect(recorded[0]?.params).toEqual({
+      url: "https://personal.example.test",
+      chatSessionId: "chat-personal",
+      projectRoot: "/Users/ade/project-alpha",
+      tabCollection: undefined,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
+      __adeDesktopBridgeAuth: "bridge-auth",
     });
     client.dispose();
   });
@@ -163,6 +260,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     );
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: missingPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(
@@ -177,6 +275,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/Browser pane is offline/);
@@ -192,6 +291,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     });
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath: server.socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(/temporary/);
@@ -210,6 +310,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     server = await startBridgeServer(async () => ({ generation }), socketPath);
     const client = createBuiltInBrowserDesktopBridgeClient({
       socketPath,
+      getAuthToken: () => "bridge-auth",
       logger: silentLogger(),
     });
 

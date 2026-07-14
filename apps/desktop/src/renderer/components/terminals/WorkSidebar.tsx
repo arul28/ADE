@@ -164,8 +164,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function browserEventProjectRoot(value: unknown): string | null | undefined {
   if (!isRecord(value)) return undefined;
-  if ("profileProjectRoot" in value) {
-    const root = value.profileProjectRoot;
+  if ("collectionProjectRoot" in value) {
+    const root = value.collectionProjectRoot;
     return typeof root === "string" && root.trim().length > 0 ? root : null;
   }
   return browserEventProjectRoot(value.status);

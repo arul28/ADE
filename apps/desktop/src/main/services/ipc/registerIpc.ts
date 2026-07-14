@@ -97,6 +97,7 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
@@ -2469,21 +2470,31 @@ export function registerIpc({
     return undefined;
   }
 
+  function optionalBuiltInBrowserNumber(
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    options: { min?: number; max?: number } = {},
+  ): number | undefined {
+    if (record[field] == null) return undefined;
+    return builtInBrowserNumber(record, field, channel, options);
+  }
+
   const parseBuiltInBrowserProjectScopeArgs = (
     record: Record<string, unknown>,
     channel: string,
   ): BuiltInBrowserProjectScopeArgs => {
     const projectRoot = optionalBuiltInBrowserString(record, "projectRoot", channel, 4096);
-    const profileScope = optionalBuiltInBrowserString(record, "profileScope", channel, 16);
-    if (profileScope && profileScope !== "global") {
-      return invalidBuiltInBrowserArg(channel, "profileScope is invalid");
+    const tabCollection = optionalBuiltInBrowserString(record, "tabCollection", channel, 16);
+    if (tabCollection && tabCollection !== "personal") {
+      return invalidBuiltInBrowserArg(channel, "tabCollection is invalid");
     }
-    if (profileScope === "global" && projectRoot) {
-      return invalidBuiltInBrowserArg(channel, "profileScope and projectRoot cannot both be set");
+    if (tabCollection === "personal" && projectRoot) {
+      return invalidBuiltInBrowserArg(channel, "tabCollection and projectRoot cannot both be set");
     }
     return {
       ...(projectRoot ? { projectRoot } : {}),
-      ...(profileScope === "global" ? { profileScope } : {}),
+      ...(tabCollection === "personal" ? { tabCollection } : {}),
     };
   };
 
@@ -2493,27 +2504,52 @@ export function registerIpc({
   ): BuiltInBrowserProjectScopeArgs =>
     parseBuiltInBrowserProjectScopeArgs(builtInBrowserRecord(value, channel, false), channel);
 
+  const parseBuiltInBrowserClearPermissionsArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserClearPermissionsArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const origin = optionalBuiltInBrowserString(record, "origin", channel, 2048);
+    const permission = optionalBuiltInBrowserString(record, "permission", channel, 128);
+    return {
+      ...(origin ? { origin } : {}),
+      ...(permission ? { permission } : {}),
+    };
+  };
+
   const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
     const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
+    const force = optionalBoolean(record.force);
+    const leaseTtlMs = optionalBuiltInBrowserNumber(record, "leaseTtlMs", channel, {
+      min: 1_000,
+      max: 60 * 60_000,
+    });
     return {
       ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
+      ...(force !== undefined ? { force } : {}),
+      ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
+    };
+  };
+
+  const parseBuiltInBrowserTabTargetRecord = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): BuiltInBrowserTabTargetArgs => {
+    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
+    return {
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+      ...(sessionId ? { sessionId } : {}),
     };
   };
 
   const parseBuiltInBrowserTabTargetArgs = (value: unknown, channel: string): BuiltInBrowserTabTargetArgs => {
     const record = builtInBrowserRecord(value, channel, false);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
-    return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(sessionId ? { sessionId } : {}),
-    };
+    return parseBuiltInBrowserTabTargetRecord(record, channel);
   };
 
   const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
@@ -2541,13 +2577,9 @@ export function registerIpc({
 
   const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
     const record = builtInBrowserRecord(value, channel, true);
-    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    const sessionId = optionalBuiltInBrowserString(record, "sessionId", channel, 128);
     const includeScreenshot = record.includeScreenshot === false ? false : undefined;
     return {
-      ...parseBuiltInBrowserProjectScopeArgs(record, channel),
-      ...(tabId ? { tabId } : {}),
-      ...(sessionId ? { sessionId } : {}),
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       includeScreenshot,
@@ -7384,6 +7416,31 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserRequestOriginAccess, { windowMs: 10_000, max: 10 });
+    return ensureBuiltInBrowser().requestOriginAccess(
+      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserRequestOriginAccess),
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGetProfileDiagnostics, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetProfileDiagnostics, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().getProfileDiagnostics();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserListPermissions, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserListPermissions, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().listPermissions();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserClearPermissions, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearPermissions, { windowMs: 10_000, max: 10 });
+    return ensureBuiltInBrowser().clearPermissions(
+      parseBuiltInBrowserClearPermissionsArgs(arg, IPC.builtInBrowserClearPermissions),
+    );
   });
 
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {

@@ -13,7 +13,7 @@ function shouldConfigureTouchIdWebAuthn(): boolean {
   const value = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN?.trim().toLowerCase();
   if (value === "0" || value === "false") return false;
   if (value === "1" || value === "true") return true;
-  return false;
+  return app.isPackaged;
 }
 
 export function configureBuiltInBrowserWebAuthn(args: {
@@ -39,6 +39,7 @@ export function configureBuiltInBrowserWebAuthn(args: {
       });
       logger()?.info("built_in_browser.webauthn_configured", {
         keychainAccessGroup: BUILT_IN_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP,
+        credentialScope: "device_bound_global_browser_session",
       });
     } catch (error) {
       logger()?.warn("built_in_browser.webauthn_configure_failed", {
@@ -48,7 +49,7 @@ export function configureBuiltInBrowserWebAuthn(args: {
     }
   } else if (process.platform === "darwin") {
     logger()?.debug("built_in_browser.webauthn_touchid_disabled", {
-      reason: "missing_provisioned_keychain_access_group",
+      reason: app.isPackaged ? "environment_override" : "unpackaged_build_without_entitlement",
       keychainAccessGroup: BUILT_IN_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP,
     });
   }

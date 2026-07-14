@@ -163,9 +163,17 @@ const fakes = vi.hoisted(() => {
   const requestErrorHandlers: RequestFinishedHandler[] = [];
   const sessionEventHandlers: Array<{ session: FakeSession; event: string; handler: (...args: unknown[]) => void }> = [];
   const appGetPath = vi.fn((name: string): string => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
+  const appIsReady = vi.fn(() => false);
+  const permissionPrompt = vi.fn(async () => ({ response: 1, checkboxChecked: false }));
   let permissionCheckHandler: PermissionCheckHandler | null = null;
   let permissionRequestHandler: PermissionRequestHandler | null = null;
   type FakeSession = {
+    cookies: {
+      flushStore: () => Promise<void>;
+      get: () => Promise<Array<{ domain?: string; expirationDate?: number }>>;
+    };
+    flushStorageData: () => void;
+    getCacheSize: () => Promise<number>;
     webRequest: {
       onBeforeSendHeaders: (handler: unknown) => void;
       onBeforeRequest: (handler: unknown) => void;
@@ -178,11 +186,21 @@ const fakes = vi.hoisted(() => {
     setPermissionCheckHandler: (handler: unknown) => void;
     setPermissionRequestHandler: (handler: unknown) => void;
   };
+  const flushCookieStore = vi.fn(async (): Promise<void> => undefined);
+  const getCookies = vi.fn(async (): Promise<Array<{ domain?: string; expirationDate?: number }>> => []);
+  const getCacheSize = vi.fn(async (): Promise<number> => 0);
+  const flushStorageData = vi.fn((): void => undefined);
   const sessionsByPartition = new Map<string, FakeSession>();
   const sessionForPartition = (partition: string): FakeSession => {
     const existing = sessionsByPartition.get(partition);
     if (existing) return existing;
     const nextSession: FakeSession = {
+      cookies: {
+        flushStore: flushCookieStore,
+        get: getCookies,
+      },
+      flushStorageData,
+      getCacheSize,
       webRequest: {
         onBeforeSendHeaders: (handler: unknown) => {
           beforeSendHeadersHandlers.push(handler as Parameters<typeof beforeSendHeadersHandlers.push>[0]);
@@ -320,19 +338,26 @@ const fakes = vi.hoisted(() => {
     clearSessionEventHandlers: () => {
       sessionEventHandlers.length = 0;
     },
+    flushCookieStore,
+    getCookies,
+    getCacheSize,
+    flushStorageData,
     sessionEventHandlers,
     appGetPath,
+    appIsReady,
     dispatchWillDownload: (
       item: FakeDownloadItem,
       downloadWebContents: FakeWebContents | null = webContentsInstances[0] ?? null,
     ): { preventDefault: ReturnType<typeof vi.fn> } => {
       const event = { preventDefault: vi.fn() };
       const downloadSession = downloadWebContents?.session as FakeSession | null | undefined;
-      const handler = sessionEventHandlers.findLast((entry) => (
+      const handlers = sessionEventHandlers.filter((entry) => (
         entry.session === downloadSession
         && entry.event === "will-download"
-      ))?.handler;
-      handler?.(event, item, downloadWebContents);
+      ));
+      for (const { handler } of handlers) {
+        handler(event, item, downloadWebContents);
+      }
       return event;
     },
     setPermissionCheckHandler: (handler: PermissionCheckHandler | null) => {
@@ -356,30 +381,30 @@ const fakes = vi.hoisted(() => {
     dispatchPermissionRequest: (
       permission: string,
       details: { requestingUrl: string; isMainFrame?: boolean; requestingOrigin?: string },
-    ): boolean | null => {
-      let granted: boolean | null = null;
+    ): Promise<boolean | null> => {
       const wc = webContentsInstances[0];
-      if (!wc || !permissionRequestHandler) return null;
-      permissionRequestHandler(wc, permission, (nextGranted) => {
-        granted = nextGranted;
-      }, {
-        requestingUrl: details.requestingUrl,
-        isMainFrame: details.isMainFrame ?? true,
-        requestingOrigin: details.requestingOrigin,
+      if (!wc || !permissionRequestHandler) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        permissionRequestHandler?.(wc, permission, resolve, {
+          requestingUrl: details.requestingUrl,
+          isMainFrame: details.isMainFrame ?? true,
+          requestingOrigin: details.requestingOrigin,
+        });
       });
-      return granted;
     },
     clearPermissionHandlers: () => {
       permissionCheckHandler = null;
       permissionRequestHandler = null;
     },
     sessionForPartition,
+    permissionPrompt,
   };
 });
 
 vi.mock("electron", () => ({
   WebContentsView: fakes.WebContentsView,
-  app: { getPath: fakes.appGetPath },
+  app: { getPath: fakes.appGetPath, isReady: fakes.appIsReady },
+  dialog: { showMessageBox: fakes.permissionPrompt },
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
   screen: fakes.screen,
   session: {
@@ -405,6 +430,17 @@ function captureStatusEvents(): {
       events.push(payload);
     },
   };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
 }
 
 let fakeWindowId = 1;
@@ -448,8 +484,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.clearBeforeSendHeadersHandlers();
     fakes.clearSessionEventHandlers();
     fakes.clearPermissionHandlers();
+    fakes.flushCookieStore.mockClear();
+    fakes.getCookies.mockReset();
+    fakes.getCookies.mockResolvedValue([]);
+    fakes.getCacheSize.mockReset();
+    fakes.getCacheSize.mockResolvedValue(0);
+    fakes.flushStorageData.mockClear();
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
+    fakes.appIsReady.mockReset();
+    fakes.appIsReady.mockReturnValue(false);
+    fakes.permissionPrompt.mockClear();
+    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   });
 
@@ -457,11 +503,73 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const status = service.getStatus();
     expect(status.partition).toBe("persist:ade-browser");
+    expect(status.storageProfileKey).toBe("global");
     expect(status.tabs).toEqual([]);
     expect(status.activeTabId).toBeNull();
     expect(status.attached).toBe(false);
     expect(status.visible).toBe(false);
     expect(status.bounds).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  it("keeps personal and window fallback collections independent before a window attaches", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://window.example.test", activate: true });
+    await service.createTab({
+      tabCollection: "personal",
+      url: "https://personal.example.test",
+      activate: true,
+    });
+
+    expect(service.getStatus().url).toBe("https://window.example.test/");
+    expect(service.getStatus({ tabCollection: "personal" }).url).toBe("https://personal.example.test/");
+    expect(service.getStatus().partition).toBe(service.getStatus({ tabCollection: "personal" }).partition);
+  });
+
+  it("reports non-secret global profile diagnostics", async () => {
+    fakes.getCookies.mockResolvedValue([
+      { domain: ".github.com", expirationDate: 1_900_000_000 },
+      { domain: "github.com" },
+      { domain: ".console.aws.amazon.com", expirationDate: 1_900_000_000 },
+    ]);
+    fakes.getCacheSize.mockResolvedValue(12_345);
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await expect(service.getProfileDiagnostics()).resolves.toEqual({
+      partition: "persist:ade-browser",
+      storageProfileKey: "global",
+      persistentProfile: true,
+      cookieCount: 3,
+      persistentCookieCount: 2,
+      sessionCookieCount: 1,
+      cookieDomains: ["console.aws.amazon.com", "github.com"],
+      cacheSizeBytes: 12_345,
+      persistedPermissionDecisionCount: 0,
+      tabRestorationEnabled: false,
+      lastStorageFlushAt: null,
+    });
+
+    await service.flushStorage();
+    expect((await service.getProfileDiagnostics()).lastStorageFlushAt).toEqual(expect.any(String));
+  });
+
+  it("awaits cookie and DOM storage flushes for the global profile", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.flushStorage();
+
+    expect(fakes.flushCookieStore).toHaveBeenCalledTimes(1);
+    expect(fakes.flushStorageData).toHaveBeenCalledTimes(1);
+    expect(fakes.partitionCalls).toEqual(["persist:ade-browser"]);
+  });
+
+  it("still attempts the DOM storage flush when the cookie flush fails", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    fakes.flushCookieStore.mockRejectedValueOnce(new Error("cookie flush failed"));
+
+    await expect(service.flushStorage()).rejects.toThrow("Failed to flush ADE browser storage");
+
+    expect(fakes.flushCookieStore).toHaveBeenCalledTimes(1);
+    expect(fakes.flushStorageData).toHaveBeenCalledTimes(1);
   });
 
   it("setBounds short-circuits and does not emit when args are unchanged", async () => {
@@ -602,7 +710,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus(browserWinB).url).toBe("https://b-2.example.test/");
   });
 
-  it("uses one persistent browser profile partition per project root", async () => {
+  it("uses one global persistent profile while keeping project and window tab collections independent", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -625,12 +733,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const partitionA = service.getStatus(browserWinA).partition;
     const partitionB = service.getStatus(browserWinB).partition;
     const partitionC = service.getStatus(browserWinC).partition;
-    expect(partitionA).toMatch(/^persist:ade-browser-project-/);
+    expect(partitionA).toBe("persist:ade-browser");
     expect(partitionB).toBe(partitionA);
-    expect(partitionC).toMatch(/^persist:ade-browser-project-/);
-    expect(partitionC).not.toBe(partitionA);
-    expect(service.getStatus(browserWinA).profileProjectRoot).toBe("/Users/ade/project-alpha");
-    expect(service.getStatus(browserWinC).profileProjectRoot).toBe("/Users/ade/project-beta");
+    expect(partitionC).toBe(partitionA);
+    expect(service.getStatus(browserWinA).collectionProjectRoot).toBe("/Users/ade/project-alpha");
+    expect(service.getStatus(browserWinC).collectionProjectRoot).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWinA).collectionKey).toBe(service.getStatus(browserWinB).collectionKey);
+    expect(service.getStatus(browserWinC).collectionKey).not.toBe(service.getStatus(browserWinA).collectionKey);
+    expect(service.getStatus(browserWinA).persistentProfile).toBe(true);
 
     const viewPartitions = fakes.webContentsViewInstances.map((view) => (
       view.webPreferences as { partition?: string } | undefined
@@ -639,7 +749,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.partitionCalls).toEqual([partitionA, partitionA, partitionC]);
   });
 
-  it("keeps an explicitly global browser profile isolated from the sender window project", async () => {
+  it("keeps personal tabs separate from project tabs without partitioning authentication storage", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -652,25 +762,188 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.attachToWindow(browserWin);
     await service.createTab({ url: "https://project.example.test", activate: true }, browserWin);
     await service.createTab({
-      profileScope: "global",
+      tabCollection: "personal",
       url: "https://personal.example.test",
       activate: true,
     }, browserWin);
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin)).toMatchObject({
-      profileProjectRoot: "/Users/ade/project-alpha",
+      partition: "persist:ade-browser",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       url: "https://project.example.test/",
     });
-    expect(service.getStatus({ profileScope: "global" }, browserWin)).toMatchObject({
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin)).toMatchObject({
       partition: "persist:ade-browser",
-      profileProjectRoot: null,
+      storageProfileKey: "global",
+      collectionKey: "personal",
+      collectionProjectRoot: null,
       url: "https://personal.example.test/",
     });
-    expect(service.getStatus({ profileScope: "global" }, browserWin).partition)
-      .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).partition);
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin).partition)
+      .toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).partition);
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin).collectionKey)
+      .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).collectionKey);
   });
 
-  it("rejects attached webviews from another project browser profile", async () => {
+  it("restores project tab URLs and the active tab without restoring agent leases", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-restore-"));
+    const stateFilePath = path.join(tempDir, "browser-state.json");
+    try {
+      fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
+      const projectRootByWindow = new Map<number, string>();
+      const win = fakeBrowserWindow();
+      projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+      const browserWin = win as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const firstService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      await firstService.createTab({
+        url: "https://github.com/login",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      }, browserWin);
+      await firstService.createTab({ url: "https://console.aws.amazon.com/", activate: true }, browserWin);
+      await firstService.flushStorage();
+      firstService.dispose();
+
+      const restoredWin = fakeBrowserWindow();
+      projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
+      const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const restoredService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      restoredService.attachToWindow(restoredBrowserWin);
+      await vi.waitFor(() => {
+        expect(restoredService.getStatus(restoredBrowserWin).tabs.map((tab) => tab.url)).toEqual([
+          "https://github.com/login",
+          "https://console.aws.amazon.com/",
+        ]);
+      });
+      const status = restoredService.getStatus(restoredBrowserWin);
+      expect(status.url).toBe("https://console.aws.amazon.com/");
+      expect(status.tabs.every((tab) => (
+        tab.ownerLaneId === null
+        && tab.ownerChatSessionId === null
+        && tab.ownerLeaseExpiresAt === null
+      ))).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for tab restoration before visible bounds can create a browser view", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-restore-bounds-"));
+    const stateFilePath = path.join(tempDir, "browser-state.json");
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : tempDir
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const firstWin = fakeBrowserWindow();
+      projectRootByWindow.set(firstWin.id, "/Users/ade/project-alpha");
+      const firstBrowserWin = firstWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const firstService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      await firstService.createTab({ url: "https://restore-race.test", activate: true }, firstBrowserWin);
+      await firstService.flushStorage();
+      firstService.dispose();
+
+      fakes.clearWebContentsInstances();
+      fakes.getCookies.mockClear();
+      const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
+      fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      const restoredWin = fakeBrowserWindow();
+      projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
+      const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const restoredService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      restoredService.attachToWindow(restoredBrowserWin);
+      let boundsSettled = false;
+      const boundsPromise = restoredService.setBounds({
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+        visible: true,
+      }, restoredBrowserWin).then((status) => {
+        boundsSettled = true;
+        return status;
+      });
+
+      await vi.waitFor(() => expect(fakes.getCookies).toHaveBeenCalled());
+      expect(boundsSettled).toBe(false);
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+
+      migrationCookies.resolve([]);
+      const status = await boundsPromise;
+      expect(status.tabs.map((tab) => tab.url)).toEqual(["https://restore-race.test/"]);
+      expect(fakes.webContentsViewInstances).toHaveLength(1);
+      restoredService.dispose();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resurrect restored browser views after the service is disposed", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-disposed-restore-"));
+    const stateFilePath = path.join(tempDir, "browser-state.json");
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : tempDir
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const firstWin = fakeBrowserWindow();
+      projectRootByWindow.set(firstWin.id, "/Users/ade/project-alpha");
+      const firstBrowserWin = firstWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const firstService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      await firstService.createTab({ url: "https://disposed-restore.test", activate: true }, firstBrowserWin);
+      await firstService.flushStorage();
+      firstService.dispose();
+
+      fakes.clearWebContentsInstances();
+      fakes.getCookies.mockClear();
+      const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
+      fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      const restoredWin = fakeBrowserWindow();
+      projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
+      const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const restoredService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      restoredService.attachToWindow(restoredBrowserWin);
+      const boundsPromise = restoredService.setBounds({
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+        visible: true,
+      }, restoredBrowserWin);
+
+      await vi.waitFor(() => expect(fakes.getCookies).toHaveBeenCalled());
+      restoredService.dispose();
+      migrationCookies.resolve([]);
+
+      await expect(boundsPromise).resolves.toMatchObject({ tabs: [], activeTabId: null });
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects attached webviews from outside the global browser profile", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -688,7 +961,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     if (!tabId) throw new Error("Expected an active browser tab");
 
     const foreignView = new fakes.WebContentsView({
-      webPreferences: { partition: "persist:ade-browser-project-ffffffffffffffff" },
+      webPreferences: { partition: "persist:foreign-browser" },
     });
     await expect(service.attachWebview({
       tabId,
@@ -792,9 +1065,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
 
     expect(projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
-    expect(service.getStatus(browserWin).profileProjectRoot).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWin).collectionProjectRoot).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
-    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).profileProjectRoot).toBe("/Users/ade/project-alpha");
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).collectionProjectRoot).toBe("/Users/ade/project-alpha");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha.example.test/");
   });
 
@@ -828,7 +1101,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-alpha",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       visible: true,
     });
     expect(win.contentView.children).toHaveLength(1);
@@ -845,7 +1118,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-beta",
+      collectionProjectRoot: "/Users/ade/project-beta",
       visible: true,
     });
     expect(win.contentView.children).toHaveLength(1);
@@ -943,12 +1216,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-alpha",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       visible: true,
     });
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-beta",
+      collectionProjectRoot: "/Users/ade/project-beta",
       visible: true,
     });
     expect(winA.contentView.children).toHaveLength(1);
@@ -956,7 +1229,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(winA.contentView.children[0]).not.toBe(winB.contentView.children[0]);
   });
 
-  it("re-resolves the active window profile for bridge-style calls after project switches", async () => {
+  it("re-resolves the active window tab collection for bridge-style calls after project switches", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -966,14 +1239,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
 
     service.attachToWindow(browserWin);
-    expect(service.getStatus().profileKey).toBe("global");
+    expect(service.getStatus().collectionKey).toBe("window");
 
     projectRootByWindow.set(win.id, "/Users/ade/project-after-startup");
     await service.createTab({ url: "https://example.test", activate: true });
 
     const status = service.getStatus();
-    expect(status.profileProjectRoot).toBe("/Users/ade/project-after-startup");
-    expect(status.partition).toMatch(/^persist:ade-browser-project-/);
+    expect(status.collectionProjectRoot).toBe("/Users/ade/project-after-startup");
+    expect(status.partition).toBe("persist:ade-browser");
     expect(status.tabs).toHaveLength(1);
     expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
       partition: status.partition,
@@ -1108,34 +1381,77 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(fakes.dispatchPermissionCheck("storage-access", "https://accounts.google.com")).toBe(true);
     expect(fakes.dispatchPermissionCheck("top-level-storage-access", "https://accounts.google.com")).toBe(true);
-    expect(fakes.dispatchPermissionCheck("hid", "https://accounts.google.com")).toBe(true);
-    expect(fakes.dispatchPermissionCheck("usb", "https://accounts.google.com")).toBe(true);
-    expect(fakes.dispatchPermissionCheck("serial", "https://accounts.google.com")).toBe(true);
+    expect(fakes.dispatchPermissionCheck("hid", "https://accounts.google.com")).toBe(false);
+    expect(fakes.dispatchPermissionCheck("usb", "https://accounts.google.com")).toBe(false);
+    expect(fakes.dispatchPermissionCheck("serial", "https://accounts.google.com")).toBe(false);
 
     expect(fakes.dispatchPermissionCheck("storage-access", "https://example.test")).toBe(false);
     expect(fakes.dispatchPermissionCheck("media", "https://accounts.google.com")).toBe(false);
 
-    expect(fakes.dispatchPermissionRequest("storage-access", {
+    await expect(fakes.dispatchPermissionRequest("storage-access", {
       requestingUrl: "https://accounts.google.com/v3/signin/identifier",
-    })).toBe(true);
-    expect(fakes.dispatchPermissionRequest("top-level-storage-access", {
+    })).resolves.toBe(true);
+    await expect(fakes.dispatchPermissionRequest("top-level-storage-access", {
       requestingUrl: "https://accounts.google.com/v3/signin/identifier",
-    })).toBe(true);
-    expect(fakes.dispatchPermissionRequest("media", {
+    })).resolves.toBe(true);
+    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+    await expect(fakes.dispatchPermissionRequest("media", {
       requestingUrl: "https://accounts.google.com/v3/signin/identifier",
-    })).toBe(false);
-    expect(fakes.dispatchPermissionRequest("storage-access", {
+    })).resolves.toBe(false);
+    await expect(fakes.dispatchPermissionRequest("storage-access", {
       requestingUrl: "https://example.test/login",
-    })).toBe(false);
+    })).resolves.toBe(false);
+  });
+
+  it("lists and clears remembered browser permissions through the service", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-permissions-service-"));
+    const permissionFilePath = path.join(tempDir, "permissions.json");
+    try {
+      fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: true });
+      const service = createBuiltInBrowserService({
+        onEvent: collector.onEvent,
+        permissionFilePath,
+      });
+      await service.createTab({ url: "https://example.test", activate: true });
+      await expect(fakes.dispatchPermissionRequest("geolocation", {
+        requestingUrl: "https://example.test/maps",
+      })).resolves.toBe(true);
+
+      expect(service.listPermissions()).toMatchObject({
+        permissions: [{
+          permission: "geolocation",
+          origin: "https://example.test",
+          decision: "allow",
+        }],
+      });
+      await expect(service.clearPermissions({ origin: "https://example.test" })).resolves.toEqual({
+        removed: 1,
+        permissions: [],
+      });
+      await expect(service.clearPermissions({ origin: "not a URL" })).rejects.toThrow(/Invalid permission origin/);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("revokes managed permission status when a browser tab closes", async () => {
+    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: true });
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const tabId = service.getStatus().activeTabId;
+    await service.closeTab({ tabId: tabId ?? "" });
+
+    await expect(fakes.dispatchPermissionRequest("notifications", {
+      requestingUrl: "https://example.test/alerts",
+    })).resolves.toBe(false);
+    expect(fakes.permissionPrompt).not.toHaveBeenCalled();
   });
 
   it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({
-      url: "https://example.test",
+      url: "http://localhost:5173",
       activate: true,
-      laneId: "lane-1",
-      chatSessionId: "chat-1",
     });
     const firstTabId = service.getStatus().activeTabId;
     const firstWc = fakes.webContentsInstances[0];
@@ -1167,8 +1483,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus().activeTabId).not.toBe(firstTabId);
     expect(service.getStatus().tabs.at(-1)).toMatchObject({
       url: "https://accounts.google.com/gsi/select",
-      ownerLaneId: "lane-1",
-      ownerChatSessionId: "chat-1",
+      ownerLaneId: null,
+      ownerChatSessionId: null,
     });
     const popupWebPreferences = fakes.webContentsViewInstances.at(-1)?.webPreferences as Record<string, unknown>;
     expect(popupWebPreferences).toMatchObject({
@@ -1189,6 +1505,175 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       url: "https://accounts.google.com/gsi/select",
       tabId: service.getStatus().activeTabId,
     });
+  });
+
+  it("blocks agent-triggered high-risk popups until the origin is human-approved", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://example.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    const response = fakes.webContentsInstances[0]?.openWindow(
+      "https://accounts.google.com/gsi/select",
+    );
+
+    expect(response?.action).toBe("deny");
+    expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("Navigate to that origin explicitly"),
+    });
+  });
+
+  it("requires chat-scoped human approval before agent navigation uses a high-risk origin", async () => {
+    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.navigate({
+      url: "https://github.com/settings/tokens",
+      newTab: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+    expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1);
+    expect(service.getStatus({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).url)
+      .toBe("https://github.com/settings/tokens");
+    expect(() => service.getStatus({ tabId, laneId: "lane-2", chatSessionId: "chat-2" }))
+      .toThrow(/leased by chat chat-1/);
+  });
+
+  it("blocks a high-risk redirect triggered by an agent page action", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "http://localhost:5173",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+    const tabId = service.getStatus().activeTabId ?? "";
+    await service.click({
+      tabId,
+      x: 10,
+      y: 20,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      observe: false,
+    });
+
+    const wc = fakes.webContentsInstances[0];
+    const loadCountBeforeRedirect = wc?.loadURLCalls.length ?? 0;
+    const redirectEvent = { preventDefault: vi.fn() };
+    wc?.emit("will-redirect", redirectEvent, "https://console.aws.amazon.com/");
+    expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    expect(wc?.getURL()).toBe("http://localhost:5173/");
+    expect(wc?.loadURLCalls).toHaveLength(loadCountBeforeRedirect);
+    await vi.waitFor(() => expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("Blocked agent-triggered redirect"),
+    }));
+  });
+
+  it("keeps delayed agent redirects behind the human approval boundary", async () => {
+    const realDateNow = Date.now.bind(Date);
+    let dateNow: { mockRestore(): void } | null = null;
+    try {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({
+        url: "http://localhost:5173",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      });
+      fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+      const tabId = service.getStatus().activeTabId ?? "";
+      await service.click({
+        tabId,
+        x: 10,
+        y: 20,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        observe: false,
+      });
+      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
+
+      const redirectEvent = { preventDefault: vi.fn() };
+      fakes.webContentsInstances[0]?.emit(
+        "will-redirect",
+        redirectEvent,
+        "https://console.aws.amazon.com/",
+      );
+
+      expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    } finally {
+      dateNow?.mockRestore();
+    }
+  });
+
+  it("keeps delayed agent popups behind the human approval boundary", async () => {
+    const realDateNow = Date.now.bind(Date);
+    let dateNow: { mockRestore(): void } | null = null;
+    try {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({
+        url: "http://localhost:5173",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      });
+      const tabId = service.getStatus().activeTabId ?? "";
+      await service.click({
+        tabId,
+        x: 10,
+        y: 20,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        observe: false,
+      });
+      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
+
+      const response = fakes.webContentsInstances[0]?.openWindow(
+        "https://accounts.google.com/gsi/select",
+      );
+
+      expect(response?.action).toBe("deny");
+    } finally {
+      dateNow?.mockRestore();
+    }
+  });
+
+  it("clears the persistent agent navigation guard on explicit human navigation", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const agentStatus = await service.createTab({
+      url: "http://localhost:5173",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = agentStatus.activeTabId ?? "";
+    await service.click({
+      tabId,
+      x: 10,
+      y: 20,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      observe: false,
+    });
+
+    await service.navigate({ tabId, url: "http://localhost:5174/human" });
+
+    expect(service.getStatus()).toMatchObject({
+      ownerLaneId: null,
+      ownerChatSessionId: null,
+      ownerLeaseExpiresAt: null,
+    });
+    const popup = fakes.webContentsInstances[0]?.openWindow("https://example.test/human-popup");
+    expect(popup?.action).toBe("allow");
   });
 
   it("assigns ADE browser downloads to the user's Downloads folder", async () => {
@@ -1292,7 +1777,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     doneHandlers[2]?.[0]?.({}, "completed");
   });
 
-  it("reserves in-flight browser download filenames across project browser profiles", async () => {
+  it("reserves in-flight browser download filenames across project tab collections", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
@@ -1501,7 +1986,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
 
     await service.createTab({
-      url: "https://first.test",
+      url: "http://localhost:4201/first",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
@@ -1509,7 +1994,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const firstTabId = service.getStatus().activeTabId;
 
     await service.createTab({
-      url: "https://second.test",
+      url: "http://localhost:4202/second",
       activate: true,
       laneId: "lane-2",
       chatSessionId: "chat-2",
@@ -1574,7 +2059,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: true,
     });
 
-    expect(status.tabs).toHaveLength(2);
+    expect(status.tabs).toHaveLength(1);
     expect(status.activeTabId).toBe(firstTabId);
     expect(status.url).toBe("https://reused.test/");
     expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
@@ -1582,11 +2067,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
-    expect(status.tabs.find((tab) => tab.id === secondTabId)).toMatchObject({
-      url: "https://second.test/",
-      ownerLaneId: "lane-2",
-      ownerChatSessionId: "chat-2",
-    });
+    expect(status.tabs.find((tab) => tab.id === secondTabId)).toBeUndefined();
 
     status = await service.navigate({
       url: "https://fresh.test",
@@ -1595,13 +2076,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(3);
+    expect(status.tabs).toHaveLength(1);
     expect(status.url).toBe("https://fresh.test/");
     expect(status.tabs.at(-1)).toMatchObject({
       url: "https://fresh.test/",
       ownerLaneId: "lane-3",
       ownerChatSessionId: "chat-3",
     });
+    expect(service.getStatus().tabs).toHaveLength(3);
   });
 
   it("does not reuse a same-lane tab owned by another chat when chat identity is missing", async () => {
@@ -1621,9 +2103,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(2);
+    expect(status.tabs).toHaveLength(1);
     expect(status.activeTabId).not.toBe(firstTabId);
-    expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
+    expect(status.tabs.find((tab) => tab.id === firstTabId)).toBeUndefined();
+    expect(service.getStatus().tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
       url: "https://chat-owned.test/",
       ownerChatSessionId: "chat-1",
     });
@@ -1662,8 +2145,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: false,
     });
 
-    expect(status.tabs).toHaveLength(2);
-    expect(status.activeTabId).toBe(visibleTabId);
+    expect(status.tabs).toHaveLength(1);
+    expect(status.activeTabId).toBeNull();
     expect(status.tabs.find((tab) => tab.id === ownedTabId)).toMatchObject({
       url: "https://background.test/",
       ownerLaneId: "lane-1",
@@ -1768,6 +2251,48 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("stores default action observations for personal tabs in machine-local scratch space", async () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-personal-observe-"));
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : userDataPath
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const service = createBuiltInBrowserService({
+        onEvent: collector.onEvent,
+        getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      });
+      const win = fakeBrowserWindow();
+      projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+      const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+      await service.createTab({
+        tabCollection: "personal",
+        url: "http://localhost:5173/personal",
+        activate: true,
+        chatSessionId: "chat-personal",
+      }, browserWin);
+
+      const result = await service.click({
+        tabCollection: "personal",
+        x: 10,
+        y: 20,
+        waitAfterMs: 0,
+        chatSessionId: "chat-personal",
+      }, browserWin);
+
+      const observation = result.observation;
+      expect(observation).not.toBeNull();
+      expect(observation?.filePath.startsWith(path.join(userDataPath, "browser-observations", "personal")))
+        .toBe(true);
+      expect(observation?.relativePath).toMatch(/^personal\//);
+      expect(fs.existsSync(observation?.filePath ?? "")).toBe(true);
+      service.dispose();
+    } finally {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
     }
   });
 
@@ -2046,6 +2571,47 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("routes global-session network diagnostics to the owning window collection", async () => {
+    const projectA = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-network-a-"));
+    const projectB = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-network-b-"));
+    try {
+      const projectRootByWindow = new Map<number, string>();
+      const service = createBuiltInBrowserService({
+        onEvent: collector.onEvent,
+        getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      });
+      const winA = fakeBrowserWindow();
+      const winB = fakeBrowserWindow();
+      projectRootByWindow.set(winA.id, projectA);
+      projectRootByWindow.set(winB.id, projectB);
+      const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+      const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+      await service.createTab({ url: "https://a.example.test", activate: true }, browserWinA);
+      await service.createTab({ url: "https://b.example.test", activate: true }, browserWinB);
+      const wcA = fakes.webContentsInstances[0];
+      const wcB = fakes.webContentsInstances[1];
+      if (!wcA || !wcB) throw new Error("Expected two browser web contents.");
+
+      for (const [id, wc, url] of [
+        ["a-failed", wcA, "https://a.example.test/api"],
+        ["b-failed", wcB, "https://b.example.test/api"],
+      ] as const) {
+        fakes.dispatchBeforeRequest({ id, webContentsId: wc.id, url, method: "GET", resourceType: "xhr" });
+        fakes.dispatchRequestError({ id, webContentsId: wc.id, url, method: "GET", resourceType: "xhr", error: "net::ERR_FAILED" });
+      }
+
+      const observedA = await service.observe({ includeDom: false }, browserWinA);
+      const observedB = await service.observe({ includeDom: false }, browserWinB);
+      expect(observedA.diagnostics?.network.map((entry) => entry.url)).toEqual(["https://a.example.test/api"]);
+      expect(observedB.diagnostics?.network.map((entry) => entry.url)).toEqual(["https://b.example.test/api"]);
+      expect(fakes.beforeRequestHandlers).toHaveLength(1);
+      expect(fakes.requestErrorHandlers).toHaveLength(1);
+    } finally {
+      fs.rmSync(projectA, { recursive: true, force: true });
+      fs.rmSync(projectB, { recursive: true, force: true });
+    }
+  });
+
   it("waits for pending requests before resolving network-idle", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-network-idle-"));
     try {
@@ -2260,6 +2826,57 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("filters other agents' tab metadata from status and action results", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const first = await service.createTab({
+      url: "http://localhost:4101/private-one",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const firstTabId = first.activeTabId ?? "";
+    const second = await service.createTab({
+      url: "http://localhost:4102/private-two",
+      activate: true,
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+    });
+    const secondTabId = second.activeTabId ?? "";
+
+    const scoped = service.getStatus({
+      tabId: firstTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(scoped.activeTabId).toBeNull();
+    expect(scoped.url).toBeNull();
+    expect(scoped.tabs).toEqual([
+      expect.objectContaining({
+        id: firstTabId,
+        url: "http://localhost:4101/private-one",
+        ownerChatSessionId: "chat-1",
+      }),
+    ]);
+    expect(JSON.stringify(scoped)).not.toContain(secondTabId);
+    expect(JSON.stringify(scoped)).not.toContain("private-two");
+    expect(JSON.stringify(scoped)).not.toContain("chat-2");
+
+    const implicitScoped = service.getStatus({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(implicitScoped.tabs.map((tab) => tab.id)).toEqual([firstTabId]);
+    expect(implicitScoped.activeTabId).toBeNull();
+
+    const actionStatus = await service.reload({
+      tabId: firstTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(actionStatus.tabs).toHaveLength(1);
+    expect(JSON.stringify(actionStatus)).not.toContain("private-two");
+  });
+
   it("blocks another lane from driving a leased tab unless forced", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://lease.test", activate: true, laneId: "lane-1" });
@@ -2312,6 +2929,117 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-2",
     });
+  });
+
+  it("enforces tab leases for browser reads, screenshots, traces, and navigation controls", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://sensitive-session.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+    const otherOwner = { tabId, laneId: "lane-1", chatSessionId: "chat-2" };
+    const ownedSession = service.startSession({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).session;
+
+    expect(() => service.getStatus(otherOwner)).toThrow(/leased by chat chat-1/);
+    await expect(service.captureScreenshot(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.observe({ ...otherOwner, includeDom: false })).rejects.toThrow(/leased by chat chat-1/);
+    expect(() => service.getTrace(otherOwner)).toThrow(/leased by chat chat-1/);
+    await expect(service.reload(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.selectPoint({ ...otherOwner, x: 10, y: 20 })).rejects.toThrow(/leased by chat chat-1/);
+    expect(service.listSessions({ laneId: "lane-1", chatSessionId: "chat-2" }).sessions).toEqual([]);
+    expect(() => service.endSession({
+      sessionId: ownedSession.id,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).toThrow(/leased by chat chat-1/);
+
+    await expect(service.captureScreenshot({ ...otherOwner, force: true })).resolves.toMatchObject({
+      width: 320,
+      height: 180,
+    });
+    expect(service.getStatus()).toMatchObject({
+      ownerLaneId: "lane-1",
+      ownerChatSessionId: "chat-2",
+    });
+  });
+
+  it("authorizes selected browser context against the tab that created it", async () => {
+    fakes.setSendCommand(async (method) => {
+      switch (method) {
+        case "DOM.getNodeForLocation":
+          return { backendNodeId: 42 };
+        case "DOM.resolveNode":
+          return { object: { objectId: "selection-owner" } };
+        case "Runtime.callFunctionOn":
+          return {
+            result: {
+              value: {
+                tagName: "button",
+                selector: "button#private",
+                testId: null,
+                frame: { x: 0, y: 0, width: 10, height: 10 },
+                pixelRatio: 1,
+                url: "http://localhost/private",
+                title: "private",
+                metadata: { viewport: { width: 100, height: 100 } },
+              },
+            },
+          };
+        default:
+          return {};
+      }
+    });
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "http://localhost/first",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const selectionTabId = service.getStatus().activeTabId ?? "";
+    await service.createTab({
+      url: "http://localhost/second",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    });
+    const activeTabId = service.getStatus().activeTabId ?? "";
+    await service.selectPoint({
+      tabId: selectionTabId,
+      x: 10,
+      y: 20,
+      includeScreenshot: false,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    await expect(service.selectCurrent({
+      tabId: activeTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.clearSelection({
+      tabId: activeTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).rejects.toThrow(/leased by chat chat-1/);
+    expect(service.getStatus().hasSelection).toBe(true);
+
+    await expect(service.selectCurrent({
+      tabId: selectionTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    })).resolves.toMatchObject({ item: { componentId: "button#private" } });
+    await service.clearSelection({
+      tabId: selectionTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(service.getStatus().hasSelection).toBe(false);
   });
 
   it("rejects leased tab switching before mutating the active tab", async () => {

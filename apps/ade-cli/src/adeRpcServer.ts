@@ -69,6 +69,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
+import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
@@ -161,6 +162,7 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
+  browserActorToken: string | null;
 };
 
 type SessionState = {
@@ -2119,6 +2121,10 @@ function chatAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported chat method: ${method}`);
 }
 
+function builtInBrowserAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported built-in browser method: ${method}`);
+}
+
 function externalSessionsAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported external sessions method: ${method}`);
 }
@@ -2418,6 +2424,47 @@ function scopeSearchAdeActionArgs(
   // transcripts.
   if (!callerChatSessionId) return searchArgs;
   return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
+}
+
+function scopeBuiltInBrowserAdeActionArgs(
+  session: SessionState,
+  action: string,
+  browserArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const method = `run_ade_action:built_in_browser.${action}`;
+  const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
+  if (!callerChatSessionId || !browserActorToken) {
+    builtInBrowserAccessDenied(method);
+  }
+  if (
+    action === "getProfileDiagnostics"
+    || action === "listPermissions"
+    || action === "clearPermissions"
+  ) {
+    builtInBrowserAccessDenied(method);
+  }
+  const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    builtInBrowserAccessDenied(method);
+  }
+  if (browserArgs.force === true) {
+    builtInBrowserAccessDenied(method);
+  }
+
+  // The capability registry intentionally lives only in Electron, where chat
+  // and terminal launches issue and revoke tokens. The separate runtime strips
+  // caller routing and carries the opaque token over its authenticated bridge;
+  // desktopBridgeServer performs the authoritative lookup and scope restore.
+  return {
+    ...browserArgs,
+    chatSessionId: callerChatSessionId,
+    laneId: undefined,
+    projectRoot: undefined,
+    tabCollection: undefined,
+    force: false,
+    [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken,
+  };
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
@@ -2951,6 +2998,10 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  // Browser actor capabilities belong to the connecting CLI process. The
+  // long-lived runtime daemon must never lend an inherited token to another
+  // client, even if it was accidentally launched from an agent-owned shell.
+  const browserActorToken = asOptionalTrimmedString(identity.browserActorToken);
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !resolvedRunId
@@ -2966,6 +3017,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
+    browserActorToken,
   };
 }
 
@@ -3449,6 +3501,12 @@ async function runTool(args: {
     } else if (!callerIsCto && domain === "search" && action === "query") {
       scopedObjectArgs = scopeSearchAdeActionArgs(
         session,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (domain === "built_in_browser") {
+      scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
+        session,
+        action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
@@ -4995,6 +5053,7 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
+      browserActorToken: null,
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -5037,6 +5096,19 @@ export function createAdeRpcRequestHandler(args: {
         ?? asOptionalTrimmedString(clientInfo.name)
         ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
+      const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
+      if (
+        session.clientName === "ade-desktop-local"
+        && desktopBridgeAuthToken
+        && runtime.configureBuiltInBrowserDesktopBridgeAuth
+      ) {
+        const configured = await runtime.configureBuiltInBrowserDesktopBridgeAuth(desktopBridgeAuthToken);
+        if (!configured) {
+          runtime.logger.warn("built_in_browser_bridge.runtime_auth_rejected", {
+            clientName: session.clientName,
+          });
+        }
+      }
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
