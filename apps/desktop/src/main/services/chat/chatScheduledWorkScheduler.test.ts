@@ -20,6 +20,7 @@ function wakeup(
     pausedFlag: false,
     lateFlag: false,
     fireAt: START + 60_000,
+    durable: false,
     ...overrides,
   };
 }
@@ -49,6 +50,152 @@ afterEach(() => {
 });
 
 describe("createChatScheduledWorkScheduler", () => {
+  it("drops provisional cron ids and quarantines canonical legacy jobs during startup migration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      wakeup({
+        id: "cron-tool:session-1:toolu_legacy",
+        kind: "cron",
+        cron: "*/20 * * * *",
+      }),
+      wakeup({ id: "1ababc75", kind: "cron", cron: "*/20 * * * *", durable: undefined }),
+      wakeup({
+        id: "cron-provider-1",
+        kind: "cron",
+        cron: "*/20 * * * *",
+        durable: true,
+      }),
+      wakeup({ id: "wake-native", kind: "wakeup", durable: undefined }),
+    ]);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: createFireMock(),
+    });
+
+    await scheduler.start();
+
+    expect(scheduler.list().map((item) => item.id)).toEqual(["1ababc75", "cron-provider-1", "wake-native"]);
+    expect(scheduler.list().find((item) => item.id === "1ababc75")).toEqual(expect.objectContaining({
+      status: "paused",
+      pausedFlag: true,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "1ababc75",
+    }));
+    expect(scheduler.list().find((item) => item.id === "wake-native")).toEqual(expect.objectContaining({
+      status: "paused",
+      pausedFlag: true,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "wake-native",
+    }));
+    expect(requireState(state).schedules.map((item) => item.id)).toEqual(["1ababc75", "cron-provider-1", "wake-native"]);
+    scheduler.dispose();
+  });
+
+  it("keeps a migrated legacy provider cron visible when its owner is inactive", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([wakeup({
+      id: "legacy-provider-cron",
+      kind: "cron",
+      cron: "*/20 * * * *",
+      durable: undefined,
+    })]);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "ended",
+      fire: createFireMock(),
+    });
+
+    await scheduler.start();
+
+    expect(requireState(state).schedules).toEqual([
+      expect.objectContaining({
+        id: "legacy-provider-cron",
+        status: "paused",
+        pausedFlag: true,
+        durable: true,
+        provider: "claude",
+        providerScheduleId: "legacy-provider-cron",
+      }),
+    ]);
+    scheduler.dispose();
+  });
+
+  it.each(["wakeup", "loop"] as const)(
+    "quarantines an active legacy %s without inventing a provider id for ADE aliases",
+    async (kind) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(START);
+      let state: ChatScheduledWorkState | null = storedState([wakeup({
+        id: `wakeup:session-1:${kind}`,
+        kind,
+        durable: undefined,
+      })]);
+      const scheduler = createChatScheduledWorkScheduler({
+        loadState: () => cloneState(state),
+        saveState: (next) => { state = structuredClone(next); },
+        isGlobalPaused: () => false,
+        sessionState: () => "ended",
+        fire: createFireMock(),
+      });
+
+      await scheduler.start();
+
+      expect(requireState(state).schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:session-1:${kind}`,
+          status: "paused",
+          pausedFlag: true,
+          durable: true,
+          provider: "claude",
+        }),
+      ]);
+      expect(requireState(state).schedules[0]?.providerScheduleId).toBeUndefined();
+      scheduler.dispose();
+    },
+  );
+
+  it("cancels a recurring job at its provider expiry instead of firing again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      id: "cron-expiring",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START + 60_000,
+      expiresAt: START + 30_000,
+      durable: true,
+    }));
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      id: "cron-expiring",
+      status: "cancelled",
+      durable: true,
+      expiresAt: START + 30_000,
+    }));
+    scheduler.dispose();
+  });
+
   it("cancels persisted work for an ended session during start reconciliation", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -78,6 +225,58 @@ describe("createChatScheduledWorkScheduler", () => {
       status: "cancelled",
     }));
     scheduler.dispose();
+  });
+
+  it("quarantines restored and newly persisted provider work when its owner is no longer active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([wakeup({
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "provider-wake-1",
+    })]);
+    const transitions: string[] = [];
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "ended",
+      fire: createFireMock(),
+      onTransition: (_schedule, status) => { transitions.push(status); },
+    });
+
+    await scheduler.start();
+
+    expect(transitions).toEqual(["paused"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "paused",
+      pausedFlag: true,
+      provider: "claude",
+      providerScheduleId: "provider-wake-1",
+    }));
+    expect(requireState(state).schedules[0]?.terminalAt).toBeUndefined();
+    scheduler.dispose();
+
+    let newState: ChatScheduledWorkState | null = null;
+    const endedScheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { newState = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "ended",
+      fire: createFireMock(),
+    });
+    const newSchedule = await endedScheduler.upsert(wakeup({
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "provider-wake-2",
+    }));
+
+    expect(newSchedule).toEqual(expect.objectContaining({ status: "paused", pausedFlag: true }));
+    expect(requireState(newState).schedules[0]).toEqual(expect.objectContaining({
+      status: "paused",
+      pausedFlag: true,
+    }));
+    endedScheduler.dispose();
   });
 
   it("cancels work when its session becomes ended before processDue fires", async () => {
@@ -155,6 +354,27 @@ describe("createChatScheduledWorkScheduler", () => {
     expect(schedule.status).toBe("cancelled");
     expect(transitions).toEqual(["cancelled"]);
     expect(requireState(state).schedules[0]?.status).toBe("cancelled");
+    scheduler.dispose();
+  });
+
+  it("retains an old schedule for seven days from its terminal transition", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: createFireMock(),
+    });
+    await scheduler.upsert(wakeup({ createdAt: START - 8 * 24 * 60 * 60 * 1_000 }));
+
+    await scheduler.cancel("wake-1");
+
+    expect(requireState(state).schedules).toEqual([
+      expect.objectContaining({ id: "wake-1", status: "cancelled", terminalAt: START }),
+    ]);
     scheduler.dispose();
   });
 
@@ -259,6 +479,7 @@ describe("createChatScheduledWorkScheduler", () => {
         fireAt: START - 60_000,
         lastFiredAt: START - 30_000,
         activeTurnId: "stale-turn",
+        durable: true,
       }),
     ]);
     const fire = createFireMock();
@@ -297,6 +518,7 @@ describe("createChatScheduledWorkScheduler", () => {
         kind: "cron",
         cron: "* * * * *",
         fireAt: START,
+        durable: true,
       }),
     ]);
     const fire = createFireMock();

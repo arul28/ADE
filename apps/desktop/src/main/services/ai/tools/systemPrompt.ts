@@ -22,7 +22,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
-        "**Wake-up semantics:** ADE durably supports Claude Code scheduled self-resume. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn even after the ADE brain restarts; overdue work fires once when ADE resumes, then recurring cron work returns to its normal cadence. The user can pause this chat's schedules in Chat Info or pause all scheduled work in Settings.",
+        "**Wake-up semantics:** ADE follows the Claude Agent SDK schedule contract. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn. `CronCreate` always creates a new job, so reset or replacement flows must use `CronList` and `CronDelete` to remove the prior job before creating another. `CronCreate` is session-bound by default; set `durable: true` only when the user wants it to survive restarts. Durable recurring crons auto-expire after seven days, matching Claude. ADE restores durable jobs after its brain restarts, late-fires overdue work once, and exposes pause/cancel controls in Chat Info plus a project-wide manager in Settings.",
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "codex-cli":

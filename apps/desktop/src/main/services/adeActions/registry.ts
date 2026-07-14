@@ -460,6 +460,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
+    "listScheduledWork",
     "listClaudePlugins",
     "listClaudeSessions",
     "listSessions",
@@ -483,6 +484,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "readTranscript",
     "setClaudeOutputStyle",
     "setParallelLaunchState",
+    "cancelScheduledWork",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -774,6 +776,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read one chat session summary.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
+    },
+    listScheduledWork: {
+      description: "List ADE-managed durable wakeups, cron jobs, and loops, optionally for one chat.",
+      input: "object { sessionId?: string, includeTerminal?: boolean }",
+      example: "ade actions run chat.listScheduledWork --input-json '{\"sessionId\":\"chat-123\"}' --text",
+    },
+    cancelScheduledWork: {
+      description: "Cancel one ADE-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
+      input: "object { sessionId: string, scheduleId: string }",
+      example: "ade actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
     },
     readTranscript: {
       description: "Read recent user/assistant messages for a chat session.",
@@ -1356,6 +1368,27 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (typeof base.getSessionSummary === "function") {
     service.getSessionSummary = (args?: unknown) =>
       agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
+  }
+  if (typeof base.listScheduledWork === "function") {
+    service.listScheduledWork = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.listScheduledWork");
+      const sessionId = typeof record.sessionId === "string" && record.sessionId.trim()
+        ? record.sessionId.trim()
+        : undefined;
+      return agentChatService.listScheduledWork({
+        ...(sessionId ? { sessionId } : {}),
+        ...(record.includeTerminal === true ? { includeTerminal: true } : {}),
+      });
+    };
+  }
+  if (typeof base.cancelScheduledWork === "function") {
+    service.cancelScheduledWork = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.cancelScheduledWork");
+      return agentChatService.cancelScheduledWork({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
   }
   if (typeof base.getChatEventHistory === "function") {
     service.getChatEventHistory = (args?: unknown) => {

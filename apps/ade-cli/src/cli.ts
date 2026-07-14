@@ -1563,6 +1563,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat subagents <session> --text           List child agents for a chat
     $ ade chat schedules <session> --pause           Pause this chat's durable wakeups/cron/loops
     $ ade chat schedules <session>                   Inspect pause state + next armed wake (--resume to re-arm)
+    $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
+    $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
     $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -6442,6 +6444,10 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "linear-issues" ||
     sub === "list-linear-issues" ||
     sub === "issues";
+  const scheduledWorkOperation = sub === "scheduled-work"
+    && (args[0] === "list" || args[0] === "cancel")
+    ? firstStandalonePositional(args)
+    : null;
   const sessionId =
     readValue(args, ["--session", "--session-id"]) ??
     (sub !== "create" && sub !== "list" && !linearSessionSub
@@ -7086,6 +7092,42 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "schedule" ||
     sub === "scheduled-work"
   ) {
+    if (scheduledWorkOperation === "list") {
+      return {
+        kind: "execute",
+        label: "chat scheduled-work list",
+        steps: [
+          actionStep(
+            "result",
+            "chat",
+            "listScheduledWork",
+            collectGenericObjectArgs(args, {
+              ...(sessionId ? { sessionId } : {}),
+              ...(readFlag(args, ["--all", "--include-terminal"]) ? { includeTerminal: true } : {}),
+            }),
+          ),
+        ],
+      };
+    }
+    if (scheduledWorkOperation === "cancel") {
+      const targetSession = requireValue(sessionId, "sessionId");
+      const scheduleId = requireValue(firstStandalonePositional(args), "scheduleId");
+      return {
+        kind: "execute",
+        label: "chat scheduled-work cancel",
+        steps: [
+          actionStep(
+            "result",
+            "chat",
+            "cancelScheduledWork",
+            collectGenericObjectArgs(args, {
+              sessionId: targetSession,
+              scheduleId,
+            }),
+          ),
+        ],
+      };
+    }
     // Per-chat scheduled-work control: pause/resume this chat's durable
     // wakeups/cron/loop schedules, or inspect (no flag) the current pause
     // state + next armed wake via getSessionSummary.

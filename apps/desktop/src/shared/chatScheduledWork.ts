@@ -1,5 +1,6 @@
 import type {
   AgentChatEventEnvelope,
+  AgentChatScheduledWorkItem,
   AgentChatScheduledWorkKind,
   AgentChatScheduledWorkOrigin,
   AgentChatScheduledWorkStatus,
@@ -22,6 +23,7 @@ export type ChatScheduledWorkSnapshot = {
   late?: boolean;
   recurring?: boolean;
   durable?: boolean;
+  cancellable?: boolean;
   sourceToolUseId?: string;
   sourceTaskId?: string;
   turnId?: string;
@@ -79,6 +81,54 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
       updatedAt: envelope.timestamp,
     });
   }
+  return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.updatedAt, right.updatedAt));
+}
+
+const ACTIVE_DURABLE_STATUSES = new Set<AgentChatScheduledWorkStatus>([
+  "scheduled",
+  "paused",
+  "running",
+  "fired",
+]);
+
+export function mergeManagedScheduledWorkSnapshots(
+  events: AgentChatEventEnvelope[],
+  managedWork?: AgentChatScheduledWorkItem[],
+): ChatScheduledWorkSnapshot[] {
+  const managedIds = new Set(managedWork?.map((item) => item.id) ?? []);
+  const snapshots = new Map(
+    deriveScheduledWorkSnapshots(events)
+      .filter((snapshot) => !(
+        managedWork
+        && snapshot.durable === true
+        && ACTIVE_DURABLE_STATUSES.has(snapshot.status)
+        && !managedIds.has(snapshot.id)
+      ))
+      .map((snapshot) => [snapshot.id, snapshot]),
+  );
+
+  for (const item of managedWork ?? []) {
+    snapshots.set(item.id, {
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      origin: item.kind === "cron" ? "cron" : item.kind === "loop" ? "loop" : "schedule_wakeup",
+      title: item.title,
+      summary: item.outcomeSummary ?? null,
+      prompt: item.prompt,
+      ...(item.reason ? { reason: item.reason } : {}),
+      ...(item.cron ? { cron: item.cron } : {}),
+      ...(item.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
+      ...(item.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
+      ...(item.late ? { late: true } : {}),
+      recurring: item.kind === "cron",
+      durable: item.durable,
+      cancellable: item.cancellable,
+      createdAt: item.createdAt,
+      updatedAt: item.lastRunAt ?? item.createdAt,
+    });
+  }
+
   return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.updatedAt, right.updatedAt));
 }
 

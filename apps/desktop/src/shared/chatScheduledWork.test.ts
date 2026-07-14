@@ -10,6 +10,7 @@ import {
   deriveScheduledWorkSnapshots,
   isEarlierBackgroundItem,
   isEarlierScheduleItem,
+  mergeManagedScheduledWorkSnapshots,
   nextCronFireAt,
   scheduledNextFireLabel,
   type ChatScheduledWorkSnapshot,
@@ -35,6 +36,51 @@ function snapshot(overrides: Partial<ChatScheduledWorkSnapshot>): ChatScheduledW
     ...overrides,
   };
 }
+
+describe("mergeManagedScheduledWorkSnapshots", () => {
+  const durableEvent = envelope({
+    type: "scheduled_work_update",
+    id: "durable-1",
+    kind: "cron",
+    status: "scheduled",
+    durable: true,
+    title: "Old durable job",
+  }, 0);
+
+  it("reconciles stale, provider-only, and managed durable rows", () => {
+    expect(mergeManagedScheduledWorkSnapshots([durableEvent], [])).toEqual([]);
+    const events = [envelope({
+      type: "scheduled_work_update",
+      id: "provider-only",
+      kind: "cron",
+      status: "scheduled",
+      durable: false,
+      title: "Provider-only job",
+    }, 0)];
+
+    const [snapshot] = mergeManagedScheduledWorkSnapshots(events, []);
+    expect(snapshot).toEqual(expect.objectContaining({ id: "provider-only", durable: false }));
+    expect(snapshot).not.toHaveProperty("cancellable");
+    expect(mergeManagedScheduledWorkSnapshots([durableEvent], [{
+      id: "durable-1",
+      sessionId: "session-1",
+      kind: "cron",
+      status: "paused",
+      title: "Managed durable job",
+      prompt: "Check CI",
+      createdAt: "2026-01-01T13:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    }])).toEqual([
+      expect.objectContaining({
+        id: "durable-1",
+        status: "paused",
+        title: "Managed durable job",
+        cancellable: true,
+      }),
+    ]);
+  });
+});
 
 describe("chatScheduledWork helpers", () => {
   it("uses the shared Earlier membership for background and schedule rows", () => {

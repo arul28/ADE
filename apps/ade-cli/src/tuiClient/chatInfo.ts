@@ -4,7 +4,7 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { isBackgroundShellCommand, latestPlan } from "../../../desktop/src/shared/chatSubagents";
-import { deriveBackgroundItems, deriveScheduleItems } from "../../../desktop/src/shared/chatScheduledWork";
+import { deriveBackgroundItems, mergeManagedScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
@@ -81,7 +81,8 @@ export function deriveChatInfoSnapshot(args: {
     planStreamingText: trimmedOrNull(planEventRecord?.streamingText),
     todos: deriveTodoItems(args.events),
     // Schedule kinds only — background command tasks render in their own block.
-    scheduledWork: deriveScheduleItems(args.events),
+    scheduledWork: mergeManagedScheduledWorkSnapshots(args.events, args.activeSession?.scheduledWork)
+      .filter((item) => item.kind !== "background_task"),
     nextWakeAt: args.activeSession?.nextWakeAt ?? null,
     backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,

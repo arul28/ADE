@@ -330,6 +330,10 @@ import type {
   AgentChatUpdateSessionArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatListScheduledWorkArgs,
+  AgentChatScheduledWorkItem,
+  AgentChatCancelScheduledWorkArgs,
+  AgentChatCancelScheduledWorkResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -6525,6 +6529,22 @@ export function registerIpc({
     async (_event, arg: AgentChatRecoverContinuityArgs): Promise<AgentChatContinuityRecoveryResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.recoverContinuity(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatListScheduledWork,
+    async (_event, arg: AgentChatListScheduledWorkArgs): Promise<AgentChatScheduledWorkItem[]> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.listScheduledWork(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatCancelScheduledWork,
+    async (_event, arg: AgentChatCancelScheduledWorkArgs): Promise<AgentChatCancelScheduledWorkResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.cancelScheduledWork(arg);
     },
   );
 

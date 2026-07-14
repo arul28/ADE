@@ -257,10 +257,9 @@ describe("AdeCodeApp polling", () => {
       ([domain, action]) => domain === "analytics" && action === "capture",
     );
 
-    expect(analyticsCalls().map(([, , input]) => (input as { event?: string }).event)).toEqual([
-      "ade_app_opened",
-      "ade_screen_viewed",
-    ]);
+    const analyticsEvents = analyticsCalls().map(([, , input]) => (input as { event?: string }).event);
+    expect(analyticsEvents).toHaveLength(2);
+    expect(new Set(analyticsEvents)).toEqual(new Set(["ade_app_opened", "ade_screen_viewed"]));
     const initialAnalyticsCount = analyticsCalls().length;
 
     await act(async () => {

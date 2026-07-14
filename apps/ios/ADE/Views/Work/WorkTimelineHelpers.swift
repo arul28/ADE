@@ -1070,6 +1070,7 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
         late: late ?? existing?.snapshot.late,
         recurring: recurring ?? existing?.snapshot.recurring,
         durable: durable ?? existing?.snapshot.durable,
+        cancellable: existing?.snapshot.cancellable,
         sourceToolUseId: nonEmptyWorkTimelineText(sourceToolUseId) ?? existing?.snapshot.sourceToolUseId,
         sourceTaskId: nonEmptyWorkTimelineText(sourceTaskId) ?? existing?.snapshot.sourceTaskId,
         turnId: nonEmptyWorkTimelineText(turnId) ?? existing?.snapshot.turnId,
@@ -1092,6 +1093,67 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
       return lhs.snapshot.updatedAt > rhs.snapshot.updatedAt
     }
     .map(\.snapshot)
+}
+
+/// Reconciles transcript presentation events with the host's durable management
+/// store. A nil managed list means an older host and keeps transcript behavior;
+/// an explicit list is authoritative for active durable schedules.
+func mergeManagedWorkScheduledWorkSnapshots(
+  local: [WorkScheduledWorkSnapshot],
+  managedWork: [AgentChatScheduledWorkItem]?
+) -> [WorkScheduledWorkSnapshot] {
+  guard let managedWork else { return local }
+
+  let activeDurableStatuses: Set<String> = ["scheduled", "paused", "running", "fired"]
+  let managedIds = Set(managedWork.map(\.id))
+  var snapshots = Dictionary(
+    uniqueKeysWithValues: local
+      .filter { snapshot in
+        let status = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !(snapshot.durable == true
+          && activeDurableStatuses.contains(status)
+          && !managedIds.contains(snapshot.id))
+      }
+      .map { ($0.id, $0) }
+  )
+
+  for item in managedWork {
+    let origin: String
+    switch item.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "cron": origin = "cron"
+    case "loop": origin = "loop"
+    default: origin = "schedule_wakeup"
+    }
+    snapshots[item.id] = WorkScheduledWorkSnapshot(
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      origin: origin,
+      title: item.title,
+      summary: item.outcomeSummary,
+      prompt: item.prompt,
+      reason: item.reason,
+      cron: item.cron,
+      nextRunAt: item.nextRunAt,
+      lastRunAt: item.lastRunAt,
+      firedAt: nil,
+      late: item.late,
+      recurring: item.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cron",
+      durable: item.durable,
+      cancellable: item.cancellable,
+      sourceToolUseId: nil,
+      sourceTaskId: nil,
+      turnId: nil,
+      error: nil,
+      createdAt: item.createdAt,
+      updatedAt: item.lastRunAt ?? item.createdAt
+    )
+  }
+
+  return snapshots.values.sorted { lhs, rhs in
+    if lhs.updatedAt == rhs.updatedAt { return lhs.id < rhs.id }
+    return lhs.updatedAt > rhs.updatedAt
+  }
 }
 
 private func workScheduledWorkDefaultTitle(kind: String) -> String {

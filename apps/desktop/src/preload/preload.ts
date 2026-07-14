@@ -328,6 +328,10 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatListScheduledWorkArgs,
+  AgentChatScheduledWorkItem,
+  AgentChatCancelScheduledWorkArgs,
+  AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
   AgentChatReloadClaudePluginsArgs,
@@ -1247,6 +1251,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setClaudeOutputStyle",
   "reloadClaudePlugins",
   "setParallelLaunchState",
+  "cancelScheduledWork",
   "ensureCtoSession",
   "warmupModel",
   "rewindFiles",
@@ -5476,6 +5481,28 @@ contextBridge.exposeInMainWorld("ade", {
         : await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
+    },
+    listScheduledWork: async (
+      args: AgentChatListScheduledWorkArgs = {},
+    ): Promise<AgentChatScheduledWorkItem[]> =>
+      callProjectRuntimeActionOr(
+        "chat",
+        "listScheduledWork",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatListScheduledWork, args),
+      ),
+    cancelScheduledWork: async (
+      args: AgentChatCancelScheduledWorkArgs,
+    ): Promise<AgentChatCancelScheduledWorkResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr(
+        "chat",
+        "cancelScheduledWork",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatCancelScheduledWork, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
     },
     setScheduledWorkPaused: async (
       args: AgentChatSetScheduledWorkPausedArgs,

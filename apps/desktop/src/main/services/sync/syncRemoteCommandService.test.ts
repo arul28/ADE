@@ -250,6 +250,21 @@ function createMockAgentChatService() {
     setCodexGoal: vi.fn().mockResolvedValue({ objective: "Ship it", status: "active", tokenBudget: null }),
     setCodexGoalStatus: vi.fn().mockResolvedValue({ objective: "Ship it", status: "paused", tokenBudget: null }),
     clearCodexGoal: vi.fn().mockResolvedValue(null),
+    cancelScheduledWork: vi.fn().mockResolvedValue({
+      schedule: {
+        id: "wake-1",
+        sessionId: "sess-1",
+        kind: "wakeup",
+        status: "cancelled",
+        title: "Check CI",
+        prompt: "Check CI",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        durable: true,
+        cancellable: true,
+      },
+      providerCancellationRequested: false,
+      providerCancellationConfirmed: true,
+    }),
     dispose: vi.fn().mockResolvedValue(undefined),
     getAvailableModels: vi.fn().mockResolvedValue([{ id: "model-1", modelId: "m1" }]),
     getModelCatalog: vi.fn().mockResolvedValue({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
@@ -443,6 +458,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("chat.setCodexGoal");
       expect(actions).toContain("chat.setCodexGoalStatus");
       expect(actions).toContain("chat.clearCodexGoal");
+      expect(actions).toContain("chat.cancelScheduledWork");
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
       expect(actions).toContain("processes.listDefinitions");
@@ -1689,6 +1705,25 @@ describe("createSyncRemoteCommandService", () => {
 
       expect(agentChatService.clearCodexGoal).toHaveBeenCalledWith({ sessionId: "sess-1" });
       expect(result).toBeNull();
+    });
+
+    it("chat.cancelScheduledWork routes durable job cancellation to the chat service", async () => {
+      const result = await service.execute(makePayload("chat.cancelScheduledWork", {
+        sessionId: "sess-1",
+        scheduleId: "wake-1",
+      }));
+
+      expect(agentChatService.cancelScheduledWork).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        scheduleId: "wake-1",
+      });
+      expect(result).toEqual(expect.objectContaining({
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: true,
+      }));
+      await expect(service.execute(makePayload("chat.cancelScheduledWork", { sessionId: "sess-1" })))
+        .rejects.toThrow("chat.cancelScheduledWork requires scheduleId.");
+      expect(agentChatService.cancelScheduledWork).toHaveBeenCalledTimes(1);
     });
 
     it("chat.setCodexGoal throws when objective is missing", async () => {

@@ -12,6 +12,7 @@ import {
 export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
 export {
   deriveScheduledWorkSnapshots,
+  mergeManagedScheduledWorkSnapshots,
   type ChatScheduledWorkSnapshot,
 } from "../../../shared/chatScheduledWork";
 

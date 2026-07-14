@@ -126,7 +126,11 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("ScheduleWakeup");
       expect(result).toContain("CronCreate");
       expect(result).toContain("can start a later unattended turn");
-      expect(result).toContain("pause all scheduled work in Settings");
+      expect(result).toContain("session-bound by default");
+      expect(result).toContain("CronCreate` always creates a new job");
+      expect(result).toContain("`CronList` and `CronDelete`");
+      expect(result).toContain("auto-expire after seven days");
+      expect(result).toContain("project-wide manager in Settings");
       expect(result).not.toContain("unavailable in this ADE chat");
       expect(result).not.toContain("will not start a later turn by itself");
     });

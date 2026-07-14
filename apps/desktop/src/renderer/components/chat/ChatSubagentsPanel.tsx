@@ -554,9 +554,11 @@ function formatScheduleClock(value: string | null | undefined): string | null {
 function ScheduledWorkRow({
   snapshot,
   schedulesPaused = false,
+  onCancel,
 }: {
   snapshot: ChatScheduledWorkSnapshot;
   schedulesPaused?: boolean;
+  onCancel?: () => void;
 }) {
   const isPaused = schedulesPaused || snapshot.status === "paused";
   const isActive = snapshot.status === "running" || snapshot.status === "fired";
@@ -628,17 +630,30 @@ function ScheduledWorkRow({
           </div>
         ) : null}
       </div>
-      <span
-        className={cn(
-          "shrink-0 font-sans text-[10.5px] tabular-nums",
-          isActive && "text-sky-300/75",
-          isProblem && "text-rose-300/75",
-          isMuted && "text-fg/35",
-          !isActive && !isProblem && !isMuted && "text-fg/45",
-        )}
-      >
-        {isPaused ? "paused" : SCHEDULE_STATUS_LABEL[snapshot.status]}
-      </span>
+      <div className="flex shrink-0 items-center gap-1">
+        <span
+          className={cn(
+            "font-sans text-[10.5px] tabular-nums",
+            isActive && "text-sky-300/75",
+            isProblem && "text-rose-300/75",
+            isMuted && "text-fg/35",
+            !isActive && !isProblem && !isMuted && "text-fg/45",
+          )}
+        >
+          {isPaused ? "paused" : SCHEDULE_STATUS_LABEL[snapshot.status]}
+        </span>
+        {onCancel && snapshot.cancellable === true && !isMuted ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label={`Cancel ${snapshot.title}`}
+            title={snapshot.kind === "cron" ? "Cancel through Claude CronDelete" : "Cancel scheduled work"}
+            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-white/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <X aria-hidden size={11} weight="bold" />
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -949,6 +964,7 @@ export function ChatSubagentsPanel({
   backgroundItems = [],
   schedulesPaused = false,
   onToggleSchedulesPaused,
+  onCancelScheduledWork,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -981,6 +997,8 @@ export function ChatSubagentsPanel({
   schedulesPaused?: boolean;
   /** Pause or resume all durable schedules for this chat. */
   onToggleSchedulesPaused?: () => void;
+  /** Cancel one durable schedule. Claude cron jobs are deleted through CronDelete. */
+  onCancelScheduledWork?: (snapshot: ChatScheduledWorkSnapshot) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1428,7 +1446,7 @@ export function ChatSubagentsPanel({
             </button>
           ) : null}</>}
           idOf={(item) => item.id}
-          renderActiveRow={(item) => <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} />}
+          renderActiveRow={(item) => <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} onCancel={onCancelScheduledWork ? () => onCancelScheduledWork(item) : undefined} />}
           renderEarlierRow={(item) => isFiredOneShotWakeup(item)
             ? <ScheduleHistoryRow snapshot={item} />
             : <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} />}

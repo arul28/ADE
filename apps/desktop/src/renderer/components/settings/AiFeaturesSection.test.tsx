@@ -76,6 +76,14 @@ function installAdeMocks() {
         },
       }),
     },
+    agentChat: {
+      listScheduledWork: vi.fn().mockResolvedValue([]),
+      cancelScheduledWork: vi.fn().mockResolvedValue({
+        schedule: { id: "wake-1", status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: true,
+      }),
+    },
   };
 }
 
@@ -149,5 +157,48 @@ describe("AiFeaturesSection", () => {
         chat: { scheduledWorkPaused: true },
       });
     });
+  });
+
+  it("lists and cancels an active durable job", async () => {
+    installAdeMocks();
+    (window as any).ade.agentChat.listScheduledWork.mockResolvedValueOnce([{
+      id: "wake-1",
+      sessionId: "chat-12345678",
+      kind: "wakeup",
+      status: "scheduled",
+      title: "Check PR CI",
+      prompt: "Check PR CI",
+      createdAt: "2026-07-14T00:00:00.000Z",
+      durable: true,
+    }]);
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Check PR CI");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.cancelScheduledWork).toHaveBeenCalledWith({
+        sessionId: "chat-12345678",
+        scheduleId: "wake-1",
+      });
+    });
+  });
+
+  it("shows scheduled-work loading failures instead of claiming there are no jobs", async () => {
+    installAdeMocks();
+    (window as any).ade.agentChat.listScheduledWork.mockRejectedValueOnce(new Error("scheduler offline"));
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Scheduled work is unavailable: scheduler offline/)).toBeTruthy();
+    expect(screen.queryByText("No active durable jobs.")).toBeNull();
   });
 });

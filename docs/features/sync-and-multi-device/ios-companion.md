@@ -53,6 +53,12 @@ Unsupported actions fail before they are queued or sent with a user-facing
 the one action users need most: seeing that the host is behind and triggering a
 host update path that the older brain still supports.
 
+Scheduled-work cancellation follows that rule. The phone shows Cancel only for
+an active durable row and only when `canInvokeChatRemoteAction` confirms that
+the selected chat's host advertises `chat.cancelScheduledWork`. The command is
+non-queueable: an offline phone or older brain leaves Chat Info view-only rather
+than recording a cancellation that could run after the job has already fired.
+
 The Settings machine card mirrors this state through
 `SettingsConnectionHeader`: connected limited hosts show a compact "Machine
 update recommended" warning while staying connected, so users can still browse
@@ -131,6 +137,7 @@ apps/ios/
 │   │                                # revisions, lane presence, terminal
 │   │                                # subscribe/unsubscribe + input/resize,
 │   │                                # CLI launcher (startCliSession), chat push,
+│   │                                # provider-aware scheduled-work cancel,
 │   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
 │   │                                # Linear read/launch RPC wrappers, worktree
@@ -290,8 +297,10 @@ The Work model/activity parity path is concentrated in these files:
   `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
   both live Codable events and persisted JSONL fallback, plus the Work context
   meter's provider-neutral usage and compaction-boundary reduction.
-- `ADE/Services/SyncService.swift` and `ADE/Views/Work/WorkSessionDestinationView+Actions.swift`
-  — host-advertised `chat.recoverCodexTurn` dispatch for stalled-turn buttons.
+- `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
+  and `WorkSessionDestinationView+Actions.swift` — host-advertised chat action
+  dispatch, including `chat.recoverCodexTurn` for stalled-turn buttons and the
+  non-queueable `chat.cancelScheduledWork` wrapper used by Chat Info.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -1330,6 +1339,11 @@ against them instead of relying on hardcoded mobile assumptions. A
 runtime that disables a command via policy change is immediately
 reflected in the phone's UI on the next descriptor read.
 
+`chat.cancelScheduledWork` is viewer-allowed but explicitly non-queueable.
+`WorkSessionDestinationView` asks `canInvokeChatRemoteAction` before constructing
+the cancellation callback, and `WorkScheduledWorkRow` additionally requires
+`durable == true` and an active status before rendering the control.
+
 The usage commands are viewer-allowed project actions:
 
 - `usage.getQuotaSnapshot` reads the host's cached Claude/Codex quota windows
@@ -1525,7 +1539,12 @@ different machine's cached limits.
   including the same active caps (12 / 8 / 10), the single **Completed**
   disclosure that folds terminal rows without reordering survivors, and
   the per-session Clear/Restore filter (persisted under
-  `ade.chat.paneCleared.v1:<sessionId>`). A run of two or more
+  `ade.chat.paneCleared.v1:<sessionId>`). An active durable scheduled row has a
+  native Cancel button when the host supports `chat.cancelScheduledWork`;
+  provider-only/non-durable rows and older hosts remain read-only. The button
+  calls `SyncService.cancelScheduledWork`, then refreshes the session summary so
+  Claude's requested-vs-confirmed cancellation state comes back from the brain
+  rather than being guessed locally. A run of two or more
   interrupt-stopped subagents folds into one `WorkSubagentStoppedGroupCardView`
   (`.subagentStoppedGroup`, mirroring the desktop `SubagentStoppedGroupCard`):
   a calm "N agents stopped when you interrupted" line that expands to a

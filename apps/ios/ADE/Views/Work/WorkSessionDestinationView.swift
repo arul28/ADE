@@ -785,6 +785,22 @@ struct WorkSessionDestinationView: View {
     return !isChatSession(current)
   }
 
+  private var scheduledWorkCancelAction: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? {
+    guard syncService.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: sessionId) else {
+      return nil
+    }
+    return { item in
+      do {
+        let result = try await syncService.cancelScheduledWork(sessionId: sessionId, scheduleId: item.id)
+        applyScheduledWorkCancellationResult(result)
+        await refreshChatSummaryFromHost()
+        refreshScheduledWorkSnapshots()
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
   var body: some View {
     sessionDestinationRoot
       .workSessionNavigationChrome(
@@ -806,7 +822,8 @@ struct WorkSessionDestinationView: View {
           selectedTaskId: subagentView?.taskId,
           probingTaskId: probingSubagentTaskId,
           expandedTaskIds: $expandedSubagentDetailIds,
-          onSelect: handleSubagentSelection
+          onSelect: handleSubagentSelection,
+          onCancelScheduledWork: scheduledWorkCancelAction
         )
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -965,6 +982,7 @@ struct WorkSessionDestinationView: View {
         if let newValue {
           lastKnownChatSummary = newValue
         }
+        refreshScheduledWorkSnapshots()
       }
       .onChange(of: transcript) { _, _ in
         refreshChatInfoSnapshots()
@@ -2110,10 +2128,31 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshScheduledWorkSnapshots() {
-    let next = buildWorkScheduledWorkSnapshots(from: transcript)
+    let managedWork = chatSummary?.scheduledWork
+      ?? lastKnownChatSummary?.scheduledWork
+      ?? initialChatSummary?.scheduledWork
+    let next = mergeManagedWorkScheduledWorkSnapshots(
+      local: buildWorkScheduledWorkSnapshots(from: transcript),
+      managedWork: managedWork
+    )
     if next != scheduledWorkSnapshots {
       scheduledWorkSnapshots = next
     }
+  }
+
+  @MainActor
+  func applyScheduledWorkCancellationResult(_ result: AgentChatCancelScheduledWorkResult) {
+    guard var summary = chatSummary ?? lastKnownChatSummary ?? initialChatSummary else { return }
+    var managedWork = summary.scheduledWork ?? []
+    if let index = managedWork.firstIndex(where: { $0.id == result.schedule.id }) {
+      managedWork[index] = result.schedule
+    } else {
+      managedWork.append(result.schedule)
+    }
+    summary.scheduledWork = managedWork
+    chatSummary = summary
+    lastKnownChatSummary = summary
+    refreshScheduledWorkSnapshots()
   }
 
   @MainActor

@@ -3808,6 +3808,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
+  register("chat.cancelScheduledWork", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").cancelScheduledWork({
+      sessionId: requireString(payload.sessionId, "chat.cancelScheduledWork requires sessionId."),
+      scheduleId: requireString(payload.scheduleId, "chat.cancelScheduledWork requires scheduleId."),
+    }));
   register("chat.getChatEventHistory", { viewerAllowed: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");

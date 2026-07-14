@@ -489,6 +489,23 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
+      listScheduledWork: vi.fn(async ({ sessionId, includeTerminal }: {
+        sessionId?: string;
+        includeTerminal?: boolean;
+      }) => [{
+        id: "cron-1",
+        sessionId: sessionId ?? "chat-1",
+        kind: "cron",
+        status: includeTerminal ? "cancelled" : "scheduled",
+      }]),
+      cancelScheduledWork: vi.fn(async ({ sessionId, scheduleId }: {
+        sessionId: string;
+        scheduleId: string;
+      }) => ({
+        schedule: { id: scheduleId, sessionId, status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: true,
+      })),
       getChatTranscript: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         sessionId,
         entries: [{ role: "assistant", text: "hello", timestamp: "2026-03-17T19:00:00.000Z" }],
@@ -2742,6 +2759,35 @@ describe("adeRpcServer", () => {
     });
     expect(chatSummary?.isError).toBeUndefined();
     expect(fixture.runtime.agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-1");
+
+    const scheduledWork = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+      args: { sessionId: " chat-1 ", includeTerminal: true },
+    });
+    expect(scheduledWork?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.listScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      includeTerminal: true,
+    });
+    expect(scheduledWork.structuredContent.result).toEqual([
+      expect.objectContaining({ id: "cron-1", sessionId: "chat-1", status: "cancelled" }),
+    ]);
+
+    const cancelledWork = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "cancelScheduledWork",
+      args: { sessionId: " chat-1 ", scheduleId: " cron-1 " },
+    });
+    expect(cancelledWork?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    });
+    expect(cancelledWork.structuredContent.result).toMatchObject({
+      schedule: { id: "cron-1", sessionId: "chat-1", status: "cancelled" },
+      providerCancellationConfirmed: true,
+    });
 
     const aiStatus = await callTool(handler, "run_ade_action", {
       domain: "ai",

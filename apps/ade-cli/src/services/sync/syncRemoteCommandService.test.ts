@@ -428,6 +428,40 @@ describe("createSyncRemoteCommandService", () => {
     ]);
   });
 
+  it("routes scheduled-work cancellation through the non-queueable mobile command", async () => {
+    const cancelScheduledWork = vi.fn(async ({ sessionId, scheduleId }: {
+      sessionId: string;
+      scheduleId: string;
+    }) => ({
+      schedule: { id: scheduleId, sessionId, status: "cancelled" },
+      providerCancellationRequested: true,
+      providerCancellationConfirmed: true,
+    }));
+    const { service } = createService({ agentChatService: { cancelScheduledWork } });
+
+    expect(service.getDescriptor("chat.cancelScheduledWork")).toEqual({
+      action: "chat.cancelScheduledWork",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.cancelScheduledWork", {
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    }))).resolves.toMatchObject({
+      schedule: { id: "cron-1", sessionId: "chat-1", status: "cancelled" },
+      providerCancellationConfirmed: true,
+    });
+    expect(cancelScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    });
+
+    await expect(service.execute(makePayload("chat.cancelScheduledWork", {
+      sessionId: "chat-1",
+    }))).rejects.toThrow("chat.cancelScheduledWork requires scheduleId.");
+    expect(cancelScheduledWork).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects unsupported Codex recovery actions before invoking chat", async () => {
     const recoverCodexTurn = vi.fn();
     const { service } = createService({ agentChatService: { recoverCodexTurn } });
@@ -1062,6 +1096,7 @@ describe("createSyncRemoteCommandService", () => {
       "work.deleteSession",
       "work.getSessionDelta",
       "chat.getSlashCommands",
+      "chat.cancelScheduledWork",
       "chat.getParallelLaunchState",
       "chat.setParallelLaunchState",
       "chat.handoff",

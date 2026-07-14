@@ -500,6 +500,37 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByRole("button", { name: "Resume scheduled work for this chat" })).toBeTruthy();
   });
 
+  it("cancels one active schedule from its row", () => {
+    const onCancelScheduledWork = vi.fn();
+    const item = scheduledSnapshot({ id: "cron-1", kind: "cron", title: "Nightly", cancellable: true });
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[item]}
+        onCancelScheduledWork={onCancelScheduledWork}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Nightly" }));
+    expect(onCancelScheduledWork).toHaveBeenCalledWith(item);
+  });
+
+  it("does not offer ADE cancellation for a provider-only schedule", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[scheduledSnapshot({ id: "cron-native", kind: "cron", title: "Native cron" })]}
+        onCancelScheduledWork={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Cancel Native cron" })).toBeNull();
+  });
+
   it("dims active schedule rows and labels them paused when the chat schedule is paused", () => {
     render(
       <ChatSubagentsPanel

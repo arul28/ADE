@@ -2909,6 +2909,45 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["chat", "schedules", "chat-1", "--pause", "--resume"])).toThrow(
       /either --pause or --resume/,
     );
+
+    const list = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "list", "chat-1", "--all"]));
+    expect(list.label).toBe("chat scheduled-work list");
+    expect(list.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "listScheduledWork",
+        args: { sessionId: "chat-1", includeTerminal: true },
+      },
+    });
+
+    const listAllChats = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "list", "--all"]));
+    expect(listAllChats.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "listScheduledWork",
+        args: { includeTerminal: true },
+      },
+    });
+
+    const cancel = expectExecutePlan(buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "cancel",
+      "chat-1",
+      "cron-1",
+    ]));
+    expect(cancel.label).toBe("chat scheduled-work cancel");
+    expect(cancel.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "cancelScheduledWork",
+        args: { sessionId: "chat-1", scheduleId: "cron-1" },
+      },
+    });
+    expect(() => buildCliPlan(["chat", "scheduled-work", "cancel", "chat-1"])).toThrow(
+      /scheduleId is required/,
+    );
   });
 
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
