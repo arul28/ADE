@@ -28,6 +28,10 @@ const mockLocalStorage = {
     keybindings: { get: vi.fn(async () => null) },
     project: {
       openRepo: vi.fn(async () => null),
+      // openRepo picks a folder, then runs the worktree gate. inspectPath is
+      // deliberately left unmocked here so the gate falls through (its catch)
+      // to a normal open — the gate itself is covered in appStore.worktreeGate.test.ts.
+      chooseDirectory: vi.fn(async () => "/p/picked"),
       listRecent: vi.fn(async () => []),
       switchToPath: vi.fn(async () => null),
       closeCurrent: vi.fn(async () => {}),
@@ -1374,11 +1378,14 @@ describe("appStore", () => {
     });
 
     it("tracks project opening progress and clears it when the user cancels", async () => {
-      let resolveOpen: (value: any) => void = () => {};
-      (window.ade.project.openRepo as any).mockImplementationOnce(
+      // openRepo shows the "opening" transition up front, then awaits the native
+      // folder picker. Cancelling the picker (chooseDirectory → null) must clear
+      // the transition without binding a project.
+      let resolvePick: (value: string | null) => void = () => {};
+      (window.ade.project.chooseDirectory as any).mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            resolveOpen = resolve;
+            resolvePick = resolve;
           }),
       );
 
@@ -1390,9 +1397,11 @@ describe("appStore", () => {
         }),
       );
 
-      resolveOpen(null);
-      await pending;
+      resolvePick(null);
+      const result = await pending;
 
+      expect(result).toBeNull();
+      expect(window.ade.project.openRepo).not.toHaveBeenCalled();
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
