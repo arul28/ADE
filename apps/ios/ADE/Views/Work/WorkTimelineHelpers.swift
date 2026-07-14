@@ -1096,8 +1096,9 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
 }
 
 /// Reconciles transcript presentation events with the host's durable management
-/// store. A nil managed list means an older host and keeps transcript behavior;
-/// an explicit list is authoritative for active durable schedules.
+/// store. A nil or empty managed list keeps transcript behavior so a transient
+/// empty host snapshot cannot hide still-live provider work; once the host has
+/// managed rows, that list is authoritative for active durable schedules.
 func mergeManagedWorkScheduledWorkSnapshots(
   local: [WorkScheduledWorkSnapshot],
   managedWork: [AgentChatScheduledWorkItem]?
@@ -1106,11 +1107,13 @@ func mergeManagedWorkScheduledWorkSnapshots(
 
   let activeDurableStatuses: Set<String> = ["scheduled", "paused", "running", "fired"]
   let managedIds = Set(managedWork.map(\.id))
+  let hasManagedRows = !managedWork.isEmpty
   var snapshots = Dictionary(
     uniqueKeysWithValues: local
       .filter { snapshot in
         let status = snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return !(snapshot.durable == true
+        return !(hasManagedRows
+          && snapshot.durable == true
           && activeDurableStatuses.contains(status)
           && !managedIds.contains(snapshot.id))
       }

@@ -2713,7 +2713,7 @@ describe("adeRpcServer", () => {
   it("invokes ADE actions dynamically and returns status hints", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
+    await initialize(handler, { callerId: "ade-cli:123", role: "agent" });
 
     const response = await callTool(handler, "run_ade_action", {
       domain: "git",
@@ -2786,8 +2786,11 @@ describe("adeRpcServer", () => {
       action: "cancelScheduledWork",
       args: { sessionId: " chat-1 ", scheduleId: " cron-1 " },
     });
-    expect(cancelledWork.isError).toBe(true);
-    expect(fixture.runtime.agentChatService.cancelScheduledWork).not.toHaveBeenCalled();
+    expect(cancelledWork?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    });
 
     const aiStatus = await callTool(handler, "run_ade_action", {
       domain: "ai",
@@ -3123,6 +3126,42 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "own-chat write",
+    });
+
+    const deniedScheduledWorkList = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+      args: { sessionId: "chat-2", includeTerminal: true },
+    });
+    expect(deniedScheduledWorkList.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.listScheduledWork).not.toHaveBeenCalled();
+
+    const ownScheduledWorkList = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+      args: { includeTerminal: true },
+    });
+    expect(ownScheduledWorkList?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.listScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      includeTerminal: true,
+    });
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, {
+      callerId: "cto-1",
+      role: "cto",
+      chatSessionId: "chat-1",
+    });
+    const ctoScheduledWorkList = await callTool(ctoHandler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+      args: { sessionId: "chat-2", includeTerminal: true },
+    });
+    expect(ctoScheduledWorkList?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.listScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-2",
+      includeTerminal: true,
     });
 
     const deniedScheduledWorkCancel = await callTool(handler, "run_ade_action", {

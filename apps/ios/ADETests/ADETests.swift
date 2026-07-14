@@ -10169,7 +10169,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workScheduleItemIsEarlier(try XCTUnwrap(byId["cron-cancelled"])))
   }
 
-  func testScheduledWorkSummaryProvidesAuthoritativeMobileManagementRows() throws {
+  func testScheduledWorkSummaryRecoversFromEmptyManagedStateAndProvidesAuthoritativeRows() throws {
     let summaryData = Data(#"""
     {
       "sessionId":"chat-1",
@@ -10199,8 +10199,18 @@ final class ADETests: XCTestCase {
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"provider-only","kind":"cron","status":"scheduled","durable":false,"title":"Provider-only watcher"}}
     """
 
+    let local = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    let recovered = mergeManagedWorkScheduledWorkSnapshots(
+      local: local,
+      managedWork: []
+    )
+    let recoveredById = Dictionary(uniqueKeysWithValues: recovered.map { ($0.id, $0) })
+
+    XCTAssertEqual(recoveredById["stale-1"]?.durable, true)
+    XCTAssertEqual(recoveredById["provider-only"]?.durable, false)
+
     let merged = mergeManagedWorkScheduledWorkSnapshots(
-      local: buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw)),
+      local: local,
       managedWork: summary.scheduledWork
     )
     let byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })

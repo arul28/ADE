@@ -2390,6 +2390,7 @@ function scopeChatAdeActionArgs(
   if (
     action !== "readTranscript"
     && action !== "sendMessage"
+    && action !== "listScheduledWork"
     && action !== "cancelScheduledWork"
   ) return chatArgs;
   if (isUnboundAdeCliCaller(session)) return chatArgs;
@@ -3503,6 +3504,7 @@ async function runTool(args: {
       && (
         action === "readTranscript"
         || action === "sendMessage"
+        || action === "listScheduledWork"
         || action === "cancelScheduledWork"
       )
     ) {
