@@ -8,6 +8,7 @@ import {
   getProjectDetail,
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
+import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
@@ -74,6 +75,7 @@ const RUNTIME_METHODS = new Set([
   "projects.browseDirectories",
   "projects.getDetail",
   "projects.getWorkSummary",
+  "projects.inspectPath",
   "projects.getDefaultParentDir",
   "projects.getHandoffStoragePreflight",
   "projects.create",
@@ -664,6 +666,7 @@ export function createMultiProjectRpcRequestHandler(
             browseDirectories: true,
             getDetail: true,
             getWorkSummary: true,
+            inspectPath: true,
             getDefaultParentDir: true,
             handoffStoragePreflight: true,
             create: true,
@@ -783,6 +786,20 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return await getProjectWorkSummary(rootPath);
+    }
+
+    if (method === "projects.inspectPath") {
+      const targetPath = readOptionalString(params.path);
+      if (!targetPath) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.inspectPath requires path.",
+        );
+      }
+      // Deliberately uncached: desktop main's inspectProjectPathCached relies
+      // on lane attach/adopt IPC hooks for invalidation, which never fire in
+      // this long-lived daemon — a cache here could serve pre-attach results.
+      return await inspectProjectPath(targetPath);
     }
 
     if (method === "projects.getDefaultParentDir") {

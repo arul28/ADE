@@ -191,6 +191,25 @@ describe("multi-project RPC server", () => {
     });
     expect(await handler({ jsonrpc: "2.0", id: 6, method: "projects.list", params: {} })).toEqual([]);
 
+    // projects.inspectPath routes to the shared desktop inspector: a plain
+    // directory (not a git checkout) classifies as not-git with no parent.
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "projects.inspectPath",
+      params: { path: projectRoot },
+    })).toMatchObject({
+      kind: "not-git",
+      worktreeRoot: null,
+      parent: null,
+    });
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "projects.inspectPath",
+      params: {},
+    })).rejects.toThrow("projects.inspectPath requires path.");
+
     handler.dispose();
   });
 

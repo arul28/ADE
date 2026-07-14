@@ -12,6 +12,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
@@ -4267,13 +4268,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         result: decorateCommandResult(payload.action, created),
       });
     } catch (error) {
+      // Coded errors (e.g. laneService attach's lane_already_linked) embed the
+      // code in the message so it survives IPC transports. The service runs
+      // in-process here, so gate on the Error's real `code` property — parsing
+      // the message alone would also mangle legit prefixes like git's "fatal:".
+      const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
+      const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
       sendResult(acceptedRecord, {
         commandId,
         ok: false,
-        error: {
-          code: "command_failed",
-          message: error instanceof Error ? error.message : String(error),
-        },
+        error: directCode
+          ? { code: directCode, message: parseCodedErrorMessage(error).message }
+          : {
+            code: "command_failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
       });
     }
   }

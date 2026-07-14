@@ -272,6 +272,7 @@ ade brain restart
 ade auth status
 ade doctor --json
 ade projects list --text
+ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
 ade lanes list --text
 ade lanes create "fix-checkout-flow" --parent main

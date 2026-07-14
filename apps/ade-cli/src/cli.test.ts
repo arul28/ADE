@@ -592,6 +592,17 @@ describe("ADE CLI", () => {
         },
       ],
     });
+    expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
+      kind: "execute",
+      label: "projects inspect",
+      steps: [
+        {
+          key: "result",
+          method: "projects.inspectPath",
+          params: { path: "/tmp/worktree" },
+        },
+      ],
+    });
   });
 
   it("does not auto-register cwd for machine-scoped registry commands", () => {
