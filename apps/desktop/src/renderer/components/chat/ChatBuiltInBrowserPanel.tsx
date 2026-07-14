@@ -160,7 +160,7 @@ type BrowserWebviewElement = HTMLElement & {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
-  /** Override the project browser profile. `null` selects the machine-wide profile. */
+  /** Override project tab routing. `null` selects the personal-chat tab collection. */
   projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
@@ -418,8 +418,8 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
 
 function eventProjectRoot(value: unknown): string | null | undefined {
   if (!isRecord(value)) return undefined;
-  if ("profileProjectRoot" in value) {
-    const root = value.profileProjectRoot;
+  if ("collectionProjectRoot" in value) {
+    const root = value.collectionProjectRoot;
     return typeof root === "string" && root.trim().length > 0 ? root : null;
   }
   if (isRecord(value.status)) return eventProjectRoot(value.status);
@@ -757,7 +757,7 @@ export function ChatBuiltInBrowserPanel({
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
   const browserScope = useMemo<BuiltInBrowserProjectScopeArgs>(
     () => (projectRootOverride === null
-      ? { profileScope: "global" }
+      ? { tabCollection: "personal" }
       : projectRoot
         ? { projectRoot }
         : {}),

@@ -166,6 +166,10 @@ const fakes = vi.hoisted(() => {
   let permissionCheckHandler: PermissionCheckHandler | null = null;
   let permissionRequestHandler: PermissionRequestHandler | null = null;
   type FakeSession = {
+    cookies: {
+      flushStore: () => Promise<void>;
+    };
+    flushStorageData: () => void;
     webRequest: {
       onBeforeSendHeaders: (handler: unknown) => void;
       onBeforeRequest: (handler: unknown) => void;
@@ -178,11 +182,17 @@ const fakes = vi.hoisted(() => {
     setPermissionCheckHandler: (handler: unknown) => void;
     setPermissionRequestHandler: (handler: unknown) => void;
   };
+  const flushCookieStore = vi.fn(async (): Promise<void> => undefined);
+  const flushStorageData = vi.fn((): void => undefined);
   const sessionsByPartition = new Map<string, FakeSession>();
   const sessionForPartition = (partition: string): FakeSession => {
     const existing = sessionsByPartition.get(partition);
     if (existing) return existing;
     const nextSession: FakeSession = {
+      cookies: {
+        flushStore: flushCookieStore,
+      },
+      flushStorageData,
       webRequest: {
         onBeforeSendHeaders: (handler: unknown) => {
           beforeSendHeadersHandlers.push(handler as Parameters<typeof beforeSendHeadersHandlers.push>[0]);
@@ -320,6 +330,8 @@ const fakes = vi.hoisted(() => {
     clearSessionEventHandlers: () => {
       sessionEventHandlers.length = 0;
     },
+    flushCookieStore,
+    flushStorageData,
     sessionEventHandlers,
     appGetPath,
     dispatchWillDownload: (
@@ -328,11 +340,13 @@ const fakes = vi.hoisted(() => {
     ): { preventDefault: ReturnType<typeof vi.fn> } => {
       const event = { preventDefault: vi.fn() };
       const downloadSession = downloadWebContents?.session as FakeSession | null | undefined;
-      const handler = sessionEventHandlers.findLast((entry) => (
+      const handlers = sessionEventHandlers.filter((entry) => (
         entry.session === downloadSession
         && entry.event === "will-download"
-      ))?.handler;
-      handler?.(event, item, downloadWebContents);
+      ));
+      for (const { handler } of handlers) {
+        handler(event, item, downloadWebContents);
+      }
       return event;
     },
     setPermissionCheckHandler: (handler: PermissionCheckHandler | null) => {
@@ -448,6 +462,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.clearBeforeSendHeadersHandlers();
     fakes.clearSessionEventHandlers();
     fakes.clearPermissionHandlers();
+    fakes.flushCookieStore.mockClear();
+    fakes.flushStorageData.mockClear();
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
     fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
@@ -462,6 +478,26 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(status.attached).toBe(false);
     expect(status.visible).toBe(false);
     expect(status.bounds).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  it("awaits cookie and DOM storage flushes for the global profile", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.flushStorage();
+
+    expect(fakes.flushCookieStore).toHaveBeenCalledTimes(1);
+    expect(fakes.flushStorageData).toHaveBeenCalledTimes(1);
+    expect(fakes.partitionCalls).toEqual(["persist:ade-browser"]);
+  });
+
+  it("still attempts the DOM storage flush when the cookie flush fails", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    fakes.flushCookieStore.mockRejectedValueOnce(new Error("cookie flush failed"));
+
+    await expect(service.flushStorage()).rejects.toThrow("Failed to flush ADE browser storage");
+
+    expect(fakes.flushCookieStore).toHaveBeenCalledTimes(1);
+    expect(fakes.flushStorageData).toHaveBeenCalledTimes(1);
   });
 
   it("setBounds short-circuits and does not emit when args are unchanged", async () => {
@@ -602,7 +638,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus(browserWinB).url).toBe("https://b-2.example.test/");
   });
 
-  it("uses one persistent browser profile partition per project root", async () => {
+  it("uses one global persistent profile while keeping project and window tab collections independent", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -625,12 +661,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const partitionA = service.getStatus(browserWinA).partition;
     const partitionB = service.getStatus(browserWinB).partition;
     const partitionC = service.getStatus(browserWinC).partition;
-    expect(partitionA).toMatch(/^persist:ade-browser-project-/);
+    expect(partitionA).toBe("persist:ade-browser");
     expect(partitionB).toBe(partitionA);
-    expect(partitionC).toMatch(/^persist:ade-browser-project-/);
-    expect(partitionC).not.toBe(partitionA);
-    expect(service.getStatus(browserWinA).profileProjectRoot).toBe("/Users/ade/project-alpha");
-    expect(service.getStatus(browserWinC).profileProjectRoot).toBe("/Users/ade/project-beta");
+    expect(partitionC).toBe(partitionA);
+    expect(service.getStatus(browserWinA).collectionProjectRoot).toBe("/Users/ade/project-alpha");
+    expect(service.getStatus(browserWinC).collectionProjectRoot).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWinA).collectionKey).toBe(service.getStatus(browserWinB).collectionKey);
+    expect(service.getStatus(browserWinC).collectionKey).not.toBe(service.getStatus(browserWinA).collectionKey);
+    expect(service.getStatus(browserWinA).persistentProfile).toBe(true);
 
     const viewPartitions = fakes.webContentsViewInstances.map((view) => (
       view.webPreferences as { partition?: string } | undefined
@@ -639,7 +677,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.partitionCalls).toEqual([partitionA, partitionA, partitionC]);
   });
 
-  it("keeps an explicitly global browser profile isolated from the sender window project", async () => {
+  it("keeps personal tabs separate from project tabs without partitioning authentication storage", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -652,25 +690,29 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.attachToWindow(browserWin);
     await service.createTab({ url: "https://project.example.test", activate: true }, browserWin);
     await service.createTab({
-      profileScope: "global",
+      tabCollection: "personal",
       url: "https://personal.example.test",
       activate: true,
     }, browserWin);
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin)).toMatchObject({
-      profileProjectRoot: "/Users/ade/project-alpha",
+      partition: "persist:ade-browser",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       url: "https://project.example.test/",
     });
-    expect(service.getStatus({ profileScope: "global" }, browserWin)).toMatchObject({
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin)).toMatchObject({
       partition: "persist:ade-browser",
-      profileProjectRoot: null,
+      collectionKey: "personal",
+      collectionProjectRoot: null,
       url: "https://personal.example.test/",
     });
-    expect(service.getStatus({ profileScope: "global" }, browserWin).partition)
-      .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).partition);
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin).partition)
+      .toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).partition);
+    expect(service.getStatus({ tabCollection: "personal" }, browserWin).collectionKey)
+      .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).collectionKey);
   });
 
-  it("rejects attached webviews from another project browser profile", async () => {
+  it("rejects attached webviews from outside the global browser profile", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -688,7 +730,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     if (!tabId) throw new Error("Expected an active browser tab");
 
     const foreignView = new fakes.WebContentsView({
-      webPreferences: { partition: "persist:ade-browser-project-ffffffffffffffff" },
+      webPreferences: { partition: "persist:foreign-browser" },
     });
     await expect(service.attachWebview({
       tabId,
@@ -792,9 +834,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
 
     expect(projectRootByWindow.get(win.id)).toBe("/Users/ade/project-beta");
-    expect(service.getStatus(browserWin).profileProjectRoot).toBe("/Users/ade/project-beta");
+    expect(service.getStatus(browserWin).collectionProjectRoot).toBe("/Users/ade/project-beta");
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
-    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).profileProjectRoot).toBe("/Users/ade/project-alpha");
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).collectionProjectRoot).toBe("/Users/ade/project-alpha");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha.example.test/");
   });
 
@@ -828,7 +870,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-alpha",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       visible: true,
     });
     expect(win.contentView.children).toHaveLength(1);
@@ -845,7 +887,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-beta",
+      collectionProjectRoot: "/Users/ade/project-beta",
       visible: true,
     });
     expect(win.contentView.children).toHaveLength(1);
@@ -943,12 +985,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-alpha",
+      collectionProjectRoot: "/Users/ade/project-alpha",
       visible: true,
     });
     expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
       attached: true,
-      profileProjectRoot: "/Users/ade/project-beta",
+      collectionProjectRoot: "/Users/ade/project-beta",
       visible: true,
     });
     expect(winA.contentView.children).toHaveLength(1);
@@ -956,7 +998,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(winA.contentView.children[0]).not.toBe(winB.contentView.children[0]);
   });
 
-  it("re-resolves the active window profile for bridge-style calls after project switches", async () => {
+  it("re-resolves the active window tab collection for bridge-style calls after project switches", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       onEvent: collector.onEvent,
@@ -966,14 +1008,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
 
     service.attachToWindow(browserWin);
-    expect(service.getStatus().profileKey).toBe("global");
+    expect(service.getStatus().collectionKey).toBe("window");
 
     projectRootByWindow.set(win.id, "/Users/ade/project-after-startup");
     await service.createTab({ url: "https://example.test", activate: true });
 
     const status = service.getStatus();
-    expect(status.profileProjectRoot).toBe("/Users/ade/project-after-startup");
-    expect(status.partition).toMatch(/^persist:ade-browser-project-/);
+    expect(status.collectionProjectRoot).toBe("/Users/ade/project-after-startup");
+    expect(status.partition).toBe("persist:ade-browser");
     expect(status.tabs).toHaveLength(1);
     expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
       partition: status.partition,
@@ -1292,7 +1334,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     doneHandlers[2]?.[0]?.({}, "completed");
   });
 
-  it("reserves in-flight browser download filenames across project browser profiles", async () => {
+  it("reserves in-flight browser download filenames across project tab collections", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
       getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
@@ -2308,6 +2350,41 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await expect(
       service.click({ tabId, x: 10, y: 20, laneId: "lane-1", chatSessionId: "chat-2", force: true, observe: false }),
     ).resolves.toMatchObject({ ok: true });
+    expect(service.getStatus()).toMatchObject({
+      ownerLaneId: "lane-1",
+      ownerChatSessionId: "chat-2",
+    });
+  });
+
+  it("enforces tab leases for browser reads, screenshots, traces, and navigation controls", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://sensitive-session.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+    const otherOwner = { tabId, laneId: "lane-1", chatSessionId: "chat-2" };
+    const ownedSession = service.startSession({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).session;
+
+    expect(() => service.getStatus(otherOwner)).toThrow(/leased by chat chat-1/);
+    await expect(service.captureScreenshot(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.observe({ ...otherOwner, includeDom: false })).rejects.toThrow(/leased by chat chat-1/);
+    expect(() => service.getTrace(otherOwner)).toThrow(/leased by chat chat-1/);
+    await expect(service.reload(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.selectPoint({ ...otherOwner, x: 10, y: 20 })).rejects.toThrow(/leased by chat chat-1/);
+    expect(service.listSessions({ laneId: "lane-1", chatSessionId: "chat-2" }).sessions).toEqual([]);
+    expect(() => service.endSession({
+      sessionId: ownedSession.id,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).toThrow(/leased by chat chat-1/);
+
+    await expect(service.captureScreenshot({ ...otherOwner, force: true })).resolves.toMatchObject({
+      width: 320,
+      height: 180,
+    });
     expect(service.getStatus()).toMatchObject({
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-2",

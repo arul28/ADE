@@ -184,10 +184,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
-import {
-  BUILT_IN_BROWSER_PARTITION,
-  BUILT_IN_BROWSER_PROFILE_PREFIX,
-} from "./services/builtInBrowser/builtInBrowserConstants";
+import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
@@ -201,7 +198,6 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
-const ADE_BROWSER_PROJECT_PROFILE_KEY_PATTERN = /^[a-f0-9]{16}$/;
 
 type AdePackageChannel = "alpha" | "beta";
 
@@ -462,18 +458,7 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
   }
 }
 
-function normalizeAdeBrowserWebviewPartition(value: unknown): string {
-  if (typeof value !== "string") return BUILT_IN_BROWSER_PARTITION;
-  const partition = value.trim();
-  if (
-    partition === BUILT_IN_BROWSER_PARTITION
-    || (
-      partition.startsWith(BUILT_IN_BROWSER_PROFILE_PREFIX)
-      && ADE_BROWSER_PROJECT_PROFILE_KEY_PATTERN.test(partition.slice(BUILT_IN_BROWSER_PROFILE_PREFIX.length))
-    )
-  ) {
-    return partition;
-  }
+function normalizeAdeBrowserWebviewPartition(_value: unknown): string {
   return BUILT_IN_BROWSER_PARTITION;
 }
 
@@ -5494,6 +5479,14 @@ app.whenReady().then(async () => {
         autoUpdateService?.dispose();
       } catch {
         // ignore
+      }
+      try {
+        await builtInBrowserService.flushStorage();
+      } catch (error) {
+        shutdownLogger.error("app.browser_storage_flush_failed", {
+          reason: args.reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       try {
         builtInBrowserService.dispose();

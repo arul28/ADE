@@ -52,7 +52,6 @@ import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import {
   BUILT_IN_BROWSER_PARTITION,
-  BUILT_IN_BROWSER_PROFILE_PREFIX,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
@@ -92,9 +91,8 @@ const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
 
-type BrowserProfile = {
+type BrowserCollection = {
   key: string;
-  partition: string;
   projectRoot: string | null;
 };
 
@@ -218,19 +216,20 @@ function normalizedProjectRoot(value: string | null | undefined): string | null 
   return trimmed.length ? trimmed : null;
 }
 
-function profileForProjectRoot(projectRoot: string | null | undefined): BrowserProfile {
+function collectionForProjectRoot(
+  projectRoot: string | null | undefined,
+  kind: "personal" | "window" = "window",
+): BrowserCollection {
   const normalized = normalizedProjectRoot(projectRoot);
   if (!normalized) {
     return {
-      key: "global",
-      partition: BROWSER_PARTITION,
+      key: kind,
       projectRoot: null,
     };
   }
   const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
   return {
-    key,
-    partition: `${BUILT_IN_BROWSER_PROFILE_PREFIX}${key}`,
+    key: `project-${key}`,
     projectRoot: normalized,
   };
 }
@@ -253,18 +252,22 @@ export function createBuiltInBrowserService(args: {
   let activeWindowId: number | null = null;
   let fallbackService: WindowBrowserService | null = null;
 
-  const createServiceForWindow = (win: BrowserWindow, profile: BrowserProfile): WindowBrowserService =>
+  const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
     createBuiltInBrowserWindowService({
       getLogger: args.getLogger,
       onEvent: (payload) => args.onEvent?.(payload, win),
-      profile,
+      collection,
     });
 
-  const serviceKey = (windowId: number, profile: BrowserProfile): string =>
-    `${windowId}:${profile.partition}`;
+  const serviceKey = (windowId: number, collection: BrowserCollection): string =>
+    `${windowId}:${collection.key}`;
 
-  const profileForWindow = (win: BrowserWindow): BrowserProfile =>
-    profileForProjectRoot(args.getProjectRootForWindow?.(win));
+  const collectionForWindow = (win: BrowserWindow): BrowserCollection => {
+    const projectRoot = args.getProjectRootForWindow?.(win);
+    return normalizedProjectRoot(projectRoot)
+      ? collectionForProjectRoot(projectRoot)
+      : collectionForProjectRoot(null, "window");
+  };
 
   const projectRootForWindow = (win: BrowserWindow): string | null =>
     normalizedProjectRoot(args.getProjectRootForWindow?.(win));
@@ -281,8 +284,8 @@ export function createBuiltInBrowserService(args: {
     return typeof projectRoot === "string" ? normalizedProjectRoot(projectRoot) : null;
   };
 
-  const requestsGlobalProfile = (input: unknown): boolean =>
-    isRecord(input) && input.profileScope === "global";
+  const requestsPersonalCollection = (input: unknown): boolean =>
+    isRecord(input) && input.tabCollection === "personal";
 
   const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
@@ -325,12 +328,12 @@ export function createBuiltInBrowserService(args: {
     win.once("closed", listener);
   };
 
-  const serviceForWindowProfile = (
+  const serviceForWindowCollection = (
     win: BrowserWindow,
-    profile: BrowserProfile,
+    collection: BrowserCollection,
     options: { markActive?: boolean } = {},
   ): WindowBrowserService => {
-    const key = serviceKey(win.id, profile);
+    const key = serviceKey(win.id, collection);
     const existing = windowServices.get(key);
     if (options.markActive) {
       activeServiceKeyByWindow.set(win.id, key);
@@ -341,13 +344,13 @@ export function createBuiltInBrowserService(args: {
     fallbackService?.dispose();
     fallbackService = null;
     ensureWindowClosedListener(win);
-    const service = createServiceForWindow(win, profile);
+    const service = createServiceForWindow(win, collection);
     windowServices.set(key, { win, service });
     return service;
   };
 
   const serviceForWindow = (win: BrowserWindow): WindowBrowserService =>
-    serviceForWindowProfile(win, profileForWindow(win), { markActive: true });
+    serviceForWindowCollection(win, collectionForWindow(win), { markActive: true });
 
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
@@ -363,7 +366,7 @@ export function createBuiltInBrowserService(args: {
       fallbackService = createBuiltInBrowserWindowService({
         getLogger: args.getLogger,
         onEvent: (payload) => args.onEvent?.(payload, null),
-        profile: profileForProjectRoot(null),
+        collection: collectionForProjectRoot(null, "window"),
       });
     }
     return fallbackService;
@@ -384,14 +387,14 @@ export function createBuiltInBrowserService(args: {
     if (!win) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
-    const service = serviceForWindowProfile(win, profileForProjectRoot(normalized), {
+    const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
       markActive: projectRootsMatch(projectRootForWindow(win), normalized),
     });
     service.attachToWindow(win);
     return service;
   };
 
-  const serviceForGlobalProfile = (sourceWindow?: BrowserWindow | null): WindowBrowserService => {
+  const serviceForPersonalCollection = (sourceWindow?: BrowserWindow | null): WindowBrowserService => {
     const activeWindow = activeWindowId == null
       ? null
       : windowClosedListeners.get(activeWindowId)?.win ?? null;
@@ -405,13 +408,13 @@ export function createBuiltInBrowserService(args: {
         fallbackService = createBuiltInBrowserWindowService({
           getLogger: args.getLogger,
           onEvent: (payload) => args.onEvent?.(payload, null),
-          profile: profileForProjectRoot(null),
+          collection: collectionForProjectRoot(null, "personal"),
         });
       }
       return fallbackService;
     }
     activeWindowId = win.id;
-    const service = serviceForWindowProfile(win, profileForProjectRoot(null), { markActive: true });
+    const service = serviceForWindowCollection(win, collectionForProjectRoot(null, "personal"), { markActive: true });
     service.attachToWindow(win);
     return service;
   };
@@ -420,25 +423,49 @@ export function createBuiltInBrowserService(args: {
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
   ): WindowBrowserService => {
-    if (requestsGlobalProfile(input)) return serviceForGlobalProfile(sourceWindow);
+    if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
     if (projectRoot) return serviceForProjectRoot(projectRoot);
     if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
     return activeService();
   };
 
+  const flushStorage = async (): Promise<void> => {
+    const startedAt = Date.now();
+    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => browserSession.cookies.flushStore()),
+      Promise.resolve().then(() => browserSession.flushStorageData()),
+    ]);
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Failed to flush ADE browser storage.");
+    }
+    try {
+      args.getLogger?.().info("built_in_browser.storage_flushed", {
+        partition: BROWSER_PARTITION,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch {
+      // Storage is already flushed; logging must not turn a successful flush into a shutdown failure.
+    }
+  };
+
   return {
+    flushStorage,
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
     },
     getStatus(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).getStatus();
+      return serviceForInput(input, win).getStatusForInput(input ?? {});
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
@@ -520,20 +547,20 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).wait(input);
     },
     startInspect(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserStatus> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).startInspect();
+      return serviceForInput(input, win).startInspect(input ?? {});
     },
     stopInspect(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserStatus> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).stopInspect();
+      return serviceForInput(input, win).stopInspect(input ?? {});
     },
     captureScreenshot(inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserScreenshot> {
       const input = isLiveWindow(inputOrSourceWindow) ? {} : inputOrSourceWindow ?? {};
@@ -543,20 +570,20 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).selectPoint(input);
     },
     selectCurrent(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserSelectResult> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).selectCurrent();
+      return serviceForInput(input, win).selectCurrent(input ?? {});
     },
     clearSelection(
-      inputOrSourceWindow?: BuiltInBrowserProjectScopeArgs | BrowserWindow | null,
+      inputOrSourceWindow?: BuiltInBrowserTabTargetArgs | BrowserWindow | null,
       sourceWindow?: BrowserWindow | null,
     ): Promise<{ ok: true }> {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      return serviceForInput(input, win).clearSelection();
+      return serviceForInput(input, win).clearSelection(input ?? {});
     },
     dispose(): void {
       for (const { win, listener } of windowClosedListeners.values()) {
@@ -584,7 +611,7 @@ export function createBuiltInBrowserService(args: {
 function createBuiltInBrowserWindowService(args: {
   getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
-  profile: BrowserProfile;
+  collection: BrowserCollection;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
@@ -875,6 +902,13 @@ function createBuiltInBrowserWindowService(args: {
   const prepareAgentActionTab = <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
+  ): void => {
+    claimTabOwnerFromInput(tab, input);
+  };
+
+  const prepareAgentReadTab = (
+    tab: BrowserTabState,
+    input: BuiltInBrowserTabTargetArgs,
   ): void => {
     claimTabOwnerFromInput(tab, input);
   };
@@ -1244,7 +1278,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const browserWebPreferences = (): Electron.WebPreferences => ({
-    partition: args.profile.partition,
+    partition: BROWSER_PARTITION,
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -1361,7 +1395,7 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const browserSessionForProfile = () => session.fromPartition(args.profile.partition);
+  const browserSessionForProfile = () => session.fromPartition(BROWSER_PARTITION);
 
   const removeBrowserDownloadListener = (): void => {
     if (!browserDownloadListener) return;
@@ -1539,9 +1573,10 @@ function createBuiltInBrowserWindowService(args: {
         && currentTab
         && (!currentTab.view || win.contentView.children.includes(currentTab.view))
       ),
-      partition: args.profile.partition,
-      profileKey: args.profile.key,
-      profileProjectRoot: args.profile.projectRoot,
+      partition: BROWSER_PARTITION,
+      collectionKey: args.collection.key,
+      collectionProjectRoot: args.collection.projectRoot,
+      persistentProfile: true,
       visible,
       bounds,
       activeTabId: currentTab?.id ?? null,
@@ -1558,6 +1593,14 @@ function createBuiltInBrowserWindowService(args: {
       ownerClaimedAt: currentTab?.ownerClaimedAt ?? null,
       ownerLeaseExpiresAt: currentTab?.ownerLeaseExpiresAt ?? null,
     };
+  }
+
+  function getStatusForInput(input: BuiltInBrowserTabTargetArgs = {}): BuiltInBrowserStatus {
+    if (tabs.length > 0 && (input.tabId || input.sessionId || input.laneId || input.chatSessionId)) {
+      const tab = targetTabFromInput(input, "No active browser tab.");
+      prepareAgentReadTab(tab, input);
+    }
+    return getStatus();
   }
 
   function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
@@ -1590,9 +1633,18 @@ function createBuiltInBrowserWindowService(args: {
   function listSessions(input: BuiltInBrowserListSessionsArgs = {}): BuiltInBrowserSessionsResult {
     pruneDestroyedTabs();
     const tabId = stringOrNull(input.tabId);
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (tabId) {
+      const tab = tabById(tabId);
+      if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+      prepareAgentReadTab(tab, input);
+    }
     const sessions = browserSessions
       .filter((entry) => (input.includeEnded ? true : !entry.endedAt))
       .filter((entry) => (tabId ? entry.tabId === tabId : true))
+      .filter((entry) => (chatSessionId ? entry.ownerChatSessionId === chatSessionId : true))
+      .filter((entry) => (laneId ? entry.ownerLaneId === laneId : true))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(sessionSnapshot);
     return { sessions };
@@ -1603,6 +1655,18 @@ function createBuiltInBrowserWindowService(args: {
     if (!sessionId) throw new Error("Browser session id is required.");
     const entry = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
     if (!entry) throw new Error(`Browser session not found: ${sessionId}`);
+    const tab = tabById(entry.tabId);
+    if (tab) prepareAgentReadTab(tab, input);
+    if (!input.force) {
+      const laneId = stringOrNull(input.laneId);
+      const chatSessionId = stringOrNull(input.chatSessionId);
+      if (chatSessionId && entry.ownerChatSessionId && chatSessionId !== entry.ownerChatSessionId) {
+        throw new Error(`Browser session ${sessionId} is owned by chat ${entry.ownerChatSessionId}.`);
+      }
+      if (laneId && entry.ownerLaneId && laneId !== entry.ownerLaneId) {
+        throw new Error(`Browser session ${sessionId} is owned by lane ${entry.ownerLaneId}.`);
+      }
+    }
     if (!entry.endedAt) {
       const now = new Date().toISOString();
       entry.endedAt = now;
@@ -1639,6 +1703,8 @@ function createBuiltInBrowserWindowService(args: {
         openPanel: true,
         laneId: input.laneId,
         chatSessionId: input.chatSessionId,
+        force: input.force,
+        leaseTtlMs: input.leaseTtlMs,
       });
     }
     if (tabId) {
@@ -1648,6 +1714,8 @@ function createBuiltInBrowserWindowService(args: {
         openPanel: true,
         laneId: input.laneId,
         chatSessionId: input.chatSessionId,
+        force: input.force,
+        leaseTtlMs: input.leaseTtlMs,
       });
     }
     return requestOpenPanel(input);
@@ -1690,7 +1758,7 @@ function createBuiltInBrowserWindowService(args: {
       throw new Error("Browser webview is not available.");
     }
     if (nextWebContents.session !== browserSessionForProfile()) {
-      throw new Error("Browser webview partition does not match the current project browser profile.");
+      throw new Error("Browser webview partition does not match the global ADE browser profile.");
     }
 
     configureBrowserSession();
@@ -1876,37 +1944,43 @@ function createBuiltInBrowserWindowService(args: {
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
+    prepareAgentReadTab(tab, input);
     tab.webContents.reload();
     emitStatus();
     return getStatus();
   }
 
   async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
     return getStatus();
   }
 
   async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
     return getStatus();
   }
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
     return getStatus();
   }
 
-  async function startInspect(): Promise<BuiltInBrowserStatus> {
-    const wc = currentWebContents();
-    if (!wc) {
-      throw new Error("No active browser tab. Open a tab before starting inspect.");
-    }
+  async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting inspect.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
     try {
@@ -1935,11 +2009,13 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function stopInspect(): Promise<BuiltInBrowserStatus> {
+  async function stopInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const inspectWc = inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()
       ? inspectListenerWebContents
       : null;
     const wc = inspectWc ?? currentWebContents();
+    const tab = wc ? tabForWebContents(wc) : null;
+    if (tab) prepareAgentReadTab(tab, input);
     inspecting = false;
     if (wc?.debugger.isAttached()) {
       try {
@@ -1962,7 +2038,9 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     try {
       return await capturePageScreenshot(wc);
     } catch (error) {
@@ -1976,6 +2054,7 @@ function createBuiltInBrowserWindowService(args: {
   async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
     const sessionEntry = sessionFromInput(input);
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before observing.");
+    prepareAgentReadTab(tab, input);
     const screenshot = await captureScreenshot({ tabId: tab.id });
     const dom = input.includeDom === false
       ? null
@@ -2002,6 +2081,7 @@ function createBuiltInBrowserWindowService(args: {
   function getTrace(input: BuiltInBrowserTraceArgs = {}): BuiltInBrowserTraceResult {
     const sessionEntry = sessionFromInput(input);
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reading browser trace.");
+    prepareAgentReadTab(tab, input);
     const limit = normalizeTraceLimit(input.limit);
     const entries = sessionEntry
       ? tab.actionTrace.filter((entry) => entry.sessionId === sessionEntry.id)
@@ -2143,7 +2223,9 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
-    const wc = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.").webContents;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.");
+    prepareAgentReadTab(tab, input);
+    const wc = tab.webContents;
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
     const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
@@ -2184,14 +2266,18 @@ function createBuiltInBrowserWindowService(args: {
     }
   }
 
-  async function selectCurrent(): Promise<BuiltInBrowserSelectResult> {
+  async function selectCurrent(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserSelectResult> {
+    const tab = activeTab();
+    if (tab) prepareAgentReadTab(tab, input);
     if (lastSelectedItem) {
       emit({ type: "selection", item: lastSelectedItem });
     }
     return { item: lastSelectedItem };
   }
 
-  async function clearSelection(): Promise<{ ok: true }> {
+  async function clearSelection(input: BuiltInBrowserTabTargetArgs = {}): Promise<{ ok: true }> {
+    const tab = activeTab();
+    if (tab) prepareAgentReadTab(tab, input);
     if (lastSelectedItem) {
       clearSelectionInternal();
     } else {
@@ -2765,14 +2851,14 @@ function createBuiltInBrowserWindowService(args: {
     if (!parsed) {
       throw new Error("Browser element handle must look like obs-...:e:<index>.");
     }
-    const projectRoot = args.profile.projectRoot;
+    const projectRoot = args.collection.projectRoot;
     if (!projectRoot) {
-      throw new Error("Browser element handles require a project-scoped ADE browser profile.");
+      throw new Error("Browser element handles require a project tab collection.");
     }
     const jsonPath = path.join(
       projectRoot,
       OBSERVATION_CACHE_DIR,
-      sanitizePathSegment(args.profile.key),
+      sanitizePathSegment(args.collection.key),
       sanitizePathSegment(tab.id),
       `${sanitizePathSegment(parsed.observationId)}.json`,
     );
@@ -2826,13 +2912,13 @@ function createBuiltInBrowserWindowService(args: {
     diagnostics: BuiltInBrowserDiagnostics | null,
     sessionId: string | null,
   ): Promise<BuiltInBrowserObservation> => {
-    const projectRoot = args.profile.projectRoot;
+    const projectRoot = args.collection.projectRoot;
     if (!projectRoot) {
-      throw new Error("Browser observations require a project-scoped ADE browser profile.");
+      throw new Error("Browser observations require a project tab collection.");
     }
     const keepCount = normalizeObservationKeepCount(input.keepCount);
     const id = `obs-${Date.now()}-${randomUUID()}`;
-    const dir = path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key), sanitizePathSegment(tab.id));
+    const dir = path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.collection.key), sanitizePathSegment(tab.id));
     const filePath = path.join(dir, `${id}.png`);
     const elementMapPath = path.join(dir, `${id}.map.png`);
     const jsonPath = path.join(dir, `${id}.json`);
@@ -2882,7 +2968,7 @@ function createBuiltInBrowserWindowService(args: {
     await fs.writeFile(jsonPath, `${JSON.stringify({ ...observation, filePath, relativePath }, null, 2)}\n`, "utf8");
     observation.cleanup = await pruneObservationDirectory(dir, keepCount);
     void pruneObservationCacheRoot(
-      path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.profile.key)),
+      path.join(projectRoot, OBSERVATION_CACHE_DIR, sanitizePathSegment(args.collection.key)),
       DEFAULT_OBSERVATION_MAX_AGE_MS,
     ).catch((error) => {
       logger()?.debug("built_in_browser.observation_stale_prune_failed", {
@@ -2897,6 +2983,7 @@ function createBuiltInBrowserWindowService(args: {
     attachToWindow,
     detachFromWindow,
     getStatus,
+    getStatusForInput,
     claim,
     startSession,
     listSessions,

@@ -185,6 +185,19 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(document.querySelector("webview")).toBeNull();
   });
 
+  it("routes personal chat browser calls to the personal tab collection", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="personal-chat-1" projectRootOverride={null} />);
+
+    await waitFor(() => {
+      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" });
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        tabCollection: "personal",
+      }));
+    });
+  });
+
   it("temporarily hides the browser while the Work sidebar splitter is being dragged", async () => {
     const { api } = installBrowserApi();
 

@@ -422,13 +422,13 @@ describe("TerminalsPage chat session activation", () => {
     browserEventListener.current?.({ type: "open-request" });
     browserEventListener.current?.({
       type: "open-request",
-      status: { profileProjectRoot: "/repo-two" },
+      status: { collectionProjectRoot: "/repo-two" },
     });
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
 
     browserEventListener.current?.({
       type: "open-request",
-      status: { profileProjectRoot: "/repo-one" },
+      status: { collectionProjectRoot: "/repo-one" },
     });
     expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("browser");
   });
@@ -459,7 +459,7 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => expect(browserEventListener.current).not.toBeNull());
     browserEventListener.current?.({
       type: "open-request",
-      status: { profileProjectRoot: "/repo-one" },
+      status: { collectionProjectRoot: "/repo-one" },
     });
     // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
     // guard now just suppresses the browser-sidebar open.)

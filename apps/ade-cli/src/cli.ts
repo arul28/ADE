@@ -1852,11 +1852,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
   browser: `${ADE_BANNER}
   ADE browser
 
-  Browser commands control ADE's project-scoped built-in browser pane. Use
-  desktop bridge mode so CLI calls, chat link clicks, terminal localhost links,
-  and the Work sidebar share the browser for the active project only. Browser
-  tabs, cookies, and storage are isolated between separate projects.
-  The browser is project-scoped, not lane-scoped. Ownership is per tab/session:
+  Browser commands control ADE's built-in browser pane. ADE uses one persistent
+  authentication profile per installation/channel, so cookies and site storage
+  are shared across projects. Visible tabs remain independent per ADE
+  window/project (with a separate personal-chat collection). Desktop bridge
+  calls use the project root only to route to the right tab collection.
+  Ownership is per tab/session:
   tab creation, explicit claims, sessions, and page actions read
   ADE_LANE_ID/ADE_CHAT_SESSION_ID for agent CLI calls. Panel reveal and plain
   tab switching are passive view operations; use

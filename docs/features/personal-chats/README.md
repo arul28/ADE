@@ -25,7 +25,7 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/desktop/src/renderer/components/personalChats/sessionHelpers.ts` | Pure helpers for session title/preview, relative timestamps, and provider→tool-logo mapping shared by the page and sidebar. |
 | `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider-accent theming for the surface, including `effectiveChatAccent` (accounts for the neutral chrome tint) and `chatAccentContrast` (readable glyph on the `--chat-accent` fill). |
 | `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, `TabNav.tsx` (sidebar Chats entry), and `TopBar.tsx`. The Chats top tab is a machine-level tab backed by `personalChatsTabOpen` in `state/appStore.ts` and rendered through the reusable `ShellNavTab.tsx` (shared by the Chats and New Tab shell tabs). |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Explicit global browser profile used by personal chat so project cookies, tabs, and storage never bleed into it. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Global authenticated browser profile plus an independent personal-chat tab collection. Cookies and site storage are shared with project browser collections; visible tabs are not. |
 | `apps/desktop/src/renderer/webclient/adapter/personalChats.ts` | Hosted-web adapter over runtime-scoped sync commands. |
 | `apps/desktop/src/renderer/webclient/shell/` | Projectless Chats entry and shell routing without choosing an active project in `WebClientRoot.tsx`, `WebShell.tsx`, and `ProjectPicker.tsx`. |
 | `apps/ios/ADE/Views/PersonalChats/` | Native mobile list, new-chat, and chat destination flow. |
@@ -140,7 +140,7 @@ domains into the hidden runtime.
 | Surface | Entry and behavior |
 |---|---|
 | Desktop | **Chats** sits above the profile control and stays enabled with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface itself is a hero empty state — heading plus verb-first suggestion chips — whose composer docks to the bottom once a session is selected, alongside a stateful searchable recency-grouped conversation rail, shared model/reasoning/permission controls, provider-accent send button, transcript/approval handling, and compact Browser and Terminal buttons. |
-| ADE Browser | Personal chat uses the explicit global browser profile (`profileScope: "global"`). It is isolated from every project's persistent browser partition, tabs, cookies, and local storage. |
+| ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
 | iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Personal summaries are cached per paired host for offline list display; create requires a live host, while sends may queue. |
 | ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
@@ -166,8 +166,9 @@ domains into the hidden runtime.
   personal RPC/action or `chatScope: "personal"` explicitly.
 - Keep state and scratch roots separate; the provider cwd must not expose the
   hidden database or transcript directory.
-- Keep personal browser calls on `profileScope: "global"`; omitting the scope
-  lets Electron fall back to the source window's active project profile.
+- Keep personal browser calls on `tabCollection: "personal"`; omitting it routes
+  the call to the source window's active project tab collection. This changes
+  visible tab routing only, never the global authentication storage profile.
 - Older runtimes should report the feature as unavailable. Do not silently
   create a normal project chat.
 - The hosted web client has no local database. Lists and transcript updates

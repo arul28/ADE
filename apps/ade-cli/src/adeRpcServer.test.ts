@@ -3018,6 +3018,45 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("injects the caller lease identity into built-in browser actions and blocks agent takeovers", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-1" ? { id: "chat-1", laneId: "lane-1" } : null
+    ));
+    const captureScreenshot = vi.fn(async (args: unknown) => args);
+    fixture.runtime.builtInBrowserService = { captureScreenshot };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const captured = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1" },
+    });
+    expect(captured?.isError).toBeUndefined();
+    expect(captureScreenshot).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      force: false,
+    });
+
+    const forced = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1", force: true },
+    });
+    expect(forced.isError).toBe(true);
+
+    const impersonated = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "captureScreenshot",
+      args: { tabId: "tab-1", chatSessionId: "chat-2" },
+    });
+    expect(impersonated.isError).toBe(true);
+    expect(captureScreenshot).toHaveBeenCalledTimes(1);
+  });
+
   it("scopes external-sessions ADE actions to the caller's lane", async () => {
     const fixture = createRuntime();
     const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };

@@ -2112,6 +2112,10 @@ function chatAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported chat method: ${method}`);
 }
 
+function builtInBrowserAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported built-in browser method: ${method}`);
+}
+
 function externalSessionsAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported external sessions method: ${method}`);
 }
@@ -2411,6 +2415,37 @@ function scopeSearchAdeActionArgs(
   // transcripts.
   if (!callerChatSessionId) return searchArgs;
   return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
+}
+
+function scopeBuiltInBrowserAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  browserArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!callerChatSessionId) return browserArgs;
+
+  const method = `run_ade_action:built_in_browser.${action}`;
+  const callerLaneId = resolveChatSessionLaneId(runtime, session);
+  const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
+  const requestedLaneId = asOptionalTrimmedString(browserArgs.laneId);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    builtInBrowserAccessDenied(method);
+  }
+  if (requestedLaneId && requestedLaneId !== callerLaneId) {
+    builtInBrowserAccessDenied(method);
+  }
+  if (browserArgs.force === true) {
+    builtInBrowserAccessDenied(method);
+  }
+
+  return {
+    ...browserArgs,
+    chatSessionId: callerChatSessionId,
+    ...(callerLaneId ? { laneId: callerLaneId } : {}),
+    force: false,
+  };
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
@@ -3414,6 +3449,13 @@ async function runTool(args: {
     } else if (!callerIsCto && domain === "search" && action === "query") {
       scopedObjectArgs = scopeSearchAdeActionArgs(
         session,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (!callerIsCto && domain === "built_in_browser") {
+      scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
+        runtime,
+        session,
+        action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
