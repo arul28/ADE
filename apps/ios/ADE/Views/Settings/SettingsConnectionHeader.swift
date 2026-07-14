@@ -1,11 +1,34 @@
+import Foundation
 import SwiftUI
+
+func settingsConnectedRouteChipText(
+  durationMs: Int?,
+  routeKind: SyncConnectionRouteKind?
+) -> String? {
+  guard let routeKind else { return nil }
+  let routeLabel = switch routeKind {
+  case .lan: "lan"
+  case .tailnet: "tailnet"
+  case .relay: "relay"
+  }
+  guard let durationMs, durationMs >= 0, durationMs <= 10_000 else {
+    return routeLabel
+  }
+  let seconds = Double(durationMs) / 1_000
+  let durationLabel = String(
+    format: "%.1f",
+    locale: Locale(identifier: "en_US_POSIX"),
+    seconds
+  )
+  return "Connected in \(durationLabel)s · \(routeLabel)"
+}
 
 struct SettingsConnectionHeader: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   let snapshot: SettingsConnectionSnapshot
   let onDisconnect: () -> Void
-  let onReconnect: (Bool) -> Void
+  let onReconnect: () -> Void
 
   @State private var pulsing = false
 
@@ -37,7 +60,6 @@ struct SettingsConnectionHeader: View {
         SettingsConnectionQuickAction(
           connectionState: snapshot.connectionState,
           canReconnectToSavedHost: snapshot.canReconnectToSavedHost,
-          savedReconnectPrefersTailnet: snapshot.savedReconnectPrefersTailnet,
           onDisconnect: onDisconnect,
           onReconnect: onReconnect
         )
@@ -46,6 +68,12 @@ struct SettingsConnectionHeader: View {
 
       if health.transport.isConnected {
         VStack(alignment: .leading, spacing: 4) {
+          if let chipText = settingsConnectedRouteChipText(
+            durationMs: snapshot.lastConnectDurationMs,
+            routeKind: snapshot.lastConnectedRouteKind
+          ) {
+            ADEStatusPill(text: chipText, tint: ADEColor.success)
+          }
           SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
           if snapshot.usingRelay {
             // Quiet nudge: relay is a valid automatic path; Tailscale is only a
@@ -251,9 +279,8 @@ private struct SettingsConnectedHostDetails: View {
 private struct SettingsConnectionQuickAction: View {
   let connectionState: RemoteConnectionState
   let canReconnectToSavedHost: Bool
-  let savedReconnectPrefersTailnet: Bool
   let onDisconnect: () -> Void
-  let onReconnect: (Bool) -> Void
+  let onReconnect: () -> Void
 
   var body: some View {
     switch connectionState {
@@ -296,7 +323,7 @@ private struct SettingsConnectionQuickAction: View {
           symbol: "arrow.clockwise",
           tint: ADEColor.purpleAccent
         ) {
-          onReconnect(savedReconnectPrefersTailnet)
+          onReconnect()
         }
         .accessibilityLabel("Reconnect to saved machine")
       }
