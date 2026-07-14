@@ -12,7 +12,7 @@ import {
   issueBuiltInBrowserActorCapability,
   resetBuiltInBrowserActorCapabilitiesForTest,
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
-import { isRuntimeValidatedBuiltInBrowserPersonalScope } from "./services/builtInBrowser/desktopBridgeMethods";
+import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -3042,6 +3042,7 @@ describe("adeRpcServer", () => {
       projectRoot: fixture.runtime.projectRoot,
       tabCollection: null,
     });
+    resetBuiltInBrowserActorCapabilitiesForTest();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, {
       callerId: "agent-1",
@@ -3058,10 +3059,12 @@ describe("adeRpcServer", () => {
     expect(captured?.isError).toBeUndefined();
     expect(captureScreenshot).toHaveBeenCalledWith({
       tabId: "tab-1",
-      laneId: "lane-1",
       chatSessionId: "chat-1",
       force: false,
-      projectRoot: fixture.runtime.projectRoot,
+      laneId: undefined,
+      projectRoot: undefined,
+      tabCollection: undefined,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: actorToken,
     });
 
     const forced = await callTool(handler, "run_ade_action", {
@@ -3092,7 +3095,7 @@ describe("adeRpcServer", () => {
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
   });
 
-  it("marks actor-validated personal browser routing while erasing caller project scope", async () => {
+  it("forwards the caller capability to the issuer while erasing caller routing", async () => {
     const fixture = createRuntime();
     const getStatus = vi.fn(async (args: unknown) => args);
     fixture.runtime.builtInBrowserService = { getStatus };
@@ -3120,11 +3123,12 @@ describe("adeRpcServer", () => {
     const scopedArgs = getStatus.mock.calls[0]?.[0];
     expect(scopedArgs).toEqual({
       chatSessionId: "chat-personal",
+      laneId: undefined,
       projectRoot: undefined,
-      tabCollection: "personal",
+      tabCollection: undefined,
       force: false,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: actorToken,
     });
-    expect(isRuntimeValidatedBuiltInBrowserPersonalScope(scopedArgs)).toBe(true);
   });
 
   it("does not let the runtime daemon environment override the connecting browser actor", async () => {
@@ -3159,10 +3163,12 @@ describe("adeRpcServer", () => {
     expect(status?.isError).toBeUndefined();
     expect(getStatus).toHaveBeenCalledTimes(1);
     expect(getStatus).toHaveBeenCalledWith({
-      laneId: "lane-client",
       chatSessionId: "chat-client",
+      laneId: undefined,
       force: false,
-      projectRoot: fixture.runtime.projectRoot,
+      projectRoot: undefined,
+      tabCollection: undefined,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: clientActorToken,
     });
   });
 

@@ -13,8 +13,8 @@ import type {
 import { JsonRpcClient } from "../../../../../ade-cli/src/tuiClient/jsonRpcClient";
 import { createBuiltInBrowserDesktopBridgeClient } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeClient";
 import {
+  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
-  markRuntimeValidatedBuiltInBrowserPersonalScope,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import {
   issueBuiltInBrowserActorCapability,
@@ -812,6 +812,7 @@ describe("built-in browser desktop bridge", () => {
   let bridgeTempDir = "";
 
   beforeEach(() => {
+    resetBuiltInBrowserActorCapabilitiesForTest();
     bridgeTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-bridge-"));
     tempDirs.push(bridgeTempDir);
   });
@@ -857,28 +858,50 @@ describe("built-in browser desktop bridge", () => {
       await expect(client.request("built_in_browser.authenticate", {
         [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
       })).resolves.toEqual({ authenticated: true });
+
       await expect(client.request("built_in_browser.navigate", {
         url: "https://example.test",
-        laneId: "lane-trusted",
         chatSessionId: "chat-trusted",
         projectRoot: "/trusted/project",
+        [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
+      })).rejects.toThrow(/issuer-validated chat capability/);
+
+      const actorToken = issueBuiltInBrowserActorCapability({
+        chatSessionId: "chat-trusted",
+        laneId: "lane-issued",
+        projectRoot: "/issued/project",
+        tabCollection: null,
+      });
+      await expect(client.request("built_in_browser.navigate", {
+        url: "https://example.test",
+        chatSessionId: "chat-other",
+        [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: actorToken,
+        [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
+      })).rejects.toThrow(/issuer-validated chat capability/);
+      await expect(client.request("built_in_browser.navigate", {
+        url: "https://example.test",
+        laneId: "lane-spoofed",
+        chatSessionId: "chat-trusted",
+        projectRoot: "/spoofed/project",
         force: true,
+        [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: actorToken,
         [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
       })).resolves.toMatchObject({
         url: "https://example.test",
-        laneId: "lane-trusted",
+        laneId: "lane-issued",
         chatSessionId: "chat-trusted",
-        projectRoot: "/trusted/project",
+        projectRoot: "/issued/project",
         force: false,
       });
       expect(navigate).toHaveBeenCalledTimes(1);
+      expect(navigate.mock.calls[0]?.[0]).not.toHaveProperty(BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM);
     } finally {
       client?.close();
       server.dispose();
     }
   });
 
-  it.skipIf(process.platform === "win32")("routes only runtime-validated personal chats through the real desktop bridge", async () => {
+  it.skipIf(process.platform === "win32")("validates opaque actor capabilities in their issuing desktop process", async () => {
     const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
     const navigate = vi.fn(async (input: unknown) => input);
     const server = startBuiltInBrowserDesktopBridgeServer({
@@ -894,25 +917,42 @@ describe("built-in browser desktop bridge", () => {
     });
     try {
       await waitForPath(socketPath);
-      await expect(client.navigate(markRuntimeValidatedBuiltInBrowserPersonalScope({
+      const personalActorToken = issueBuiltInBrowserActorCapability({
+        chatSessionId: "chat-personal",
+        laneId: null,
+        projectRoot: null,
+        tabCollection: "personal" as const,
+      });
+      const personalNavigate = {
         url: "https://example.test",
         chatSessionId: "chat-personal",
-        tabCollection: "personal",
+        tabCollection: "personal" as const,
         force: true,
-      }))).resolves.toMatchObject({
+        [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: personalActorToken,
+      };
+      await expect(client.navigate(personalNavigate)).resolves.toMatchObject({
         url: "https://example.test",
         chatSessionId: "chat-personal",
-        tabCollection: "personal",
+        tabCollection: "personal" as const,
         force: false,
       });
-      await expect(client.navigate({
+      const projectActorToken = issueBuiltInBrowserActorCapability({
+        chatSessionId: "chat-project",
+        laneId: "lane-project",
+        projectRoot: "/issued/project",
+        tabCollection: null,
+      });
+      const projectNavigate = {
         url: "https://project.example.test",
         chatSessionId: "chat-project",
-        tabCollection: "personal",
-      })).resolves.toMatchObject({
+        tabCollection: "personal" as const,
+        [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: projectActorToken,
+      };
+      await expect(client.navigate(projectNavigate)).resolves.toMatchObject({
         url: "https://project.example.test",
         chatSessionId: "chat-project",
-        projectRoot: "/trusted/project",
+        laneId: "lane-project",
+        projectRoot: "/issued/project",
         force: false,
       });
       expect(navigate).toHaveBeenCalledWith(expect.objectContaining({
@@ -923,10 +963,18 @@ describe("built-in browser desktop bridge", () => {
       }));
       expect(navigate).toHaveBeenLastCalledWith(expect.objectContaining({
         chatSessionId: "chat-project",
-        projectRoot: "/trusted/project",
+        projectRoot: "/issued/project",
         tabCollection: undefined,
         force: false,
       }));
+
+      revokeBuiltInBrowserActorCapability("chat-personal");
+      const revokedNavigate = {
+        url: "https://example.test/revoked",
+        chatSessionId: "chat-personal",
+        [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: personalActorToken,
+      };
+      await expect(client.navigate(revokedNavigate)).rejects.toThrow(/issuer-validated chat capability/);
     } finally {
       client.dispose();
       server.dispose();

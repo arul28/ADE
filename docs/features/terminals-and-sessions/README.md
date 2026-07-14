@@ -911,8 +911,9 @@ sensible target for attached-session agents. Every PTY launched through
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
 session-owned) `ADE_CHAT_SESSION_ID` plus an opaque
 `ADE_BROWSER_ACTOR_TOKEN` into the spawn env. The browser capability is
-bound in memory to that owner chat/lane/project and lets the runtime reject
-an unbound shell or forged browser scope before it reaches Electron. The
+bound in Electron memory to that owner chat/lane/project. The runtime rejects
+missing tokens and strips caller routing; Electron validates the token in the
+issuing process before restoring its scope on the authenticated bridge. The
 remaining identity variables are how a
 plain shell that the user types `ade --socket terminal read --chat-session
 "$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's

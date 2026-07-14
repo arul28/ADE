@@ -13,7 +13,7 @@ import {
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./desktopBridgeClient";
-import { markRuntimeValidatedBuiltInBrowserPersonalScope } from "./desktopBridgeMethods";
+import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 
 function silentLogger() {
   return {
@@ -220,7 +220,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     client.dispose();
   });
 
-  it("preserves only runtime-validated personal tab routing", async () => {
+  it("forwards the runtime-bound actor capability while erasing caller routing", async () => {
     const recorded: JsonRpcRequest[] = [];
     server = await startBridgeServer(async (request) => {
       recorded.push(request);
@@ -233,28 +233,21 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       logger: silentLogger(),
     });
 
-    await client.navigate(markRuntimeValidatedBuiltInBrowserPersonalScope({
+    const runtimeScopedNavigate = {
       url: "https://personal.example.test",
       chatSessionId: "chat-personal",
-      projectRoot: undefined,
-      tabCollection: "personal",
-    }));
-    await client.navigate({
-      url: "https://spoofed.example.test",
-      chatSessionId: "chat-project",
-      tabCollection: "personal",
-    });
+      projectRoot: "/tmp/spoofed-project",
+      tabCollection: "personal" as const,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
+    };
+    await client.navigate(runtimeScopedNavigate);
 
     expect(recorded[0]?.params).toEqual({
       url: "https://personal.example.test",
       chatSessionId: "chat-personal",
-      tabCollection: "personal",
-      __adeDesktopBridgeAuth: "bridge-auth",
-    });
-    expect(recorded[1]?.params).toEqual({
-      url: "https://spoofed.example.test",
-      chatSessionId: "chat-project",
       projectRoot: "/Users/ade/project-alpha",
+      tabCollection: undefined,
+      [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: "opaque-actor-token",
       __adeDesktopBridgeAuth: "bridge-auth",
     });
     client.dispose();

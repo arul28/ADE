@@ -69,8 +69,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import { resolveBuiltInBrowserActorCapability } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
-import { markRuntimeValidatedBuiltInBrowserPersonalScope } from "./services/builtInBrowser/desktopBridgeMethods";
+import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
@@ -2428,8 +2427,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
   const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  const actor = resolveBuiltInBrowserActorCapability(browserActorToken);
-  if (!callerChatSessionId || !actor || actor.chatSessionId !== callerChatSessionId) {
+  if (!callerChatSessionId || !browserActorToken) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -2439,31 +2437,27 @@ function scopeBuiltInBrowserAdeActionArgs(
   ) {
     builtInBrowserAccessDenied(method);
   }
-  const callerLaneId = actor.laneId;
   const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
-  const requestedLaneId = asOptionalTrimmedString(browserArgs.laneId);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    builtInBrowserAccessDenied(method);
-  }
-  if (requestedLaneId && requestedLaneId !== callerLaneId) {
     builtInBrowserAccessDenied(method);
   }
   if (browserArgs.force === true) {
     builtInBrowserAccessDenied(method);
   }
 
-  const scopedArgs = {
+  // The capability registry intentionally lives only in Electron, where chat
+  // and terminal launches issue and revoke tokens. The separate runtime strips
+  // caller routing and carries the opaque token over its authenticated bridge;
+  // desktopBridgeServer performs the authoritative lookup and scope restore.
+  return {
     ...browserArgs,
-    chatSessionId: actor.chatSessionId,
-    ...(callerLaneId ? { laneId: callerLaneId } : {}),
-    ...(actor.projectRoot
-      ? { projectRoot: actor.projectRoot, tabCollection: undefined }
-      : { projectRoot: undefined, tabCollection: actor.tabCollection }),
+    chatSessionId: callerChatSessionId,
+    laneId: undefined,
+    projectRoot: undefined,
+    tabCollection: undefined,
     force: false,
+    [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken,
   };
-  return actor.tabCollection === "personal"
-    ? markRuntimeValidatedBuiltInBrowserPersonalScope(scopedArgs)
-    : scopedArgs;
 }
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;

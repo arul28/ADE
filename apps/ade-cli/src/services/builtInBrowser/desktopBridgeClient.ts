@@ -4,7 +4,6 @@ import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
-  isRuntimeValidatedBuiltInBrowserPersonalScope,
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
@@ -127,13 +126,6 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     const record = params && typeof params === "object" && !Array.isArray(params)
       ? params as Record<string, unknown>
       : {};
-    if (isRuntimeValidatedBuiltInBrowserPersonalScope(params)) {
-      return {
-        ...record,
-        projectRoot: undefined,
-        tabCollection: "personal",
-      };
-    }
     return {
       ...record,
       projectRoot: projectRoot ?? undefined,

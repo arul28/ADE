@@ -12,10 +12,12 @@ import {
   type JsonRpcTransport,
 } from "../../../../../ade-cli/src/jsonrpc";
 import {
+  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type { Logger } from "../logging/logger";
+import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 
 /**
@@ -172,20 +174,25 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
     const chatSessionId = normalizedString(rawParams.chatSessionId);
-    const projectRoot = normalizedString(rawParams.projectRoot);
-    const tabCollection = rawParams.tabCollection === "personal" ? "personal" : null;
-    if (!chatSessionId || (!projectRoot && !tabCollection)) {
+    const actorToken = normalizedString(rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]);
+    delete rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM];
+    // Validate in the issuing Electron process so opaque capabilities remain
+    // revocable without sharing the in-memory registry or its authority with
+    // the runtime daemon (which runs in a separate process).
+    const actor = resolveBuiltInBrowserActorCapability(actorToken);
+    if (!chatSessionId || !actor || actor.chatSessionId !== chatSessionId) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        "Built-in browser automation requires a runtime-validated chat and tab collection.",
+        "Built-in browser automation requires an issuer-validated chat capability.",
       );
     }
     const params = {
       ...rawParams,
-      chatSessionId,
-      ...(projectRoot
-        ? { projectRoot, tabCollection: undefined }
-        : { projectRoot: undefined, tabCollection }),
+      chatSessionId: actor.chatSessionId,
+      laneId: actor.laneId ?? undefined,
+      ...(actor.projectRoot
+        ? { projectRoot: actor.projectRoot, tabCollection: undefined }
+        : { projectRoot: undefined, tabCollection: actor.tabCollection }),
       force: false,
     };
     const callable = (service as unknown as Record<string, unknown>)[name];
