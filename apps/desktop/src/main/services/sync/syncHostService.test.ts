@@ -33,11 +33,16 @@ const { execFileMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
   })),
   spawnSyncMock: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
 }));
+const resolveCodexComputerUseMcpConfigMock = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
   spawn: spawnMock,
   spawnSync: spawnSyncMock,
+}));
+
+vi.mock("../../utils/codexComputerUse", () => ({
+  resolveCodexComputerUseMcpConfig: resolveCodexComputerUseMcpConfigMock,
 }));
 
 function createStubPinStore(initialPin: string | null = null): SyncPinStore {
