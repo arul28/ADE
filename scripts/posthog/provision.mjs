@@ -471,7 +471,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 const isDirectRun = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (isDirectRun) {
   main().catch((error) => {
-    process.stderr.write(`[ade-posthog] ${redact(error instanceof Error ? error.message : error, [process.env[API_KEY_ENV]])}\n`);
+    process.stderr.write(`[ade-posthog] ${redact(error instanceof Error ? error.message : error, [process.env[API_KEY_ENV]?.trim()])}\n`);
     process.exitCode = 1;
   });
 }

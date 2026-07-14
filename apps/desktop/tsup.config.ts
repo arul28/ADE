@@ -1,9 +1,8 @@
 import { defineConfig } from "tsup";
+import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
 
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
-if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {
-  throw new Error("ADE_POSTHOG_PROJECT_TOKEN must be a public phc_ project token; personal API keys must never be bundled.");
-}
+assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
 
 export default defineConfig({
   entry: {

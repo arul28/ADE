@@ -122,8 +122,8 @@ export function captureDailyUsageAnalytics(args: {
     token_count: summary.adeTotalTokens ?? summary.trackedAdeTokens ?? 0,
     call_count: summary.trackedAdeCalls ?? 0,
     duration_ms: summary.trackedAdeDurationMs ?? 0,
-    provider_count: args.stats.providers.length,
-    model_count: args.stats.models.length,
+    provider_count: (args.stats.adeProviders ?? args.stats.providers).length,
+    model_count: (args.stats.adeModels ?? args.stats.models).length,
   });
 
   const providers = new Map<string, { total: number; input: number; output: number }>();

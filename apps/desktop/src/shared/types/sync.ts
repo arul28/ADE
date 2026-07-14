@@ -948,6 +948,7 @@ export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
   | "analytics.capture"
+  | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
   | "usage.getAdeStats"

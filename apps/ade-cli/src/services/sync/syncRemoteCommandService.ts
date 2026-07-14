@@ -4748,6 +4748,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return args.productAnalyticsService.capture(parsed.value);
   }, "runtime");
 
+  register("analytics.flush", { viewerAllowed: true }, async () =>
+    args.productAnalyticsService ? await args.productAnalyticsService.flush() : false,
+  "runtime");
+
   register("analytics.getStatus", { viewerAllowed: true }, async () =>
     args.productAnalyticsService?.getStatus() ?? {
       configured: false,

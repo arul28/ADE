@@ -2177,6 +2177,12 @@ describe("sync host handoff over a shared listener", () => {
     const rootB = createTempProjectRoot();
     const tokenPath = path.join(rootA.projectRoot, "shared-bootstrap-token");
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const capture = vi.fn(() => ({ accepted: true, reason: "accepted" as const }));
+    const productAnalyticsService = {
+      capture,
+      getStatus: () => ({ configured: true, enabled: true, effective: true }),
+      flush: vi.fn(async () => true),
+    };
     let client: WebSocket | null = null;
     let hostB: ReturnType<typeof createSyncHostService> | null = null;
     try {
@@ -2188,6 +2194,7 @@ describe("sync host handoff over a shared listener", () => {
           changes: [],
         }),
         sharedListener: listener,
+        productAnalyticsService,
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       expect(await hostA.waitUntilListening()).toBe(port);
 
@@ -2203,6 +2210,18 @@ describe("sync host handoff over a shared listener", () => {
         "hello_ok from host A",
       );
       expect(hostA.getPeerStates()).toHaveLength(1);
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "analytics-consent-before-handoff",
+        projectId: null,
+        payload: {
+          commandId: "analytics-consent-before-handoff",
+          action: "analytics.setClientEnabled",
+          projectId: null,
+          args: { enabled: true },
+        },
+      }));
+      await waitForEnvelope(envelopes, "command_result", "analytics-consent-before-handoff");
 
       // Project switch: host A dies, host B (a different project DB) takes
       // over the shared listener and must adopt the live socket.
@@ -2215,6 +2234,7 @@ describe("sync host handoff over a shared listener", () => {
           changes: [makeHostChange(1, 0), makeHostChange(2, 1)],
         }),
         sharedListener: listener,
+        productAnalyticsService,
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       expect(await hostB.waitUntilListening()).toBe(port);
 
@@ -2235,6 +2255,33 @@ describe("sync host handoff over a shared listener", () => {
       const adoptedPeer = hostB.getPeerStates();
       expect(adoptedPeer).toHaveLength(1);
       expect(adoptedPeer[0]?.deviceId).toBe("ios-device-1");
+
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "analytics-capture-after-handoff",
+        projectId: null,
+        payload: {
+          commandId: "analytics-capture-after-handoff",
+          action: "analytics.capture",
+          projectId: null,
+          args: {
+            event: "ade_screen_viewed",
+            surface: "desktop",
+            properties: { screen: "work" },
+          },
+        },
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "command_result",
+        "analytics-capture-after-handoff",
+      )).resolves.toMatchObject({
+        payload: { ok: true, result: { accepted: true, reason: "accepted" } },
+      });
+      expect(capture).toHaveBeenCalledWith(expect.objectContaining({
+        event: "ade_screen_viewed",
+        surface: "mobile",
+      }));
     } finally {
       try {
         client?.close();

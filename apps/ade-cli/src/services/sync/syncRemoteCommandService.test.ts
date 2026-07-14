@@ -36,6 +36,7 @@ function createService(options?: {
   issueRuntimeHostPairingGrant?: () => string;
   isCloudRelayEnabled?: () => boolean;
   usageTrackingService?: Record<string, unknown>;
+  productAnalyticsService?: Record<string, unknown>;
   personalChatScope?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
@@ -87,6 +88,7 @@ function createService(options?: {
       : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
+    ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     logger,
   } as any);
@@ -110,14 +112,20 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
-  it("advertises the complete paired-client analytics command contract", () => {
-    const { service } = createService();
+  it("advertises the complete paired-client analytics command contract", async () => {
+    const flush = vi.fn(async () => true);
+    const { service } = createService({ productAnalyticsService: { flush } });
 
     expect(
       service.getDescriptors().filter((descriptor) => descriptor.action.startsWith("analytics.")),
     ).toEqual([
       {
         action: "analytics.capture",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.flush",
         scope: "runtime",
         policy: { viewerAllowed: true },
       },
@@ -132,6 +140,8 @@ describe("createSyncRemoteCommandService", () => {
         policy: { viewerAllowed: true },
       },
     ]);
+    await expect(service.execute(makePayload("analytics.flush"))).resolves.toBe(true);
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {

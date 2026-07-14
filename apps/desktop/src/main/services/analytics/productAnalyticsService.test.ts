@@ -30,6 +30,7 @@ function makeHarness(options: {
   root?: string;
   messages?: Array<Record<string, unknown>>;
   appVersion?: string;
+  captureClientMessage?: ProductAnalyticsClient["capture"];
 } = {}) {
   const root = options.root ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-product-analytics-"));
   const messages = options.messages ?? [];
@@ -37,7 +38,7 @@ function makeHarness(options: {
   let shutdowns = 0;
   const shutdownArgs: Array<[number | undefined, { flush?: boolean } | undefined]> = [];
   const client: ProductAnalyticsClient = {
-    capture: (message) => messages.push(message),
+    capture: options.captureClientMessage ?? ((message) => messages.push(message)),
     flush: async () => { flushes += 1; },
     shutdown: async (timeoutMs, shutdownOptions) => {
       shutdowns += 1;
@@ -75,7 +76,7 @@ describe("productAnalyticsService", () => {
     vi.unstubAllEnvs();
   });
 
-  it("sanitizes properties and hashes operational identifiers", () => {
+  it("enforces privacy boundaries for properties, identifiers, actions, and insert ids", () => {
     expect(parseProductAnalyticsCapture(null, "desktop")).toEqual({ ok: false, reason: "invalid_event" });
     expect(parseProductAnalyticsCapture({ event: "unknown" }, "desktop")).toEqual({
       ok: false,
@@ -94,7 +95,7 @@ describe("productAnalyticsService", () => {
       clientEventId: "11111111-1111-4111-8111-111111111111",
       properties: {
         feature: "Work",
-        action: "chat.send",
+        action: "work.startCliSession",
         outcome: "success",
         prompt: "never send this",
         path: "/Users/alice/secret.ts",
@@ -109,7 +110,7 @@ describe("productAnalyticsService", () => {
     expect(message.properties).toMatchObject({
       surface: "desktop",
       feature: "work",
-      action: "chat.send",
+      action: "work.startCliSession",
       outcome: "success",
       app_version: "1.2.3",
       runtime_mode: "test_harness",
@@ -122,6 +123,16 @@ describe("productAnalyticsService", () => {
     expect(message.properties).not.toHaveProperty("path");
     expect(JSON.stringify(message)).not.toContain("secret-project");
     expect(fs.readFileSync(path.join(harness.root, "analytics.json"), "utf8")).not.toContain("secret-project");
+
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      clientEventId: "11111111-2222-1333-8444-555555555555",
+      properties: { feature: "chat", action: "chat.send", outcome: "success" },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    const regenerated = harness.messages[1] as { uuid: string };
+    expect(regenerated.uuid).not.toBe("11111111-2222-1333-8444-555555555555");
+    expect(regenerated.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -228,6 +239,33 @@ describe("productAnalyticsService", () => {
       reason: "daily_budget",
     });
     expect(harness.messages).toHaveLength(25);
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("rolls back quota, minute, and dedupe reservations after a synchronous transport failure", () => {
+    const harness = makeHarness({
+      captureClientMessage: () => {
+        throw new Error("PostHog analytics queue is full");
+      },
+    });
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      dedupeKey: "retry-after-transport-failure",
+      properties: { feature: "work", action: "work.startCliSession", outcome: "started" },
+    })).toEqual({ accepted: false, reason: "transport_error" });
+
+    expect(harness.service.getStatus()).toMatchObject({ acceptedToday: 0, droppedToday: 1 });
+    const state = JSON.parse(fs.readFileSync(path.join(harness.root, "analytics.json"), "utf8")) as {
+      quota: {
+        acceptedByEvent: Record<string, number>;
+        minuteWindows: Record<string, number[]>;
+        dedupe: Record<string, number>;
+      };
+    };
+    expect(state.quota.acceptedByEvent).not.toHaveProperty("ade_feature_used");
+    expect(state.quota.minuteWindows).not.toHaveProperty("ade_feature_used");
+    expect(state.quota.dedupe).toEqual({});
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -508,7 +546,19 @@ describe("product analytics producers", () => {
       },
       clients: [{ client: "desktop", interactions: 9, sessions: 3, activeDays: 1 }],
       providers: [{ provider: "OpenAI", totalTokens: 42_000, inputTokens: 30_000, outputTokens: 12_000 }],
+      adeProviders: [
+        { provider: "OpenAI", totalTokens: 40_000, inputTokens: 29_000, outputTokens: 11_000 },
+        { provider: "Claude", totalTokens: 2_000, inputTokens: 1_000, outputTokens: 1_000 },
+      ],
       models: [{
+        provider: "OpenAI",
+        model: "GPT 5",
+        totalTokens: 42_000,
+        inputTokens: 30_000,
+        outputTokens: 12_000,
+        calls: 8,
+      }],
+      adeModels: [{
         provider: "OpenAI",
         model: "GPT 5",
         totalTokens: 42_000,
@@ -524,6 +574,11 @@ describe("product analytics producers", () => {
       projectId: "/private/project/path",
     })).toBe(3);
     expect(captureInternal).toHaveBeenCalledTimes(3);
+    expect(captureInternal).toHaveBeenCalledWith(expect.objectContaining({
+      event: "ade_daily_usage_summary",
+      surface: "api",
+      properties: expect.objectContaining({ summary_kind: "overall", provider_count: 2, model_count: 1 }),
+    }));
     expect(captureInternal).toHaveBeenCalledWith(expect.objectContaining({
       event: "ade_daily_usage_summary",
       surface: "api",

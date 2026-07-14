@@ -141,7 +141,7 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
   if (key === "action") {
     if (typeof value !== "string" || value.length > 256) return null;
     const raw = value.trim();
-    return raw === "open" || isMeaningfulUsageAction(raw) ? raw.toLowerCase() : null;
+    return raw === "open" || isMeaningfulUsageAction(raw) ? raw : null;
   }
   if (key === "error_kind") return coarseErrorKind(value);
   const safe = safeProductAnalyticsString(value);

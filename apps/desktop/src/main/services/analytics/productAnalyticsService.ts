@@ -29,9 +29,8 @@ declare const __ADE_POSTHOG_PROJECT_TOKEN__: string | undefined;
 declare const __ADE_POSTHOG_HOST__: string | undefined;
 
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
-const STATE_LOCK_WAIT_MS = 25;
 const STATE_LOCK_STALE_MS = 5_000;
-const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type PendingBudgetSummary = {
   sentCount: number;
@@ -299,12 +298,9 @@ function writeState(filePath: string, state: ProductAnalyticsState): void {
   writeTextAtomic(filePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 }
 
-const stateLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
-
-function acquireStateLock(filePath: string, waitMs: number): (() => void) | null {
+function tryAcquireStateLock(filePath: string): (() => void) | null {
   const lockPath = `${filePath}.lock`;
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + Math.max(0, waitMs);
   while (true) {
     try {
       fs.mkdirSync(lockPath, { mode: 0o700 });
@@ -325,8 +321,9 @@ function acquireStateLock(filePath: string, waitMs: number): (() => void) | null
       } catch {
         continue;
       }
-      if (Date.now() >= deadline) return null;
-      Atomics.wait(stateLockWaitArray, 0, 0, 2);
+      // Analytics must never stall Electron's main thread. Contended callers
+      // fail closed and let the next capture/status refresh observe disk state.
+      return null;
     }
   }
 }
@@ -654,7 +651,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     ingressTimestamps.push(ingressNow);
     let release: (() => void) | null = null;
     try {
-      release = acquireStateLock(args.stateFilePath, STATE_LOCK_WAIT_MS);
+      release = tryAcquireStateLock(args.stateFilePath);
       if (!release) {
         pendingIngressDrops = Math.min(1_000_000, pendingIngressDrops + 1);
         return { accepted: false, reason: "rate_limited" };
@@ -742,7 +739,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           timestamp = new Date(parsed);
         }
       }
-      const uuid = input.clientEventId?.length === 36 && UUID_VALUE.test(input.clientEventId)
+      const uuid = input.clientEventId?.length === 36 && RANDOM_UUID_VALUE.test(input.clientEventId)
         ? input.clientEventId.toLowerCase()
         : randomUUID();
       state.quota.accepted += 1;
@@ -776,6 +773,13 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           event: input.event,
           errorKind: error instanceof Error ? error.name : "unknown",
         });
+        state.quota.accepted = Math.max(0, state.quota.accepted - 1);
+        const acceptedByEvent = Math.max(0, (state.quota.acceptedByEvent[input.event] ?? 1) - 1);
+        if (acceptedByEvent === 0) delete state.quota.acceptedByEvent[input.event];
+        else state.quota.acceptedByEvent[input.event] = acceptedByEvent;
+        recent.pop();
+        if (recent.length === 0) delete state.quota.minuteWindows[input.event]; else state.quota.minuteWindows[input.event] = recent;
+        if (dedupeKey) delete state.quota.dedupe[dedupeKey];
         incrementDrop(state.quota, "transport_error");
         writeState(args.stateFilePath, state);
         return { accepted: false, reason: "transport_error" };
@@ -819,7 +823,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     }
     let release: (() => void) | null = null;
     try {
-      release = acquireStateLock(args.stateFilePath, STATE_LOCK_WAIT_MS);
+      release = tryAcquireStateLock(args.stateFilePath);
       if (release) {
         const nextState = rollQuotaDay(readState(args.stateFilePath, now()), now());
         if (nextState.quota.day !== state.quota.day) writeState(args.stateFilePath, nextState);
@@ -870,7 +874,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     let release: (() => void) | null = null;
     let preferencePersisted = false;
     try {
-      release = acquireStateLock(args.stateFilePath, 250);
+      release = tryAcquireStateLock(args.stateFilePath);
       if (release) {
         state = rollQuotaDay(readState(args.stateFilePath, now()), now());
         state = {

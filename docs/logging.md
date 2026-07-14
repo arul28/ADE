@@ -38,7 +38,7 @@ Attached clients and native surfaces:
 
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` binds paired-client consent, surface, and project identity at the host boundary. `syncHostService.ts` keeps consent peer-scoped, and `syncRemoteCommandService.ts` exposes only the runtime-scoped analytics commands.
 - `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
-- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's affirmative choice in browser storage and reasserts it on every connection. It disconnects fail-closed when an opt-out acknowledgement cannot be confirmed.
+- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's affirmative choice in browser storage and reasserts it on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
 - `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, and direct transport. `SettingsAnalyticsSection.swift` owns the durable preference, while `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
 
@@ -71,7 +71,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
-Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a client UUID as the PostHog insert ID. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
+Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
 
 Daily usage summaries report coarse totals and only the top coarse provider and model family. They never report provider account IDs, exact model strings, prompt content, or per-session content.
 

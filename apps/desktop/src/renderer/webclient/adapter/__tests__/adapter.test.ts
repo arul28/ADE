@@ -268,7 +268,7 @@ describe("createAdeWebAdapter", () => {
     reloadedAdapter.dispose();
   });
 
-  it("disconnects when an opted-out browser cannot get a host consent acknowledgement", async () => {
+  it("retries consent before disconnecting an opted-out browser fail-closed", async () => {
     fake.descriptors = descriptors(["analytics.setClientEnabled", "analytics.capture"]);
     fake.commandErrors.set("analytics.setClientEnabled", new Error("consent timeout"));
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -277,6 +277,7 @@ describe("createAdeWebAdapter", () => {
       enabled: false,
       effective: false,
     });
+    expect(fake.commandCalls.filter((call) => call.action === "analytics.setClientEnabled")).toHaveLength(6);
     expect(fake.disconnectCalls).toBe(1);
     await expect(adapter.ade.analytics.capture({
       event: "ade_screen_viewed",

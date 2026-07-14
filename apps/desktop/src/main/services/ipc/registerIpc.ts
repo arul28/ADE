@@ -2063,20 +2063,24 @@ export function registerIpc({
           const usageAction = usageActionFromIpcChannel(channel);
           if (isMeaningfulUsageAction(usageAction)) {
             const errorKind = error instanceof Error ? error.name : "unknown";
-            productAnalyticsService?.capture({
-              event: "ade_error",
-              surface: "desktop",
-              dedupeKey: `desktop-action-error:${usageAction}:${errorKind}`,
-              minimumIntervalMs: 5 * 60_000,
-              properties: {
-                action: usageAction,
-                feature: usageAction.split(".", 1)[0] ?? "other",
-                error_kind: errorKind,
-                outcome: didTimeout ? "timeout" : "failure",
-                recoverable: true,
-                source: "ipc",
-              },
-            });
+            try {
+              productAnalyticsService?.capture({
+                event: "ade_error",
+                surface: "desktop",
+                dedupeKey: `desktop-action-error:${usageAction}:${errorKind}`,
+                minimumIntervalMs: 5 * 60_000,
+                properties: {
+                  action: usageAction,
+                  feature: usageAction.split(".", 1)[0] ?? "other",
+                  error_kind: errorKind,
+                  outcome: didTimeout ? "timeout" : "failure",
+                  recoverable: true,
+                  source: "ipc",
+                },
+              });
+            } catch {
+              // Analytics capture must never mask the original IPC error.
+            }
           }
           if (traceIpcInvokes || didTimeout) {
             const logger = traceLogger ?? getTraceLogger();

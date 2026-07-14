@@ -175,6 +175,13 @@ type SessionState = {
   };
 };
 
+function isUserClientSession(session: SessionState): boolean {
+  return !session.identity.runId
+    && !session.identity.stepId
+    && !session.identity.attemptId
+    && !session.identity.chatSessionId;
+}
+
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
@@ -3338,10 +3345,7 @@ async function runTool(args: {
       : [domain as AdeActionDomain];
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
-    const isUserClient = !session.identity.runId
-      && !session.identity.stepId
-      && !session.identity.attemptId
-      && !session.identity.chatSessionId;
+    const isUserClient = isUserClientSession(session);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
@@ -3395,10 +3399,7 @@ async function runTool(args: {
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
     let result: unknown;
-    const isUserClient = !session.identity.runId
-      && !session.identity.stepId
-      && !session.identity.attemptId
-      && !session.identity.chatSessionId;
+    const isUserClient = isUserClientSession(session);
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(

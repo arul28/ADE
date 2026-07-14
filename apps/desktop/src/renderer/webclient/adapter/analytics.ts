@@ -21,6 +21,7 @@ const DISABLED: ProductAnalyticsCaptureResult = {
   accepted: false,
   reason: "disabled",
 };
+const CONSENT_SYNC_ATTEMPTS = 3;
 
 function fallbackStatus(enabled: boolean): ProductAnalyticsStatus {
   return {
@@ -67,6 +68,7 @@ function writeEnabledPreference(enabled: boolean): void {
 export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNamespace {
   let enabled = readEnabledPreference();
   let consentSyncTail: Promise<void> = Promise.resolve();
+  let disconnectedForFailedDisable = false;
 
   const combineStatus = (remote: ProductAnalyticsStatus): ProductAnalyticsStatus => ({
     ...remote,
@@ -89,22 +91,28 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
     const requestedEnabled = enabled;
     const run = async (): Promise<ProductAnalyticsStatus> => {
       if (!infra.commands.hasAction("analytics.setClientEnabled")) return await getStatus();
-      try {
-        const remote = await infra.client.sendCommand(
-          "analytics.setClientEnabled",
-          { enabled: requestedEnabled },
-          { projectId: null, timeoutMs: 5_000 },
-        ) as ProductAnalyticsStatus;
-        return combineStatus(remote);
-      } catch {
-        if (!requestedEnabled) {
-          // A failed disable acknowledgement must not leave an already-enabled
-          // host peer accepting exportable mutations on this socket. Closing it
-          // removes the peer; every reconnect starts fail-closed until consent.
-          infra.client.disconnect();
+      for (let attempt = 1; attempt <= CONSENT_SYNC_ATTEMPTS; attempt += 1) {
+        try {
+          const remote = await infra.client.sendCommand(
+            "analytics.setClientEnabled",
+            { enabled: requestedEnabled },
+            { projectId: null, timeoutMs: 5_000 },
+          ) as ProductAnalyticsStatus;
+          disconnectedForFailedDisable = false;
+          return combineStatus(remote);
+        } catch {
+          if (attempt < CONSENT_SYNC_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+          }
         }
-        return fallbackStatus(enabled);
       }
+      if (!requestedEnabled && !disconnectedForFailedDisable) {
+        // Preserve the fail-closed consent boundary only after retries are
+        // exhausted. A reconnect starts with peer analytics disabled.
+        disconnectedForFailedDisable = true;
+        infra.client.disconnect();
+      }
+      return fallbackStatus(enabled);
     };
     const result = consentSyncTail.then(run, run);
     consentSyncTail = result.then(() => undefined, () => undefined);

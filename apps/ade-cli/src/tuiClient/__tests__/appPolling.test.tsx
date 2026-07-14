@@ -407,38 +407,27 @@ describe("AdeCodeApp polling", () => {
 
 describe("TUI product analytics policy", () => {
   it("derives closed screen names and binds capture to the TUI surface", async () => {
-    expect(deriveTuiAnalyticsScreen({
+    const base: Parameters<typeof deriveTuiAnalyticsScreen>[0] = {
       activePane: "chat",
       drawerSection: "lanes",
       rightPaneKind: "empty",
       gridViewActive: false,
       addModeActive: false,
       terminalControlActive: false,
-    })).toBe("chat");
-    expect(deriveTuiAnalyticsScreen({
-      activePane: "drawer",
-      drawerSection: "chats",
-      rightPaneKind: "empty",
-      gridViewActive: false,
-      addModeActive: false,
-      terminalControlActive: false,
-    })).toBe("drawer_chats");
-    expect(deriveTuiAnalyticsScreen({
-      activePane: "details",
-      drawerSection: "lanes",
-      rightPaneKind: "model-picker",
-      gridViewActive: false,
-      addModeActive: false,
-      terminalControlActive: false,
-    })).toBe("details_model_picker");
-    expect(deriveTuiAnalyticsScreen({
-      activePane: "addMode",
-      drawerSection: "lanes",
-      rightPaneKind: "empty",
-      gridViewActive: false,
-      addModeActive: true,
-      terminalControlActive: true,
-    })).toBe("terminal_control");
+    };
+    const cases: Array<[string, Parameters<typeof deriveTuiAnalyticsScreen>[0]]> = [
+      ["terminal_control", { ...base, activePane: "addMode", addModeActive: true, gridViewActive: true, terminalControlActive: true }],
+      ["drawer_chats", { ...base, activePane: "drawer", drawerSection: "chats", addModeActive: true, gridViewActive: true }],
+      ["details", { ...base, activePane: "details" }],
+      ["details_model_picker", { ...base, activePane: "details", rightPaneKind: "model-picker", addModeActive: true }],
+      ["add_chat", { ...base, activePane: "addMode", gridViewActive: true }],
+      ["add_chat", { ...base, addModeActive: true, gridViewActive: true }],
+      ["multi_chat_grid", { ...base, gridViewActive: true }],
+      ["chat", base],
+    ];
+    for (const [expected, input] of cases) {
+      expect(deriveTuiAnalyticsScreen(input)).toBe(expected);
+    }
 
     const action = vi.fn(async () => ({ accepted: true, reason: "accepted" as const }));
     const tuiConnection = { action } as unknown as AdeCodeConnection;

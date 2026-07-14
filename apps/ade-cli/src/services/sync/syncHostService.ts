@@ -2353,6 +2353,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatSubscriptionScopes.set(sessionId, scope);
         }
         peer.rosterSubscribed = snapshot.rosterSubscribed === true;
+        peer.productAnalyticsEnabled = snapshot.productAnalyticsEnabled === true;
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
           lastSeenAt: nowIso(),
           lastHost: peer.remoteAddress,
@@ -5523,6 +5524,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 .filter(([sessionId]) => handedOffChatSessionIds.has(sessionId)),
             ),
             rosterSubscribed: peer.rosterSubscribed,
+            productAnalyticsEnabled: peer.productAnalyticsEnabled,
           });
         }
         peers.clear();

@@ -2,7 +2,7 @@ import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
 import { LINKS } from "../../lib/links";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
 export function TermsPage() {
@@ -46,10 +46,10 @@ export function TermsPage() {
                   For licensing and detailed system behavior, refer to the repository.
                 </p>
                 <div className="mt-4 flex flex-wrap gap-3 text-sm">
-                  <a className="focus-ring rounded-md text-muted-fg hover:text-fg" href={LINKS.github} data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB} target="_blank" rel="noreferrer">
+                  <a className="focus-ring rounded-md text-muted-fg hover:text-fg" href={LINKS.github} {...{ [ANALYTICS_FEATURE_ATTRIBUTE]: MARKETING_FEATURES.VIEW_GITHUB }} target="_blank" rel="noreferrer">
                     GitHub
                   </a>
-                  <a className="focus-ring rounded-md text-muted-fg hover:text-fg" href={LINKS.docs} data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS} target="_blank" rel="noreferrer">
+                  <a className="focus-ring rounded-md text-muted-fg hover:text-fg" href={LINKS.docs} {...{ [ANALYTICS_FEATURE_ATTRIBUTE]: MARKETING_FEATURES.VIEW_DOCS }} target="_blank" rel="noreferrer">
                     Docs
                   </a>
                 </div>
