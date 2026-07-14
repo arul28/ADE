@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.27] - 2026-07-14
+
+### Added
+
+- Added per-job scheduled-work management across Settings, Chat Info, ADE CLI/Code, and paired iOS Work chats.
+
+### Changed
+
+- Claude cron jobs, wakeups, and loops now retain their Claude Agent SDK session ownership across ADE persistence, with provider-confirmed cancellation for current owners and immediate quarantine during session rollover.
+- Scheduled-work reconciliation now refreshes active recurring ownership, retires fired one-shots, prunes terminal history, and migrates legacy provisional rows safely.
+
+### Fixed
+
+- Stale scheduled-work mirrors can no longer keep injecting prompts into a superseding chat after compaction or relaunch.
+- Legacy and orphaned jobs remain recoverable without allowing a busy or unavailable provider to block chat archive or deletion.
+- iOS preserves transcript-derived scheduled work when the managed snapshot is empty and uses authoritative managed state when available.
+
 ## [1.2.26] - 2026-07-14
 
 ### Added
@@ -773,7 +790,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.26...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.27...HEAD
+[1.2.27]: https://github.com/arul28/ADE/compare/v1.2.26...v1.2.27
 [1.2.26]: https://github.com/arul28/ADE/compare/v1.2.25...v1.2.26
 [1.2.25]: https://github.com/arul28/ADE/compare/v1.2.24...v1.2.25
 [1.2.24]: https://github.com/arul28/ADE/compare/v1.2.23...v1.2.24
