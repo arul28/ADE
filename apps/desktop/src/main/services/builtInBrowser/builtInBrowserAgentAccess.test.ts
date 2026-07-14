@@ -83,4 +83,23 @@ describe("builtInBrowserAgentAccess", () => {
     await expect(controller.requireUrlAccess("https://example.test", identity, "navigate")).resolves.toBeUndefined();
     expect(() => controller.assertUrlAccessSync("https://example.test", identity)).not.toThrow();
   });
+
+  it("treats HTTP-authenticated origins as sensitive and grants only the prompting agent", async () => {
+    const controller = createBuiltInBrowserAgentAccessController({
+      getSession: () => fakeSession(),
+      resolveParentWindow: () => null,
+      prompt: vi.fn(),
+    });
+    const owner = { laneId: "lane-1", chatSessionId: "chat-1" };
+
+    await expect(controller.authorizeUrl("https://basic.example.com/", owner, "read"))
+      .resolves.toMatchObject({ required: false, granted: true });
+    controller.recordHumanAuthentication("https://basic.example.com/private", owner);
+
+    expect(() => controller.assertUrlAccessSync("https://basic.example.com/private", owner)).not.toThrow();
+    expect(() => controller.assertUrlAccessSync(
+      "https://basic.example.com/private",
+      { laneId: "lane-1", chatSessionId: "chat-2" },
+    )).toThrow(/requires a browser human-approval check/);
+  });
 });

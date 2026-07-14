@@ -61,6 +61,7 @@ import {
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
+import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
 import {
   createBuiltInBrowserPermissionController,
@@ -1406,6 +1407,15 @@ function createBuiltInBrowserWindowService(args: {
     MANAGED_BROWSER_WEB_CONTENTS.add(wc);
     wc.once("destroyed", () => {
       MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
+    });
+    configureBuiltInBrowserAuthentication({
+      webContents: wc,
+      resolveParentWindow: () => (win && !win.isDestroyed() ? win : null),
+      getAgentIdentity: () => tabForWebContents(wc)?.agentNavigationGuard ?? null,
+      recordAuthenticatedOrigin: (url, identity) => {
+        args.agentAccessController.recordHumanAuthentication(url, identity);
+      },
+      getLogger: args.getLogger,
     });
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);

@@ -41,6 +41,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
   }) => Promise<AccessPromptResult>;
 }) {
   const authenticatedCookieDomains = new Set<string>();
+  const authenticatedOrigins = new Set<string>();
   const evaluatedSafeOrigins = new Set<string>();
   const grants = new Set<string>();
   const pendingPrompts = new Map<string, Promise<boolean>>();
@@ -71,7 +72,11 @@ export function createBuiltInBrowserAgentAccessController(args: {
 
   const inspectOrigin = async (origin: string): Promise<boolean> => {
     const host = new URL(origin).hostname.toLowerCase();
-    if (isHighRiskHost(host) || cookieDomainsContainHost(authenticatedCookieDomains, host)) return true;
+    if (
+      authenticatedOrigins.has(origin)
+      || isHighRiskHost(host)
+      || cookieDomainsContainHost(authenticatedCookieDomains, host)
+    ) return true;
     try {
       const cookies = await args.getSession().cookies.get({ url: `${origin}/` });
       if (cookies.length > 0) {
@@ -176,7 +181,21 @@ export function createBuiltInBrowserAgentAccessController(args: {
       if (!agentKey || !origin || isLocalBrowserOrigin(origin)) return false;
       if (grants.has(accessGrantKey(agentKey, origin))) return false;
       const host = new URL(origin).hostname.toLowerCase();
-      return isHighRiskHost(host) || cookieDomainsContainHost(authenticatedCookieDomains, host);
+      return authenticatedOrigins.has(origin)
+        || isHighRiskHost(host)
+        || cookieDomainsContainHost(authenticatedCookieDomains, host);
+    },
+    recordHumanAuthentication(url: string, identity: AgentIdentity | null): void {
+      const origin = browserOrigin(url);
+      if (!origin || isLocalBrowserOrigin(origin)) return;
+      authenticatedOrigins.add(origin);
+      evaluatedSafeOrigins.delete(origin);
+      const agentKey = identity ? agentIdentityKey(identity) : null;
+      if (agentKey) grants.add(accessGrantKey(agentKey, origin));
+      logger()?.info("built_in_browser.authenticated_origin_recorded", {
+        origin,
+        grantedToAgent: Boolean(agentKey),
+      });
     },
   };
 }
