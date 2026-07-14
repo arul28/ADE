@@ -110,6 +110,13 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers (including per-chat scheduled-work pause), persists/retrieves parallel launch recovery state in `kv`, and refreshes the runtime scheduler after the global AI config pause changes. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 
+## Built-in browser authentication limits
+
+- Signed, packaged macOS builds configure Electron's Touch ID WebAuthn platform authenticator with the matching `VQ372F39G6.com.ade.desktop.webauthn` keychain access-group entitlement. Source builds leave it off unless `ADE_ENABLE_TOUCH_ID_WEBAUTHN=1` is explicitly set; `ADE_ENABLE_TOUCH_ID_WEBAUTHN=0` is an operational kill switch. The account-selection event always resolves exactly once and uses a native chooser when a site returns multiple discoverable credentials.
+- Electron documents these Touch ID credentials as device-bound to that Mac's Secure Enclave and scoped by Electron session metadata. Because ADE uses one global browser partition, the metadata is global across ADE projects in the same release channel, but the credentials are not iCloud Keychain-synced passkeys. See Electron's [`app.configureWebAuthn`](https://www.electronjs.org/docs/latest/api/app#appconfigureweb-authnoptions-macos) and [`select-webauthn-account`](https://www.electronjs.org/docs/latest/api/session#event-select-webauthn-account) contracts.
+- ADE does not request Apple's managed-browser public-key credential entitlement or claim native AuthenticationServices integration. It also does not load Apple Passwords or arbitrary Chrome Web Store extensions: Electron supports only a documented subset of extension APIs. Roaming FIDO2 security keys and site-provided WebAuthn flows remain Chromium/Electron capabilities, subject to the hardware and site. See Electron's [extension support boundary](https://www.electronjs.org/docs/latest/api/extensions-api).
+- ADE never converts persistent cookies into session cookies or recreates expired/logout-cleared credentials. A clean restart restores tab URLs only; Chromium and each site remain authoritative for cookie expiry and logout semantics.
+
 ## Where the chat service runs
 
 The chat service is constructed once per project, inside whichever
