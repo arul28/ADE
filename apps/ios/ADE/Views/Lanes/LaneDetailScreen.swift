@@ -106,6 +106,7 @@ struct LaneDetailScreen: View {
     .toolbar(.hidden, for: .navigationBar)
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
+    .adeAnalyticsScreen(.laneDetail)
     .safeAreaInset(edge: .top, spacing: 0) {
       laneDetailTopBar
     }

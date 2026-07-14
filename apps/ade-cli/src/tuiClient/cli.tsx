@@ -159,6 +159,17 @@ async function printState(options: CliOptions): Promise<void> {
   }
 }
 
+async function shutdownLocalProductAnalytics(): Promise<void> {
+  try {
+    const { shutdownAllSharedProductAnalyticsServices } = await import(
+      "../../../desktop/src/main/services/analytics/productAnalyticsService"
+    );
+    await shutdownAllSharedProductAnalyticsServices();
+  } catch {
+    // Analytics is best-effort and must not change the TUI's exit status.
+  }
+}
+
 export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Promise<number> {
   const options = parseArgs(argv);
   if (options.help) {
@@ -206,5 +217,7 @@ if (isDirectEntry) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`ade code: ${message}\n`);
     process.exitCode = 1;
+  }).finally(async () => {
+    await shutdownLocalProductAnalytics();
   });
 }

@@ -651,12 +651,24 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type {
+  ProductAnalyticsCapture,
+  ProductAnalyticsCaptureResult,
+  ProductAnalyticsStatus,
+} from "../shared/types/productAnalytics";
 
 export {};
 
 declare global {
   interface Window {
     ade: {
+      analytics: {
+        capture: (
+          input: Omit<ProductAnalyticsCapture, "surface">,
+        ) => Promise<ProductAnalyticsCaptureResult>;
+        getStatus: () => Promise<ProductAnalyticsStatus>;
+        setEnabled: (enabled: boolean) => Promise<ProductAnalyticsStatus>;
+      };
       app: {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;

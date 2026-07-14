@@ -11,6 +11,7 @@ struct ADEApp: App {
   @StateObject private var dictationController = DictationController()
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
+  @State private var didEnterBackground = false
   /// Pending cross-machine deep link awaiting a "Send to Mac" confirmation.
   /// Driven by `.adeSendToMacRequested` notifications from `DeepLinkRouter`.
   @State private var sendToMacTarget: SendToMacTarget?
@@ -37,7 +38,16 @@ struct ADEApp: App {
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in
+          if newPhase == .background {
+            didEnterBackground = true
+            ProductAnalytics.shared.flush()
+            return
+          }
           guard newPhase == .active else { return }
+          if didEnterBackground {
+            didEnterBackground = false
+            ProductAnalytics.shared.captureAppOpened(.foreground)
+          }
           // Clear the badge on every foreground, independent of the sync
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }

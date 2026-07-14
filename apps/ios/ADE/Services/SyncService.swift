@@ -3791,6 +3791,11 @@ final class SyncService: ObservableObject {
     }
     saveProfile(profile)
     await reconnectIfPossible(userInitiated: true)
+    ProductAnalytics.shared.captureFeature(
+      .appClipHandoff,
+      outcome: .completed,
+      source: .appClip
+    )
     return true
   }
 
@@ -4118,11 +4123,14 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    ProductAnalytics.shared.captureFeature(.pairing, outcome: .started)
     do {
       try ensureDatabaseReady()
     } catch {
       lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
+      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.captureError(.pairing)
       return
     }
     lastPairingErrorCode = nil
@@ -4298,6 +4306,7 @@ final class SyncService: ObservableObject {
       // tokens so the brain can start / update remote activities.
       Task { await PushNotificationService.shared.enableIfPaired() }
       LiveActivityService.shared.start()
+      ProductAnalytics.shared.captureFeature(.pairing, outcome: .completed)
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -4309,6 +4318,8 @@ final class SyncService: ObservableObject {
       lastPairingErrorCode = (error as NSError).userInfo["ADEErrorCode"] as? String
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
+      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.captureError(.pairing)
     }
   }
 
@@ -9635,6 +9646,9 @@ final class SyncService: ObservableObject {
     lastPairingErrorCode = nil
     markSyncActivity(force: true)
     saveRemoteCommandDescriptors(commandDescriptors)
+    Task { @MainActor [weak self] in
+      await self?.setProductAnalyticsClientEnabled(ProductAnalytics.shared.isEnabled)
+    }
 
     let matchingDiscovery = discoveredHosts.first { discovered in
       discovered.hostIdentity == remoteHostIdentity
@@ -11666,6 +11680,30 @@ enum RemoteCommandKind: String, Sendable {
 }
 
 extension SyncService {
+
+  /// Propagate this phone's analytics preference to the connected peer only.
+  /// The host uses this as a connection-scoped filter; it does not mutate the
+  /// Mac's machine-wide analytics preference and it is never queued offline.
+  @discardableResult
+  func setProductAnalyticsClientEnabled(_ enabled: Bool) async -> Bool {
+    let action = "analytics.setClientEnabled"
+    guard canSendLiveRequests(), supportsRemoteAction(action) else { return true }
+    do {
+      _ = try await performCommandRequest(
+        action: action,
+        args: ["enabled": enabled],
+        disconnectOnTimeout: !enabled
+      )
+      return true
+    } catch {
+      if !enabled {
+        // Removing the socket removes the host's peer-scoped consent. A later
+        // reconnect begins fail-closed and reasserts this phone preference.
+        disconnect(clearCredentials: false, suspendAutoReconnect: false)
+      }
+      return false
+    }
+  }
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
   ///   • in-app Attention Drawer App Intents

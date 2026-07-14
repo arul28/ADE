@@ -233,14 +233,16 @@ export function recordUsageInteraction(
     feature?: string | null;
     sessionId?: string | null;
     occurredAt?: string;
+    /** False preserves local stats while permanently excluding this row from product export. */
+    analyticsEligible?: boolean;
   },
 ): void {
   if (!db || !isMeaningfulUsageAction(args.action)) return;
   try {
     db.run(
       `insert into usage_events(
-        id, project_id, client_surface, action, feature, session_id, occurred_at
-      ) values (?, ?, ?, ?, ?, ?, ?)`,
+        id, project_id, client_surface, action, feature, session_id, occurred_at, analytics_exported_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         randomUUID(),
         args.projectId?.trim() || "local",
@@ -249,6 +251,7 @@ export function recordUsageInteraction(
         args.feature?.trim() || args.action.split(".", 1)[0] || "other",
         args.sessionId?.trim() || null,
         args.occurredAt ?? new Date().toISOString(),
+        args.analyticsEligible === false ? "suppressed:analytics_inactive" : null,
       ],
     );
   } catch {

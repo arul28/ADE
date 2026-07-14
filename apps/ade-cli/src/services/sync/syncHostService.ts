@@ -83,6 +83,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -125,6 +126,7 @@ import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import {
@@ -427,6 +429,8 @@ type PeerState = {
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
   messageQueue: Promise<void>;
+  /** Local consent for this browser/phone; never mutates machine-wide consent. */
+  productAnalyticsEnabled: boolean;
 };
 
 type PendingChangesetBatch = {
@@ -681,6 +685,7 @@ type SyncHostServiceArgs = {
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
    * rejected (forces a re-pair that registers one). Devices with a key on
@@ -1447,6 +1452,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const dpopNonceCache = createSyncDpopNonceCache();
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
     db: args.db,
+    productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
@@ -2140,6 +2146,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSeq: 0,
       rosterBaseline: new Map(),
       messageQueue: Promise.resolve(),
+      // Paired clients own their local preference. Fail closed on every new
+      // connection until that client explicitly reasserts consent, so an
+      // opted-out reconnect cannot leak an exportable first mutation.
+      productAnalyticsEnabled: false,
     };
     peers.add(peer);
     peer.authTimeout = setTimeout(() => {
@@ -2343,6 +2353,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatSubscriptionScopes.set(sessionId, scope);
         }
         peer.rosterSubscribed = snapshot.rosterSubscribed === true;
+        peer.productAnalyticsEnabled = snapshot.productAnalyticsEnabled === true;
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
           lastSeenAt: nowIso(),
           lastHost: peer.remoteAddress,
@@ -4243,20 +4254,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const executor = shouldRouteToProject && args.remoteCommandExecutor
         ? args.remoteCommandExecutor
         : remoteCommandService;
+      const surface = usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform);
+      const rawCommandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+        ? payload.args as Record<string, unknown>
+        : {};
+      const canonicalProjectId = matchesHostProject
+        ? hostProjectId
+        : requestedProjectId;
+      const preparedAnalytics = prepareProductAnalyticsRemoteCommand({
+        action: payload.action,
+        args: rawCommandArgs,
+        surface,
+        projectId: canonicalProjectId,
+        clientEnabled: peer.productAnalyticsEnabled,
+      });
+      peer.productAnalyticsEnabled = preparedAnalytics.clientEnabled;
+      const surfaceBoundPayload = preparedAnalytics.args === rawCommandArgs
+        ? payload
+        : { ...payload, args: preparedAnalytics.args };
       const routedPayload = matchesHostProject && hostProjectId
-        ? { ...payload, projectId: hostProjectId }
-        : payload;
-      const created = await executor.execute(routedPayload);
-      if (matchesHostProject) {
+        ? { ...surfaceBoundPayload, projectId: hostProjectId }
+        : surfaceBoundPayload;
+      const created = preparedAnalytics.captureDisabled
+        ? { accepted: false, reason: "disabled" }
+        : await executor.execute(routedPayload);
+      if (
+        matchesHostProject
+        && !payload.action.startsWith("analytics.")
+      ) {
         const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
           ? payload.args as Record<string, unknown>
           : {};
         recordUsageInteraction(args.db, {
           projectId: hostProjectId,
-          client: usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform),
+          client: surface,
           action: payload.action,
           feature: payload.action.split(".", 1)[0] ?? "other",
           sessionId: toOptionalString(commandArgs.sessionId),
+          analyticsEligible:
+            peer.productAnalyticsEnabled
+            && args.productAnalyticsService?.getStatus().effective === true,
         });
       }
       // Create-in-place (possibly into another project) adds a lane/chat row the
@@ -5487,6 +5524,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 .filter(([sessionId]) => handedOffChatSessionIds.has(sessionId)),
             ),
             rosterSubscribed: peer.rosterSubscribed,
+            productAnalyticsEnabled: peer.productAnalyticsEnabled,
           });
         }
         peers.clear();

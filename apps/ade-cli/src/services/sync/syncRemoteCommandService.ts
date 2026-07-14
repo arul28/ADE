@@ -249,6 +249,8 @@ import type { createPrSummaryService } from "../../../../desktop/src/main/servic
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -281,6 +283,7 @@ type SyncRemoteCommandServiceArgs = {
    */
   db?: AdeDb;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
@@ -4735,6 +4738,49 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       handler,
     });
   };
+
+  register("analytics.capture", { viewerAllowed: true }, async (payload) => {
+    if (!args.productAnalyticsService) {
+      return { accepted: false, reason: "not_configured" };
+    }
+    const parsed = parseProductAnalyticsCapture(payload);
+    if (!parsed.ok) return { accepted: false, reason: parsed.reason };
+    return args.productAnalyticsService.capture(parsed.value);
+  }, "runtime");
+
+  register("analytics.flush", { viewerAllowed: true }, async () =>
+    args.productAnalyticsService ? await args.productAnalyticsService.flush() : false,
+  "runtime");
+
+  register("analytics.getStatus", { viewerAllowed: true }, async () =>
+    args.productAnalyticsService?.getStatus() ?? {
+      configured: false,
+      enabled: true,
+      effective: false,
+      host: "not_configured",
+      dailyBudget: 200,
+      acceptedToday: 0,
+      droppedToday: 0,
+      day: new Date().toISOString().slice(0, 10),
+    }, "runtime");
+
+  // Consent for a paired browser/phone is peer-scoped by SyncHostService.
+  // This handler intentionally never changes the machine-wide preference.
+  register("analytics.setClientEnabled", { viewerAllowed: true }, async (payload) => {
+    if (typeof payload.enabled !== "boolean") {
+      throw new Error("analytics.setClientEnabled requires a boolean enabled value.");
+    }
+    return args.productAnalyticsService?.getStatus() ?? {
+      configured: false,
+      enabled: true,
+      effective: false,
+      host: "not_configured",
+      dailyBudget: 200,
+      acceptedToday: 0,
+      droppedToday: 0,
+      day: new Date().toISOString().slice(0, 10),
+    };
+  }, "runtime");
 
   register("usage.getAdeStats", { viewerAllowed: true }, async (payload) => {
     if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");

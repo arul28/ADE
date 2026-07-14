@@ -727,6 +727,7 @@ struct WorkNewChatScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
+    .adeAnalyticsScreen(.workNewChat)
     .toolbar {
       ToolbarItem(placement: .principal) {
         WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in

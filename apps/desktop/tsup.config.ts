@@ -1,4 +1,8 @@
 import { defineConfig } from "tsup";
+import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
+
+const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
+assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
 
 export default defineConfig({
   entry: {
@@ -26,5 +30,7 @@ export default defineConfig({
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),
+    __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
+    __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
   },
 });

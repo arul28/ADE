@@ -1763,6 +1763,236 @@ describe("mobile command result ledger", () => {
   });
 });
 
+describe("paired-client product analytics consent", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("binds analytics identity to the peer and permanently suppresses opted-out usage rows from export", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const dbRun = vi.fn();
+    const execute = vi.fn(async (payload: { action: string; args?: Record<string, unknown> }) => {
+      if (payload.action === "analytics.capture") return { accepted: true, reason: "accepted" };
+      if (payload.action === "analytics.getStatus") return { configured: true, effective: true };
+      if (payload.action === "analytics.setClientEnabled") return { configured: true, effective: true };
+      return { ok: true };
+    });
+    const analyticsDescriptor = (action: string): SyncRemoteCommandDescriptor => ({
+      action: action as SyncRemoteCommandDescriptor["action"],
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+    const descriptors: SyncRemoteCommandDescriptor[] = [
+      analyticsDescriptor("analytics.capture"),
+      analyticsDescriptor("analytics.getStatus"),
+      analyticsDescriptor("analytics.setClientEnabled"),
+      {
+        action: "lanes.create",
+        scope: "project",
+        policy: { viewerAllowed: true, queueable: true },
+      },
+    ];
+    const remoteCommandService = {
+      execute,
+      getDescriptor: (action: string) => descriptors.find((descriptor) => descriptor.action === action) ?? null,
+      getDescriptors: () => descriptors,
+      getSupportedActions: () => descriptors.map((descriptor) => descriptor.action),
+    };
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        ...base.db,
+        run: dbRun,
+      },
+      discoveryEnabled: false,
+      remoteCommandService,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      productAnalyticsService: {
+        getStatus: () => ({ effective: true }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    const sendCommand = async (
+      action: SyncRemoteCommandDescriptor["action"],
+      args: Record<string, unknown>,
+      requestId: string,
+      requestedProjectId = "project-1",
+    ): Promise<ParsedSyncEnvelope> => {
+      peer!.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId,
+        projectId: requestedProjectId,
+        payload: {
+          commandId: requestId,
+          action,
+          projectId: requestedProjectId,
+          args,
+        },
+      }));
+      await waitForEnvelope(peer!.envelopes, "command_ack", requestId);
+      return waitForEnvelope(peer!.envelopes, "command_result", requestId);
+    };
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "browser-analytics", {
+        platform: "macOS",
+        deviceType: "browser",
+      });
+
+      const preConsentCapture = await sendCommand("analytics.capture", {
+        event: "ade_project_opened",
+        surface: "desktop",
+        projectId: "client-spoofed-project",
+        properties: { source: "navigation" },
+      }, "analytics-before-consent");
+      expect(preConsentCapture.payload).toMatchObject({
+        ok: true,
+        result: { accepted: false, reason: "disabled" },
+      });
+      expect(execute).not.toHaveBeenCalled();
+
+      await expect(sendCommand("lanes.create", { name: "reconnect-race" }, "mutation-before-consent"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { ok: true } } });
+      const preConsentUsageInsert = dbRun.mock.calls.find(([sql]) => String(sql).includes("insert into usage_events"));
+      expect(preConsentUsageInsert?.[1]).toEqual([
+        expect.any(String),
+        "project-1",
+        "web",
+        "lanes.create",
+        "lanes",
+        null,
+        expect.any(String),
+        "suppressed:analytics_inactive",
+      ]);
+
+      await expect(sendCommand("analytics.setClientEnabled", { enabled: true }, "analytics-initial-consent"))
+        .resolves.toMatchObject({ payload: { ok: true } });
+      execute.mockClear();
+      dbRun.mockClear();
+
+      const canonicalCapture = await sendCommand("analytics.capture", {
+        event: "ade_project_opened",
+        surface: "desktop",
+        projectId: "client-spoofed-project",
+        dedupeKey: "client-controlled-dedupe",
+        properties: { source: "navigation" },
+      }, "analytics-canonical");
+      expect(canonicalCapture.payload).toMatchObject({
+        ok: true,
+        result: { accepted: true, reason: "accepted" },
+      });
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+        action: "analytics.capture",
+        projectId: "project-1",
+        args: expect.objectContaining({
+          event: "ade_project_opened",
+          surface: "web",
+          projectId: "project-1",
+          dedupeKey: "web_project_opened:project-1",
+        }),
+      }));
+
+      execute.mockClear();
+      const foreignProjectCapture = await sendCommand("analytics.capture", {
+        event: "ade_screen_viewed",
+        surface: "desktop",
+        projectId: "client-spoofed-project",
+        properties: { screen: "work" },
+      }, "analytics-foreign-project", "forged-project-id");
+      expect(foreignProjectCapture.payload).toMatchObject({
+        ok: false,
+        error: {
+          code: "project_not_open",
+          message: expect.stringContaining("hosting a different project"),
+        },
+      });
+      expect(execute).not.toHaveBeenCalled();
+
+      await expect(sendCommand("analytics.setClientEnabled", { enabled: false }, "analytics-disable"))
+        .resolves.toMatchObject({ payload: { ok: true } });
+      execute.mockClear();
+      dbRun.mockClear();
+
+      const disabledCapture = await sendCommand("analytics.capture", {
+        event: "ade_feature_used",
+        surface: "desktop",
+        projectId: "client-spoofed-project",
+        properties: { feature: "lanes", action: "lanes.create", outcome: "success" },
+      }, "analytics-disabled-capture");
+      expect(disabledCapture.payload).toMatchObject({
+        ok: true,
+        result: { accepted: false, reason: "disabled" },
+      });
+      expect(execute).not.toHaveBeenCalled();
+
+      await expect(sendCommand("lanes.create", { name: "private-lane" }, "mutation-while-disabled"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { ok: true } } });
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ action: "lanes.create" }));
+      const suppressedUsageInsert = dbRun.mock.calls.find(([sql]) => String(sql).includes("insert into usage_events"));
+      expect(suppressedUsageInsert?.[1]).toEqual([
+        expect.any(String),
+        "project-1",
+        "web",
+        "lanes.create",
+        "lanes",
+        null,
+        expect.any(String),
+        "suppressed:analytics_inactive",
+      ]);
+
+      await expect(sendCommand("analytics.setClientEnabled", { enabled: true }, "analytics-enable"))
+        .resolves.toMatchObject({ payload: { ok: true } });
+      dbRun.mockClear();
+
+      await expect(sendCommand("lanes.create", { name: "tracked-lane" }, "mutation-after-enable"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { ok: true } } });
+      const usageInsert = dbRun.mock.calls.find(([sql]) => String(sql).includes("insert into usage_events"));
+      expect(usageInsert?.[1]).toEqual([
+        expect.any(String),
+        "project-1",
+        "web",
+        "lanes.create",
+        "lanes",
+        null,
+        expect.any(String),
+        null,
+      ]);
+
+      const malformedConsent = await sendCommand(
+        "analytics.setClientEnabled",
+        { enabled: "false" },
+        "analytics-malformed-consent",
+      );
+      expect(malformedConsent.payload).toMatchObject({
+        ok: false,
+        error: {
+          code: "command_failed",
+          message: "analytics.setClientEnabled requires a boolean enabled value.",
+        },
+      });
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("inbound changeset_batch guards", () => {
   beforeEach(() => {
     publishMock.mockReset();
@@ -1947,6 +2177,12 @@ describe("sync host handoff over a shared listener", () => {
     const rootB = createTempProjectRoot();
     const tokenPath = path.join(rootA.projectRoot, "shared-bootstrap-token");
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const capture = vi.fn(() => ({ accepted: true, reason: "accepted" as const }));
+    const productAnalyticsService = {
+      capture,
+      getStatus: () => ({ configured: true, enabled: true, effective: true }),
+      flush: vi.fn(async () => true),
+    };
     let client: WebSocket | null = null;
     let hostB: ReturnType<typeof createSyncHostService> | null = null;
     try {
@@ -1958,6 +2194,7 @@ describe("sync host handoff over a shared listener", () => {
           changes: [],
         }),
         sharedListener: listener,
+        productAnalyticsService,
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       expect(await hostA.waitUntilListening()).toBe(port);
 
@@ -1973,6 +2210,18 @@ describe("sync host handoff over a shared listener", () => {
         "hello_ok from host A",
       );
       expect(hostA.getPeerStates()).toHaveLength(1);
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "analytics-consent-before-handoff",
+        projectId: null,
+        payload: {
+          commandId: "analytics-consent-before-handoff",
+          action: "analytics.setClientEnabled",
+          projectId: null,
+          args: { enabled: true },
+        },
+      }));
+      await waitForEnvelope(envelopes, "command_result", "analytics-consent-before-handoff");
 
       // Project switch: host A dies, host B (a different project DB) takes
       // over the shared listener and must adopt the live socket.
@@ -1985,6 +2234,7 @@ describe("sync host handoff over a shared listener", () => {
           changes: [makeHostChange(1, 0), makeHostChange(2, 1)],
         }),
         sharedListener: listener,
+        productAnalyticsService,
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       expect(await hostB.waitUntilListening()).toBe(port);
 
@@ -2005,6 +2255,33 @@ describe("sync host handoff over a shared listener", () => {
       const adoptedPeer = hostB.getPeerStates();
       expect(adoptedPeer).toHaveLength(1);
       expect(adoptedPeer[0]?.deviceId).toBe("ios-device-1");
+
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "analytics-capture-after-handoff",
+        projectId: null,
+        payload: {
+          commandId: "analytics-capture-after-handoff",
+          action: "analytics.capture",
+          projectId: null,
+          args: {
+            event: "ade_screen_viewed",
+            surface: "desktop",
+            properties: { screen: "work" },
+          },
+        },
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "command_result",
+        "analytics-capture-after-handoff",
+      )).resolves.toMatchObject({
+        payload: { ok: true, result: { accepted: true, reason: "accepted" } },
+      });
+      expect(capture).toHaveBeenCalledWith(expect.objectContaining({
+        event: "ade_screen_viewed",
+        surface: "mobile",
+      }));
     } finally {
       try {
         client?.close();

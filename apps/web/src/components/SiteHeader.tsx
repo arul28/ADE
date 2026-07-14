@@ -7,8 +7,9 @@ import { LINKS } from "../lib/links";
 import { Container } from "./Container";
 import { LinkButton } from "./LinkButton";
 import { ADE_EASE_OUT } from "../lib/motion";
+import { MARKETING_FEATURES, type MarketingFeature } from "../lib/marketingAnalytics";
 
-type NavItem = { label: string; to: string; kind: "internal" | "external" };
+type NavItem = { label: string; to: string; kind: "internal" | "external"; analyticsFeature: MarketingFeature };
 
 export function SiteHeader() {
   const location = useLocation();
@@ -47,8 +48,8 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
-      { label: "Web client", to: LINKS.webClient, kind: "external" },
-      { label: "Docs", to: LINKS.docs, kind: "external" },
+      { label: "Web client", to: LINKS.webClient, kind: "external", analyticsFeature: MARKETING_FEATURES.OPEN_WEB_CLIENT },
+      { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
     ],
     []
   );
@@ -82,6 +83,7 @@ export function SiteHeader() {
                   key={item.label}
                   className="focus-ring rounded-md px-3 py-2 text-sm font-medium text-muted-fg transition-colors hover:text-fg"
                   href={item.to}
+                  data-ade-analytics-feature={item.analyticsFeature}
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -103,6 +105,7 @@ export function SiteHeader() {
             <a
               className="focus-ring ml-1 inline-flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-card/60 px-3 text-sm font-medium text-muted-fg transition-colors hover:text-fg hover:bg-card"
               href={LINKS.github}
+              data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
               target="_blank"
               rel="noreferrer"
             >
@@ -110,13 +113,13 @@ export function SiteHeader() {
               GitHub
             </a>
 
-            <LinkButton to={LINKS.releasesLatest} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
+            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
               Download for Mac
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to={LINKS.releasesLatest} variant="primary" size="sm" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} variant="primary" size="sm" target="_blank" rel="noreferrer">
               Mac
             </LinkButton>
             <button
@@ -181,6 +184,7 @@ export function SiteHeader() {
                           "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
                         )}
                         href={item.to}
+                        data-ade-analytics-feature={item.analyticsFeature}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -207,6 +211,7 @@ export function SiteHeader() {
                       "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
                     )}
                     href={LINKS.github}
+                    data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
                     target="_blank"
                     rel="noreferrer"
                   >

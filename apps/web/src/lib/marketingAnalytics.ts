@@ -1,0 +1,442 @@
+export const MARKETING_ANALYTICS_EVENTS = {
+  APP_OPENED: "ade_marketing_app_opened",
+  SCREEN_VIEWED: "ade_marketing_screen_viewed",
+  FEATURE_USED: "ade_marketing_feature_used",
+  ERROR: "ade_marketing_error",
+  ANALYTICS_BUDGET: "ade_marketing_analytics_budget",
+} as const;
+
+export type MarketingAnalyticsEvent =
+  (typeof MARKETING_ANALYTICS_EVENTS)[keyof typeof MARKETING_ANALYTICS_EVENTS];
+
+export const MARKETING_SCREENS = {
+  HOME: "home",
+  DOWNLOAD: "download",
+  OPEN_LINK: "open_link",
+  PAIR: "pair",
+  PRIVACY: "privacy",
+  TERMS: "terms",
+  NOT_FOUND: "not_found",
+} as const;
+
+export type MarketingScreen = (typeof MARKETING_SCREENS)[keyof typeof MARKETING_SCREENS];
+
+export const MARKETING_FEATURES = {
+  DOWNLOAD_MAC: "download_mac",
+  DOWNLOAD_IOS: "download_ios",
+  OPEN_WEB_CLIENT: "open_web_client",
+  VIEW_DOCS: "view_docs",
+  VIEW_GITHUB: "view_github",
+  VIEW_RELEASES: "view_releases",
+  VIEW_DOWNLOAD_PAGE: "view_download_page",
+  VIEW_PRD: "view_prd",
+  VIEW_FEATURES: "view_features",
+  GET_STARTED: "get_started",
+  OPEN_IN_DESKTOP: "open_in_desktop",
+  PAIR_IN_WEB_CLIENT: "pair_in_web_client",
+  COPY_INSTALL_COMMAND: "copy_install_command",
+  COPY_SOURCE_COMMAND: "copy_source_command",
+  DEMO_GRID_VIEW: "demo_grid_view",
+  DEMO_SUBAGENTS: "demo_subagents",
+  DEMO_AUTO_CREATE_WORKTREES: "demo_auto_create_worktrees",
+  DEMO_PR_FROM_CHAT: "demo_pr_from_chat",
+  DEMO_WORKTREE_GRAPH: "demo_worktree_graph",
+  DEMO_ADE_CODE: "demo_ade_code",
+  DEMO_BROWSER: "demo_browser",
+  DEMO_REMOTE_RUNTIMES: "demo_remote_runtimes",
+  DEMO_LINEAR: "demo_linear",
+  SHOWCASE_WORKTREES: "showcase_worktrees",
+  SHOWCASE_AGENT_CHAT: "showcase_agent_chat",
+  SHOWCASE_PULL_REQUESTS: "showcase_pull_requests",
+  SHOWCASE_WORK_TOOLS: "showcase_work_tools",
+} as const;
+
+export type MarketingFeature = (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];
+
+export const MARKETING_ERROR_KINDS = {
+  WINDOW_ERROR: "window_error",
+  UNHANDLED_REJECTION: "unhandled_rejection",
+} as const;
+
+export type MarketingErrorKind = (typeof MARKETING_ERROR_KINDS)[keyof typeof MARKETING_ERROR_KINDS];
+
+export const ANALYTICS_FEATURE_ATTRIBUTE = "data-ade-analytics-feature";
+
+export const MARKETING_ANALYTICS_LIMITS = Object.freeze({
+  daily: 40,
+  perEvent: {
+    [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 1,
+    [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 12,
+    [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 20,
+    [MARKETING_ANALYTICS_EVENTS.ERROR]: 3,
+    [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 1,
+  },
+  perKey: {
+    [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 1,
+    [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 2,
+    [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 3,
+    [MARKETING_ANALYTICS_EVENTS.ERROR]: 1,
+    [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 1,
+  },
+  dedupeMs: {
+    [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 86_400_000,
+    [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 30_000,
+    [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 1_500,
+    [MARKETING_ANALYTICS_EVENTS.ERROR]: 60_000,
+    [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 86_400_000,
+  },
+});
+
+const SCREEN_BY_PATH: Readonly<Record<string, MarketingScreen | null>> = Object.freeze({
+  "/": MARKETING_SCREENS.HOME,
+  "/download": MARKETING_SCREENS.DOWNLOAD,
+  "/open": MARKETING_SCREENS.OPEN_LINK,
+  "/pair": MARKETING_SCREENS.PAIR,
+  "/privacy": MARKETING_SCREENS.PRIVACY,
+  "/terms": MARKETING_SCREENS.TERMS,
+  "/_og": null,
+});
+
+const ALLOWED_FEATURES = new Set<string>(Object.values(MARKETING_FEATURES));
+
+export function normalizeMarketingScreen(pathname: string): MarketingScreen | null {
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  return Object.prototype.hasOwnProperty.call(SCREEN_BY_PATH, normalized)
+    ? SCREEN_BY_PATH[normalized] ?? null
+    : MARKETING_SCREENS.NOT_FOUND;
+}
+
+export function isMarketingFeature(value: string | null | undefined): value is MarketingFeature {
+  return typeof value === "string" && ALLOWED_FEATURES.has(value);
+}
+
+export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+type DropReason = "daily_cap" | "event_cap" | "key_cap" | "duplicate" | "transport";
+
+type DayState = {
+  day: string;
+  sent: number;
+  eventCounts: Partial<Record<MarketingAnalyticsEvent, number>>;
+  keyCounts: Record<string, number>;
+  dropped: Partial<Record<DropReason, number>>;
+  lastCapturedAt: Record<string, number>;
+};
+
+type PendingBudgetSummary = {
+  sentCount: number;
+  droppedCount: number;
+  dropReason: DropReason | "none";
+};
+
+type PersistedState = {
+  version: 1;
+  current: DayState;
+  pending?: PendingBudgetSummary;
+};
+
+export type PostHogCapturePayload = {
+  api_key: string;
+  distinct_id: string;
+  event: MarketingAnalyticsEvent;
+  properties: Record<string, string | number | boolean>;
+};
+
+export type MarketingAnalyticsTransport = (payload: PostHogCapturePayload) => Promise<void> | void;
+
+export type CaptureDisposition = "sent" | "disabled" | "dropped";
+
+type MarketingAnalyticsOptions = {
+  projectToken: string;
+  storage: StorageLike;
+  transport: MarketingAnalyticsTransport;
+  isEnabled: () => boolean;
+  now?: () => Date;
+  idFactory?: () => string;
+};
+
+const STATE_STORAGE_KEY = "ade.analytics.marketing.budget.v1";
+const DISTINCT_ID_STORAGE_KEY = "ade.analytics.marketing.id.v1";
+const VALID_DISTINCT_ID = /^[A-Za-z0-9_-]{16,128}$/;
+
+function utcDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function freshDay(day: string): DayState {
+  return {
+    day,
+    sent: 0,
+    eventCounts: {},
+    keyCounts: {},
+    dropped: {},
+    lastCapturedAt: {},
+  };
+}
+
+function totalDropped(state: DayState): number {
+  return Object.values(state.dropped).reduce((sum, value) => sum + (value ?? 0), 0);
+}
+
+function primaryDropReason(state: DayState): DropReason | "none" {
+  let selected: DropReason | "none" = "none";
+  let count = 0;
+  for (const [reason, value] of Object.entries(state.dropped) as Array<[DropReason, number]>) {
+    if (value > count) {
+      selected = reason;
+      count = value;
+    }
+  }
+  return selected;
+}
+
+function parseState(raw: string | null, day: string): PersistedState {
+  if (!raw) return { version: 1, current: freshDay(day) };
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    if (parsed.version !== 1 || !parsed.current || typeof parsed.current.day !== "string") {
+      return { version: 1, current: freshDay(day) };
+    }
+    const current: DayState = {
+      day: parsed.current.day,
+      sent: Number.isFinite(parsed.current.sent) && parsed.current.sent >= 0 ? parsed.current.sent : 0,
+      eventCounts: parsed.current.eventCounts ?? {},
+      keyCounts: parsed.current.keyCounts ?? {},
+      dropped: parsed.current.dropped ?? {},
+      lastCapturedAt: parsed.current.lastCapturedAt ?? {},
+    };
+    return { version: 1, current, ...(parsed.pending ? { pending: parsed.pending } : {}) };
+  } catch {
+    return { version: 1, current: freshDay(day) };
+  }
+}
+
+function mergePending(previous: PendingBudgetSummary | undefined, state: DayState): PendingBudgetSummary {
+  const droppedCount = totalDropped(state);
+  if (!previous) {
+    return {
+      sentCount: state.sent,
+      droppedCount,
+      dropReason: primaryDropReason(state),
+    };
+  }
+  return {
+    sentCount: previous.sentCount + state.sent,
+    droppedCount: previous.droppedCount + droppedCount,
+    dropReason: previous.dropReason === "none" ? primaryDropReason(state) : previous.dropReason,
+  };
+}
+
+export class MarketingAnalytics {
+  private readonly projectToken: string;
+  private readonly storage: StorageLike;
+  private readonly transport: MarketingAnalyticsTransport;
+  private readonly isEnabled: () => boolean;
+  private readonly now: () => Date;
+  private readonly idFactory: () => string;
+  private storageHealthy = true;
+
+  constructor(options: MarketingAnalyticsOptions) {
+    this.projectToken = options.projectToken;
+    this.storage = options.storage;
+    this.transport = options.transport;
+    this.isEnabled = options.isEnabled;
+    this.now = options.now ?? (() => new Date());
+    this.idFactory = options.idFactory ?? (() => crypto.randomUUID());
+  }
+
+  captureAppOpened(): CaptureDisposition {
+    return this.capture(
+      MARKETING_ANALYTICS_EVENTS.APP_OPENED,
+      { action: "opened", runtime_mode: "web" },
+      "app",
+    );
+  }
+
+  captureScreen(screen: MarketingScreen): CaptureDisposition {
+    return this.capture(
+      MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED,
+      { action: "viewed", screen },
+      screen,
+    );
+  }
+
+  captureFeature(feature: MarketingFeature, screen?: MarketingScreen): CaptureDisposition {
+    return this.capture(
+      MARKETING_ANALYTICS_EVENTS.FEATURE_USED,
+      { action: "clicked", feature, ...(screen ? { screen } : {}) },
+      feature,
+    );
+  }
+
+  captureError(errorKind: MarketingErrorKind): CaptureDisposition {
+    return this.capture(
+      MARKETING_ANALYTICS_EVENTS.ERROR,
+      { action: "observed", error_kind: errorKind },
+      errorKind,
+    );
+  }
+
+  reset(): void {
+    // Opting out rotates the anonymous identity without resetting quota state;
+    // repeated off/on cycles therefore cannot bypass the daily event ceiling.
+    this.safeRemove(DISTINCT_ID_STORAGE_KEY);
+  }
+
+  private capture(
+    event: MarketingAnalyticsEvent,
+    properties: Record<string, string | number | boolean>,
+    key: string,
+  ): CaptureDisposition {
+    if (!this.projectToken || !this.isEnabled() || !this.storageHealthy) return "disabled";
+    const now = this.now();
+    const state = this.readState(now);
+    if (!this.storageHealthy) return "disabled";
+    this.emitPendingBudget(state, now);
+    if (!this.storageHealthy) return "disabled";
+    return this.reserveAndSend(state, event, properties, key, now);
+  }
+
+  private readState(now: Date): PersistedState {
+    const day = utcDay(now);
+    const state = parseState(this.safeGet(STATE_STORAGE_KEY), day);
+    if (state.current.day === day) return state;
+    const next: PersistedState = {
+      version: 1,
+      current: freshDay(day),
+      pending: mergePending(state.pending, state.current),
+    };
+    this.writeState(next);
+    return next;
+  }
+
+  private emitPendingBudget(state: PersistedState, now: Date): void {
+    const pending = state.pending;
+    if (!pending) return;
+    delete state.pending;
+    this.writeState(state);
+    this.reserveAndSend(
+      state,
+      MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET,
+      {
+        action: "daily_rollup",
+        sent_count: pending.sentCount,
+        dropped_count: pending.droppedCount,
+        drop_reason: pending.dropReason,
+      },
+      "daily_rollup",
+      now,
+    );
+  }
+
+  private reserveAndSend(
+    state: PersistedState,
+    event: MarketingAnalyticsEvent,
+    properties: Record<string, string | number | boolean>,
+    key: string,
+    now: Date,
+  ): CaptureDisposition {
+    const current = state.current;
+    const eventKey = `${event}:${key}`;
+    const nowMs = now.getTime();
+    const lastCapturedAt = current.lastCapturedAt[eventKey] ?? 0;
+    if (nowMs - lastCapturedAt < MARKETING_ANALYTICS_LIMITS.dedupeMs[event]) {
+      return this.recordDrop(state, "duplicate");
+    }
+    if (current.sent >= MARKETING_ANALYTICS_LIMITS.daily) {
+      return this.recordDrop(state, "daily_cap");
+    }
+    const eventCount = current.eventCounts[event] ?? 0;
+    if (eventCount >= MARKETING_ANALYTICS_LIMITS.perEvent[event]) {
+      return this.recordDrop(state, "event_cap");
+    }
+    const keyCount = current.keyCounts[eventKey] ?? 0;
+    if (keyCount >= MARKETING_ANALYTICS_LIMITS.perKey[event]) {
+      return this.recordDrop(state, "key_cap");
+    }
+
+    current.sent += 1;
+    current.eventCounts[event] = eventCount + 1;
+    current.keyCounts[eventKey] = keyCount + 1;
+    current.lastCapturedAt[eventKey] = nowMs;
+    this.writeState(state);
+    if (!this.storageHealthy) return "disabled";
+
+    const distinctId = this.distinctId();
+    if (!distinctId) return "disabled";
+
+    const payload: PostHogCapturePayload = {
+      api_key: this.projectToken,
+      distinct_id: distinctId,
+      event,
+      properties: {
+        surface: "web",
+        route_kind: "marketing",
+        $process_person_profile: false,
+        $geoip_disable: true,
+        ...properties,
+      },
+    };
+
+    try {
+      void Promise.resolve(this.transport(payload)).catch(() => this.recordTransportFailure());
+    } catch {
+      this.recordTransportFailure();
+    }
+    return "sent";
+  }
+
+  private recordDrop(state: PersistedState, reason: DropReason): CaptureDisposition {
+    state.current.dropped[reason] = (state.current.dropped[reason] ?? 0) + 1;
+    this.writeState(state);
+    return "dropped";
+  }
+
+  private recordTransportFailure(): void {
+    if (!this.isEnabled()) return;
+    const state = this.readState(this.now());
+    state.current.dropped.transport = (state.current.dropped.transport ?? 0) + 1;
+    this.writeState(state);
+  }
+
+  private distinctId(): string | null {
+    const existing = this.safeGet(DISTINCT_ID_STORAGE_KEY);
+    if (!this.storageHealthy) return null;
+    if (existing && VALID_DISTINCT_ID.test(existing)) return existing;
+    const created = this.idFactory().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
+    const value = VALID_DISTINCT_ID.test(created) ? created : `adeweb_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    this.safeSet(DISTINCT_ID_STORAGE_KEY, value);
+    return this.storageHealthy ? value : null;
+  }
+
+  private writeState(state: PersistedState): void {
+    this.safeSet(STATE_STORAGE_KEY, JSON.stringify(state));
+  }
+
+  private safeGet(key: string): string | null {
+    try {
+      return this.storage.getItem(key);
+    } catch {
+      this.storageHealthy = false;
+      return null;
+    }
+  }
+
+  private safeSet(key: string, value: string): void {
+    try {
+      this.storage.setItem(key, value);
+    } catch {
+      // Without durable quota state, analytics fails closed so reloads cannot
+      // reset and bypass the browser/day ceiling.
+      this.storageHealthy = false;
+    }
+  }
+
+  private safeRemove(key: string): void {
+    try {
+      this.storage.removeItem(key);
+    } catch {
+      this.storageHealthy = false;
+    }
+  }
+}

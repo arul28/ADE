@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: prune dead tests, consolidate fragments, add only tests that prove new contracts, turn each /quality Blocker/High finding into a named regression test, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn each /quality Blocker/High finding into a named regression test, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
 ---
 
 # /test — Test Suite Steward
@@ -20,6 +20,23 @@ Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. Yo
 **Consume the `/quality` gate.** If `/quality` ran on this lane, take its Summary's **Gate** section — every Blocker/High it surfaced but did not auto-fix. Each is a named regression-test target for the ADD pass: a test that fails on the bug and passes once it's fixed. A finding isn't "handled" until a test pins it. No gate available → derive the same targets from the diff.
 
 **Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
+
+---
+
+## Logging and analytics gate (always runs)
+
+`docs/logging.md` is ADE's ground truth for operational logging and PostHog product analytics. Before Pass 1:
+
+1. Verify `docs/logging.md` exists and read it in full. A missing file is a failed `/test` run, not an optional docs gap.
+2. Review the entire branch diff for meaningful new user decisions, successful mutations, coarse workflow outcomes, screens, or product-level failure categories on desktop, runtime/API, hosted web, TUI, native iOS, and the public site.
+3. For applicable behavior, verify it is captured at the durable owner boundary using the existing closed taxonomy, sanitizers, consent path, deduplication, and hard local budgets. Prefer `ade_feature_used` plus coarse properties over a new top-level event. High-frequency reads, renders, polling, streaming, terminal bytes, progress, and retries must be aggregated locally or left untracked.
+4. If the change is not analytics-applicable, record the concrete reason in the summary. "No analytics changes" without inspecting the behavior is not sufficient.
+5. When the analytics contract changes, update `docs/logging.md`, the relevant allowlists and boundary tests, and `scripts/posthog/dashboard-spec.mjs` when a dashboard depends on the change. Validate the provisioner spec and tests.
+6. Confirm no personal PostHog key, public token value, arbitrary user content, raw identifier, path, URL, log message, error message, or recording can enter the diff or outgoing payload.
+7. Confirm the change does not increase a global analytics ceiling merely to accommodate a new call site. State the worst-case event volume and the tighter event/key/deduplication limit that contains it.
+8. For `apps/web`, preserve direct browser-to-PostHog capture. Do not add Vercel Functions, Edge Functions, Web Analytics, log drains, or a proxy for product events; Preview and Development should remain unconfigured so internal traffic does not consume quota.
+
+The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave ADE with broad, decision-useful coverage and a small, predictable event budget.
 
 ---
 
@@ -555,6 +572,7 @@ Added:
 - Or "none — feature was visual / fully covered by consolidation"
 
 Parity:
+- Logging/PostHog: <instrumentation/docs/dashboard changes, or explicit not-applicable reason> — privacy + cost gate PASS / blocked
 - Docs: <files updated, or "none required"> — validation PASS / blocked
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
 - CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
@@ -585,3 +603,4 @@ Mark **completed** only if all of:
 4. No new test file relies on `expect(true)`-class no-ops.
 5. Every new test file matches a vitest workspace glob.
 6. The summary is the *only* thing you output.
+7. `docs/logging.md` exists, was read, and every analytics-applicable change is covered or has an explicit not-applicable rationale.

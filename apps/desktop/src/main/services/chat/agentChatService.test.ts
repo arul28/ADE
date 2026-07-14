@@ -2201,6 +2201,44 @@ describe("createAgentChatService", () => {
     expect(service.setComputerUseArtifactBrokerService).toBeTypeOf("function");
   });
 
+  it("reports a persisted terminal turn through the content-free settlement hook", async () => {
+    installClaudeResponseFixture({
+      sdkSessionId: "sdk-turn-settled",
+      responseText: "Finished successfully.",
+    });
+    const onTurnSettled = vi.fn();
+    const { service } = createService({ onTurnSettled });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      surface: "work",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Complete the task.",
+    });
+
+    expect(onTurnSettled).toHaveBeenCalledTimes(1);
+    const settled = onTurnSettled.mock.calls[0]?.[0];
+    expect(settled).toEqual({
+      sessionId: session.id,
+      turnId: expect.any(String),
+      status: "completed",
+      provider: "claude",
+      sessionSurface: "work",
+    });
+    expect(Object.keys(settled).sort()).toEqual([
+      "provider",
+      "sessionId",
+      "sessionSurface",
+      "status",
+      "turnId",
+    ]);
+    service.forceDisposeAll();
+  });
+
   it("previews native git ADE tools for regular workflow chats", () => {
     const { service } = createService();
     const toolNames = service.previewSessionToolNames({

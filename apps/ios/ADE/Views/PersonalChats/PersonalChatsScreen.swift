@@ -38,6 +38,7 @@ struct PersonalChatsScreen: View {
       }
     }
     .navigationTitle("Chats")
+    .adeAnalyticsScreen(.personalChats)
     .navigationBarTitleDisplayMode(.large)
     .searchable(text: $searchText, prompt: "Search chats")
     .toolbar {

@@ -111,6 +111,7 @@ import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde } from "./connection";
+import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "./productAnalytics";
 import { Drawer, type DrawerPrSummary } from "./components/Drawer";
 import {
   computeDrawerLayout,
@@ -3027,6 +3028,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
+  const analyticsAppOpenedRef = useRef(false);
+  const lastAnalyticsScreenRef = useRef<string | null>(null);
   const connectionLostRef = useRef(false);
   const activeLaneIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(project.sessionHint);
@@ -3189,6 +3192,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     addModeRef.current = addMode;
   }, [addMode]);
+
+  useEffect(() => {
+    if (!connection) return;
+    const screen = deriveTuiAnalyticsScreen({
+      activePane,
+      drawerSection,
+      rightPaneKind: rightPane.kind,
+      gridViewActive,
+      addModeActive: addMode !== null,
+      terminalControlActive: attachedTerminalId !== null,
+    });
+    if (lastAnalyticsScreenRef.current === screen) return;
+    lastAnalyticsScreenRef.current = screen;
+    void captureTuiProductAnalytics(connection, {
+      event: "ade_screen_viewed",
+      properties: {
+        screen,
+        source: "ade_code",
+      },
+      dedupeKey: `tui_screen:${screen}`,
+      minimumIntervalMs: 2_000,
+    }).catch(() => undefined);
+  }, [activePane, addMode, attachedTerminalId, connection, drawerSection, gridViewActive, rightPane.kind]);
 
   useEffect(() => {
     streamingBySessionIdRef.current = streamingBySessionId;
@@ -7337,12 +7363,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               await Promise.allSettled([
                 flushPendingAdeCodeState(),
                 signalActiveTerminalForExit(),
+                conn.action("analytics", "flush"),
               ]);
             },
           });
         connectionRef.current = conn;
         setConnection(conn);
         setMode(conn.mode);
+        if (!analyticsAppOpenedRef.current) {
+          analyticsAppOpenedRef.current = true;
+          void captureTuiProductAnalytics(conn, {
+            event: "ade_app_opened",
+            properties: {
+              entry_point: remoteLaunch ? "remote" : "local",
+              mode: conn.mode,
+              source: "ade_code",
+            },
+            dedupeKey: "tui_app_opened",
+            minimumIntervalMs: 5 * 60_000,
+          }).catch(() => undefined);
+        }
         draftSeededFromHistoryRef.current = false;
         newChatPreviewLaneIdRef.current = null;
         setDraftChatMode(false);
@@ -10635,6 +10675,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setCommandPaletteIndex(0);
     selectFooterControl(null);
     setInlineRowFocus({ cell: null });
+    const conn = connectionRef.current;
+    if (conn) {
+      void captureTuiProductAnalytics(conn, {
+        event: "ade_feature_used",
+        properties: {
+          feature: "command_palette",
+          action: "open",
+          source: "ade_code",
+        },
+        dedupeKey: "tui_feature:command_palette:open",
+        minimumIntervalMs: 5_000,
+      }).catch(() => undefined);
+    }
   }, [selectFooterControl]);
 
   const runCommandPaletteItem = useCallback(async (item: CommandPaletteItem | null | undefined) => {

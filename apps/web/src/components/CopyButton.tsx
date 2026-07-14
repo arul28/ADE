@@ -1,15 +1,18 @@
 import { useCallback, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { cn } from "../lib/cn";
+import { ANALYTICS_FEATURE_ATTRIBUTE, type MarketingFeature } from "../lib/marketingAnalytics";
 
 export function CopyButton({
   value,
   className,
   compact = false,
+  analyticsFeature,
 }: {
   value: string;
   className?: string;
   compact?: boolean;
+  analyticsFeature?: MarketingFeature;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -39,10 +42,10 @@ export function CopyButton({
       onClick={onCopy}
       disabled={!canCopy}
       aria-label={copied ? "Copied" : "Copy to clipboard"}
+      {...(analyticsFeature ? { [ANALYTICS_FEATURE_ATTRIBUTE]: analyticsFeature } : {})}
     >
       {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
       {!compact && (copied ? "Copied" : "Copy")}
     </button>
   );
 }
-

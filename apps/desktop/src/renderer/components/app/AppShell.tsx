@@ -74,6 +74,10 @@ import { ToastStack } from "./toast/ToastStack";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
+import {
+  useProductAnalyticsLifecycle,
+  WebAnalyticsConsentBanner,
+} from "../analytics/ProductAnalyticsLifecycle";
 
 type PrToast = {
   id: string;
@@ -90,6 +94,29 @@ type AutoLinkToast = {
 function primaryTabPath(pathname: string): string {
   const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
+
+const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
+  "/project",
+  "/lanes",
+  "/files",
+  "/work",
+  "/graph",
+  "/prs",
+  "/review",
+  "/history",
+  "/automations",
+  "/cto",
+  "/settings",
+  "/chats",
+  "/onboarding",
+] as const;
+
+export function productAnalyticsScreenForPathname(pathname: string): string {
+  const root = PRODUCT_ANALYTICS_ROUTE_ROOTS.find(
+    (candidate) => pathname === candidate || pathname.startsWith(`${candidate}/`),
+  );
+  return root?.slice(1) ?? "other";
 }
 
 function shouldLoadShellGithubStatus(pathname: string, isRemoteProject: boolean): boolean {
@@ -391,6 +418,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
+  const productAnalyticsScreen = productAnalyticsScreenForPathname(location.pathname);
+  const productAnalytics = useProductAnalyticsLifecycle({
+    projectRoot: currentProjectRoot,
+    screen: productAnalyticsScreen,
+  });
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
@@ -1255,6 +1287,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <ProjectTransitionErrorAlert />
+
+      {productAnalytics.consentRequired ? (
+        <WebAnalyticsConsentBanner
+          onAllow={productAnalytics.allow}
+          onDecline={productAnalytics.decline}
+        />
+      ) : null}
 
       {!hideSidebar && projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">

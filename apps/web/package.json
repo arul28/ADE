@@ -8,6 +8,7 @@
     "dev:detach": "nohup vite >> .vite-dev.log 2>&1 & echo \"Vite detached on http://localhost:4180/ (log: .vite-dev.log)\"",
     "build": "node scripts/check-entities.mjs && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
+    "test:analytics": "node --experimental-strip-types --test src/lib/marketingAnalytics.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

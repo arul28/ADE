@@ -17,6 +17,12 @@ import {
 import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
+import {
+  createProductAnalyticsService,
+  defaultProductAnalyticsStateFile,
+  getSharedProductAnalyticsService,
+} from "./services/analytics/productAnalyticsService";
+import { captureAgentTurnSettledAnalytics } from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -1285,6 +1291,25 @@ app.whenReady().then(async () => {
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
+  const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
+  const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
+    createProductAnalyticsService({
+      stateFilePath: productAnalyticsStateFile,
+      logger: localRuntimeLogger,
+      appVersion: app.getVersion(),
+      runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
+    }));
+  productAnalyticsService.capture({
+    event: "ade_app_opened",
+    surface: "desktop",
+    dedupeKey: "desktop-app-opened",
+    minimumIntervalMs: 30 * 60_000,
+    properties: {
+      entry_point: pendingStartupProjectRoot ? "project_file" : envRoot ? "environment" : "app_icon",
+      is_packaged: app.isPackaged,
+      release_channel: packagedChannel,
+    },
+  });
   const shouldRepairRuntimeServiceOnFallback =
     app.isPackaged
     && process.env.NODE_ENV !== "test"
@@ -3028,6 +3053,11 @@ app.whenReady().then(async () => {
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
+      onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();
@@ -5516,6 +5546,7 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
+        await productAnalyticsService.shutdown();
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {
@@ -6310,6 +6341,7 @@ app.whenReady().then(async () => {
     closeProjectByPath,
     globalStatePath,
     builtInBrowserService,
+    productAnalyticsService,
   });
 
   // Explicit project launches still bind a project before the renderer boots;

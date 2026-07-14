@@ -1,4 +1,5 @@
 import { LINKS } from "../../lib/links";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
 /**
  * Magazine masthead — top bar on the dark cover.
@@ -20,6 +21,7 @@ export function Masthead() {
         <nav className="ml-auto flex shrink-0 items-center gap-3 text-[11px] uppercase tracking-[0.12em] sm:gap-5 sm:text-[12px] sm:tracking-[0.14em]">
           <a
             href={LINKS.docs}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)]"
@@ -28,6 +30,7 @@ export function Masthead() {
           </a>
           <a
             href={LINKS.github}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)]"
@@ -36,6 +39,7 @@ export function Masthead() {
           </a>
           <a
             href={LINKS.webClient}
+            data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
@@ -44,6 +48,7 @@ export function Masthead() {
           </a>
           <a
             href={LINKS.releasesLatest}
+            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
@@ -52,6 +57,7 @@ export function Masthead() {
           </a>
           <a
             href={LINKS.testflight}
+            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"

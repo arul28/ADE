@@ -2,6 +2,7 @@ import type { ProjectInfo } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { createAgentChatNamespace } from "./agentChat";
+import { createAnalyticsNamespace } from "./analytics";
 import { createAppNamespace, webUpdateMethods } from "./app";
 import { createFilesNamespace } from "./files";
 import { createGitNamespaces } from "./git";
@@ -93,6 +94,7 @@ export function createAdeWebAdapter(client: AdeSyncClient, initialCatalog?: Sync
 
   const surface = {
     app: createAppNamespace(infra),
+    analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
     lanes: createLanesNamespace(infra),
     sessions,

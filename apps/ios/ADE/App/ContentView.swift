@@ -31,11 +31,22 @@ private enum RootTab: Hashable, CaseIterable, Identifiable {
     case .cto: return "brain"
     }
   }
+
+  var analyticsScreen: ADEAnalyticsScreen {
+    switch self {
+    case .work: return .work
+    case .lanes: return .lanes
+    case .prs: return .pullRequests
+    case .files: return .files
+    case .cto: return .cto
+    }
+  }
 }
 
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var selectedTab: RootTab = .work
+  @State private var analyticsConsentPresented = false
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -67,6 +78,28 @@ struct ContentView: View {
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
+      .onAppear {
+        captureCurrentRootScreen()
+        analyticsConsentPresented = ProductAnalytics.shared.shouldRequestConsent
+      }
+      .onChange(of: selectedTab) { _, _ in
+        captureCurrentRootScreen()
+      }
+      .onChange(of: syncService.shouldShowProjectHome) { _, _ in
+        captureCurrentRootScreen()
+      }
+      .onChange(of: syncService.settingsPresented) { _, isPresented in
+        guard isPresented else { return }
+        ProductAnalytics.shared.captureScreen(.settings)
+      }
+      .onChange(of: syncService.attentionDrawerPresented) { _, isPresented in
+        guard isPresented else { return }
+        ProductAnalytics.shared.captureScreen(.attentionDrawer)
+      }
+      .onChange(of: syncService.linearPanePresented) { _, isPresented in
+        guard isPresented else { return }
+        ProductAnalytics.shared.captureScreen(.linear)
+      }
       .sheet(isPresented: $syncService.settingsPresented) {
         ConnectionSettingsView(syncService: syncService)
       }
@@ -78,6 +111,18 @@ struct ContentView: View {
       .sheet(isPresented: $syncService.linearPanePresented) {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
+      }
+      .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
+        Button("Don't share", role: .cancel) {
+          ProductAnalytics.shared.setEnabled(false)
+        }
+        Button("Share usage") {
+          ProductAnalytics.shared.setEnabled(true)
+          ProductAnalytics.shared.captureAppOpened(.coldStart)
+          captureCurrentRootScreen()
+        }
+      } message: {
+        Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
       }
       .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
@@ -122,6 +167,12 @@ struct ContentView: View {
           selectedTab = .work
         }
       }
+  }
+
+  private func captureCurrentRootScreen() {
+    ProductAnalytics.shared.captureScreen(
+      syncService.shouldShowProjectHome ? .hub : selectedTab.analyticsScreen
+    )
   }
 
   private var rootTabs: some View {

@@ -10,6 +10,8 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        ProductAnalytics.shared.configure()
+        ProductAnalytics.shared.captureAppOpened(.coldStart)
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
         return true
@@ -60,6 +62,7 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         MainActor.assumeIsolated {
+            ProductAnalytics.shared.captureError(.pushRegistration)
             PushNotificationService.shared.didFailToRegisterForRemoteNotifications(error: error)
         }
     }
@@ -113,13 +116,27 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         // that cannot resolve.
         switch response.actionIdentifier {
         case ADEAppDelegate.approveActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
-            await MainActor.run { PushNotificationService.shared.notePushReceived() }
+            await MainActor.run {
+                PushNotificationService.shared.notePushReceived()
+                ProductAnalytics.shared.captureFeature(
+                    .pushAction,
+                    outcome: .approved,
+                    source: .notificationApprove
+                )
+            }
             await ADEIntentCommandRegistry.dispatch(
                 .approveSession,
                 payload: ["sessionId": sessionId, "itemId": itemId]
             )
         case ADEAppDelegate.denyActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
-            await MainActor.run { PushNotificationService.shared.notePushReceived() }
+            await MainActor.run {
+                PushNotificationService.shared.notePushReceived()
+                ProductAnalytics.shared.captureFeature(
+                    .pushAction,
+                    outcome: .denied,
+                    source: .notificationDeny
+                )
+            }
             await ADEIntentCommandRegistry.dispatch(
                 .denySession,
                 payload: ["sessionId": sessionId, "itemId": itemId]
@@ -129,6 +146,11 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
             // existing deep-link navigation, which knows the payload keys.
             await MainActor.run {
                 PushNotificationService.shared.notePushReceived()
+                ProductAnalytics.shared.captureFeature(
+                    .pushNotification,
+                    outcome: .opened,
+                    source: .notification
+                )
                 DeepLinkRouter.shared.handleNotificationUserInfo(userInfo)
             }
         }

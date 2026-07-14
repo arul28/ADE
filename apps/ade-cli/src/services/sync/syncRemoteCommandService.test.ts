@@ -36,6 +36,7 @@ function createService(options?: {
   issueRuntimeHostPairingGrant?: () => string;
   isCloudRelayEnabled?: () => boolean;
   usageTrackingService?: Record<string, unknown>;
+  productAnalyticsService?: Record<string, unknown>;
   personalChatScope?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
@@ -87,6 +88,7 @@ function createService(options?: {
       : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
+    ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     logger,
   } as any);
@@ -110,6 +112,38 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("advertises the complete paired-client analytics command contract", async () => {
+    const flush = vi.fn(async () => true);
+    const { service } = createService({ productAnalyticsService: { flush } });
+
+    expect(
+      service.getDescriptors().filter((descriptor) => descriptor.action.startsWith("analytics.")),
+    ).toEqual([
+      {
+        action: "analytics.capture",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.flush",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.getStatus",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.setClientEnabled",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+    ]);
+    await expect(service.execute(makePayload("analytics.flush"))).resolves.toBe(true);
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
   it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
     const getAdeUsageStats = vi.fn().mockResolvedValue({ generatedAt: "2026-07-09T12:00:00.000Z", daily: [] });
     const quotaSnapshot = { windows: [], lastPolledAt: "2026-07-09T12:00:00.000Z", errors: [] };

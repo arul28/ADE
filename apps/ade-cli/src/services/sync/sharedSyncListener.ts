@@ -90,6 +90,8 @@ export type SyncPeerHandoffSnapshot = {
   /** All-projects roster (mobile hub) subscription, restored on adoption so a
    * hosted-project switch does not silently stop the hub feed. */
   rosterSubscribed?: boolean;
+  /** Peer-local product analytics consent survives only live socket handoffs. */
+  productAnalyticsEnabled?: boolean;
   bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
 };
 

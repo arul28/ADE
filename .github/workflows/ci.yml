@@ -123,6 +123,8 @@ jobs:
             apps/push-relay/node_modules
           key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
+      - run: cd apps/web && npm run test:analytics
+      - run: npm run test:posthog
 
   typecheck-webhook-relay:
     needs: install

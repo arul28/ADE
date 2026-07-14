@@ -6,6 +6,7 @@ import { LinkButton } from "../../components/LinkButton";
 import { Page } from "../../components/Page";
 import { Section } from "../../components/Section";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
 type OpenTarget =
   | { kind: "lane"; laneId: string; envelope?: OpenEnvelope }
@@ -334,11 +335,12 @@ export function OpenPage() {
               <div className="mt-4 flex flex-wrap gap-3">
                 <a
                   href={adeUrl}
+                  data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
                   className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400"
                 >
                   <ArrowUpRight className="mr-1 h-4 w-4" /> Open in ADE
                 </a>
-                <LinkButton to="/download" variant="secondary">
+                <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
                   <Download className="mr-1 h-4 w-4" /> Install ADE
                 </LinkButton>
               </div>

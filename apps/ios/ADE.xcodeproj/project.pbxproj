@@ -228,6 +228,12 @@
 		E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000049 /* TerminalSessionScreen.swift */; };
 		E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000004A /* SwiftTermSessionView.swift */; };
 		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
+		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
+		A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000012 /* SettingsAnalyticsSection.swift */; };
+		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
+		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
+		A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000011 /* PrivacyInfo.xcprivacy */; };
+		A90300000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90300000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -472,6 +478,12 @@
 		A1000000000000000000001E /* LaneColorPalette.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorPalette.swift; path = ADE/Views/Lanes/LaneColorPalette.swift; sourceTree = "<group>"; };
 		A1000000000000000000001F /* LaneColorSwatchPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorSwatchPicker.swift; path = ADE/Views/Lanes/LaneColorSwatchPicker.swift; sourceTree = "<group>"; };
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
+		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
+		A90000000000000000000012 /* SettingsAnalyticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAnalyticsSection.swift; path = ADE/Views/Settings/SettingsAnalyticsSection.swift; sourceTree = "<group>"; };
+		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
+		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A90200000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEWidgets/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A90300000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEClip/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C9411193AF56B236BA32EFF5 /* ADEApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEApp.swift; path = ADE/App/ADEApp.swift; sourceTree = "<group>"; };
 		C10000000000000000000011 /* ADEMobilePrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEMobilePrimitives.swift; path = ADE/Views/Components/ADEMobilePrimitives.swift; sourceTree = "<group>"; };
 		C10000000000000000000012 /* ADECodeRenderingCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADECodeRenderingCache.swift; path = ADE/Views/Components/ADECodeRenderingCache.swift; sourceTree = "<group>"; };
@@ -773,6 +785,7 @@
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
+				A90000000000000000000012 /* SettingsAnalyticsSection.swift */,
 				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
@@ -787,6 +800,7 @@
 			children = (
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
+				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
@@ -859,6 +873,7 @@
 			isa = PBXGroup;
 			children = (
 				AA5000000000000000000001 /* Info.plist */,
+				A90200000000000000000011 /* PrivacyInfo.xcprivacy */,
 				AA5000000000000000000002 /* ADEWidgets.entitlements */,
 				AA5200000000000000000001 /* ADEWidgetBundle.swift */,
 				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
@@ -871,6 +886,7 @@
 			isa = PBXGroup;
 			children = (
 				AC1000000000000000000005 /* Info.plist */,
+				A90300000000000000000011 /* PrivacyInfo.xcprivacy */,
 				AC1000000000000000000007 /* ADEClip.entitlements */,
 				AC1000000000000000000001 /* ADEClipApp.swift */,
 				AC1000000000000000000002 /* ClipPairingClient.swift */,
@@ -927,6 +943,7 @@
 		B6658D243715FBE2E04D6A2E /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A90100000000000000000011 /* PrivacyInfo.xcprivacy */,
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
 				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
 			);
@@ -945,6 +962,7 @@
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
+				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -974,6 +992,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = E6B3339883991EC90A3BB071 /* Build configuration list for PBXNativeTarget "ADE" */;
 			buildPhases = (
+				A90000000000000000000021 /* Validate PostHog configuration */,
 				73ED0BCB9618AA29B41D84DA /* Sources */,
 				DE00988229EE6003DBF8D8FA /* Frameworks */,
 				7A00A99FE2965CB60C5BE5BF /* Resources */,
@@ -1144,6 +1163,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 				63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */,
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
 				CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */,
@@ -1154,6 +1174,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1161,11 +1182,37 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A90300000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 				AC2200000000000000000002 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A90000000000000000000021 /* Validate PostHog configuration */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/$(INFOPLIST_FILE)",
+				"$(SRCROOT)/Scripts/validate-posthog-project-token.sh",
+			);
+			name = "Validate PostHog configuration";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nsource_plist=\"${SRCROOT}/${INFOPLIST_FILE}\"\nplist_token=$(/usr/libexec/PlistBuddy -c 'Print :ADEPostHogProjectToken' \"$source_plist\" 2>/dev/null || true)\nplist_host=$(/usr/libexec/PlistBuddy -c 'Print :ADEPostHogHost' \"$source_plist\" 2>/dev/null || true)\ntoken_placeholder='$'\"(ADE_POSTHOG_PROJECT_TOKEN)\"\nhost_placeholder='$'\"(ADE_POSTHOG_HOST)\"\nif [ \"$plist_token\" = \"$token_placeholder\" ]; then\n  token=\"${ADE_POSTHOG_PROJECT_TOKEN:-}\"\nelse\n  token=\"$plist_token\"\nfi\nif [ \"$plist_host\" = \"$host_placeholder\" ]; then\n  host=\"${ADE_POSTHOG_HOST:-}\"\nelse\n  host=\"$plist_host\"\nfi\nprintf '%s\\n%s\\n' \"$token\" \"$host\" | /bin/sh \"${SRCROOT}/Scripts/validate-posthog-project-token.sh\" --stdin\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		73ED0BCB9618AA29B41D84DA /* Sources */ = {
@@ -1190,6 +1237,7 @@
 				01FE6A4E9FAB343B48940038 /* DictationCleanup.swift in Sources */,
 				8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */,
 				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
+				A90000000000000000000001 /* ProductAnalytics.swift in Sources */,
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
@@ -1250,6 +1298,7 @@
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
 				B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */,
+				A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */,
 				B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */,
 				B10000000000000000000103 /* LaneActionsCard.swift in Sources */,
 				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,
@@ -1378,6 +1427,7 @@
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
+				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1454,6 +1504,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ADE_POSTHOG_HOST = "";
+				ADE_POSTHOG_PROJECT_TOKEN = "";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1531,6 +1583,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ADE_POSTHOG_HOST = "";
+				ADE_POSTHOG_PROJECT_TOKEN = "";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;

@@ -28,6 +28,7 @@ describe("createAdeWebAdapter", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("boots before and after a bound project", async () => {
@@ -171,6 +172,118 @@ describe("createAdeWebAdapter", () => {
       opts: { projectId: null, timeoutMs: undefined },
     });
 
+    adapter.dispose();
+  });
+
+  it("captures web analytics at runtime scope with a durable browser-local opt-out", async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    });
+    fake.descriptors = ["analytics.capture", "analytics.getStatus", "analytics.setClientEnabled"].map((action) => ({
+      action,
+      scope: "runtime" as const,
+      policy: { viewerAllowed: true },
+    }));
+    fake.commandResults.set("analytics.capture", { accepted: true, reason: "accepted" });
+    const hostStatus = {
+      configured: true,
+      enabled: true,
+      effective: true,
+      host: "https://us.i.posthog.com",
+      dailyBudget: 200,
+      acceptedToday: 4,
+      droppedToday: 1,
+      day: "2026-07-13",
+    };
+    fake.commandResults.set("analytics.getStatus", hostStatus);
+    fake.commandResults.set("analytics.setClientEnabled", hostStatus);
+    const adapter = createAdeWebAdapter(fake.asClient());
+
+    await expect(adapter.ade.analytics.getStatus()).resolves.toMatchObject({
+      configured: true,
+      enabled: false,
+      effective: false,
+      consentRequired: true,
+    });
+    await expect(adapter.ade.analytics.capture({
+      event: "ade_screen_viewed",
+      properties: { screen: "work" },
+    })).resolves.toEqual({ accepted: false, reason: "disabled" });
+
+    await expect(adapter.ade.analytics.setEnabled(true)).resolves.toMatchObject({
+      configured: true,
+      enabled: true,
+      effective: true,
+      consentRequired: false,
+    });
+    await expect(adapter.ade.analytics.capture({
+      event: "ade_screen_viewed",
+      properties: { screen: "work" },
+    })).resolves.toEqual({ accepted: true, reason: "accepted" });
+    expect(fake.commandCalls).toContainEqual({
+      action: "analytics.setClientEnabled",
+      args: { enabled: true },
+      opts: { projectId: null, timeoutMs: 5_000 },
+    });
+    expect(fake.commandCalls).toContainEqual({
+      action: "analytics.getStatus",
+      args: {},
+      opts: { projectId: null, timeoutMs: undefined },
+    });
+    expect(fake.commandCalls).toContainEqual({
+      action: "analytics.capture",
+      args: {
+        event: "ade_screen_viewed",
+        properties: { screen: "work" },
+        surface: "web",
+      },
+      opts: { projectId: null, timeoutMs: undefined },
+    });
+
+    await expect(adapter.ade.analytics.setEnabled(false)).resolves.toMatchObject({
+      enabled: false,
+      effective: false,
+    });
+    await expect(adapter.ade.analytics.capture({
+      event: "ade_screen_viewed",
+      properties: { screen: "files" },
+    })).resolves.toEqual({ accepted: false, reason: "disabled" });
+    expect(fake.commandCalls).toContainEqual({
+      action: "analytics.setClientEnabled",
+      args: { enabled: false },
+      opts: { projectId: null, timeoutMs: 5_000 },
+    });
+    expect(fake.commandCalls.filter((call) => call.action === "analytics.capture")).toHaveLength(1);
+    adapter.dispose();
+
+    const reloadedAdapter = createAdeWebAdapter(fake.asClient());
+    await expect(reloadedAdapter.ade.analytics.getStatus()).resolves.toMatchObject({
+      enabled: false,
+      effective: false,
+    });
+    reloadedAdapter.dispose();
+  });
+
+  it("retries consent before disconnecting an opted-out browser fail-closed", async () => {
+    fake.descriptors = descriptors(["analytics.setClientEnabled", "analytics.capture"]);
+    fake.commandErrors.set("analytics.setClientEnabled", new Error("consent timeout"));
+    const adapter = createAdeWebAdapter(fake.asClient());
+
+    await expect(adapter.ade.analytics.setEnabled(false)).resolves.toMatchObject({
+      enabled: false,
+      effective: false,
+    });
+    expect(fake.commandCalls.filter((call) => call.action === "analytics.setClientEnabled")).toHaveLength(6);
+    expect(fake.disconnectCalls).toBe(1);
+    await expect(adapter.ade.analytics.capture({
+      event: "ade_screen_viewed",
+      properties: { screen: "work" },
+    })).resolves.toEqual({ accepted: false, reason: "disabled" });
+    expect(fake.commandCalls.some((call) => call.action === "analytics.capture")).toBe(false);
     adapter.dispose();
   });
 
@@ -427,12 +540,14 @@ type TerminalHistoryCall = {
 class FakeAdeSyncClient {
   descriptors: SyncRemoteCommandDescriptor[] = [];
   commandResults = new Map<string, unknown>();
+  commandErrors = new Map<string, Error>();
   // The real sync client resolves requestFile() with the host's structured
   // `result` — a SyncFileBlob only for readFile/readArtifact, but an array/object
   // for listWorkspaces/listTree/etc. Model that faithfully (unknown), not "always
   // a blob", so adapter mis-parsing is caught.
   fileResults = new Map<string, unknown>();
   commandCalls: CommandCall[] = [];
+  disconnectCalls = 0;
   fileCalls: Array<{ action: string; args: Record<string, unknown>; opts: { projectId?: string | null; timeoutMs?: number } }> = [];
   terminalInputs: Array<{ sessionId: string; data: string }> = [];
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
@@ -494,7 +609,13 @@ class FakeAdeSyncClient {
 
   async sendCommand(action: string, args: Record<string, unknown>, opts: { projectId?: string | null; timeoutMs?: number } = {}): Promise<unknown> {
     this.commandCalls.push({ action, args, opts });
+    const error = this.commandErrors.get(action);
+    if (error) throw error;
     return this.commandResults.has(action) ? this.commandResults.get(action) : null;
+  }
+
+  disconnect(): void {
+    this.disconnectCalls += 1;
   }
 
   async requestFile(action: string, args: Record<string, unknown>, opts: { projectId?: string | null; timeoutMs?: number } = {}): Promise<unknown> {

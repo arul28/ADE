@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { EDITORIAL_ISSUE } from "./issue";
+import { MARKETING_FEATURES, type MarketingFeature } from "../../lib/marketingAnalytics";
 
 /** Official Linear mark (from the desktop app's Linear integration). */
 function LinearMark({ className }: { className?: string }) {
@@ -32,6 +33,7 @@ type Demo = {
   /** /videos/<name>.webp — tiny first-frame poster. */
   poster: string;
   icon: ComponentType<{ className?: string }>;
+  analyticsFeature: MarketingFeature;
   /** Brand icons keep their own colour; native ones inherit the accent. */
   brand?: string;
 };
@@ -43,6 +45,7 @@ const DEMOS: Demo[] = [
     video: "/videos/gridViewDemo.mp4",
     poster: "/videos/gridViewDemo.webp",
     icon: LayoutGrid,
+    analyticsFeature: MARKETING_FEATURES.DEMO_GRID_VIEW,
   },
   {
     label: "Subagents",
@@ -50,6 +53,7 @@ const DEMOS: Demo[] = [
     video: "/videos/subagentsDemo.mp4",
     poster: "/videos/subagentsDemo.webp",
     icon: Network,
+    analyticsFeature: MARKETING_FEATURES.DEMO_SUBAGENTS,
   },
   {
     label: "Auto-create worktrees",
@@ -57,6 +61,7 @@ const DEMOS: Demo[] = [
     video: "/videos/autocreateLane.mp4",
     poster: "/videos/autocreateLane.webp",
     icon: GitBranchPlus,
+    analyticsFeature: MARKETING_FEATURES.DEMO_AUTO_CREATE_WORKTREES,
   },
   {
     label: "PRs from a chat",
@@ -64,6 +69,7 @@ const DEMOS: Demo[] = [
     video: "/videos/creatingPRfromChat.mp4",
     poster: "/videos/creatingPRfromChat.webp",
     icon: GitPullRequest,
+    analyticsFeature: MARKETING_FEATURES.DEMO_PR_FROM_CHAT,
   },
   {
     label: "Worktree graph",
@@ -71,6 +77,7 @@ const DEMOS: Demo[] = [
     video: "/videos/graphsTab.mp4",
     poster: "/videos/graphsTab.webp",
     icon: Workflow,
+    analyticsFeature: MARKETING_FEATURES.DEMO_WORKTREE_GRAPH,
   },
   {
     label: "ADE Code",
@@ -78,6 +85,7 @@ const DEMOS: Demo[] = [
     video: "/videos/adecodeDemo.mp4",
     poster: "/videos/adecodeDemo.webp",
     icon: SquareTerminal,
+    analyticsFeature: MARKETING_FEATURES.DEMO_ADE_CODE,
   },
   {
     label: "Built-in browser",
@@ -85,6 +93,7 @@ const DEMOS: Demo[] = [
     video: "/videos/browserInspect.mp4",
     poster: "/videos/browserInspect.webp",
     icon: Globe,
+    analyticsFeature: MARKETING_FEATURES.DEMO_BROWSER,
   },
   {
     label: "Remote runtimes",
@@ -92,6 +101,7 @@ const DEMOS: Demo[] = [
     video: "/videos/remoteConnect.mp4",
     poster: "/videos/remoteConnect.webp",
     icon: Server,
+    analyticsFeature: MARKETING_FEATURES.DEMO_REMOTE_RUNTIMES,
   },
   {
     label: "Linear, connected",
@@ -99,6 +109,7 @@ const DEMOS: Demo[] = [
     video: "/videos/linearConnection.mp4",
     poster: "/videos/linearConnection.webp",
     icon: LinearMark,
+    analyticsFeature: MARKETING_FEATURES.DEMO_LINEAR,
     brand: "#5E6AD2",
   },
 ];
@@ -152,6 +163,7 @@ function DemoTile({
         type="button"
         onClick={() => onOpen(demo)}
         aria-label={`Expand the ${demo.label} demo`}
+        data-ade-analytics-feature={demo.analyticsFeature}
         className="relative block w-full cursor-pointer overflow-hidden rounded-[3px] border border-[color:var(--color-ink-hairline)] bg-[#0a0a0f] text-left shadow-[0_20px_44px_-26px_rgba(24,21,15,0.55)] outline-none ring-0 transition-[transform,box-shadow] duration-300 focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)] motion-safe:group-hover:-translate-y-[4px] motion-safe:group-hover:shadow-[0_30px_60px_-28px_rgba(94,106,210,0.5)]"
       >
         <div className="relative aspect-video w-full">

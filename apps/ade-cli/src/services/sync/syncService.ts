@@ -74,10 +74,12 @@ import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHos
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 
 type SyncServiceArgs = {
   db: AdeDb;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
   projectId?: string | null;
   runtimeProjectId?: string | null;
@@ -588,6 +590,7 @@ export function createSyncService(args: SyncServiceArgs) {
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
+    productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
@@ -722,6 +725,7 @@ export function createSyncService(args: SyncServiceArgs) {
       personalChatScope: args.personalChatScope,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
+      productAnalyticsService: args.productAnalyticsService,
       requireDpop: () => securityStore.getRequireDpop(),
       getCloudRelayWssUrl: () =>
         cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,

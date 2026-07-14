@@ -33,6 +33,11 @@ import {
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
+import {
+  parseProductAnalyticsCapture,
+  type ProductAnalyticsStatus,
+} from "../../../shared/types/productAnalytics";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { runGit } from "../git/git";
 import type {
@@ -1544,6 +1549,7 @@ export function registerIpc({
   closeProjectByPath,
   globalStatePath,
   builtInBrowserService,
+  productAnalyticsService,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1563,12 +1569,24 @@ export function registerIpc({
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
+  productAnalyticsService?: ProductAnalyticsService;
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+  let fallbackAnalyticsEnabled = true;
+  const fallbackAnalyticsStatus = (): ProductAnalyticsStatus => ({
+    configured: false,
+    enabled: fallbackAnalyticsEnabled,
+    effective: false,
+    host: "https://us.i.posthog.com",
+    dailyBudget: 200,
+    acceptedToday: 0,
+    droppedToday: 0,
+    day: new Date().toISOString().slice(0, 10),
+  });
   const projectRecoveryService = projectRecoveryConnectionPool
     ? createProjectRecoveryService({
         adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
@@ -2023,6 +2041,7 @@ export function registerIpc({
                 client: "desktop",
                 action: usageAction,
                 sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : null,
+                analyticsEligible: productAnalyticsService?.getStatus().effective === true,
               });
             } catch {
               // Global/project-selection IPC can run without an active context.
@@ -2041,6 +2060,28 @@ export function registerIpc({
         } catch (error) {
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: true });
+          const usageAction = usageActionFromIpcChannel(channel);
+          if (isMeaningfulUsageAction(usageAction)) {
+            const errorKind = error instanceof Error ? error.name : "unknown";
+            try {
+              productAnalyticsService?.capture({
+                event: "ade_error",
+                surface: "desktop",
+                dedupeKey: `desktop-action-error:${usageAction}:${errorKind}`,
+                minimumIntervalMs: 5 * 60_000,
+                properties: {
+                  action: usageAction,
+                  feature: usageAction.split(".", 1)[0] ?? "other",
+                  error_kind: errorKind,
+                  outcome: didTimeout ? "timeout" : "failure",
+                  recoverable: true,
+                  source: "ipc",
+                },
+              });
+            } catch {
+              // Analytics capture must never mask the original IPC error.
+            }
+          }
           if (traceIpcInvokes || didTimeout) {
             const logger = traceLogger ?? getTraceLogger();
             logger.warn("ipc.invoke.failed", {
@@ -2958,6 +2999,44 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
+
+  ipcMain.handle(
+    IPC.analyticsCapture,
+    async (
+      _event,
+      input: unknown,
+    ) => {
+      if (!productAnalyticsService) return { accepted: false, reason: "not_configured" };
+      const parsed = parseProductAnalyticsCapture(input, "desktop");
+      if (!parsed.ok) return { accepted: false, reason: parsed.reason };
+      const { projectId: _untrustedProjectId, dedupeKey, ...safeInput } = parsed.value;
+      let projectId: string | null = null;
+      try {
+        projectId = getCtx().projectId;
+      } catch {
+        // Projectless desktop screens are still valid analytics events.
+      }
+      return productAnalyticsService.capture({
+        ...safeInput,
+        surface: "desktop",
+        ...(projectId ? { projectId } : {}),
+        ...(safeInput.event === "ade_project_opened" && projectId
+          ? { dedupeKey: `desktop_project_opened:${projectId}` }
+          : { dedupeKey }),
+      });
+    },
+  );
+  ipcMain.handle(
+    IPC.analyticsGetStatus,
+    async (): Promise<ProductAnalyticsStatus> => productAnalyticsService?.getStatus() ?? fallbackAnalyticsStatus(),
+  );
+  ipcMain.handle(
+    IPC.analyticsSetEnabled,
+    async (_event, enabled: boolean): Promise<ProductAnalyticsStatus> => {
+      fallbackAnalyticsEnabled = enabled === true;
+      return productAnalyticsService?.setEnabled(fallbackAnalyticsEnabled) ?? fallbackAnalyticsStatus();
+    },
+  );
 
   ipcMain.handle(
     IPC.localhostProbePort,

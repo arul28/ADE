@@ -4,6 +4,11 @@ import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type {
+  ProductAnalyticsCapture,
+  ProductAnalyticsCaptureResult,
+  ProductAnalyticsStatus,
+} from "../shared/types/productAnalytics";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   StorageCleanupPreview,
@@ -3170,6 +3175,16 @@ const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 
 contextBridge.exposeInMainWorld("ade", {
+  analytics: {
+    capture: async (
+      input: Omit<ProductAnalyticsCapture, "surface">,
+    ): Promise<ProductAnalyticsCaptureResult> =>
+      ipcRenderer.invoke(IPC.analyticsCapture, input),
+    getStatus: async (): Promise<ProductAnalyticsStatus> =>
+      ipcRenderer.invoke(IPC.analyticsGetStatus),
+    setEnabled: async (enabled: boolean): Promise<ProductAnalyticsStatus> =>
+      ipcRenderer.invoke(IPC.analyticsSetEnabled, enabled),
+  },
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),

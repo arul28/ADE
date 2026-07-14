@@ -14729,6 +14729,17 @@ async function runServe(
     }
     await scopeRegistry.disposeAll();
     await personalChatScope.dispose();
+    try {
+      const {
+        defaultProductAnalyticsStateFile,
+        peekSharedProductAnalyticsService,
+      } = await import("../../desktop/src/main/services/analytics/productAnalyticsService");
+      await peekSharedProductAnalyticsService(
+        defaultProductAnalyticsStateFile(layout.adeDir),
+      )?.shutdown();
+    } catch {
+      // Analytics is best-effort and must never delay or fail daemon shutdown.
+    }
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});
     }
@@ -18073,7 +18084,15 @@ async function main(): Promise<void> {
 }
 
 if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
-  void main().finally(() => {
+  void main().finally(async () => {
+    try {
+      const { shutdownAllSharedProductAnalyticsServices } = await import(
+        "../../desktop/src/main/services/analytics/productAnalyticsService"
+      );
+      await shutdownAllSharedProductAnalyticsServices();
+    } catch {
+      // Product analytics is best-effort and must not change CLI exit status.
+    }
     process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
   });
 }

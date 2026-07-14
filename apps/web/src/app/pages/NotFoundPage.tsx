@@ -2,6 +2,7 @@ import { Container } from "../../components/Container";
 import { LinkButton } from "../../components/LinkButton";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
 export function NotFoundPage() {
@@ -22,7 +23,7 @@ export function NotFoundPage() {
                 <LinkButton to="/" variant="secondary">
                   Home
                 </LinkButton>
-                <LinkButton to="/download" variant="primary">
+                <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary">
                   Download
                 </LinkButton>
               </div>
@@ -33,4 +34,3 @@ export function NotFoundPage() {
     </Page>
   );
 }
-

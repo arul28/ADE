@@ -65,6 +65,45 @@ function expectIndexes(db: Awaited<ReturnType<typeof openKvDb>>, indexes: readon
 }
 
 describe("kvDb migrations - legacy upgrade paths", () => {
+  it("marks pre-integration usage rows local-only when adding the analytics export column", async () => {
+    const dbPath = makeDbPath("ade-kvdb-usage-analytics-legacy-");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec(`
+      create table usage_events (
+        id text primary key,
+        project_id text not null,
+        client_surface text not null,
+        action text not null,
+        feature text not null,
+        session_id text,
+        occurred_at text not null
+      );
+      insert into usage_events values (
+        '11111111-1111-4111-8111-111111111111',
+        'project-1',
+        'desktop',
+        'chat.send',
+        'chat',
+        'session-1',
+        '2026-07-12T12:00:00.000Z'
+      );
+    `);
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      expect(listColumnNames(db, "usage_events")).toContain("analytics_exported_at");
+      expect(db.get<{ value: string }>(
+        "select analytics_exported_at as value from usage_events where id = ?",
+        ["11111111-1111-4111-8111-111111111111"],
+      )?.value).toBe("pre_analytics");
+    } finally {
+      db.close();
+    }
+  });
+
   it("drops legacy unified_memories FTS4 schema before retrofit passes run", async () => {
     const dbPath = makeDbPath("ade-kvdb-legacy-memory-");
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });

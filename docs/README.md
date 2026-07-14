@@ -8,8 +8,9 @@ The mental model up front: ADE has a **brain** — the always-on, machine-owned 
 
 1. [**PRD.md**](./PRD.md) — product scope, brain role, runtime machinery, clients model, concepts, feature index.
 2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, brain/client topology, data plane, IPC, services catalog, security, build/test/deploy.
-3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
-4. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
+3. [**logging.md**](./logging.md) — ground truth for local logging, PostHog product analytics, privacy, consent, event budgets, dashboards, and instrumentation rules.
+4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
+5. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
 ## Layout
 
@@ -18,6 +19,7 @@ docs/
 ├── README.md                              # this file
 ├── PRD.md                                 # product entry point
 ├── ARCHITECTURE.md                        # system architecture
+├── logging.md                             # logging + PostHog ground truth
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
 ├── playbooks/
 │   └── ship-lane.md                       # autonomous PR-to-merge driver
