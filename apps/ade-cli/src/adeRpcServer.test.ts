@@ -3750,6 +3750,22 @@ describe("adeRpcServer", () => {
       sessionId: "chat-2",
       text: "external write",
     });
+
+    const scheduledWorkList = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+      args: { sessionId: "chat-2", includeTerminal: true },
+    });
+    expect(scheduledWorkList.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.listScheduledWork).not.toHaveBeenCalled();
+
+    const scheduledWorkCancel = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "cancelScheduledWork",
+      args: { sessionId: "chat-2", scheduleId: "wake-2" },
+    });
+    expect(scheduledWorkCancel.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).not.toHaveBeenCalled();
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

@@ -2397,7 +2397,10 @@ function scopeChatAdeActionArgs(
 
   const scopedArgs = { ...chatArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  if (session.identity.role === "external" && !callerChatSessionId) return scopedArgs;
+  if (session.identity.role === "external" && !callerChatSessionId) {
+    if (action === "readTranscript" || action === "sendMessage") return scopedArgs;
+    chatAccessDenied(method);
+  }
 
   const requestedSessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   if (!callerChatSessionId || (requestedSessionId && requestedSessionId !== callerChatSessionId)) {
