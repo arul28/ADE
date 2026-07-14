@@ -1,0 +1,21 @@
+---
+title: "v1.2.27"
+description: "Release notes for ADE v1.2.27 - July 14, 2026"
+---
+
+v1.2.27 makes Claude scheduled work reliable across compaction, relaunch, and long-running chats. ADE now follows Claude Agent SDK ownership instead of letting stale mirrored jobs keep waking the wrong session.
+
+---
+
+## Desktop and CLI
+
+- **Scheduled work follows its Claude session.** Durable cron jobs, wakeups, and loops are bound to the Claude Agent SDK session that created them. Session rollover quarantines old work instead of silently rebinding it or continuing to inject prompts.
+- **Cancellation is provider-aware.** ADE asks the owning Claude session to delete current jobs and waits for provider confirmation where required. Legacy or unreachable work is paused immediately, and truly orphaned mirrors can still be cleared locally.
+- **Automatic cleanup is safer.** One-shot work is reconciled after it fires, recurring ownership is refreshed from Claude snapshots, inactive chats are quarantined, terminal history is pruned, and legacy provisional cron rows are removed during migration.
+- **Per-job recovery is available when needed.** Settings, Chat Info, `ade chat scheduled-work`, and ADE Code can list, pause, or cancel individual jobs. These controls are a recovery surface; normal scheduled work continues to operate without setup.
+- **Lifecycle actions always win.** A busy or unavailable provider can no longer prevent a user from archiving or deleting a chat.
+
+## iOS
+
+- Added scheduled-work status and individual cancellation to paired Work chats, including personal chats.
+- Kept transcript-derived schedule cards visible when the managed list is empty, while treating a non-empty managed snapshot as authoritative.
