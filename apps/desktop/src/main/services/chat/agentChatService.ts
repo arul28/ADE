@@ -12169,6 +12169,7 @@ export function createAgentChatService(args: {
           ...(cronSchedule
             ? { fireAt: nextChatScheduledCronFireAt(cronSchedule, Date.now()) ?? undefined }
             : {}),
+          ...(recurring ? { expiresAt: Date.now() + claudeRecurringCronTtlMs } : {}),
           status: "scheduled",
           lateFlag: false,
           durable: true,
@@ -33393,14 +33394,27 @@ export function createAgentChatService(args: {
         ? managed.runtime.sdkSessionId
         : readPersistedState(sessionId)?.sdkSessionId
     )?.trim();
-    // Successful hooks always carry Claude's session_id. A missing owner is
-    // therefore a pre-1.2.27 legacy mirror that cannot be safely rebound to
-    // the live session, just like an explicitly mismatched owner.
+    // Successful hooks always carry Claude's session_id. A missing owner is a
+    // pre-1.2.27 legacy mirror: never rebind it, but when the chat still exists
+    // ask the current provider to delete the matching id/prompt before ADE
+    // tombstones its local row. That best-effort request covers legacy work
+    // created by the current provider without making an orphaned/deleted chat
+    // impossible to clean up.
+    const sessionRow = sessionService.get(sessionId);
+    const canRequestLegacyProviderCancellation = Boolean(
+      currentProviderSessionId
+      && sessionRow
+      && isChatToolType(sessionRow.toolType),
+    );
     const staleOwnerSchedules = schedules.filter((schedule) =>
       !schedule.providerSessionId
       || schedule.providerSessionId !== currentProviderSessionId);
     const staleOwnerIds = new Set(staleOwnerSchedules.map((schedule) => schedule.id));
-    const providerSchedules = schedules.filter((schedule) => !staleOwnerIds.has(schedule.id));
+    const confirmedOwnerSchedules = schedules.filter((schedule) => !staleOwnerIds.has(schedule.id));
+    const legacyProviderSchedules = canRequestLegacyProviderCancellation
+      ? schedules.filter((schedule) => !schedule.providerSessionId)
+      : [];
+    const providerSchedules = [...confirmedOwnerSchedules, ...legacyProviderSchedules];
     const currentRecords = (selected = schedules) => selected.map((schedule) =>
       scheduledWorkScheduler!.list(sessionId).find((candidate) => candidate.id === schedule.id) ?? schedule);
     const forgetStaleOwnerSchedules = async (): Promise<void> => {
@@ -33439,6 +33453,19 @@ export function createAgentChatService(args: {
     try {
       await messageSession({ sessionId, kind: "wake", text: instructions });
     } catch (error) {
+      if (!confirmedOwnerSchedules.length) {
+        await forgetStaleOwnerSchedules();
+        logger.warn("agent_chat.claude_legacy_scheduled_work_cancel_request_failed", {
+          sessionId,
+          scheduleCount: legacyProviderSchedules.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+          schedules: currentRecords(),
+          providerCancellationRequested: false,
+          providerCancellationConfirmed: false,
+        };
+      }
       await Promise.all(schedules.map((schedule) =>
         scheduledWorkScheduler!.setSchedulePaused(schedule.id, originalPauseFlags.get(schedule.id) === true)));
       throw error;
@@ -33450,14 +33477,24 @@ export function createAgentChatService(args: {
       return {
         schedules: current,
         providerCancellationRequested: true,
-        providerCancellationConfirmed: currentRecords(providerSchedules)
-          .every((schedule) => schedule.status === "cancelled"),
+        providerCancellationConfirmed: confirmedOwnerSchedules.length > 0
+          && currentRecords(confirmedOwnerSchedules)
+            .every((schedule) => schedule.status === "cancelled"),
+      };
+    }
+
+    if (!confirmedOwnerSchedules.length) {
+      await forgetStaleOwnerSchedules();
+      return {
+        schedules: currentRecords(),
+        providerCancellationRequested: true,
+        providerCancellationConfirmed: false,
       };
     }
 
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
-      const providerCurrent = currentRecords(providerSchedules);
+      const providerCurrent = currentRecords(confirmedOwnerSchedules);
       if (providerCurrent.every((schedule) => schedule.status === "cancelled")) {
         await forgetStaleOwnerSchedules();
         return {
