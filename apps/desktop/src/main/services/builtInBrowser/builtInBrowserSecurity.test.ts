@@ -907,4 +907,41 @@ describe("built-in browser desktop bridge", () => {
       server.dispose();
     }
   });
+
+  it.skipIf(process.platform === "win32")("accepts authenticated personal chat scopes without a project root", async () => {
+    const socketPath = path.join(bridgeTempDir, "desktop-bridge.sock");
+    const navigate = vi.fn(async (input: unknown) => input);
+    const server = startBuiltInBrowserDesktopBridgeServer({
+      socketPath,
+      service: { navigate } as unknown as BuiltInBrowserService,
+      logger: createLogger(),
+    });
+    let client: JsonRpcClient | null = null;
+    try {
+      await waitForPath(socketPath);
+      client = await JsonRpcClient.connect(socketPath);
+
+      await expect(client.request("built_in_browser.navigate", {
+        url: "https://example.test",
+        chatSessionId: "chat-personal",
+        tabCollection: "personal",
+        force: true,
+        [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: server.authToken,
+      })).resolves.toMatchObject({
+        url: "https://example.test",
+        chatSessionId: "chat-personal",
+        tabCollection: "personal",
+        force: false,
+      });
+      expect(navigate).toHaveBeenCalledWith(expect.objectContaining({
+        chatSessionId: "chat-personal",
+        projectRoot: undefined,
+        tabCollection: "personal",
+        force: false,
+      }));
+    } finally {
+      client?.close();
+      server.dispose();
+    }
+  });
 });
