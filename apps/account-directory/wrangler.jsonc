@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ade-account-directory",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ONLINE_WINDOW_MS": "90000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ade-account-directory",
+      // Local build/dev identifier. Replace it with the created D1 database UUID
+      // during the deferred Cloudflare setup before any remote migration/deploy.
+      "database_id": "local-account-directory",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
