@@ -298,6 +298,7 @@ export function createChatScheduledWorkScheduler(
     if (options.sessionState(schedule.sessionId) !== "active") {
       if (!quarantineInactiveProviderSchedule(schedule)) {
         markTerminal(schedule, "cancelled");
+        pruneTerminalHistory();
       }
       clearTimer(schedule.id);
       await persist();
@@ -368,6 +369,7 @@ export function createChatScheduledWorkScheduler(
     if (schedule.status === "done" || schedule.status === "cancelled") return;
     if (isExpired(schedule)) {
       markTerminal(schedule, "cancelled");
+      pruneTerminalHistory();
       await persist();
       await emitTransition(schedule, "cancelled");
       return;
@@ -375,6 +377,7 @@ export function createChatScheduledWorkScheduler(
     if (options.sessionState(schedule.sessionId) !== "active") {
       if (!quarantineInactiveProviderSchedule(schedule)) {
         markTerminal(schedule, "cancelled");
+        pruneTerminalHistory();
       }
       await persist();
       await emitTransition(schedule, schedule.status);
@@ -392,6 +395,7 @@ export function createChatScheduledWorkScheduler(
         // process exited. Complete it without delivery so restore preserves
         // at-most-once semantics.
         markTerminal(schedule, "done");
+        pruneTerminalHistory();
       }
       delete schedule.activeTurnId;
       await persist();
@@ -503,6 +507,7 @@ export function createChatScheduledWorkScheduler(
       if (options.sessionState(schedule.sessionId) !== "active") {
         if (!quarantineInactiveProviderSchedule(schedule)) {
           markTerminal(schedule, "cancelled");
+          pruneTerminalHistory();
         }
       } else if (!isTerminal(schedule)) {
         delete schedule.terminalAt;

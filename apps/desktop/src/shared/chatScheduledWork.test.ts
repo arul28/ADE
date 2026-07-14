@@ -48,7 +48,9 @@ describe("mergeManagedScheduledWorkSnapshots", () => {
   }, 0);
 
   it("reconciles stale, provider-only, and managed durable rows", () => {
-    expect(mergeManagedScheduledWorkSnapshots([durableEvent], [])).toEqual([]);
+    expect(mergeManagedScheduledWorkSnapshots([durableEvent], [])).toEqual([
+      expect.objectContaining({ id: "durable-1", durable: true }),
+    ]);
     const events = [envelope({
       type: "scheduled_work_update",
       id: "provider-only",
@@ -61,6 +63,17 @@ describe("mergeManagedScheduledWorkSnapshots", () => {
     const [snapshot] = mergeManagedScheduledWorkSnapshots(events, []);
     expect(snapshot).toEqual(expect.objectContaining({ id: "provider-only", durable: false }));
     expect(snapshot).not.toHaveProperty("cancellable");
+    expect(mergeManagedScheduledWorkSnapshots([durableEvent], [{
+      id: "managed-elsewhere",
+      sessionId: "session-1",
+      kind: "wakeup",
+      status: "scheduled",
+      title: "Managed wakeup",
+      prompt: "Continue",
+      createdAt: "2026-01-01T13:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    }]).map((item) => item.id)).toEqual(["managed-elsewhere"]);
     expect(mergeManagedScheduledWorkSnapshots([durableEvent], [{
       id: "durable-1",
       sessionId: "session-1",

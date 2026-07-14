@@ -11888,7 +11888,7 @@ export function createAgentChatService(args: {
         ? scheduledWorkScheduler?.list(managed.session.id)
           .filter((schedule) =>
             (schedule.kind === "wakeup" || schedule.kind === "loop")
-            && schedule.providerSessionId === providerSessionId
+            && (!schedule.providerSessionId || schedule.providerSessionId === providerSessionId)
             && schedule.status !== "done"
             && schedule.status !== "cancelled")
           .at(-1)
@@ -11926,7 +11926,7 @@ export function createAgentChatService(args: {
       if (stop) {
         const activeWakeups = scheduledWorkScheduler.list(managed.session.id).filter((schedule) =>
           (schedule.kind === "wakeup" || schedule.kind === "loop")
-          && schedule.providerSessionId === providerSessionId
+          && (!schedule.providerSessionId || schedule.providerSessionId === providerSessionId)
           && schedule.status !== "done"
           && schedule.status !== "cancelled");
         await Promise.all(activeWakeups.map((schedule) =>

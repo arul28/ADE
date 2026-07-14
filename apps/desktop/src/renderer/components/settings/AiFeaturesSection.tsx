@@ -430,7 +430,18 @@ export function AiFeaturesSection() {
               <button
                 type="button"
                 onClick={() => void handleCancelScheduledWork(item)}
-                style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, background: "transparent", color: COLORS.warning, padding: "5px 9px", fontSize: 11, fontFamily: SANS_FONT, cursor: "pointer" }}
+                disabled={!item.cancellable}
+                style={{
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: item.cancellable ? COLORS.warning : COLORS.textMuted,
+                  padding: "5px 9px",
+                  fontSize: 11,
+                  fontFamily: SANS_FONT,
+                  cursor: item.cancellable ? "pointer" : "not-allowed",
+                  opacity: item.cancellable ? 1 : 0.5,
+                }}
               >
                 Cancel
               </button>

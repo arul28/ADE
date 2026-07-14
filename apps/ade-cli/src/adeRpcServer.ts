@@ -2387,7 +2387,12 @@ function scopeChatAdeActionArgs(
   chatArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:chat.${action}`;
-  if (action !== "readTranscript" && action !== "sendMessage") return chatArgs;
+  if (
+    action !== "readTranscript"
+    && action !== "sendMessage"
+    && action !== "cancelScheduledWork"
+  ) return chatArgs;
+  if (isUnboundAdeCliCaller(session)) return chatArgs;
 
   const scopedArgs = { ...chatArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
@@ -3492,7 +3497,15 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (!callerIsCto && domain === "chat" && (action === "readTranscript" || action === "sendMessage")) {
+    } else if (
+      !callerIsCto
+      && domain === "chat"
+      && (
+        action === "readTranscript"
+        || action === "sendMessage"
+        || action === "cancelScheduledWork"
+      )
+    ) {
       scopedObjectArgs = scopeChatAdeActionArgs(
         session,
         action,

@@ -2930,6 +2930,23 @@ describe("ADE CLI", () => {
       },
     });
 
+    for (const alias of ["schedule", "schedules"]) {
+      expect(expectExecutePlan(buildCliPlan(["chat", alias, "list", "chat-1"])).steps[0]?.params)
+        .toMatchObject({
+          arguments: {
+            action: "listScheduledWork",
+            args: { sessionId: "chat-1" },
+          },
+        });
+      expect(expectExecutePlan(buildCliPlan(["chat", alias, "cancel", "chat-1", "cron-1"])).steps[0]?.params)
+        .toMatchObject({
+          arguments: {
+            action: "cancelScheduledWork",
+            args: { sessionId: "chat-1", scheduleId: "cron-1" },
+          },
+        });
+    }
+
     const cancel = expectExecutePlan(buildCliPlan([
       "chat",
       "scheduled-work",

@@ -2774,20 +2774,20 @@ describe("adeRpcServer", () => {
       expect.objectContaining({ id: "cron-1", sessionId: "chat-1", status: "cancelled" }),
     ]);
 
+    const allScheduledWork = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listScheduledWork",
+    });
+    expect(allScheduledWork?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.listScheduledWork).toHaveBeenCalledWith({});
+
     const cancelledWork = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "cancelScheduledWork",
       args: { sessionId: " chat-1 ", scheduleId: " cron-1 " },
     });
-    expect(cancelledWork?.isError).toBeUndefined();
-    expect(fixture.runtime.agentChatService.cancelScheduledWork).toHaveBeenCalledWith({
-      sessionId: "chat-1",
-      scheduleId: "cron-1",
-    });
-    expect(cancelledWork.structuredContent.result).toMatchObject({
-      schedule: { id: "cron-1", sessionId: "chat-1", status: "cancelled" },
-      providerCancellationConfirmed: true,
-    });
+    expect(cancelledWork.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).not.toHaveBeenCalled();
 
     const aiStatus = await callTool(handler, "run_ade_action", {
       domain: "ai",
@@ -3123,6 +3123,25 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "own-chat write",
+    });
+
+    const deniedScheduledWorkCancel = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "cancelScheduledWork",
+      args: { sessionId: "chat-2", scheduleId: "wake-2" },
+    });
+    expect(deniedScheduledWorkCancel.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).not.toHaveBeenCalled();
+
+    const ownScheduledWorkCancel = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "cancelScheduledWork",
+      args: { sessionId: "chat-1", scheduleId: "wake-1" },
+    });
+    expect(ownScheduledWorkCancel?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.cancelScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      scheduleId: "wake-1",
     });
 
     const peerMessage = await callTool(handler, "run_ade_action", {

@@ -13662,6 +13662,74 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("cancels an unowned legacy wakeup when Claude confirms ScheduleWakeup stop", async () => {
+      const sdkSessionId = "sdk-legacy-wakeup-stop";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: sdkSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          durable: true,
+          provider: "claude",
+        })],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the legacy wakeup.",
+        timeoutMs: 15_000,
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = resumeOptions?.hooks?.PostToolUse?.[0]?.hooks[0];
+      expect(postToolUseHook).toEqual(expect.any(Function));
+
+      await postToolUseHook!({
+        hook_event_name: "PostToolUse",
+        session_id: sdkSessionId,
+        tool_name: "ScheduleWakeup",
+        tool_use_id: "tool-stop-legacy-wakeup",
+        tool_input: { stop: true },
+        tool_response: { stopped: true },
+      });
+
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "cancelled",
+        }),
+      ]);
+    });
+
     it("coalesces parentless recurring cron run events with the provider cron row", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

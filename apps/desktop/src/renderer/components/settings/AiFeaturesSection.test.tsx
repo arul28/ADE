@@ -170,6 +170,17 @@ describe("AiFeaturesSection", () => {
       prompt: "Check PR CI",
       createdAt: "2026-07-14T00:00:00.000Z",
       durable: true,
+      cancellable: true,
+    }, {
+      id: "wake-2",
+      sessionId: "chat-87654321",
+      kind: "wakeup",
+      status: "scheduled",
+      title: "Provider-only wakeup",
+      prompt: "Continue",
+      createdAt: "2026-07-14T00:01:00.000Z",
+      durable: true,
+      cancellable: false,
     }]);
 
     render(
@@ -179,7 +190,10 @@ describe("AiFeaturesSection", () => {
     );
 
     await screen.findByText("Check PR CI");
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const cancelButtons = screen.getAllByRole("button", { name: "Cancel" });
+    expect((cancelButtons[0] as HTMLButtonElement).disabled).toBe(false);
+    expect((cancelButtons[1] as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(cancelButtons[0]!);
     await waitFor(() => {
       expect((window as any).ade.agentChat.cancelScheduledWork).toHaveBeenCalledWith({
         sessionId: "chat-12345678",

@@ -1371,7 +1371,9 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   }
   if (typeof base.listScheduledWork === "function") {
     service.listScheduledWork = (args?: unknown) => {
-      const record = readObjectActionArg(args, "chat.listScheduledWork");
+      const record = args === undefined
+        ? {}
+        : readObjectActionArg(args, "chat.listScheduledWork");
       const sessionId = typeof record.sessionId === "string" && record.sessionId.trim()
         ? record.sessionId.trim()
         : undefined;

@@ -6444,7 +6444,11 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "linear-issues" ||
     sub === "list-linear-issues" ||
     sub === "issues";
-  const scheduledWorkOperation = sub === "scheduled-work"
+  const scheduledWorkOperation = (
+    sub === "scheduled-work"
+    || sub === "schedules"
+    || sub === "schedule"
+  )
     && (args[0] === "list" || args[0] === "cancel")
     ? firstStandalonePositional(args)
     : null;

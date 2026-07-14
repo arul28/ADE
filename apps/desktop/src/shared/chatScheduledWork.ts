@@ -96,10 +96,11 @@ export function mergeManagedScheduledWorkSnapshots(
   managedWork?: AgentChatScheduledWorkItem[],
 ): ChatScheduledWorkSnapshot[] {
   const managedIds = new Set(managedWork?.map((item) => item.id) ?? []);
+  const hasManagedRows = Boolean(managedWork?.length);
   const snapshots = new Map(
     deriveScheduledWorkSnapshots(events)
       .filter((snapshot) => !(
-        managedWork
+        hasManagedRows
         && snapshot.durable === true
         && ACTIVE_DURABLE_STATUSES.has(snapshot.status)
         && !managedIds.has(snapshot.id)
