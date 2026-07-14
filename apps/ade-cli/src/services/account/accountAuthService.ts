@@ -102,6 +102,7 @@ export type AccountAuthService = {
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
   getStatus(): AccountAuthStatus;
   getAccessToken(): Promise<string>;
+  cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
   dispose(): void;
 };
@@ -110,6 +111,7 @@ export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
   status(): AccountAuthStatus;
+  cancelLogin(args: { sessionId?: string }): void;
   signOut(): AccountAuthStatus;
   getToken(): Promise<string>;
 };
@@ -118,6 +120,7 @@ export const ACCOUNT_ACTION_NAMES = [
   "startLogin",
   "pollLogin",
   "status",
+  "cancelLogin",
   "signOut",
   "getToken",
 ] as const;
@@ -311,6 +314,7 @@ export function createAccountActionDomainService(
     startLogin: () => service.startLogin(),
     pollLogin: (args) => service.pollLogin(readNonEmptyString(args?.sessionId) ?? ""),
     status: () => service.getStatus(),
+    cancelLogin: (args) => service.cancelLogin(readNonEmptyString(args?.sessionId) ?? ""),
     signOut: () => service.signOut(),
     getToken: () => service.getAccessToken(),
   };
@@ -338,6 +342,9 @@ export async function callAccountAction(args: {
   } else if (action === "startLogin") {
     result = await domain.startLogin();
   } else if (action === "status") {
+    result = domain.status();
+  } else if (action === "cancelLogin") {
+    domain.cancelLogin({ sessionId: readNonEmptyString(actionArgs.sessionId) ?? undefined });
     result = domain.status();
   } else if (action === "signOut") {
     result = domain.signOut();
@@ -655,6 +662,21 @@ export function createAccountAuthService(args: {
     return refreshed.accessToken;
   };
 
+  // Cancel a single pending login (e.g. `ade login --max-wait` timed out) without
+  // signing the machine out. This closes the loopback listener so a browser tab
+  // that completes AFTER the CLI gave up can no longer exchange the code and
+  // silently persist a session. Unlike signOut it MUST NOT bump authEpoch or wipe
+  // the persisted account. Idempotent: a no-op if the session is unknown or done.
+  const cancelLogin = (sessionId: string): void => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) return;
+    const session = pendingSessions.get(normalizedSessionId);
+    if (!session) return;
+    finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+    pendingSessions.delete(normalizedSessionId);
+    logger.info("account.login_cancelled");
+  };
+
   const signOut = (): AccountAuthStatus => {
     authEpoch += 1;
     persistSession(null);
@@ -674,5 +696,5 @@ export function createAccountAuthService(args: {
     pendingSessions.clear();
   };
 
-  return { startLogin, pollLogin, getStatus, getAccessToken, signOut, dispose };
+  return { startLogin, pollLogin, getStatus, getAccessToken, cancelLogin, signOut, dispose };
 }

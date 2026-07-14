@@ -17632,6 +17632,15 @@ async function runAccountLogin(
     while (true) {
       if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
         process.stderr.write("ADE account sign-in timed out.\n");
+        // Cancel the pending loopback session so a browser tab that completes
+        // after this timeout cannot silently exchange the code and sign the
+        // machine in later. Best-effort: a cancel failure must not mask the
+        // timeout result, so swallow it and still report the timed-out status.
+        try {
+          await runAccountAction("cancelLogin", { sessionId });
+        } catch {
+          // The pending session may already be gone; the timeout is what matters.
+        }
         const status = await runAccountAction("status");
         return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
       }

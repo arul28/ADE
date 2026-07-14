@@ -54,6 +54,7 @@ function makeAccountAuthServiceMock() {
       expiresAt: null,
     })),
     getAccessToken: vi.fn(async () => "test-access-token"),
+    cancelLogin: vi.fn(),
     signOut: vi.fn(() => ({
       signedIn: false,
       userId: null,
@@ -105,6 +106,7 @@ describe("multi-project RPC server", () => {
         expiresAt: null,
       })),
       getAccessToken: vi.fn(),
+      cancelLogin: vi.fn(),
       signOut: vi.fn(),
       dispose: vi.fn(),
     };
@@ -192,7 +194,7 @@ describe("multi-project RPC server", () => {
         method: "ade/initialize",
         params: { identity: { role: "agent" } },
       });
-      for (const action of ["getToken", "startLogin", "signOut"]) {
+      for (const action of ["getToken", "startLogin", "cancelLogin", "signOut"]) {
         await expect(
           handler({
             jsonrpc: "2.0",
@@ -204,6 +206,7 @@ describe("multi-project RPC server", () => {
       }
       expect(accountAuthService.getAccessToken).not.toHaveBeenCalled();
       expect(accountAuthService.startLogin).not.toHaveBeenCalled();
+      expect(accountAuthService.cancelLogin).not.toHaveBeenCalled();
       expect(accountAuthService.signOut).not.toHaveBeenCalled();
       handler.dispose();
     } finally {

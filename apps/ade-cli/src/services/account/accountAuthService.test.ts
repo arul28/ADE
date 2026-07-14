@@ -187,6 +187,83 @@ describe("AccountAuthService OAuth PKCE login", () => {
     });
   });
 
+  it("cancelLogin closes the loopback listener so a late completion cannot sign in", async () => {
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomBytes: (size) => Buffer.alloc(size, 0x55),
+      randomUUID: () => "login-session-cancel",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startLogin();
+    const authorizeUrl = new URL(start.authorizeUrl);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+
+    service.cancelLogin(start.sessionId);
+
+    // The loopback listener is closed, so a browser tab that completes AFTER the
+    // CLI timed out can no longer reach it to exchange the authorization code.
+    await expect(
+      fetch(`${redirectUri}?code=late-code&state=${encodeURIComponent(state)}`),
+    ).rejects.toThrow();
+
+    // Cancel must not exchange a token, must not persist a session, and must
+    // leave the machine signed out.
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+    expect(service.getStatus()).toEqual({
+      signedIn: false,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: null,
+    });
+
+    // The pending session is gone; polling reports it was not found rather than
+    // ever transitioning to signed_in.
+    await expect(service.pollLogin(start.sessionId)).resolves.toMatchObject({
+      status: "error",
+      authStatus: { signedIn: false },
+    });
+
+    // Idempotent: cancelling again, or an unknown id, is a harmless no-op.
+    expect(() => service.cancelLogin(start.sessionId)).not.toThrow();
+    expect(() => service.cancelLogin("unknown-session")).not.toThrow();
+  });
+
+  it("cancelLogin leaves an already signed-in account untouched", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      expiresAt: "2026-07-15T12:00:00.000Z",
+    })));
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomBytes: (size) => Buffer.alloc(size, 0x66),
+      randomUUID: () => "login-session-cancel-existing",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const before = store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    const start = await service.startLogin();
+    service.cancelLogin(start.sessionId);
+
+    // Cancelling a pending login must NOT sign out the existing account: the
+    // persisted session is byte-for-byte intact and still reported signed in.
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(before);
+    expect(service.getStatus()).toMatchObject({ signedIn: true, email: "old@example.com" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("rejects a state mismatch without exchanging or resolving the pending login", async () => {
     const store = new MemoryCredentialStore();
     const fetchImpl = vi.fn();

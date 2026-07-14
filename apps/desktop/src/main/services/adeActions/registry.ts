@@ -136,7 +136,7 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: ["startLogin", "pollLogin", "signOut", "getToken"],
+  account: ["startLogin", "pollLogin", "cancelLogin", "signOut", "getToken"],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
   cto_memory: ["updateMemory"],
@@ -183,7 +183,7 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
 }
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: ["startLogin", "pollLogin", "status", "signOut", "getToken"],
+  account: ["startLogin", "pollLogin", "status", "cancelLogin", "signOut", "getToken"],
   lane: [
     "adoptAttached",
     "archive",
