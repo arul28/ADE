@@ -892,6 +892,57 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
+  it("does not resurrect restored browser views after the service is disposed", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-disposed-restore-"));
+    const stateFilePath = path.join(tempDir, "browser-state.json");
+    try {
+      fakes.appIsReady.mockReturnValue(true);
+      fakes.appGetPath.mockImplementation((name: string) => (
+        name === "downloads" ? "/Users/test/Downloads" : tempDir
+      ));
+      const projectRootByWindow = new Map<number, string>();
+      const firstWin = fakeBrowserWindow();
+      projectRootByWindow.set(firstWin.id, "/Users/ade/project-alpha");
+      const firstBrowserWin = firstWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const firstService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      await firstService.createTab({ url: "https://disposed-restore.test", activate: true }, firstBrowserWin);
+      await firstService.flushStorage();
+      firstService.dispose();
+
+      fakes.clearWebContentsInstances();
+      fakes.getCookies.mockClear();
+      const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
+      fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      const restoredWin = fakeBrowserWindow();
+      projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
+      const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
+      const restoredService = createBuiltInBrowserService({
+        stateFilePath,
+        getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
+      });
+      restoredService.attachToWindow(restoredBrowserWin);
+      const boundsPromise = restoredService.setBounds({
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+        visible: true,
+      }, restoredBrowserWin);
+
+      await vi.waitFor(() => expect(fakes.getCookies).toHaveBeenCalled());
+      restoredService.dispose();
+      migrationCookies.resolve([]);
+
+      await expect(boundsPromise).resolves.toMatchObject({ tabs: [], activeTabId: null });
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects attached webviews from outside the global browser profile", async () => {
     const projectRootByWindow = new Map<number, string>();
     const service = createBuiltInBrowserService({
@@ -2913,6 +2964,82 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-2",
     });
+  });
+
+  it("authorizes selected browser context against the tab that created it", async () => {
+    fakes.setSendCommand(async (method) => {
+      switch (method) {
+        case "DOM.getNodeForLocation":
+          return { backendNodeId: 42 };
+        case "DOM.resolveNode":
+          return { object: { objectId: "selection-owner" } };
+        case "Runtime.callFunctionOn":
+          return {
+            result: {
+              value: {
+                tagName: "button",
+                selector: "button#private",
+                testId: null,
+                frame: { x: 0, y: 0, width: 10, height: 10 },
+                pixelRatio: 1,
+                url: "http://localhost/private",
+                title: "private",
+                metadata: { viewport: { width: 100, height: 100 } },
+              },
+            },
+          };
+        default:
+          return {};
+      }
+    });
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "http://localhost/first",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const selectionTabId = service.getStatus().activeTabId ?? "";
+    await service.createTab({
+      url: "http://localhost/second",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    });
+    const activeTabId = service.getStatus().activeTabId ?? "";
+    await service.selectPoint({
+      tabId: selectionTabId,
+      x: 10,
+      y: 20,
+      includeScreenshot: false,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    await expect(service.selectCurrent({
+      tabId: activeTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).rejects.toThrow(/leased by chat chat-1/);
+    await expect(service.clearSelection({
+      tabId: activeTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+    })).rejects.toThrow(/leased by chat chat-1/);
+    expect(service.getStatus().hasSelection).toBe(true);
+
+    await expect(service.selectCurrent({
+      tabId: selectionTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    })).resolves.toMatchObject({ item: { componentId: "button#private" } });
+    await service.clearSelection({
+      tabId: selectionTabId,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    expect(service.getStatus().hasSelection).toBe(false);
   });
 
   it("rejects leased tab switching before mutating the active tab", async () => {

@@ -819,10 +819,12 @@ function createBuiltInBrowserWindowService(args: {
   let browserDownloadListener: BrowserDownloadListener | null = null;
   let unsubscribeNetworkObserver: (() => void) | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
+  let lastSelectedTabId: string | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   let restoringTabs = false;
+  let disposed = false;
   const configuredWebContents = new WeakSet<WebContents>();
   const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
@@ -1001,9 +1003,11 @@ function createBuiltInBrowserWindowService(args: {
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
     pruneBrowserSessions();
+    if (lastSelectedTabId && !tabs.some((tab) => tab.id === lastSelectedTabId)) {
+      clearSelectionInternal();
+    }
     if (activeTabId && !tabs.some((tab) => tab.id === activeTabId)) {
       activeTabId = tabs[0]?.id ?? null;
-      clearSelectionInternal();
     }
   };
 
@@ -1206,8 +1210,10 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const clearSelectionInternal = (): void => {
-    if (!lastSelectedItem) return;
+    const hadSelection = Boolean(lastSelectedItem);
     lastSelectedItem = null;
+    lastSelectedTabId = null;
+    if (!hadSelection) return;
     emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
   };
 
@@ -2060,6 +2066,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function setBounds(nextBounds: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> {
     await tabRestorationPromise;
+    if (disposed) return scopeStatusForInput(getStatus(), nextBounds);
     const normalized: BuiltInBrowserFrame = {
       x: normalizeDimension(nextBounds.x),
       y: normalizeDimension(nextBounds.y),
@@ -2291,9 +2298,11 @@ function createBuiltInBrowserWindowService(args: {
         }
       }
     }
+    if (lastSelectedTabId === tabId) {
+      clearSelectionInternal();
+    }
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
-      clearSelectionInternal();
     }
     attachViewsToCurrentWindow();
     emitStatus();
@@ -2609,6 +2618,7 @@ function createBuiltInBrowserWindowService(args: {
           });
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
+      lastSelectedTabId = tab.id;
       emit({ type: "selection", item });
       emitStatus();
       return { item };
@@ -2624,7 +2634,8 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function selectCurrent(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserSelectResult> {
-    const tab = activeTab();
+    const tab = lastSelectedItem && lastSelectedTabId ? tabById(lastSelectedTabId) : activeTab();
+    if (lastSelectedItem && !tab) clearSelectionInternal();
     if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested selected page content.");
     if (lastSelectedItem) {
       emit({ type: "selection", item: lastSelectedItem });
@@ -2633,7 +2644,8 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function clearSelection(input: BuiltInBrowserTabTargetArgs = {}): Promise<{ ok: true }> {
-    const tab = activeTab();
+    const tab = lastSelectedItem && lastSelectedTabId ? tabById(lastSelectedTabId) : activeTab();
+    if (lastSelectedItem && !tab) clearSelectionInternal();
     if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to clear browser selection.");
     if (lastSelectedItem) {
       clearSelectionInternal();
@@ -2645,6 +2657,7 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   function dispose(): void {
+    disposed = true;
     // Clear inspecting flags up front so any in-flight debugger callbacks that fire
     // during teardown don't act on torn-down state. stopInspect() is async, but the
     // synchronous flag flip here protects the message listener (handleInspectNodeRequested
@@ -2808,6 +2821,8 @@ function createBuiltInBrowserWindowService(args: {
     backendNodeId: number,
   ): Promise<void> => {
     if (handlingInspectNode) return;
+    const ownerTab = tabForWebContents(wc);
+    if (!ownerTab) return;
     handlingInspectNode = true;
     try {
       const metadata = await readNodeMetadata(wc, backendNodeId, currentCursorPointInView());
@@ -2819,6 +2834,7 @@ function createBuiltInBrowserWindowService(args: {
       });
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
+      lastSelectedTabId = ownerTab.id;
       emit({ type: "selection", item });
     } finally {
       if (inspecting) {
@@ -3332,6 +3348,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const restorePersistedTabs = async (): Promise<void> => {
+    if (disposed) return;
     const restored = args.restoredState;
     if (!restored?.tabs.length) return;
     restoringTabs = true;
@@ -3346,6 +3363,7 @@ function createBuiltInBrowserWindowService(args: {
       tab.webContents.loadURL(restored.tabs[index]?.url ?? "about:blank")
     )));
     restoringTabs = false;
+    if (disposed) return;
     logger()?.info("built_in_browser.tabs_restore_completed", {
       collectionKey: args.collection.key,
       tabCount: restoredTabs.length,
@@ -3358,6 +3376,7 @@ function createBuiltInBrowserWindowService(args: {
     .then(restorePersistedTabs)
     .catch((error) => {
       restoringTabs = false;
+      if (disposed) return;
       logger()?.warn("built_in_browser.tabs_restore_failed", {
         collectionKey: args.collection.key,
         error: error instanceof Error ? error.message : String(error),
