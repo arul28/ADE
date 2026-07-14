@@ -365,6 +365,7 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "provisioningProfile": "build/ade-desktop.provisionprofile",
       "notarize": true,
       "mergeASARs": false,
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,whisper-cli}{,/**}",

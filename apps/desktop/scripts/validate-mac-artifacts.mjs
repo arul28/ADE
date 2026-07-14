@@ -17,6 +17,9 @@ const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // runtime sidecar. Universal builds carry both darwin runtime payloads.
 const DEFAULT_MAX_UNPACKED_BYTES = 1280 * 1024 * 1024;
 const DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES = 1600 * 1024 * 1024;
+const EXPECTED_APPLICATION_IDENTIFIER = "VQ372F39G6.com.ade.desktop";
+const EXPECTED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.com.ade.desktop.webauthn";
+const ALLOWED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.*";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -385,6 +388,39 @@ async function validateSignedApp(appPath, description) {
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
+async function validateProvisionedWebAuthnEntitlement(appPath, description) {
+  const embeddedProfilePath = path.join(appPath, "Contents", "embedded.provisionprofile");
+  await assertPathExists(embeddedProfilePath, `embedded Developer ID provisioning profile for ${description}`);
+
+  const { stdout: profileXml } = await execFileAsync("security", ["cms", "-D", "-i", embeddedProfilePath]);
+  if (!profileXml.includes(`<string>${EXPECTED_APPLICATION_IDENTIFIER}</string>`)) {
+    throw new Error(
+      `[release:mac] Embedded provisioning profile for ${description} does not authorize ${EXPECTED_APPLICATION_IDENTIFIER}`,
+    );
+  }
+  if (
+    !profileXml.includes(`<string>${EXPECTED_KEYCHAIN_ACCESS_GROUP}</string>`) &&
+    !profileXml.includes(`<string>${ALLOWED_KEYCHAIN_ACCESS_GROUP}</string>`)
+  ) {
+    throw new Error(
+      `[release:mac] Embedded provisioning profile for ${description} does not authorize ${EXPECTED_KEYCHAIN_ACCESS_GROUP}`,
+    );
+  }
+
+  const { stdout: entitlementStdout, stderr: entitlementStderr } = await execFileAsync(
+    "codesign",
+    ["--display", "--entitlements", ":-", appPath],
+  );
+  const signedEntitlements = `${entitlementStdout}\n${entitlementStderr}`;
+  if (!signedEntitlements.includes(`<string>${EXPECTED_KEYCHAIN_ACCESS_GROUP}</string>`)) {
+    throw new Error(
+      `[release:mac] Signed ${description} is missing keychain access group ${EXPECTED_KEYCHAIN_ACCESS_GROUP}`,
+    );
+  }
+
+  console.log(`[release:mac] Provisioned WebAuthn entitlement passed for ${description}`);
+}
+
 async function validatePackageHygiene(appPath, description, expectedArch) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
@@ -673,6 +709,7 @@ for (const { arch, appPath } of archApps) {
   const label = `signed ${arch} app bundle`;
   await assertPathExists(appPath, label);
   await validateSignedApp(appPath, label);
+  await validateProvisionedWebAuthnEntitlement(appPath, label);
   await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), label);
   await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === "universal" || arch === hostArch });
 }

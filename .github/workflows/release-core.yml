@@ -145,6 +145,20 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
 
+      - name: Materialize Developer ID provisioning profile
+        env:
+          MACOS_DEVELOPER_ID_PROFILE_B64: ${{ secrets.MACOS_DEVELOPER_ID_PROFILE_B64 }}
+        run: |
+          if [ -z "$MACOS_DEVELOPER_ID_PROFILE_B64" ]; then
+            echo "::error::Missing MACOS_DEVELOPER_ID_PROFILE_B64 GitHub secret."
+            exit 1
+          fi
+
+          PROFILE_PATH="$GITHUB_WORKSPACE/apps/desktop/build/ade-desktop.provisionprofile"
+          printf '%s' "$MACOS_DEVELOPER_ID_PROFILE_B64" | base64 --decode > "$PROFILE_PATH"
+          chmod 600 "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" > /dev/null
+
       - name: Reject insecure macOS signing certificate URL
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}

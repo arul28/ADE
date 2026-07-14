@@ -2,6 +2,14 @@
 "use strict";
 
 const fs = require("node:fs");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+const appDir = path.resolve(__dirname, "..");
+const provisioningProfilePath = path.join(appDir, "build", "ade-desktop.provisionprofile");
+const expectedApplicationIdentifier = "VQ372F39G6.com.ade.desktop";
+const expectedKeychainAccessGroup = "VQ372F39G6.com.ade.desktop.webauthn";
+const allowedKeychainAccessGroup = "VQ372F39G6.*";
 
 function hasEnv(name) {
   return Boolean(process.env[name] && String(process.env[name]).trim().length > 0);
@@ -18,6 +26,29 @@ const hasInstalledIdentity = hasEnv("CSC_NAME");
 const cscLink = hasEnv("CSC_LINK") ? String(process.env.CSC_LINK).trim() : "";
 const cscLinkIsAbsolutePath = cscLink.startsWith("/");
 const cscLinkPathExists = !cscLinkIsAbsolutePath || fs.existsSync(cscLink);
+
+if (!fs.existsSync(provisioningProfilePath)) {
+  missing.push(`Missing Developer ID provisioning profile: ${provisioningProfilePath}`);
+} else {
+  try {
+    const profileXml = execFileSync("security", ["cms", "-D", "-i", provisioningProfilePath], {
+      encoding: "utf8",
+    });
+    if (!profileXml.includes(`<string>${expectedApplicationIdentifier}</string>`)) {
+      missing.push(`Developer ID provisioning profile does not authorize ${expectedApplicationIdentifier}`);
+    }
+    if (
+      !profileXml.includes(`<string>${expectedKeychainAccessGroup}</string>`) &&
+      !profileXml.includes(`<string>${allowedKeychainAccessGroup}</string>`)
+    ) {
+      missing.push(`Developer ID provisioning profile does not authorize ${expectedKeychainAccessGroup}`);
+    }
+  } catch (error) {
+    missing.push(
+      `Developer ID provisioning profile could not be decoded: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 if (hasImportedCertificate && cscLinkIsAbsolutePath && !cscLinkPathExists && !hasInstalledIdentity) {
   missing.push(`CSC_LINK points to a missing certificate file: ${cscLink}`);
@@ -86,5 +117,5 @@ process.stdout.write(
     `${hasImportedCertificate && (!cscLinkIsAbsolutePath || cscLinkPathExists)
       ? "imported Developer ID certificate"
       : `installed identity ${process.env.CSC_NAME}`}, ` +
-    `${matchingProfile.label}).\n`
+    `${matchingProfile.label}, provisioned WebAuthn keychain access group).\n`
 );

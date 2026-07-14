@@ -156,24 +156,33 @@ describe("built-in browser WebAuthn", () => {
     }
   });
 
-  it("does not ship a restricted keychain access-group entitlement without provisioning", () => {
+  it("ships the matching macOS keychain access-group entitlement and provisioning config", () => {
     const entitlementPath = fileURLToPath(new URL(
       "../../../../build/entitlements.mac.plist",
       import.meta.url,
     ));
+    const packageJsonPath = fileURLToPath(new URL("../../../../package.json", import.meta.url));
     const entitlements = fs.readFileSync(entitlementPath, "utf8");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
-    expect(entitlements).not.toContain("<key>keychain-access-groups</key>");
-    expect(entitlements).not.toContain("<string>VQ372F39G6.com.ade.desktop.webauthn</string>");
+    expect(entitlements).toContain("<key>keychain-access-groups</key>");
+    expect(entitlements).toContain("<string>VQ372F39G6.com.ade.desktop.webauthn</string>");
+    expect(packageJson.build.mac.provisioningProfile).toBe("build/ade-desktop.provisionprofile");
   });
 
-  it("keeps Touch ID WebAuthn disabled by default in packaged macOS builds", async () => {
+  it("configures Touch ID WebAuthn by default in packaged macOS builds", async () => {
     fakes.app.isPackaged = true;
     const { configureBuiltInBrowserWebAuthn } = await loadWebAuthnModule();
 
     configureBuiltInBrowserWebAuthn();
 
-    expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
+    if (process.platform === "darwin") {
+      expect(fakes.app.configureWebAuthn).toHaveBeenCalledWith({
+        touchID: { keychainAccessGroup: "VQ372F39G6.com.ade.desktop.webauthn" },
+      });
+    } else {
+      expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
+    }
   });
 
   it("lets packaged builds disable Touch ID WebAuthn with an env override", async () => {
