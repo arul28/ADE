@@ -12483,7 +12483,7 @@ describe("createAgentChatService", () => {
       orphaned.service.forceDisposeAll();
     });
 
-    it("best-effort deletes legacy ownerless Claude schedules before tombstoning the ADE mirror", async () => {
+    it("keeps legacy ownerless Claude schedules paused until provider deletion confirms", async () => {
       const scheduledWork = createScheduledWorkDb({
         version: 1,
         schedules: [storedWakeup("test-uuid-1", {
@@ -12503,6 +12503,10 @@ describe("createAgentChatService", () => {
         provider: "claude",
         model: "sonnet",
       });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
       expect(session.id).toBe("test-uuid-1");
       await service.runSessionTurn({
         sessionId: session.id,
@@ -12513,13 +12517,31 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         scheduleId: `wakeup:${session.id}`,
       })).resolves.toMatchObject({
-        schedule: { status: "cancelled" },
+        schedule: { status: "paused" },
         providerCancellationRequested: true,
         providerCancellationConfirmed: false,
       });
-      expect(send).toHaveBeenLastCalledWith(expect.stringContaining(
-        "CronDelete: provider-legacy-wakeup",
-      ));
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledWith(expect.stringContaining(
+          "CronDelete: provider-legacy-wakeup",
+        ));
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "paused",
+          pausedFlag: true,
+        }),
+      ]);
+
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-legacy-owner-cancel",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-delete-legacy-ownerless",
+        tool_input: { id: "provider-legacy-wakeup" },
+        tool_response: { id: "provider-legacy-wakeup" },
+      });
       expect(scheduledWork.readState()?.schedules).toEqual([
         expect.objectContaining({
           id: `wakeup:${session.id}`,

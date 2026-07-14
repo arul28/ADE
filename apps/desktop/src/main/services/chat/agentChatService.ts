@@ -33454,7 +33454,6 @@ export function createAgentChatService(args: {
       await messageSession({ sessionId, kind: "wake", text: instructions });
     } catch (error) {
       if (!confirmedOwnerSchedules.length) {
-        await forgetStaleOwnerSchedules();
         logger.warn("agent_chat.claude_legacy_scheduled_work_cancel_request_failed", {
           sessionId,
           scheduleCount: legacyProviderSchedules.length,
@@ -33472,7 +33471,6 @@ export function createAgentChatService(args: {
     }
 
     if (!options.awaitConfirmation) {
-      await forgetStaleOwnerSchedules();
       const current = currentRecords();
       return {
         schedules: current,
@@ -33484,11 +33482,13 @@ export function createAgentChatService(args: {
     }
 
     if (!confirmedOwnerSchedules.length) {
+      const providerCancellationConfirmed = currentRecords(legacyProviderSchedules)
+        .every((schedule) => schedule.status === "cancelled");
       await forgetStaleOwnerSchedules();
       return {
         schedules: currentRecords(),
         providerCancellationRequested: true,
-        providerCancellationConfirmed: false,
+        providerCancellationConfirmed,
       };
     }
 
