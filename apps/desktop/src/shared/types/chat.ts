@@ -1284,6 +1284,8 @@ export type AgentChatSessionSummary = {
   nextWakeAt: string | null;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
+  /** KV-backed durable schedules. This is the management source of truth. */
+  scheduledWork?: AgentChatScheduledWorkItem[];
   threadId?: string;
   continuityRecovery?: AgentChatContinuityRecovery;
   recoveredFromSessionId?: string;
@@ -2059,6 +2061,42 @@ export type AgentChatSetScheduledWorkPausedResult = {
   sessionId: string;
   paused: boolean;
   nextWakeAt: string | null;
+};
+
+export type AgentChatScheduledWorkItem = {
+  id: string;
+  sessionId: string;
+  kind: "wakeup" | "cron" | "loop";
+  status: "scheduled" | "paused" | "fired" | "completed" | "cancelled";
+  title: string;
+  prompt: string;
+  reason?: string;
+  cron?: string;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+  durable: boolean;
+  /** True when ADE has a durable record that its management API can cancel. */
+  cancellable: boolean;
+  late?: boolean;
+  outcomeSummary?: string;
+};
+
+export type AgentChatListScheduledWorkArgs = {
+  sessionId?: string;
+  includeTerminal?: boolean;
+};
+
+export type AgentChatCancelScheduledWorkArgs = {
+  sessionId: string;
+  scheduleId: string;
+};
+
+export type AgentChatCancelScheduledWorkResult = {
+  schedule: AgentChatScheduledWorkItem;
+  providerCancellationRequested: boolean;
+  providerCancellationConfirmed: boolean;
 };
 
 export type AgentChatRecoverContinuityArgs = {

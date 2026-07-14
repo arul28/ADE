@@ -70,6 +70,7 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.restart",
   "chat.handoff",
   "chat.rewindFiles",
+  "chat.cancelScheduledWork",
   "chat.delete",
   "chat.archive",
   "chat.unarchive",

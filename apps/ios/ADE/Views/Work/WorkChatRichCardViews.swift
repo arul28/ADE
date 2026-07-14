@@ -2511,6 +2511,7 @@ struct WorkChatInfoDetailsSheet: View {
   let probingTaskId: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
+  let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
   @AppStorage private var paneUiRaw: String
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
@@ -2532,7 +2533,8 @@ struct WorkChatInfoDetailsSheet: View {
     selectedTaskId: String?,
     probingTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
-    onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void
+    onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
+    onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil
   ) {
     self.sessionId = sessionId
     self.subagentSnapshots = subagentSnapshots
@@ -2542,6 +2544,7 @@ struct WorkChatInfoDetailsSheet: View {
     self.probingTaskId = probingTaskId
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
+    self.onCancelScheduledWork = onCancelScheduledWork
     self._paneUiRaw = AppStorage(
       wrappedValue: #"{"collapsed":{},"earlier":{}}"#,
       "ade.chat.paneUi.v1:\(sessionId)"
@@ -2768,7 +2771,12 @@ struct WorkChatInfoDetailsSheet: View {
                   if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
                     WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
                   } else {
-                    WorkScheduledWorkRow(item: item)
+                    WorkScheduledWorkRow(
+                      item: item,
+                      onCancel: onCancelScheduledWork.map { cancel in
+                        { await cancel(item) }
+                      }
+                    )
                   }
                 }
               }
@@ -3115,6 +3123,8 @@ private struct WorkBackgroundWorkRow: View {
 
 private struct WorkScheduledWorkRow: View {
   let item: WorkScheduledWorkSnapshot
+  var onCancel: (@MainActor () async -> Void)? = nil
+  @State private var cancellationInFlight = false
 
   private var status: String {
     item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -3170,6 +3180,32 @@ private struct WorkScheduledWorkRow: View {
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
           .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+        if let onCancel, item.cancellable == true, workScheduledWorkIsActive(item) {
+          Button {
+            guard !cancellationInFlight else { return }
+            cancellationInFlight = true
+            Task { @MainActor in
+              await onCancel()
+              cancellationInFlight = false
+            }
+          } label: {
+            Group {
+              if cancellationInFlight {
+                ProgressView()
+                  .controlSize(.mini)
+              } else {
+                Image(systemName: "xmark")
+                  .font(.caption2.weight(.bold))
+              }
+            }
+            .frame(width: 44, height: 44)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.danger)
+          .disabled(cancellationInFlight)
+          .accessibilityLabel("Cancel \(item.title)")
+          .accessibilityHint("Stops this scheduled work on the paired machine")
+        }
       }
       if let detail {
         Text(detail)

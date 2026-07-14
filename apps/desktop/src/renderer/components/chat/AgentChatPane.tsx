@@ -131,7 +131,7 @@ import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
@@ -3801,7 +3801,10 @@ export function AgentChatPane({
     return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
-  const selectedScheduledWorkSnapshots = useMemo(() => deriveScheduledWorkSnapshots(selectedEvents), [selectedEvents]);
+  const selectedScheduledWorkSnapshots = useMemo(
+    () => mergeManagedScheduledWorkSnapshots(selectedEvents, selectedSession?.scheduledWork),
+    [selectedEvents, selectedSession?.scheduledWork],
+  );
   // Partition scheduled work into schedule kinds (wakeup/cron/loop/remote_trigger)
   // and background command tasks so the actions pane renders them in distinct
   // sections. Both the drawer and pane variants receive the same partitioned data.
@@ -9665,6 +9668,22 @@ export function AgentChatPane({
           });
         }).catch((pauseError) => {
           setError(pauseError instanceof Error ? pauseError.message : String(pauseError));
+        });
+      } : undefined}
+      onCancelScheduledWork={selectedSessionId ? (schedule) => {
+        void window.ade.agentChat.cancelScheduledWork({
+          sessionId: selectedSessionId,
+          scheduleId: schedule.id,
+        }).then((result) => {
+          const current = selectedSession?.scheduledWork ?? [];
+          patchSessionSummary(selectedSessionId, {
+            scheduledWork: result.providerCancellationConfirmed || result.schedule.status === "cancelled"
+              ? current.filter((item) => item.id !== schedule.id)
+              : current.map((item) => item.id === schedule.id ? result.schedule : item),
+          });
+          scheduleSessionsRefresh();
+        }).catch((cancelError) => {
+          setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
         });
       } : undefined}
       variant="pane"

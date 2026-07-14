@@ -76,6 +76,14 @@ function installAdeMocks() {
         },
       }),
     },
+    agentChat: {
+      listScheduledWork: vi.fn().mockResolvedValue([]),
+      cancelScheduledWork: vi.fn().mockResolvedValue({
+        schedule: { id: "wake-1", status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: true,
+      }),
+    },
   };
 }
 
@@ -149,5 +157,62 @@ describe("AiFeaturesSection", () => {
         chat: { scheduledWorkPaused: true },
       });
     });
+  });
+
+  it("lists and cancels an active durable job", async () => {
+    installAdeMocks();
+    (window as any).ade.agentChat.listScheduledWork.mockResolvedValueOnce([{
+      id: "wake-1",
+      sessionId: "chat-12345678",
+      kind: "wakeup",
+      status: "scheduled",
+      title: "Check PR CI",
+      prompt: "Check PR CI",
+      createdAt: "2026-07-14T00:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    }, {
+      id: "wake-2",
+      sessionId: "chat-87654321",
+      kind: "wakeup",
+      status: "scheduled",
+      title: "Provider-only wakeup",
+      prompt: "Continue",
+      createdAt: "2026-07-14T00:01:00.000Z",
+      durable: true,
+      cancellable: false,
+    }]);
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Check PR CI");
+    const cancelButtons = screen.getAllByRole("button", { name: "Cancel" });
+    expect((cancelButtons[0] as HTMLButtonElement).disabled).toBe(false);
+    expect((cancelButtons[1] as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(cancelButtons[0]!);
+    await waitFor(() => {
+      expect((window as any).ade.agentChat.cancelScheduledWork).toHaveBeenCalledWith({
+        sessionId: "chat-12345678",
+        scheduleId: "wake-1",
+      });
+    });
+  });
+
+  it("shows scheduled-work loading failures instead of claiming there are no jobs", async () => {
+    installAdeMocks();
+    (window as any).ade.agentChat.listScheduledWork.mockRejectedValueOnce(new Error("scheduler offline"));
+
+    render(
+      <MemoryRouter>
+        <AiFeaturesSection />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Scheduled work is unavailable: scheduler offline/)).toBeTruthy();
+    expect(screen.queryByText("No active durable jobs.")).toBeNull();
   });
 });

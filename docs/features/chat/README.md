@@ -25,7 +25,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, external chat import orchestration (`importExternalChatSession` for Claude/Codex sessions discovered by the external-session service), turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, prompt-derived lane-name suggestions for auto-created / parallel lanes, event-history snapshots, durable chat transcript replay/storage compaction, slash-command discovery/merge (delegates to per-provider discovery modules and `slashCommandPromptExpansion` for unified prompt expansion), and active-workload detection used by project/window close guards. Codex non-retrying app-server failures are deduplicated by turn plus semantic error identity across the early `error` notification and terminal `turn/completed`; retrying notifications (`willRetry: true`) remain provider-health notices while the turn stays active. Lane naming runs through the session-intelligence prompt path, retries the configured/requested/default title models — the auto-title candidate order prefers the configured `titleModelId` before the session's `requestedModelId` — then falls back to a deterministic prompt slug; branch uniqueness is handled by the lane id suffix added by lane creation. Tracks Fast Mode with the legacy `codexFastMode: boolean` session field for every provider whose descriptor advertises `serviceTiers: ["fast"]`; Codex forwards it as `serviceTier: "fast" \| null` on every `thread/start` and `turn/start` JSON-RPC call, while Cursor SDK sessions resolve it through discovered model parameters (see [Agent Routing](agent-routing.md#provider-service-tiers-fast-mode)). Codex chat goals are managed through the app-server `thread/goal/get` / `set` / `clear` RPCs, persisted in session summaries, validated to the provider's 4,000-character objective limit, and normalized to ADE's unlimited-budget policy by sending `tokenBudget: null` and clearing provider-reported budgets. `applyCodexEffectiveThreadState` accepts a `requestedCodexPolicy` option and uses `shouldPreserveRequestedCodexPolicy` to keep ADE-controlled picker selections authoritative when the lifecycle response echoes an older thread policy (prevents a manual Plan→Edit switch from snapping back); it also syncs the abstract `permissionMode` via `syncLegacyPermissionMode` after every policy application. Whenever an `updateSession` touches any permission/interaction/mode field, the service also emits a transient `session_meta_updated` chat event carrying the recomputed mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, and the `cursorModeSnapshot`) so any other client viewing the same session — a desktop refreshing a session an iOS device just re-moded, or vice versa — updates its composer controls live. It is a direct state patch, emitted after the Cursor policy sync so `cursorModeSnapshot` reflects the recomputed mode, and is kept off the session-list refresh path. Builds ADE guidance from the active lane worktree so Agent Skill roots are lane-scoped in persistent system/developer prompts and provider fallback injection. Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). When the session has Linear issues attached (`session_linear_issues`), `buildAgentRuntimeEnv` also materializes them into a per-session context file via `writeSessionLinearIssueContextFile` (`<contextDir>/<sessionId>/linear-issues.json`, written atomically; stale files cleared when nothing is attached) and sets `ADE_LINEAR_ISSUE_IDS` (comma-joined identifiers) + `ADE_LINEAR_CONTEXT_FILE` so the agent reads its issue context without Linear credentials. Attaching a `linear_issue` context attachment at run time calls `laneService.attachLinearIssueToSession({ chatSessionId, issues, role: "worked", source: "chat_attach", includeInPr: true })` so the link is persisted even for standalone (laneless) chats; when the session has a lane it additionally runs `laneService.linkLinearIssues` for the lane/PR-card semantics. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable` so packaged builds can prefer the bundled native binary before PATH/auth fallbacks; interrupted Claude turns stop active subagents before emitting stopped `subagent_result`s, and every `subagent_result` is gated on a previously emitted `subagent_started` (tracked in `emittedSubagentStartIds`) so an interrupt can never emit a phantom stopped card for a subagent that never announced — terminal events clear both the taskId and agentId aliases. A plain Claude Code task run (`task_type` `other`, no agent metadata — e.g. "Re-run affected test files") is tracked for cleanup but never surfaces subagent rows. Claude resume paths run `claudeThinkingTranscriptRepair` before loading a transcript, and the runtime self-heals the same corruption after the Anthropic thinking-block 400 error. Full-auto plan acceptance emits the same plan-mode exit notice as the manual approval path so the renderer composer chip can update even when the session refresh races with compaction. Cursor SDK setup records interrupts that arrive while the worker is still being acquired, releases the acquired generation if setup loses the race, and suppresses false provider-health failures for user-initiated setup interrupts. Cursor provider slash commands use a dedicated discovery path (`cursorSlashCommandDiscovery`) instead of falling through to the generic filesystem-backed list. Claude query startup is single-flight: concurrent `ensureClaudeQuery` callers latch onto one in-flight `queryStartPromise`, and a per-runtime `queryGeneration` token aborts and reaps a start that a reset or interrupt superseded, so a resumed session never spawns twin subprocesses; both reset and interrupt reap the SDK subprocess through `claudeSubprocessReaper` because a closed `query()` still leaves a live `claude --resume` child. `run_in_background` shell tasks (SDK `task_type` `local_bash`/`background`) survive turn boundaries — the query stays alive across turns and delivers their real completion — so only interrupt, reset/dispose, or a host-restart rebind settle them as stopped; a reset that orphans still-open background tasks emits one `system_notice` that they were stopped without reporting completion, and background-task titles are sticky (the first spawn description is reused through the terminal row). A durable per-`(SDK message id, content index)` emitted-text record keeps a re-delivered assistant snapshot (after a stream-dedup reset from steer, message interleave, or idle handoff) from doubling the transcript. Claude `TaskCreate`/`TaskUpdate` tracking keys creates by tool-use id and remaps the harness's ordinal task id onto the Nth created task; an update for an id it cannot resolve or describe changes nothing rather than fabricating a todo row. `steer()` returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`); reasoning effort is normalized and applied at steer delivery, and an active Claude `interrupt-replace` uses SDK priority `now` without tearing down the query or its background work. Large service file. |
 | `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies Codex resume failures without conflating missing threads with MCP/provider-environment or transient transport failures; rollout-file evidence keeps a locally known thread from being declared missing. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | Renders the explicit continuity-recovery choices from a `system_notice`: retry the preserved thread, reconstruct from durable ADE history, or start a separate chat. |
-| `apps/desktop/src/main/services/chat/chatScheduledWorkScheduler.ts` | Runtime-owned durable scheduler for Claude `ScheduleWakeup`, `CronCreate`, and `/loop`. Persists versioned schedule records and per-chat pause state in the project SQLite `kv` store, restores and re-arms them on service start, coalesces overdue work to one late fire, advances recurring cron work to its next normal occurrence, cancels schedules whose session is missing or archived, and reports transitions back to `agentChatService`. Uses injected time/timer/persistence adapters so restart, pause, collision, and catch-up behavior can be tested without Electron. |
+| `apps/desktop/src/main/services/chat/chatScheduledWorkScheduler.ts` | Runtime-owned durable mirror and wake coordinator for Claude `ScheduleWakeup`, durable `CronCreate`, and `/loop`. Persists versioned records, provider ids, expiry/terminal timestamps, and per-chat pause state in the project SQLite `kv` store; restores and re-arms them on service start; coalesces overdue work to one late fire; and reports transitions back to `agentChatService`. Startup migration drops the pre-1.2.27 `cron-tool:` intent placeholders that Claude could never cancel, quarantines older active provider rows in a paused state for operator review, and bounds terminal history to the newest 200 rows or seven days. Uses injected time/timer/persistence adapters so restart, pause, collision, migration, expiry, and catch-up behavior can be tested without Electron. |
 | `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex thread-turn history into ADE `AgentChatEventEnvelope` rows. It reads at most the last 32 MB of source transcript bytes, keeps the newest 2,000 imported content events, emits system notices for provenance/truncation, drops metadata-only/provider-wrapper user rows without stripping user-authored JSX/XML, preserves failed Claude tool-result status, maps user/assistant text plus tool calls/results/file changes/commands/search/image events where available, and derives a fallback imported-chat title from the first user or assistant text. |
 | `apps/desktop/src/main/services/chat/runtimeEvents.ts` | Canonical cross-runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) plus shims between legacy `AgentChatEvent` rows and the canonical runtime envelope. Claude emits canonical subagent events alongside the legacy rows while the other adapters migrate. |
 | `apps/desktop/src/main/services/chat/contextCompactionEmitter.ts` | Normalizes Claude, Codex, OpenCode, Cursor, and Droid compaction lifecycle events into provider-tagged `context_compact` rows. It pairs started/completed boundaries, preserves provider-reported pre/post token counts and duration, and maintains the per-session compaction count used by transcript surfaces. |
@@ -68,7 +68,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and tracks both `modelIds` (connected providers only) and `catalogModelIds` (the full browseable catalog). Anthropic rows normalize retired Sonnet 4.6 / basic Opus 4.7 ids to Sonnet 5 / Opus 4.8 so runtime catalogs cannot reintroduce removed picker rows. `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/chatSubagents.ts` | Cross-target subagent helpers: `normalizeSubagentLifecycleEvent` (canonicalizes legacy `subagent_*` and dotted `subagent.*` envelopes), the stable `groupPaneSectionItems` partition and pane caps, `buildSubagentPaneRows`, tagged pane click targets, `buildSubagentTranscriptEvents`, `isLifecycleEventForSnapshot`, plus the `latestPlan` derivation. The partition keeps source order, forces pinned rows into the active cap, and excludes visually cleared Completed ids. It also owns the shared subagent-vs-background classification (`isBackgroundShellCommand`, `isRealSubagent`, `isNonAgentTaskRun`, `subagentAgentKey`) — `isNonAgentTaskRun` flags a `task_type` `other` run with no agent metadata (a plain Claude Code task, not a subagent) so both the idle-turn and foreground paths keep it out of the roster. Claude's raw `local_bash` kind is normalized only after explicit background evidence (`background_tasks_changed`, `is_backgrounded`, or `run_in_background`) because foreground Bash emits the same kind. The file also owns summary-quality helpers and `deriveSubagentTimelineRows` → `SubagentTimelineRow` (`spawn` / `result` / `background_chip`). Desktop consumes the partition directly; ADE Code consumes the expanded row model; iOS mirrors the same predicates and caps. |
-| `apps/desktop/src/shared/chatScheduledWork.ts` | Cross-target scheduled-work derivation. Folds `scheduled_work_update` envelopes into stable snapshots for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work, then partitions them by surface: `deriveScheduleItems` returns the schedule kinds (`wakeup` / `cron` / `loop` / `remote_trigger`) while `deriveBackgroundItems` returns `background_task` rows that do not duplicate a real subagent with the same `sourceTaskId`. A parent turn's terminal event does not coerce surviving background work to stopped; only an explicit work terminal state or runtime teardown does. `isEarlierBackgroundItem`, `isFiredOneShotWakeup`, and `isEarlierScheduleItem` define the shared Earlier membership mirrored by ADE Code and iOS; the older active/history helpers remain available to existing callers. Also owns next-fire labels and readable background command labels/cwds. |
+| `apps/desktop/src/shared/chatScheduledWork.ts` | Cross-target scheduled-work derivation. Folds `scheduled_work_update` envelopes into stable snapshots for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work, then merges the transcript projection with the KV-backed management snapshot from `AgentChatSessionSummary.scheduledWork`. The merge removes stale active durable transcript rows that no longer exist in the management store, preserves provider-only/non-durable activity for display, and marks only ADE-managed rows as cancellable. It also partitions rows by surface: `deriveScheduleItems` returns schedule kinds (`wakeup` / `cron` / `loop` / `remote_trigger`) while `deriveBackgroundItems` returns `background_task` rows that do not duplicate a real subagent with the same `sourceTaskId`. A parent turn's terminal event does not coerce surviving background work to stopped; only an explicit work terminal state or runtime teardown does. `isEarlierBackgroundItem`, `isFiredOneShotWakeup`, and `isEarlierScheduleItem` define the shared Earlier membership mirrored by ADE Code and iOS. |
 | `apps/desktop/src/main/services/chat/claudeWorkflowProgress.ts` | Defensive normalizer for the Claude Agent SDK's undocumented `workflow_progress` snapshot on `system:task_progress` (Workflow orchestration runs). Parses phases + per-agent entries (caps counts, clips previews, drops malformed entries, unknown states degrade to queued/running; unparseable snapshots return undefined so the generic task rendering is untouched), then `planClaudeWorkflowAgentTransitions` diffs each cumulative tick against per-task emit state to fan out `subagent_started/progress/result` events under a stable `<taskId>::a<index>` identity with the emitted agentId latched at first emission. Consumed by `agentChatService`'s `task_progress`/`task_notification` handlers and the interrupt path (which close still-running agents as `stopped`). |
 | `apps/desktop/src/shared/chatMosaic.ts` | Mosaic v1 — agent-emitted interactive cards. Strict versioned (`"v":1`) parser for ```` ```mosaic ```` fence bodies (`parseMosaicCard`: unknown version/element types, duplicate ids, or malformed JSON → null → callers render the plain fence), submission serializer (`serializeMosaicSubmission`: readable lines + machine JSON, sent through the normal `agentChat.send` path with `displayText`), and `summarizeMosaicCard` for the TUI's one-line summary. Data only — no expressions, no eval, no host actions. Schema documented for agents in the `ade-mosaic` Agent Skill (`apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md`). |
 | `apps/desktop/src/renderer/components/chat/MosaicCard.tsx` | Interactive mosaic card renderer (text, select, multiselect, number/slider, input, approve/deny, key-value table). Hooked in at `MarkdownBlock`'s code-fence handler behind a Claude-gated `mosaic` context prop from `AgentChatPane`; answered state persists across virtualized unmounts via a session-lifetime latch that rolls back on send failure. Non-Claude sessions render the plain fence. |
@@ -89,7 +89,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/ChatPrPane.tsx` | Left floating PR pane for Work chat. Renders cached lane PR details immediately, then performs the same cooldown-bound targeted PR refresh as the toolbar before settling the state. Terminal PRs hide stale running-check labels so merged/closed PRs do not keep showing in-progress CI from an old cache row. |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Serializes iOS, App Control, built-in browser, and attachment context into prompt text. |
 | `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Chat file-rewind confirmation surface. Claude uses the SDK `rewindFiles` control call; Codex uses app-server `thread/rollback` plus ADE's git-backed file restore plan. `rewindFilesPreview.ts` maps the selected user message to turn diff summaries and per-file SHA ranges; the dialog lists every restored file, expands rows into `AdeDiffViewer`, and confirms the provider rewind without using browser-native confirm UI. |
-| `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `chatSubagentIdentity.tsx`, `codex/CodexGoalCard.tsx` | Chat Info drawer content: Codex goal card, capped/collapsible plan and task sections, and capped Subagents/Background/Schedule rosters. Running subagent and background durations derive from the wall clock and tick once per second; terminal rows retain their final compact duration. Terminal work moves into one **Completed** disclosure without reordering survivors; failed and pinned rows stay active; Clear (shown beside the toggle only while Completed is expanded) hides only terminal Completed rows and Restore reverses it. Per-session collapse/Completed/cleared state persists in normalized renderer storage while Show all remains mount-local. The pane variant owns one scroll container with sticky opaque section headers. Schedule pause/play remains in the Schedule section header (Clear now sits beside the Completed toggle when the fold is expanded), recurring rows show last-run plus next-fire timing, and fired one-shot wakeups keep their dim history-row treatment inside Completed. ADE Code and iOS mirror the grouping and cap behavior. `chatSubagentIdentity.tsx` centralizes deterministic subagent identity, and the Codex goal card stays above the roster. |
+| `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `chatSubagentIdentity.tsx`, `codex/CodexGoalCard.tsx` | Chat Info drawer content: Codex goal card, capped/collapsible plan and task sections, and capped Subagents/Background/Schedule rosters. Running subagent and background durations derive from the wall clock and tick once per second; terminal rows retain their final compact duration. Terminal work moves into one **Completed** disclosure without reordering survivors; failed and pinned rows stay active; Clear hides only terminal Completed rows and Restore reverses it. Schedule pause/play remains in the Schedule header, recurring rows show last-run plus next-fire timing, and each active ADE-managed durable row exposes Cancel; provider-only/non-durable transcript rows stay visible without a false cancellation control. A Claude-owned job remains visible and paused while ADE asks that same session to confirm `CronDelete`. ADE Code and iOS mirror the grouping and cap behavior, with iOS showing Cancel only when the connected host advertises `chat.cancelScheduledWork`. `chatSubagentIdentity.tsx` centralizes deterministic subagent identity, and the Codex goal card stays above the roster. |
 | `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Its trusted-renderer-only **Profile** panel shows global cookie counts/domains, cache size, last safe flush, and remembered site permissions, with per-row Remove and Clear all controls. Because native `WebContentsView` content sits above the renderer, the panel hides it while ADE overlays, dialogs, menus, or popovers overlap the browser surface so ADE chrome remains reachable. Mounted by `WorkSidebar` under the `browser` tab and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper opens the sidebar Browser tab and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
 | `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out, but only when the chat header pill is absent so the two never double up. |
 | `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | Inline install / re-login card for missing or unauthenticated agent CLIs, rendered in the transcript from a decorated `error` event's `errorInfo.agentCli` payload. Copy chips + a tracked-PTY Run button (`window.ade.pty.create`) for the install / auth command. The logged-out (`category: "unauthenticated"`) variant is terracotta-toned for Claude (amber for other agents), retitles to "&lt;Provider&gt; is logged out", and adds an always-on **Retry turn** button that resends the last user message via the `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`) window event; it collapses to a "Reconnected" confirmation when `AgentChatPane` fires `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`) after a later turn succeeds. The "missing CLI" variant keeps the red-free amber install card. |
@@ -107,7 +107,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` → `InlineQuestionRequestCard` | Inline question / structured-question card rendered in the transcript (there is no longer a separate `AgentQuestionModal`). Header is the provider logo + a kind-derived verb (`{Provider} asks` / `{Provider} · Plan ready` via `pendingInputHeaderLabel`); body shows the question's `header` kicker then the question text once (no generic title); options render with radio/checkbox a11y roles; option previews render through `QuestionOptionPreview` — a column-preserving monospace `<pre>` for wireframes/ASCII (detected via `looksLikeWireframe`) and the code-fence-aware `ChatMarkdown` for prose. Card chrome inherits `--chat-accent` (per-provider). Keyboard: digits toggle options, ↑↓ move highlight, ←→ page, Enter advances/sends; recommended option auto-focuses; ≥2 previews enable an A/B compare toggle. |
 | `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` | Two-layer event-to-row pipeline (render events + grouped envelopes) that powers the message list. It threads per-subagent anchor state through the collapse pass to emit identity-keyed `subagent_spawn_anchor` / `subagent_result_card` / `background_finish_chip` render events (keys `subagent-spawn:` / `subagent-result:` / `background-chip:<agentKey>`), mutating anchors in place as progress/result events arrive and repairing row positions when a `transcript_retraction` splices a row out — so the virtualizer's measured heights survive rebind. It derives a `scheduled_wake_divider` render event immediately before every synthetic `user_message` carrying `metadata.scheduledWake`, with a stable `scheduled-wake:<scheduleId>:<turnId>` key for digest jumps. It also diffs `todo_update` snapshots per turn so only changed tasks render, normalizes dotted `subagent.*` lifecycle events into the legacy renderer shape while providers migrate, and falls back to a full collapse when incremental append would miss todo state. A second-layer grouping pass (`groupStoppedSubagentResultCards`) folds a run of two or more consecutive interrupt-stopped `subagent_result_card` rows into one `subagent_stopped_group` event; completed/failed cards and a lone stopped card stay individual. |
 | `apps/desktop/src/main/services/ai/tools/` | Tool tiers consumed by the service when it provisions a Claude/Codex/OpenCode runtime (see [Tool System](tool-system.md)). |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers (including per-chat scheduled-work pause), persists/retrieves parallel launch recovery state in `kv`, and refreshes the runtime scheduler after the global AI config pause changes. |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers (including scheduled-work list, per-job cancel, and per-chat pause), persists/retrieves parallel launch recovery state in `kv`, and refreshes the runtime scheduler after the global AI config pause changes. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 
 ## Built-in browser authentication limits
@@ -139,14 +139,29 @@ render them, but neither one *runs* them.
 
 ## Durable Claude scheduled work
 
-Claude SDK chats can arm `ScheduleWakeup` one-shots, recurring
-`CronCreate` schedules, and `/loop` self-pacing work. These schedules belong
-to the project runtime, not to a renderer window or a live SDK query. The
-runtime stores versioned records under the SQLite `kv` key
-`agent-chat:scheduled-work:v1`; each record carries its session, schedule
-kind, prompt/reason, cron or next fire time, lifecycle status, pause state,
-last fire, and late marker. The same scheduler is constructed by Electron
-main and headless `ade serve`.
+Claude SDK chats can arm `ScheduleWakeup` one-shots, `CronCreate` jobs, and
+`/loop` self-pacing work. Claude remains the provider authority: ADE records a
+job only after the SDK's successful `PostToolUse` hook returns its canonical
+id, clamped fire time, recurrence, and `durable` value. A failed tool call or a
+tool-use intent never creates an ADE schedule. Non-durable `CronCreate` jobs
+remain provider-only transcript activity; only `durable: true` cron jobs enter
+ADE's management store. `CronCreate` always creates a new provider job, so an
+agent replacing or resetting a watcher must `CronList` + `CronDelete` the old
+job before creating its replacement rather than relying on prompt de-duplication.
+
+ADE maintains a project-scoped durable mirror under the SQLite `kv` key
+`agent-chat:scheduled-work:v1` so a renderer, `ade serve`, or app restart does
+not lose the wake boundary. Each record carries the owning ADE session, the
+exact Claude SDK session that owns provider controls, ADE and provider
+schedule ids, provider, kind, full prompt/reason, cron or next
+fire time, lifecycle and pause state, expiry, last fire, terminal timestamp,
+and late marker. Electron main and headless `ade serve` construct the same
+scheduler. Claude's Stop/SubagentStop `session_crons` snapshot reconciles the
+mirror with provider state, while ADE keeps the full prompt captured at
+`PostToolUse` instead of replacing it with the hook's truncated snapshot.
+If Claude replaces the SDK session pointer during compaction or recovery, ADE
+pauses jobs owned by the earlier SDK session; it never treats the replacement
+session's empty `CronList` as authority to delete or resume those older jobs.
 
 At service start, armed records are loaded and timers are restored. If the
 host was asleep or the runtime was down, an overdue one-shot fires once with
@@ -156,15 +171,34 @@ does not replay every missed interval. Paused schedules remain armed. Work
 that became overdue while either the chat or global pause was active follows
 the same one-late-fire rule after resume.
 
-Session teardown distinguishes deliberate end from runtime lifecycle. Deleting,
-archiving, or explicitly disposing a chat, and archiving or deleting its lane,
-cancels every durable schedule owned by that chat. Project close and graceful
-app quit instead end live chat rows as `detached`; their schedules remain armed
-so restart reconciliation can late-fire overdue work and cold-resume the chat.
-The scheduler's `sessionState` contract treats `running` and `detached` rows as
-`active`, any other non-archived terminal row as `ended`, archived rows as
-`archived`, and absent rows as `missing`. Ended, archived, and missing owners
-are cancelled during reconciliation or before delivery.
+Session teardown distinguishes deliberate end from runtime lifecycle. Deleting
+or archiving a chat cancels every durable schedule owned by that chat.
+Claude-owned jobs are not hidden first: ADE pauses the mirror, sends the owning chat an exact-id
+`CronDelete` request (or a prompt-exact `CronList` lookup for a current-session wakeup),
+and waits up to 30 seconds for the successful provider hook before an archive
+or delete proceeds. A manual Cancel returns immediately with whether provider
+cancellation was requested and already confirmed; the paused row stays visible
+until confirmation. If dispatch fails or a destructive chat operation times
+out, ADE restores the prior pause state and leaves the chat unchanged.
+If the job belongs to an earlier SDK session that Claude no longer exposes to
+the live chat, ADE cannot truthfully issue `CronDelete` there. An explicit
+Cancel, archive, or delete then tombstones the local mirror instead, reports
+provider cancellation as neither requested nor confirmed, and never lets an
+unreachable provider owner permanently block chat management.
+
+Explicit dispose, continuity replacement, and lane teardown cannot safely
+rebind a provider-owned job to a different Claude session. They therefore
+pause the durable provider rows for recovery through Settings while cancelling
+local-only work. Reconciliation uses the same quarantine rule for a durable
+provider job whose owning session has ended or disappeared.
+
+Project close and graceful app quit instead end live chat rows as `detached`;
+their schedules remain armed so restart reconciliation can late-fire overdue
+work and cold-resume the chat. The scheduler's `sessionState` contract treats
+`running` and `detached` rows as `active`, any other non-archived terminal row
+as `ended`, archived rows as `archived`, and absent rows as `missing`. Ended,
+archived, and missing owners are reconciled before delivery: local-only work
+is cancelled, while durable provider-owned work is quarantined as paused.
 
 Delivery reuses the session peer-message path with `kind: "wake"`. A live,
 idle Claude query is resumed through its existing idle reader; otherwise the
@@ -174,15 +208,37 @@ steer queue and begins at the turn boundary instead of interrupting the
 model. One-shot lifecycle is `scheduled` -> `fired` -> `completed`; completed
 wakeups move into Chat Info history. Recurring cron rows briefly record the
 fire, retain `lastRunAt`, and return to `scheduled` with their next fire time.
-No scheduled-work spend cap is applied.
+Durable recurring Claude crons expire after seven days, matching the SDK
+contract. Terminal rows are retained for at most seven days and the newest 200
+records, then pruned. No scheduled-work spend cap is applied.
+
+The startup migration is deliberately conservative. Pre-1.2.27
+`cron-tool:<session>:<toolCall>` rows were intent placeholders with no provider
+job id, so they are removed. Older active rows without provider metadata are
+treated as Claude jobs, paused, and kept in the manager for explicit cleanup;
+they are never silently fired or mistaken for an ADE-native schedule.
 
 Controls and summaries project this runtime state rather than owning it:
 
 - Chat Info's Schedule header pauses or resumes every schedule in that chat.
-- Settings > Background Jobs has a persisted global **Pause all scheduled
-  work** toggle (`ai.chat.scheduledWorkPaused`).
+- Active ADE-managed rows in Chat Info have a per-job Cancel action.
+- Settings > AI Features has both the persisted project-wide **Pause all
+  scheduled work** toggle (`ai.chat.scheduledWorkPaused`) and an **Active
+  scheduled work** manager that lists every chat's durable job and can cancel
+  one directly. Jobs normally clean themselves up; the manager is a recovery
+  surface rather than a required setup step.
+- `ade chat scheduled-work list [session]` lists active managed jobs;
+  `--all` includes recent terminal history, and
+  `ade chat scheduled-work cancel <session> <id>` routes through the same
+  provider-aware cancellation path. The equivalent generic actions are
+  `chat.listScheduledWork` and `chat.cancelScheduledWork`.
+- iOS exposes Cancel in Chat Info only for durable rows and only when the
+  connected host advertises the non-queueable `chat.cancelScheduledWork`
+  remote action; older hosts remain view-only instead of accepting an action
+  they cannot execute.
 - Session summaries expose the earliest unpaused `nextWakeAt`; Work rows show
-  it as a compact alarm countdown, and ADE Code repeats it in Chat Info.
+  it as a compact alarm countdown. The optional `scheduledWork` management
+  snapshot lets desktop merge KV truth over stale transcript projections.
 - Every unattended turn starts with a `Woke on schedule` divider. Desktop
   tracks the last viewed time per session in renderer `localStorage` and
   offers a dismissible while-you-were-away strip with jump links to those
@@ -229,10 +285,11 @@ Controls and summaries project this runtime state rather than owning it:
   generic task-status summary,
   and SDK result entries prefixed `[ede_diagnostic]` are debug-logged as
   internal lifecycle diagnostics rather than rendered as chat errors; real
-  errors in the same result remain user-visible.
-  while ADE's durable
-  scheduler independently re-arms `ScheduleWakeup`, `CronCreate`, and `/loop`
-  after a runtime restart. SDK-origin and cold-start wake paths both produce
+  errors in the same result remain user-visible. The successful `PostToolUse`
+  hook is the authority for schedule creation/deletion metadata; Stop and
+  SubagentStop snapshots reconcile provider state. ADE's durable mirror re-arms
+  `ScheduleWakeup`, durable `CronCreate`, and `/loop` after a runtime restart.
+  SDK-origin and cold-start wake paths both produce
   synthetic turns plus `scheduled_work_update` snapshots for desktop, ADE
   Code, and iOS Chat Info. SessionStore reads are limited to resume-time
   envelope self-heal and the on-demand provider-fidelity `getMainTranscript`
@@ -611,12 +668,13 @@ happen to begin with `User request:`.
    A terminal failure also stops still-active child subagents before the
    parent goes idle; that child closeout does not keep the parent active.
 6. `dispose({ sessionId })` deliberately ends the runtime, persists the final
-   state as `disposed`, and cancels the chat's durable scheduled work. Project
+   state as `disposed`, pauses provider-owned durable work for operator cleanup,
+   and cancels local-only scheduled work. Project
    close and graceful app quit use the lifecycle variant: live rows become
    `detached`, provider runtimes are torn down, and durable schedules remain for
-   restart reconciliation and cold resume. Lane archive/delete additionally
-   cancels schedules for every session owned by that lane, including sessions
-   that were not rehydrated into the current runtime.
+   restart reconciliation and cold resume. Lane archive/delete applies the
+   dispose rule to every session owned by that lane, including sessions that
+   were not rehydrated into the current runtime.
 
 Parallel launch is a renderer-orchestrated workflow layered on the same
 session primitives:
@@ -719,8 +777,10 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
 | Channel | Direction | Purpose |
 |---|---|---|
-| `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`, `includeArchived` (defaults to `true`; pass `false` to filter out archived rows). Claude summaries include `nextWakeAt` (earliest armed, unpaused schedule) and `scheduledWorkPaused`. |
-| `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session, including the durable schedule summary fields. |
+| `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`, `includeArchived` (defaults to `true`; pass `false` to filter out archived rows). Claude summaries include `nextWakeAt` (earliest armed, unpaused schedule), `scheduledWorkPaused`, and the optional KV-backed `scheduledWork` management snapshot. |
+| `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session, including the durable schedule summary and management fields. |
+| `ade.agentChat.listScheduledWork` | invoke | List KV-backed durable jobs across the project or for one `sessionId`. Active jobs are returned by default; `includeTerminal: true` adds bounded recent completed/cancelled history. |
+| `ade.agentChat.cancelScheduledWork` | invoke | Cancel one managed job by exact `sessionId` + `scheduleId`. ADE-only jobs cancel immediately. Claude-owned jobs are paused and routed through that chat's `CronDelete`; the result reports `providerCancellationRequested` and `providerCancellationConfirmed` instead of pretending an unconfirmed request already succeeded. If the stored owner is an earlier SDK session, ADE explicitly tombstones its local mirror and reports both provider fields false. |
 | `ade.agentChat.setScheduledWorkPaused` | invoke | Pause or resume every durable wakeup/cron/loop schedule for one chat. Returns the resulting pause state and recomputed `nextWakeAt`; overdue work follows the one-late-fire rule after resume. |
 | `ade.agentChat.getEventHistory` | invoke | Return `AgentChatEventHistorySnapshot` for a session. `sessionFound: false` is the explicit stale-session signal used by renderer surfaces to clear dead locked panes. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` as the legacy-named Fast Mode bit for any provider/model descriptor that advertises `serviceTiers: ["fast"]`. |
@@ -736,7 +796,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.recoverCodexTurn` | invoke | Execute one guarded recovery action for the currently active stalled Codex turn: `wait`, `steer`, `interrupt_retry_same_thread`, or `restart_resume_thread`. Calls are single-flight per session/turn and reject stale cards once that turn is no longer active. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
 | `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel, including Codex MCP elicitation form values and metadata-gated persistent consent. |
-| `ade.agentChat.delete` | invoke | Permanently remove a chat session: cancels its durable schedules, disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat". Archiving likewise cancels the chat's schedules. |
+| `ade.agentChat.delete` | invoke | Permanently remove a chat session: first waits for current-session Claude jobs to confirm provider cancellation, locally tombstones jobs whose earlier provider owner is unreachable, then disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. A current-provider timeout leaves the chat unchanged. Archiving uses the same cancellation gate. |
 | `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode, the legacy-named `codexFastMode` Fast Mode toggle, and Claude SDK session title/tag metadata. An empty tag clears the SDK tag. |
 | `ade.agentChat.codex.goal.get` / `.set` / `.setStatus` / `.clear` | invoke | Codex-only IPC channels behind the preload API `window.ade.agentChat.codex.getGoal` / `.setGoal` / `.setGoalStatus` / `.clearGoal`. They call the app-server goal RPCs directly instead of sending `/goal` prompt text through the chat, preserve CLI/PTY sessions, validate objective length, persist goal state into session summaries, and keep ADE goals unlimited by clearing provider token budgets. |
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude SDK runtime for an eventual turn. |

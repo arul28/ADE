@@ -19,13 +19,19 @@ export type ChatScheduledWorkRecord = {
   reason?: string;
   cron?: string;
   fireAt?: number;
+  expiresAt?: number;
   createdAt: number;
+  terminalAt?: number;
   status: ChatScheduledWorkStatus;
   pausedFlag: boolean;
   lastFiredAt?: number;
   lateFlag: boolean;
   activeTurnId?: string;
   outcomeSummary?: string;
+  durable?: boolean;
+  provider?: "claude";
+  providerSessionId?: string;
+  providerScheduleId?: string;
 };
 
 export type ChatScheduledWorkState = {
@@ -68,6 +74,7 @@ export type ChatScheduledWorkScheduler = {
   dispose(): void;
   upsert(schedule: ChatScheduledWorkUpsert): Promise<ChatScheduledWorkRecord>;
   cancel(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
+  setSchedulePaused(scheduleId: string, paused: boolean): Promise<ChatScheduledWorkRecord | null>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   refreshGlobalPause(): Promise<void>;
   list(sessionId?: string): ChatScheduledWorkRecord[];
@@ -80,6 +87,9 @@ export type ChatScheduledWorkScheduler = {
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
+const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+const MAX_TERMINAL_HISTORY_RECORDS = 200;
+const LEGACY_PROVISIONAL_CRON_PREFIX = "cron-tool:";
 
 const defaultTimers: ChatScheduledWorkTimerApi = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -126,7 +136,9 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
     ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
     ...(typeof record.cron === "string" ? { cron: record.cron } : {}),
     ...(readTimestamp(record.fireAt) != null ? { fireAt: readTimestamp(record.fireAt) } : {}),
+    ...(readTimestamp(record.expiresAt) != null ? { expiresAt: readTimestamp(record.expiresAt) } : {}),
     createdAt: readTimestamp(record.createdAt) ?? 0,
+    ...(readTimestamp(record.terminalAt) != null ? { terminalAt: readTimestamp(record.terminalAt) } : {}),
     status,
     pausedFlag: record.pausedFlag === true,
     ...(readTimestamp(record.lastFiredAt) != null
@@ -138,6 +150,14 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
       : {}),
     ...(typeof record.outcomeSummary === "string"
       ? { outcomeSummary: record.outcomeSummary }
+      : {}),
+    ...(typeof record.durable === "boolean" ? { durable: record.durable } : {}),
+    ...(record.provider === "claude" ? { provider: "claude" as const } : {}),
+    ...(typeof record.providerSessionId === "string" && record.providerSessionId.trim()
+      ? { providerSessionId: record.providerSessionId.trim() }
+      : {}),
+    ...(typeof record.providerScheduleId === "string"
+      ? { providerScheduleId: record.providerScheduleId }
       : {}),
   };
 }
@@ -213,22 +233,76 @@ export function createChatScheduledWorkScheduler(
     schedule.pausedFlag || pausedSessionIds.has(schedule.sessionId) || options.isGlobalPaused()
   );
 
+  const isTerminal = (schedule: ChatScheduledWorkRecord): boolean =>
+    schedule.status === "done" || schedule.status === "cancelled";
+
+  const isExpired = (schedule: ChatScheduledWorkRecord, at = now()): boolean =>
+    schedule.expiresAt != null && schedule.expiresAt <= at;
+
+  const markTerminal = (
+    schedule: ChatScheduledWorkRecord,
+    status: Extract<ChatScheduledWorkStatus, "done" | "cancelled">,
+  ): void => {
+    schedule.status = status;
+    schedule.terminalAt = now();
+  };
+
+  const quarantineInactiveProviderSchedule = (
+    schedule: ChatScheduledWorkRecord,
+  ): boolean => {
+    if (schedule.provider !== "claude" || schedule.durable !== true || isTerminal(schedule)) return false;
+    schedule.pausedFlag = true;
+    schedule.status = "paused";
+    delete schedule.activeTurnId;
+    delete schedule.terminalAt;
+    clearTimer(schedule.id);
+    return true;
+  };
+
+  const pruneTerminalHistory = (): boolean => {
+    const cutoff = now() - TERMINAL_HISTORY_RETENTION_MS;
+    const terminal = [...schedules.values()]
+      .filter(isTerminal)
+      .sort((left, right) =>
+        (right.terminalAt ?? right.createdAt) - (left.terminalAt ?? left.createdAt)
+        || right.id.localeCompare(left.id));
+    let changed = false;
+    terminal.forEach((schedule, index) => {
+      if ((schedule.terminalAt ?? schedule.createdAt) >= cutoff && index < MAX_TERMINAL_HISTORY_RECORDS) return;
+      clearTimer(schedule.id);
+      schedules.delete(schedule.id);
+      changed = true;
+    });
+    return changed;
+  };
+
   const processDue = async (scheduleId: string, overdueWhenArmed: boolean): Promise<void> => {
     if (disposed || inFlight.has(scheduleId)) return;
     const schedule = schedules.get(scheduleId);
     if (!schedule || (schedule.status !== "scheduled" && schedule.status !== "paused")) return;
 
     const currentTime = now();
+    if (isExpired(schedule, currentTime)) {
+      markTerminal(schedule, "cancelled");
+      clearTimer(schedule.id);
+      pruneTerminalHistory();
+      await persist();
+      await emitTransition(schedule, "cancelled");
+      return;
+    }
     if (schedule.fireAt == null || schedule.fireAt > currentTime) {
       arm(schedule);
       return;
     }
 
     if (options.sessionState(schedule.sessionId) !== "active") {
-      schedule.status = "cancelled";
+      if (!quarantineInactiveProviderSchedule(schedule)) {
+        markTerminal(schedule, "cancelled");
+        pruneTerminalHistory();
+      }
       clearTimer(schedule.id);
       await persist();
-      await emitTransition(schedule, "cancelled");
+      await emitTransition(schedule, schedule.status);
       return;
     }
 
@@ -274,11 +348,16 @@ export function createChatScheduledWorkScheduler(
   const arm = (schedule: ChatScheduledWorkRecord): void => {
     clearTimer(schedule.id);
     if (disposed || inFlight.has(schedule.id) || schedule.status !== "scheduled") return;
-    if (schedule.fireAt == null || !Number.isFinite(schedule.fireAt)) return;
+    const nextAt = schedule.expiresAt == null
+      ? schedule.fireAt
+      : schedule.fireAt == null
+        ? schedule.expiresAt
+        : Math.min(schedule.fireAt, schedule.expiresAt);
+    if (nextAt == null || !Number.isFinite(nextAt)) return;
 
     const currentTime = now();
-    const overdueWhenArmed = schedule.fireAt < currentTime;
-    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, schedule.fireAt - currentTime));
+    const overdueWhenArmed = schedule.fireAt != null && schedule.fireAt < currentTime;
+    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextAt - currentTime));
     const handle = timers.setTimeout(() => {
       timerHandles.delete(schedule.id);
       void processDue(schedule.id, overdueWhenArmed).catch(() => undefined);
@@ -288,10 +367,20 @@ export function createChatScheduledWorkScheduler(
 
   const reconcileSchedule = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
     if (schedule.status === "done" || schedule.status === "cancelled") return;
-    if (options.sessionState(schedule.sessionId) !== "active") {
-      schedule.status = "cancelled";
+    if (isExpired(schedule)) {
+      markTerminal(schedule, "cancelled");
+      pruneTerminalHistory();
       await persist();
       await emitTransition(schedule, "cancelled");
+      return;
+    }
+    if (options.sessionState(schedule.sessionId) !== "active") {
+      if (!quarantineInactiveProviderSchedule(schedule)) {
+        markTerminal(schedule, "cancelled");
+        pruneTerminalHistory();
+      }
+      await persist();
+      await emitTransition(schedule, schedule.status);
       return;
     }
 
@@ -305,7 +394,8 @@ export function createChatScheduledWorkScheduler(
         // A persisted fired one-shot was already claimed before the previous
         // process exited. Complete it without delivery so restore preserves
         // at-most-once semantics.
-        schedule.status = "done";
+        markTerminal(schedule, "done");
+        pruneTerminalHistory();
       }
       delete schedule.activeTurnId;
       await persist();
@@ -333,10 +423,41 @@ export function createChatScheduledWorkScheduler(
       const state = normalizeState(await options.loadState());
       schedules.clear();
       pausedSessionIds.clear();
-      for (const schedule of state.schedules) schedules.set(schedule.id, schedule);
+      let migrated = false;
+      for (const schedule of state.schedules) {
+        // Pre-1.2.27 builds persisted cron-tool placeholders before Claude
+        // returned its canonical id. They are never provider jobs and cannot
+        // be deleted through CronDelete, so they must never be restored.
+        if (schedule.id.startsWith(LEGACY_PROVISIONAL_CRON_PREFIX)) {
+          migrated = true;
+          continue;
+        }
+        // Every pre-1.2.27 active row came from Claude scheduled tools but was
+        // persisted without provider metadata. Quarantine it instead of
+        // deleting or firing it: Claude remains the execution owner, while
+        // Settings can cancel it and an authoritative provider snapshot can
+        // retire it. `wakeup:<session>` is ADE's local alias, not a provider id.
+        if (
+          typeof schedule.durable !== "boolean"
+          && schedule.status !== "done"
+          && schedule.status !== "cancelled"
+        ) {
+          schedule.pausedFlag = true;
+          schedule.status = "paused";
+          schedule.durable = true;
+          schedule.provider = "claude";
+          if (!schedule.id.startsWith("wakeup:")) {
+            schedule.providerScheduleId = schedule.id;
+          }
+          migrated = true;
+        }
+        schedules.set(schedule.id, schedule);
+      }
       for (const sessionId of state.pausedSessionIds) pausedSessionIds.add(sessionId);
+      migrated = pruneTerminalHistory() || migrated;
       started = true;
       for (const schedule of schedules.values()) await reconcileSchedule(schedule);
+      if (migrated) await persist();
     })();
     return startPromise;
   };
@@ -383,7 +504,16 @@ export function createChatScheduledWorkScheduler(
       if (schedule.status === "scheduled" || schedule.status === "paused") {
         schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
       }
-      if (options.sessionState(schedule.sessionId) !== "active") schedule.status = "cancelled";
+      if (options.sessionState(schedule.sessionId) !== "active") {
+        if (!quarantineInactiveProviderSchedule(schedule)) {
+          markTerminal(schedule, "cancelled");
+          pruneTerminalHistory();
+        }
+      } else if (!isTerminal(schedule)) {
+        delete schedule.terminalAt;
+      } else if (schedule.terminalAt == null) {
+        schedule.terminalAt = now();
+      }
       schedules.set(schedule.id, schedule);
       await persist();
       await emitTransition(schedule, schedule.status);
@@ -397,10 +527,26 @@ export function createChatScheduledWorkScheduler(
       if (!schedule) return null;
       clearTimer(scheduleId);
       if (schedule.status !== "cancelled") {
-        schedule.status = "cancelled";
+        markTerminal(schedule, "cancelled");
+        pruneTerminalHistory();
         await persist();
         await emitTransition(schedule, "cancelled");
       }
+      return cloneSchedule(schedule);
+    },
+
+    async setSchedulePaused(scheduleId, paused): Promise<ChatScheduledWorkRecord | null> {
+      await start();
+      const schedule = schedules.get(scheduleId);
+      if (!schedule || isTerminal(schedule)) return schedule ? cloneSchedule(schedule) : null;
+      const previousStatus = schedule.status;
+      schedule.pausedFlag = paused;
+      if (schedule.status === "scheduled" || schedule.status === "paused") {
+        schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
+      }
+      await persist();
+      if (schedule.status !== previousStatus) await emitTransition(schedule, schedule.status);
+      arm(schedule);
       return cloneSchedule(schedule);
     },
 
@@ -435,6 +581,7 @@ export function createChatScheduledWorkScheduler(
           schedule.sessionId !== sessionId ||
           schedule.status !== "scheduled" ||
           schedule.pausedFlag ||
+          isExpired(schedule) ||
           schedule.fireAt == null ||
           !Number.isFinite(schedule.fireAt)
         ) continue;
@@ -451,6 +598,7 @@ export function createChatScheduledWorkScheduler(
           candidate.sessionId === sessionId
           && candidate.status === "scheduled"
           && !candidate.pausedFlag
+          && !isExpired(candidate, currentTime)
           && candidate.fireAt != null
           && candidate.fireAt <= currentTime + TIMER_LATE_TOLERANCE_MS)
         .sort((left, right) => (left.fireAt ?? 0) - (right.fireAt ?? 0))[0];
@@ -504,12 +652,13 @@ export function createChatScheduledWorkScheduler(
         delete schedule.activeTurnId;
         if (outcomeSummary != null) schedule.outcomeSummary = outcomeSummary;
         if (schedule.kind !== "cron" && schedule.status === "fired") {
-          schedule.status = "done";
+          markTerminal(schedule, "done");
           finished.push(schedule);
         }
         changed = true;
       }
       if (!changed) return;
+      pruneTerminalHistory();
       await persist();
       for (const schedule of finished) await emitTransition(schedule, "done");
     },

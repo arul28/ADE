@@ -436,7 +436,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     const { result } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(listSessionsCachedMock).toHaveBeenCalled();
+      expect(result.current.sessions).toEqual([
+        expect.objectContaining({ id: "existing-session" }),
+      ]);
     });
     listSessionsCachedMock.mockClear();
     listSessionsCachedMock.mockResolvedValue([]);

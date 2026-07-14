@@ -52,6 +52,14 @@ describe("PersonalChatScope", () => {
       interrupt: vi.fn(async () => undefined),
       respondToInput: vi.fn(async () => undefined),
       approveToolUse: vi.fn(async () => undefined),
+      cancelScheduledWork: vi.fn(async ({ sessionId, scheduleId }: {
+        sessionId: string;
+        scheduleId: string;
+      }) => ({
+        schedule: { id: scheduleId, sessionId, status: "cancelled" },
+        providerCancellationRequested: true,
+        providerCancellationConfirmed: true,
+      })),
       updateSession: vi.fn(async () => summary),
       archiveSession: vi.fn(async () => undefined),
       unarchiveSession: vi.fn(async () => undefined),
@@ -145,11 +153,44 @@ describe("PersonalChatScope", () => {
     expect(service.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("cancels scheduled work only for an owned personal session", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("cancelScheduledWork", {
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    })).resolves.toMatchObject({
+      action: "cancelScheduledWork",
+      result: {
+        schedule: { id: "cron-1", sessionId: "chat-1", status: "cancelled" },
+        providerCancellationConfirmed: true,
+      },
+    });
+    expect(service.cancelScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      scheduleId: "cron-1",
+    });
+
+    await expect(scope.call("cancelScheduledWork", {
+      sessionId: "chat-1",
+      scheduleId: " ",
+    })).rejects.toThrow("scheduleId is required");
+    expect(service.cancelScheduledWork).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes only the hard allowlisted personal-chat actions", () => {
     const scope = new PersonalChatScope();
     const capabilities = scope.capabilities();
     expect(capabilities.version).toBe(1);
-    expect(capabilities.actions).toEqual(expect.arrayContaining(["list", "create", "send", "updateSession", "delete"]));
+    expect(capabilities.actions).toEqual(expect.arrayContaining([
+      "list",
+      "create",
+      "send",
+      "cancelScheduledWork",
+      "updateSession",
+      "delete",
+    ]));
     expect(capabilities.actions).not.toContain("projects.list");
   });
 

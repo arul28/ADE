@@ -5648,6 +5648,10 @@ final class SyncService: ObservableObject {
     supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
   }
 
+  func canInvokeChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
+    canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+  }
+
   func isChatRemoteActionQueueable(_ projectAction: String, sessionId: String) -> Bool {
     isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
@@ -6803,6 +6807,19 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatSessionSummary.self
+    )
+  }
+
+  func cancelScheduledWork(sessionId: String, scheduleId: String) async throws -> AgentChatCancelScheduledWorkResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.cancelScheduledWork", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    return try await sendDecodableCommand(
+      action: action,
+      args: ["sessionId": sessionId, "scheduleId": scheduleId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatCancelScheduledWorkResult.self
     )
   }
 

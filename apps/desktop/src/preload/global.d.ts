@@ -138,6 +138,10 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatListScheduledWorkArgs,
+  AgentChatScheduledWorkItem,
+  AgentChatCancelScheduledWorkArgs,
+  AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
   AgentChatReloadClaudePluginsArgs,
@@ -1419,6 +1423,12 @@ declare global {
         updateSession: (
           args: AgentChatUpdateSessionArgs,
         ) => Promise<AgentChatSession>;
+        listScheduledWork: (
+          args?: AgentChatListScheduledWorkArgs,
+        ) => Promise<AgentChatScheduledWorkItem[]>;
+        cancelScheduledWork: (
+          args: AgentChatCancelScheduledWorkArgs,
+        ) => Promise<AgentChatCancelScheduledWorkResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
         ) => Promise<AgentChatSetScheduledWorkPausedResult>;

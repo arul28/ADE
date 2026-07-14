@@ -1399,6 +1399,7 @@ function storedWakeup(
     status: "scheduled",
     pausedFlag: false,
     lateFlag: false,
+    durable: false,
     ...overrides,
   };
 }
@@ -1441,6 +1442,25 @@ function installClaudeWakeupFixture(args: {
           usage: { input_tokens: 1, output_tokens: 1 },
         },
       };
+      const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      await options?.hooks?.PostToolUse?.[0]?.hooks[0]?.({
+        hook_event_name: "PostToolUse",
+        session_id: args.sdkSessionId,
+        tool_name: "ScheduleWakeup",
+        tool_use_id: `tool-${args.sdkSessionId}`,
+        tool_input: {
+          delaySeconds: args.delaySeconds,
+          reason: "Check PR CI",
+          prompt: args.prompt ?? "Check PR CI and report the result.",
+        },
+        tool_response: {
+          scheduledFor: Date.now() + Math.max(60, args.delaySeconds) * 1_000,
+          clampedDelaySeconds: Math.max(60, args.delaySeconds),
+          wasClamped: args.delaySeconds < 60,
+        },
+      });
       yield {
         type: "result",
         subtype: "success",
@@ -7270,7 +7290,8 @@ describe("createAgentChatService", () => {
       };
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(initialSession as any);
 
-      const { service } = createService();
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -7284,6 +7305,7 @@ describe("createAgentChatService", () => {
       const persistedAfterPrime = readPersistedChatState(session.id);
       expect(persistedAfterPrime.lastLaneDirectiveKey).toBeTruthy();
       await service.dispose({ sessionId: session.id });
+      sessionService.reopen(session.id);
 
       writePersistedChatState(session.id, {
         ...persistedAfterPrime,
@@ -7291,6 +7313,16 @@ describe("createAgentChatService", () => {
         lastLaneDirectiveKey: persistedAfterPrime.lastLaneDirectiveKey,
         claudePermissionMode: "bypassPermissions",
         permissionMode: "full-auto",
+      });
+      scheduledWork.db.setJson(SCHEDULED_WORK_STATE_KEY, {
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          provider: "claude",
+          providerSessionId: "sdk-stale",
+          providerScheduleId: "provider-stale-wakeup",
+          durable: true,
+        })],
+        pausedSessionIds: [],
       });
 
       const staleSession = {
@@ -7328,7 +7360,7 @@ describe("createAgentChatService", () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReset();
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(freshSession as any);
 
-      const resumed = createService().service;
+      const resumed = createService({ db: scheduledWork.db }).service;
       await resumed.resumeSession({ sessionId: session.id });
       const result = await resumed.runSessionTurn({
         sessionId: session.id,
@@ -7348,6 +7380,13 @@ describe("createAgentChatService", () => {
       expect(staleSession.close).toHaveBeenCalled();
       expect(freshSession.send).toHaveBeenCalled();
       expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          providerSessionId: "sdk-stale",
+          status: "paused",
+          pausedFlag: true,
+        }),
+      ]);
     });
 
     it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {
@@ -12324,6 +12363,25 @@ describe("createAgentChatService", () => {
               usage: { input_tokens: 1, output_tokens: 1 },
             },
           };
+          const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+            hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+          } | undefined;
+          await options?.hooks?.PostToolUse?.[0]?.hooks[0]?.({
+            hook_event_name: "PostToolUse",
+            session_id: "sdk-next-wake",
+            tool_name: "ScheduleWakeup",
+            tool_use_id: "tool-next-wake",
+            tool_input: {
+              delaySeconds: 120,
+              reason: "Check PR CI",
+              prompt: "Check PR CI and report the result.",
+            },
+            tool_response: {
+              scheduledFor: Date.now() + 120_000,
+              clampedDelaySeconds: 120,
+              wasClamped: false,
+            },
+          });
           yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
         })()),
         close: vi.fn(),
@@ -12344,6 +12402,206 @@ describe("createAgentChatService", () => {
       expect(summary?.scheduledWorkPaused).toBe(false);
       expect(nextWakeAt).toBeGreaterThanOrEqual(before + 119_000);
       expect(nextWakeAt).toBeLessThanOrEqual(Date.now() + 121_000);
+      expect(summary?.scheduledWork).toEqual([
+        expect.objectContaining({
+          sessionId: session.id,
+          kind: "wakeup",
+          status: "scheduled",
+          title: "Check PR CI",
+          durable: true,
+        }),
+      ]);
+
+      const listed = await service.listScheduledWork({ sessionId: session.id });
+      expect(listed).toEqual(summary?.scheduledWork);
+      const cancelled = await service.cancelScheduledWork({
+        sessionId: session.id,
+        scheduleId: listed[0]!.id,
+      });
+      expect(cancelled).toMatchObject({
+        schedule: { id: listed[0]!.id, status: "paused" },
+        providerCancellationRequested: true,
+        providerCancellationConfirmed: false,
+      });
+      expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
+        expect.objectContaining({ id: listed[0]!.id, status: "paused" }),
+      ]);
+      expect((await service.getSessionSummary(session.id))?.scheduledWork).toEqual([
+        expect.objectContaining({ id: listed[0]!.id, status: "paused" }),
+      ]);
+      service.forceDisposeAll();
+
+      const mismatchedWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          provider: "claude",
+          providerSessionId: "sdk-earlier-wakeup",
+          providerScheduleId: "provider-earlier-wakeup",
+          durable: true,
+          status: "paused",
+          pausedFlag: true,
+        })],
+        pausedSessionIds: [],
+      });
+      const mismatched = createService({ db: mismatchedWork.db });
+      await expect(mismatched.service.cancelScheduledWork({
+        sessionId: session.id,
+        scheduleId: `wakeup:${session.id}`,
+      })).resolves.toMatchObject({
+        schedule: { status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: false,
+      });
+      expect(mismatchedWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ status: "cancelled", terminalAt: expect.any(Number) }),
+      ]);
+      mismatched.service.forceDisposeAll();
+
+      const orphanedWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("missing-owner", {
+          provider: "claude",
+          providerScheduleId: "provider-missing",
+          durable: true,
+          status: "paused",
+          pausedFlag: true,
+        })],
+        pausedSessionIds: [],
+      });
+      const orphaned = createService({ db: orphanedWork.db });
+      await expect(orphaned.service.cancelScheduledWork({
+        sessionId: "missing-owner",
+        scheduleId: "wakeup:missing-owner",
+      })).resolves.toMatchObject({
+        schedule: { status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: false,
+      });
+      expect(orphanedWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ id: "wakeup:missing-owner", status: "cancelled" }),
+      ]);
+      orphaned.service.forceDisposeAll();
+    });
+
+    it("keeps legacy ownerless Claude schedules paused until provider deletion confirms", async () => {
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("test-uuid-1", {
+          provider: "claude",
+          providerScheduleId: "provider-legacy-wakeup",
+          durable: true,
+        })],
+        pausedSessionIds: [],
+      });
+      const { send } = installClaudeResponseFixture({
+        sdkSessionId: "sdk-legacy-owner-cancel",
+        responseText: "Done.",
+      });
+      const { service } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
+      expect(session.id).toBe("test-uuid-1");
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the Claude session.",
+      });
+
+      await expect(service.cancelScheduledWork({
+        sessionId: session.id,
+        scheduleId: `wakeup:${session.id}`,
+      })).resolves.toMatchObject({
+        schedule: { status: "paused" },
+        providerCancellationRequested: true,
+        providerCancellationConfirmed: false,
+      });
+      await vi.waitFor(() => {
+        expect(send).toHaveBeenCalledWith(expect.stringContaining(
+          "CronDelete: provider-legacy-wakeup",
+        ));
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "paused",
+          pausedFlag: true,
+        }),
+      ]);
+
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-legacy-owner-cancel",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-delete-legacy-ownerless",
+        tool_input: { id: "provider-legacy-wakeup" },
+        tool_response: { id: "provider-legacy-wakeup" },
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "cancelled",
+          terminalAt: expect.any(Number),
+        }),
+      ]);
+      service.forceDisposeAll();
+    });
+
+    it("locally tombstones legacy ownerless work when the chat cannot be woken", async () => {
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("test-uuid-1", {
+          provider: "claude",
+          providerScheduleId: "provider-unavailable-wakeup",
+          durable: true,
+        })],
+        pausedSessionIds: [],
+      });
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-legacy-owner-unavailable",
+        responseText: "Done.",
+      });
+      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the Claude session.",
+      });
+      await service.dispose({ sessionId: session.id });
+      const sessionRow = sessionService.get(session.id);
+      sessionService.get
+        .mockImplementationOnce(() => sessionRow)
+        .mockImplementationOnce(() => null)
+        .mockImplementation((sessionId: string) => sessionId === session.id ? sessionRow : null);
+
+      await expect(service.cancelScheduledWork({
+        sessionId: session.id,
+        scheduleId: `wakeup:${session.id}`,
+      })).resolves.toMatchObject({
+        schedule: { status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: false,
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "cancelled",
+          terminalAt: expect.any(Number),
+        }),
+      ]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_legacy_scheduled_work_cancel_request_failed",
+        expect.objectContaining({ sessionId: session.id, scheduleCount: 1 }),
+      );
       service.forceDisposeAll();
     });
 
@@ -12397,6 +12655,24 @@ describe("createAgentChatService", () => {
             usage: { input_tokens: 2, output_tokens: 3 },
           },
         };
+        const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+          hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+        } | undefined;
+        await options?.hooks?.PostToolUse?.[0]?.hooks[0]?.({
+          hook_event_name: "PostToolUse",
+          tool_name: "ScheduleWakeup",
+          tool_use_id: "tool-wakeup-1",
+          tool_input: {
+            delaySeconds: 60,
+            reason: "CI was still running",
+            prompt: "Check CI again and report back.",
+          },
+          tool_response: {
+            scheduledFor: Date.now() + 60_000,
+            clampedDelaySeconds: 60,
+            wasClamped: false,
+          },
+        });
         yield {
           type: "system",
           subtype: "task_started",
@@ -13009,6 +13285,7 @@ describe("createAgentChatService", () => {
 
     it("keys Claude cron create and delete events by the provider cron id", async () => {
       const events: AgentChatEventEnvelope[] = [];
+      const scheduledWork = createScheduledWorkDb();
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
@@ -13071,6 +13348,7 @@ describe("createAgentChatService", () => {
       } as any);
 
       const { service } = createService({
+        db: scheduledWork.db,
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
       const session = await service.createSession({
@@ -13078,10 +13356,30 @@ describe("createAgentChatService", () => {
         provider: "claude",
         model: "sonnet",
       });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
 
       await service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule and then cancel a CI cron.",
+      });
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-provider-id",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-cron-create",
+        tool_input: { cron: "*/15 * * * *", prompt: "Check CI status." },
+        tool_response: { id: "cron-sdk-1", recurring: true, durable: false },
+      });
+      expect(scheduledWork.readState()?.schedules ?? []).toEqual([]);
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-cron-delete",
+        tool_input: { id: "cron-sdk-1" },
+        tool_response: { id: "cron-sdk-1" },
       });
 
       const scheduledEvents = events
@@ -13105,8 +13403,10 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("waits for the provider cron id before creating a CronCreate scheduled row", async () => {
+    it("persists a long durable CronCreate only after PostToolUse returns the canonical provider id", async () => {
       const events: AgentChatEventEnvelope[] = [];
+      const scheduledWork = createScheduledWorkDb();
+      const longPrompt = `Check CI status. ${"Preserve full watcher context. ".repeat(80)}`.trim();
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
@@ -13122,7 +13422,22 @@ describe("createAgentChatService", () => {
           };
           return;
         }
-
+        if (streamCall === 3) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-provider-next",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-cron-provider-next",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
         yield {
           type: "assistant",
           uuid: "assistant-cron-create-no-id",
@@ -13135,7 +13450,8 @@ describe("createAgentChatService", () => {
                 name: "CronCreate",
                 input: {
                   cron: "*/15 * * * *",
-                  prompt: "Check CI status.",
+                  prompt: longPrompt,
+                  durable: true,
                 },
               },
             ],
@@ -13159,7 +13475,8 @@ describe("createAgentChatService", () => {
         setPermissionMode,
       } as any);
 
-      const { service } = createService({
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
       const session = await service.createSession({
@@ -13171,6 +13488,7 @@ describe("createAgentChatService", () => {
         hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
 
       await service.runSessionTurn({
         sessionId: session.id,
@@ -13183,12 +13501,29 @@ describe("createAgentChatService", () => {
         && event.event.kind === "cron",
       )).toEqual([]);
 
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-cron-create-no-id",
+        tool_input: {
+          cron: "*/15 * * * *",
+          prompt: longPrompt,
+          durable: true,
+        },
+        tool_response: {
+          id: "cron-provider-1",
+          recurring: true,
+          durable: true,
+        },
+      });
+
       await stopHook?.({
         hook_event_name: "Stop",
+        session_id: "sdk-cron-provider-id",
         session_crons: [{
           id: "cron-provider-1",
           schedule: "*/15 * * * *",
-          prompt: "Check CI status.",
+          prompt: `${longPrompt.slice(0, 1_000)}… [+${longPrompt.length - 1_000} chars]`,
           recurring: true,
         }],
       });
@@ -13199,8 +13534,107 @@ describe("createAgentChatService", () => {
         id: "cron-provider-1",
         status: "scheduled",
         cron: "*/15 * * * *",
-        prompt: "Check CI status.",
+        prompt: longPrompt,
+        durable: true,
       });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-provider-1",
+          prompt: longPrompt,
+          durable: true,
+          expiresAt: expect.any(Number),
+          providerSessionId: "sdk-cron-provider-id",
+        }),
+      ]);
+      expect(scheduledWork.readState()?.schedules.some((schedule) => schedule.id.startsWith("cron-tool:"))).toBe(false);
+
+      const initialExpiresAt = scheduledWork.readState()?.schedules[0]?.expiresAt;
+      const refreshNow = Date.now() + 60_000;
+      const dateNow = vi.spyOn(Date, "now").mockReturnValue(refreshNow);
+      try {
+        await stopHook?.({
+          hook_event_name: "Stop",
+          session_id: "sdk-cron-provider-id",
+          session_crons: [{
+            id: "cron-provider-1",
+            schedule: "*/15 * * * *",
+            prompt: `${longPrompt.slice(0, 1_000)}… [+${longPrompt.length - 1_000} chars]`,
+            recurring: true,
+          }],
+        });
+      } finally {
+        dateNow.mockRestore();
+      }
+      expect(scheduledWork.readState()?.schedules[0]?.expiresAt).toBeGreaterThan(initialExpiresAt ?? 0);
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue in the replacement Claude session.",
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-provider-1",
+          status: "paused",
+          pausedFlag: true,
+          providerSessionId: "sdk-cron-provider-id",
+        }),
+      ]);
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-provider-next",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-delete-from-replacement-session",
+        tool_input: { id: "cron-provider-1" },
+        tool_response: { id: "cron-provider-1" },
+      });
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_id: "sdk-cron-provider-next",
+        session_crons: [],
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-provider-1",
+          status: "paused",
+          providerSessionId: "sdk-cron-provider-id",
+        }),
+      ]);
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-provider-next",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-create-current-provider-cron",
+        tool_input: {
+          cron: "*/30 * * * *",
+          prompt: "Check the current session's CI.",
+          durable: true,
+        },
+        tool_response: {
+          id: "cron-provider-current",
+          recurring: true,
+          durable: true,
+        },
+      });
+      const archive = service.archiveSession({ sessionId: session.id });
+      await vi.waitFor(() => {
+        expect(scheduledWork.readState()?.schedules.find((schedule) =>
+          schedule.id === "cron-provider-current")?.status).toBe("paused");
+      });
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-provider-next",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-delete-current-provider-cron",
+        tool_input: { id: "cron-provider-current" },
+        tool_response: { id: "cron-provider-current" },
+      });
+      await archive;
+
+      expect(sessionService.get(session.id)?.archivedAt).toEqual(expect.any(String));
+      expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "cron-provider-1", status: "cancelled" }),
+        expect.objectContaining({ id: "cron-provider-current", status: "cancelled" }),
+      ]));
     });
 
     it("coalesces one-shot wakeup hook snapshots with the scheduled wakeup row", async () => {
@@ -13298,11 +13732,28 @@ describe("createAgentChatService", () => {
         hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
       const wakeupId = `wakeup:${session.id}`;
 
       await service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule a one-shot CI wakeup.",
+      });
+
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        tool_name: "ScheduleWakeup",
+        tool_use_id: "tool-wakeup-provider-id",
+        tool_input: {
+          delaySeconds: 60,
+          reason: "CI was still running",
+          prompt: "Check CI again.",
+        },
+        tool_response: {
+          scheduledFor: Date.now() + 60_000,
+          clampedDelaySeconds: 60,
+          wasClamped: false,
+        },
       });
 
       await stopHook?.({
@@ -13316,6 +13767,13 @@ describe("createAgentChatService", () => {
       });
 
       cancelWakeup();
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        tool_name: "CronDelete",
+        tool_use_id: "tool-wakeup-provider-delete",
+        tool_input: { id: "wakeup-provider-1" },
+        tool_response: { id: "wakeup-provider-1" },
+      });
       await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope =>
@@ -13344,6 +13802,186 @@ describe("createAgentChatService", () => {
         prompt: "Check CI again.",
         sourceTaskId: "wakeup-provider-1",
       });
+    });
+
+    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules", async () => {
+      const sdkSessionId = "sdk-provider-snapshot-reconcile";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: sdkSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [
+          storedWakeup(session.id, {
+            id: "provider-wakeup",
+            prompt: "Check provider wakeup.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-wakeup-id",
+          }),
+          storedWakeup(session.id, {
+            id: "provider-loop",
+            kind: "loop",
+            prompt: "Continue provider loop.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-loop-id",
+          }),
+          storedWakeup(session.id, {
+            id: "ade-local-wakeup",
+            prompt: "Run ADE-local work.",
+            durable: true,
+          }),
+          storedWakeup(session.id, {
+            id: "other-provider-wakeup",
+            prompt: "Keep another provider session's work.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: "sdk-other-provider-session",
+            providerScheduleId: "other-provider-wakeup-id",
+          }),
+        ],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Reconcile the provider's scheduled-work snapshot.",
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const subagentStopHook = resumeOptions?.hooks?.SubagentStop?.[0]?.hooks[0];
+      const stopHook = resumeOptions?.hooks?.Stop?.[0]?.hooks[0];
+
+      await subagentStopHook?.({
+        hook_event_name: "SubagentStop",
+        session_id: sdkSessionId,
+        agent_id: "agent-1",
+        agent_type: "reviewer",
+        last_assistant_message: "Review complete.",
+        session_crons: [{
+          id: "provider-loop-id",
+          schedule: "once",
+          prompt: "Continue provider loop.",
+          recurring: false,
+        }],
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "provider-wakeup", status: "cancelled" }),
+        expect.objectContaining({ id: "provider-loop", status: "scheduled" }),
+        expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
+        expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
+      ]));
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_id: sdkSessionId,
+        session_crons: [],
+      });
+      expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "provider-loop", status: "cancelled" }),
+        expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
+        expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
+      ]));
+      resumed.forceDisposeAll();
+      original.forceDisposeAll();
+    });
+
+    it("cancels an unowned legacy wakeup when Claude confirms ScheduleWakeup stop", async () => {
+      const sdkSessionId = "sdk-legacy-wakeup-stop";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: sdkSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          durable: true,
+          provider: "claude",
+        })],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the legacy wakeup.",
+        timeoutMs: 15_000,
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = resumeOptions?.hooks?.PostToolUse?.[0]?.hooks[0];
+      expect(postToolUseHook).toEqual(expect.any(Function));
+
+      await postToolUseHook!({
+        hook_event_name: "PostToolUse",
+        session_id: sdkSessionId,
+        tool_name: "ScheduleWakeup",
+        tool_use_id: "tool-stop-legacy-wakeup",
+        tool_input: { stop: true },
+        tool_response: { stopped: true },
+      });
+
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: `wakeup:${session.id}`,
+          status: "cancelled",
+        }),
+      ]);
     });
 
     it("coalesces parentless recurring cron run events with the provider cron row", async () => {
@@ -13928,7 +14566,7 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("dispose cancels durable schedules and emits cancelled scheduled_work_update", async () => {
+    it("dispose quarantines durable provider schedules instead of hiding live provider work", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
@@ -13961,14 +14599,14 @@ describe("createAgentChatService", () => {
         endedAt: expect.any(String),
       }));
       expect(scheduledWork.readState()?.schedules).toEqual([
-        expect.objectContaining({ sessionId: session.id, status: "cancelled" }),
+        expect.objectContaining({ sessionId: session.id, status: "paused", pausedFlag: true }),
       ]);
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           sessionId: session.id,
           event: expect.objectContaining({
             type: "scheduled_work_update",
-            status: "cancelled",
+            status: "paused",
           }),
         }),
       ]));
@@ -14010,7 +14648,7 @@ describe("createAgentChatService", () => {
         status: "disposed",
         endedAt: expect.any(String),
       }));
-      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("cancelled");
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("paused");
       expect(events.filter((event) =>
         event.sessionId === session.id
         && event.event.type === "status"
@@ -14428,6 +15066,58 @@ describe("createAgentChatService", () => {
   });
 
   describe("deleteSession", () => {
+    it.each([
+      { action: "delete" as const, warning: "agent_chat.scheduled_work_cancel_before_delete_failed" },
+      { action: "archive" as const, warning: "agent_chat.scheduled_work_cancel_before_archive_failed" },
+    ])("honors $action when provider schedule cancellation times out", async ({ action, warning }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup("test-uuid-1", {
+          provider: "claude",
+          providerSessionId: "sdk-lifecycle-timeout",
+          providerScheduleId: "provider-lifecycle-timeout",
+          durable: true,
+        })],
+        pausedSessionIds: [],
+      });
+      installClaudeResponseFixture({
+        sdkSessionId: "sdk-lifecycle-timeout",
+        responseText: "I could not delete that schedule.",
+      });
+      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the Claude session.",
+      });
+
+      const operation = action === "delete"
+        ? service.deleteSession({ sessionId: session.id })
+        : service.archiveSession({ sessionId: session.id });
+      await vi.advanceTimersByTimeAsync(31_000);
+      await expect(operation).resolves.toBeUndefined();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        warning,
+        expect.objectContaining({ sessionId: session.id }),
+      );
+      if (action === "delete") {
+        expect(sessionService.get(session.id)).toBeNull();
+      } else {
+        expect(sessionService.get(session.id)?.archivedAt).toEqual(expect.any(String));
+      }
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({ status: "cancelled", terminalAt: expect.any(Number) }),
+      ]);
+      service.forceDisposeAll();
+    });
+
     it("removes persisted chat artifacts and the stored session row", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -31633,7 +32323,19 @@ describe("explicit provider-thread continuity recovery", () => {
       },
     });
     const events: AgentChatEventEnvelope[] = [];
-    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const scheduledWork = createScheduledWorkDb({
+      version: 1,
+      schedules: [storedWakeup(session.id, {
+        durable: true,
+        provider: "claude",
+        providerScheduleId: "provider-old-chat",
+      })],
+      pausedSessionIds: [],
+    });
+    const { service } = createService({
+      db: scheduledWork.db,
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
 
     const result = await service.recoverContinuity({ sessionId: session.id, mode: "start_new_chat" });
     expect(result.ok).toBe(true);
@@ -31643,6 +32345,15 @@ describe("explicit provider-thread continuity recovery", () => {
       state: "required",
       supersededBySessionId: result.newSessionId,
     });
+    expect(scheduledWork.readState()?.schedules).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        status: "paused",
+        pausedFlag: true,
+        providerScheduleId: "provider-old-chat",
+      }),
+    ]);
+    await expect(service.listScheduledWork({ sessionId: result.newSessionId })).resolves.toEqual([]);
     expect(events.some((entry) => entry.sessionId === session.id
       && entry.event.type === "system_notice"
       && typeof entry.event.detail === "object"

@@ -699,6 +699,31 @@ struct StackChainItem: Codable, Identifiable, Equatable {
   var status: LaneStatus
 }
 
+struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
+  var id: String
+  var sessionId: String
+  var kind: String
+  var status: String
+  var title: String
+  var prompt: String
+  var reason: String?
+  var cron: String?
+  var nextRunAt: String?
+  var lastRunAt: String?
+  var expiresAt: String?
+  var createdAt: String
+  var durable: Bool
+  var cancellable: Bool
+  var late: Bool?
+  var outcomeSummary: String?
+}
+
+struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
+  var schedule: AgentChatScheduledWorkItem
+  var providerCancellationRequested: Bool
+  var providerCancellationConfirmed: Bool
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -742,6 +767,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var awaitingInput: Bool?
   var pendingInputItemId: String? = nil
+  /// Durable scheduled work managed by the paired ADE host. Older hosts omit it.
+  var scheduledWork: [AgentChatScheduledWorkItem]? = nil
   var threadId: String?
   var requestedCwd: String?
   // Orchestration-mode fields (populated when session is part of an orchestration run)
@@ -793,6 +820,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.summary == rhs.summary
       && lhs.awaitingInput == rhs.awaitingInput
       && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.scheduledWork == rhs.scheduledWork
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationRunId == rhs.orchestrationRunId

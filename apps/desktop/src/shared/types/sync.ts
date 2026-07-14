@@ -1027,6 +1027,7 @@ export type SyncRemoteCommandAction =
   | "chat.getImageDataUrl"
   | "chat.listSessions"
   | "chat.getSummary"
+  | "chat.cancelScheduledWork"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
   | "chat.listSubagents"

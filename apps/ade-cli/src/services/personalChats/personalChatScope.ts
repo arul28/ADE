@@ -174,6 +174,15 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.approveToolUse(args as never);
         break;
+      case "cancelScheduledWork": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.cancelScheduledWork({
+          sessionId,
+          scheduleId: requiredString(args.scheduleId, "scheduleId"),
+        });
+        break;
+      }
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);

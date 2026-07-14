@@ -656,6 +656,7 @@ struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
   let late: Bool?
   let recurring: Bool?
   let durable: Bool?
+  let cancellable: Bool?
   let sourceToolUseId: String?
   let sourceTaskId: String?
   let turnId: String?

@@ -292,6 +292,51 @@ describe("deriveChatInfoSnapshot", () => {
     ]);
   });
 
+  it("reconciles transcript events with ADE-managed scheduled work", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [
+        env("2026-07-07T12:00:00.000Z", {
+          type: "scheduled_work_update",
+          id: "stale-cron",
+          kind: "cron",
+          status: "scheduled",
+          title: "Stale transcript cron",
+          durable: true,
+        }, 1),
+      ],
+      activeSession: session({
+        provider: "claude",
+        scheduledWork: [{
+          id: "managed-cron",
+          sessionId: "session-1",
+          kind: "cron",
+          status: "paused",
+          title: "Managed cron",
+          prompt: "Check CI",
+          cron: "7,27,47 * * * *",
+          createdAt: "2026-07-07T12:05:00.000Z",
+          durable: true,
+          cancellable: true,
+        }],
+      }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-8",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.scheduledWork).toHaveLength(1);
+    expect(snapshot.scheduledWork[0]).toEqual(expect.objectContaining({
+      id: "managed-cron",
+      status: "paused",
+      cancellable: true,
+    }));
+    expect(snapshot.scheduledWork.some((item) => item.id === "stale-cron")).toBe(false);
+  });
+
   it("partitions background_task work into backgroundWork, keeping schedule kinds in scheduledWork", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [

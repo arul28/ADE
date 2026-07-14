@@ -3,6 +3,7 @@ import type {
   AiFeatureKey,
   AiConfig,
   AiSettingsStatus,
+  AgentChatScheduledWorkItem,
 } from "../../../shared/types";
 import {
   COLORS,
@@ -132,14 +133,24 @@ export function AiFeaturesSection() {
   const [chatAutoTitleRefresh, setChatAutoTitleRefresh] = useState(true);
   const [chatAutoTitleReasoning, setChatAutoTitleReasoning] = useState<string | null>(null);
   const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
+  const [scheduledWork, setScheduledWork] = useState<AgentChatScheduledWorkItem[]>([]);
+  const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
-      const [nextStatus, snapshot] = await Promise.all([
+      const [nextStatus, snapshot, scheduledWorkResult] = await Promise.all([
         window.ade.ai.getStatus(),
         window.ade.projectConfig.get(),
+        window.ade.agentChat.listScheduledWork()
+          .then((items) => ({ items, error: null as string | null }))
+          .catch((error) => ({
+            items: [] as AgentChatScheduledWorkItem[],
+            error: error instanceof Error ? error.message : String(error),
+          })),
       ]);
       setStatus(nextStatus);
+      setScheduledWork(scheduledWorkResult.items);
+      setScheduledWorkError(scheduledWorkResult.error);
 
       const effectiveAiRaw = snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
@@ -266,6 +277,23 @@ export function AiFeaturesSection() {
     }
   }, [saving]);
 
+  const handleCancelScheduledWork = useCallback(async (item: AgentChatScheduledWorkItem) => {
+    setScheduledWorkError(null);
+    try {
+      const result = await window.ade.agentChat.cancelScheduledWork({
+        sessionId: item.sessionId,
+        scheduleId: item.id,
+      });
+      if (result.schedule.status === "cancelled") {
+        setScheduledWork((current) => current.filter((candidate) => candidate.id !== item.id));
+      }
+      await loadStatus();
+    } catch (error) {
+      console.error("[AiFeaturesSection] scheduled-work cancellation failed:", error);
+      setScheduledWorkError(error instanceof Error ? error.message : String(error));
+    }
+  }, [loadStatus]);
+
   const handleModelChange = useCallback(async (key: AiFeatureKey, modelId: string) => {
     if (saving) return;
     setSaving(true);
@@ -370,6 +398,59 @@ export function AiFeaturesSection() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div style={{ ...cardStyle({ padding: 0 }), marginBottom: 12 }}>
+          <div style={{ padding: "10px 16px", borderBottom: scheduledWork.length ? `1px solid ${COLORS.border}` : undefined }}>
+            <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
+              Active scheduled work
+            </div>
+            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, marginTop: 2 }}>
+              Jobs normally manage themselves. Use this list only when you need to inspect or stop one directly.
+            </div>
+          </div>
+          {scheduledWorkError ? (
+            <div style={{ padding: "12px 16px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
+              Scheduled work is unavailable: {scheduledWorkError}
+            </div>
+          ) : scheduledWork.length ? scheduledWork.map((item) => (
+            <div
+              key={`${item.sessionId}:${item.id}`}
+              className="ai-feature-row"
+              style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center", padding: "10px 16px", borderBottom: `1px solid ${COLORS.border}` }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                  {item.title}
+                </div>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                  {item.kind} · {item.status} · chat {item.sessionId.slice(0, 8)}{item.nextRunAt ? ` · ${new Date(item.nextRunAt).toLocaleString()}` : ""}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleCancelScheduledWork(item)}
+                disabled={!item.cancellable}
+                style={{
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: item.cancellable ? COLORS.warning : COLORS.textMuted,
+                  padding: "5px 9px",
+                  fontSize: 11,
+                  fontFamily: SANS_FONT,
+                  cursor: item.cancellable ? "pointer" : "not-allowed",
+                  opacity: item.cancellable ? 1 : 0.5,
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )) : (
+            <div style={{ padding: "12px 16px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+              No active durable jobs.
+            </div>
+          )}
         </div>
 
         <div style={cardStyle({ padding: 0 })}>

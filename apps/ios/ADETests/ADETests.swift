@@ -4097,6 +4097,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
+    do {
+      _ = try await service.cancelScheduledWork(sessionId: "chat-legacy", scheduleId: "cron-1")
+      XCTFail("A legacy host must reject scheduled-work cancellation before transport")
+    } catch {
+      XCTAssertEqual((error as NSError).code, 15)
+    }
     let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
     XCTAssertTrue(analyticsOptOutAcknowledged)
   }
@@ -4114,13 +4121,22 @@ final class ADETests: XCTestCase {
         "projectCatalog": false,
         "commandRouting": [
           "mode": "allowlisted",
-          "actions": [[
-            "action": "chat.send",
-            "policy": [
-              "viewerAllowed": true,
-              "queueable": true,
+          "actions": [
+            [
+              "action": "chat.send",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": true,
+              ],
             ],
-          ]],
+            [
+              "action": "chat.cancelScheduledWork",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
+          ],
         ],
         "mobileCompatibility": [
           "contractVersion": 1,
@@ -4135,10 +4151,50 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     let analyticsOptInAcknowledged = await service.setProductAnalyticsClientEnabled(true)
     XCTAssertTrue(analyticsOptInAcknowledged)
+  }
+
+  @MainActor
+  func testScheduledWorkCancellationStaysGatedWhenAdvertisedHostOmitsAction() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": ["viewerAllowed": true, "queueable": true],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
+    XCTAssertFalse(service.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
+    do {
+      _ = try await service.cancelScheduledWork(sessionId: "chat-1", scheduleId: "cron-1")
+      XCTFail("An unadvertised cancellation action must be rejected before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 15)
+    }
   }
 
   func testMobileAdeUsageStatsDecodesPayloadWithoutNewOptionalBreakdowns() throws {
@@ -7273,6 +7329,11 @@ final class ADETests: XCTestCase {
         scope: "runtime",
         policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
       ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.cancelScheduledWork",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
     ]
     UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
     defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
@@ -7285,6 +7346,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.supportsChatRemoteAction("chat.getTranscript", sessionId: "personal-history"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: "personal-history"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "personal-history"))
   }
 
   @MainActor
@@ -10111,6 +10173,61 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workScheduleItemIsEarlier(try XCTUnwrap(byId["wake-one"])))
     XCTAssertFalse(workScheduleItemIsEarlier(try XCTUnwrap(byId["wake-recurring"])))
     XCTAssertTrue(workScheduleItemIsEarlier(try XCTUnwrap(byId["cron-cancelled"])))
+  }
+
+  func testScheduledWorkSummaryRecoversFromEmptyManagedStateAndProvidesAuthoritativeRows() throws {
+    let summaryData = Data(#"""
+    {
+      "sessionId":"chat-1",
+      "laneId":"lane-1",
+      "provider":"claude",
+      "model":"claude-sonnet",
+      "status":"idle",
+      "startedAt":"2026-07-08T00:00:00.000Z",
+      "lastActivityAt":"2026-07-08T00:00:03.000Z",
+      "scheduledWork":[{
+        "id":"managed-1",
+        "sessionId":"chat-1",
+        "kind":"cron",
+        "status":"paused",
+        "title":"Managed CI watcher",
+        "prompt":"Check CI",
+        "createdAt":"2026-07-08T00:00:03.000Z",
+        "durable":true,
+        "cancellable":true
+      }]
+    }
+    """#.utf8)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: summaryData)
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"stale-1","kind":"cron","status":"scheduled","durable":true,"title":"Stale watcher"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"managed-1","kind":"cron","status":"scheduled","durable":true,"title":"Old managed title"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"provider-only","kind":"cron","status":"scheduled","durable":false,"title":"Provider-only watcher"}}
+    """
+
+    let local = buildWorkScheduledWorkSnapshots(from: parseWorkChatTranscript(raw))
+    let recovered = mergeManagedWorkScheduledWorkSnapshots(
+      local: local,
+      managedWork: []
+    )
+    let recoveredById = Dictionary(uniqueKeysWithValues: recovered.map { ($0.id, $0) })
+
+    XCTAssertEqual(recoveredById["stale-1"]?.durable, true)
+    XCTAssertEqual(recoveredById["provider-only"]?.durable, false)
+
+    let merged = mergeManagedWorkScheduledWorkSnapshots(
+      local: local,
+      managedWork: summary.scheduledWork
+    )
+    let byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
+
+    XCTAssertEqual(summary.scheduledWork?.count, 1)
+    XCTAssertNil(byId["stale-1"])
+    XCTAssertEqual(byId["managed-1"]?.status, "paused")
+    XCTAssertEqual(byId["managed-1"]?.title, "Managed CI watcher")
+    XCTAssertEqual(byId["managed-1"]?.cancellable, true)
+    XCTAssertEqual(byId["provider-only"]?.durable, false)
+    XCTAssertNil(byId["provider-only"]?.cancellable)
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
