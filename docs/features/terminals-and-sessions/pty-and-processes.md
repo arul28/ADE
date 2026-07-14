@@ -247,7 +247,8 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
-`withAdeTerminalContextEnv` (project / lane / chat ids), then
+`withAdeTerminalContextEnv` (project / lane / chat ids plus the opaque,
+chat-bound `ADE_BROWSER_ACTOR_TOKEN` when the terminal has an owner), then
 `withInteractiveTerminalColorEnv`. The color helper sets a sensible
 `TERM` (`xterm-256color`) and `COLORTERM` (`truecolor`) when missing
 and unsets `NO_COLOR` so TUIs render in color by default. If the

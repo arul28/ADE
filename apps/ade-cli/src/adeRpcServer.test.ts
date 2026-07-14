@@ -3091,6 +3091,45 @@ describe("adeRpcServer", () => {
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let the runtime daemon environment override the connecting browser actor", async () => {
+    const fixture = createRuntime();
+    const getStatus = vi.fn(async (args: unknown) => args);
+    fixture.runtime.builtInBrowserService = { getStatus };
+    process.env.ADE_BROWSER_ACTOR_TOKEN = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-daemon",
+      laneId: "lane-daemon",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
+    const clientActorToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-client",
+      laneId: "lane-client",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "agent-client",
+      role: "agent",
+      chatSessionId: "chat-client",
+      browserActorToken: clientActorToken,
+    });
+
+    const status = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "getStatus",
+      args: {},
+    });
+    expect(status?.isError).toBeUndefined();
+    expect(getStatus).toHaveBeenCalledTimes(1);
+    expect(getStatus).toHaveBeenCalledWith({
+      laneId: "lane-client",
+      chatSessionId: "chat-client",
+      force: false,
+      projectRoot: fixture.runtime.projectRoot,
+    });
+  });
+
   it("denies unbound and elevated local callers without a browser actor capability", async () => {
     const fixture = createRuntime();
     const getStatus = vi.fn(async () => ({ ok: true }));

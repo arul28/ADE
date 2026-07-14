@@ -1866,7 +1866,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
   by their current chat. Plain "browser open <url>" reuses that owned tab for
   ADE-launched agents and creates one only when none exists, without revealing
   the Browser panel unless --panel is passed. Use --new-tab only when the task
-  truly needs another tab; --active-tab and --tab stay explicit.
+  truly needs another tab; --active-tab and --tab stay explicit. The runtime
+  accepts browser commands only from ADE-launched chat/terminal sessions with
+  a browser capability, validates lane/chat identity, and rejects agent force
+  takeovers. Profile diagnostics and remembered-permission administration stay
+  in the trusted ADE renderer.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
@@ -1959,7 +1963,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --wait-after-ms <n>  Delay before post-action observation (default 150).
     --fast               Alias for --wait-after-ms 0 on browser actions.
     --no-observe         Do not capture the post-action scratch observation.
-    --force              Take over a still-leased tab from another lane.
+    --force              Reserved takeover flag; ADE agent calls are rejected.
     --lease-ttl-ms <n>   Override tab lease TTL for lane-owned actions.
     --lane, --lane-id <id> Claim lane for open/new-tab/claim/session/actions.
                          On panel/switch, claims only when passed explicitly.
@@ -2556,19 +2560,25 @@ function readBrowserTabTargetArgs(args: string[]): JsonObject {
   };
 }
 
-function readBrowserSessionStartArgs(args: string[]): JsonObject {
+function readBrowserLeaseArgs(args: string[]): JsonObject {
   const leaseTtlMs = readNumberOption(args, ["--lease-ttl-ms", "--lease-ms"]);
+  return {
+    ...(readFlag(args, ["--force"]) ? { force: true } : {}),
+    ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
+  };
+}
+
+function readBrowserSessionStartArgs(args: string[]): JsonObject {
   return {
     ...readBrowserTabTargetArgs(args),
     ...readToolClaimArgs(args),
-    force: readFlag(args, ["--force"]) ? true : undefined,
-    ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
+    ...readBrowserLeaseArgs(args),
   };
 }
 
 function readBrowserSessionsArgs(args: string[]): JsonObject {
   return {
-    ...readBrowserTabTargetArgs(args),
+    ...readBrowserOwnedTabTargetArgs(args),
     ...(readFlag(args, ["--include-ended", "--all"]) ? { includeEnded: true } : {}),
   };
 }
@@ -2582,8 +2592,7 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
   const includeElementMap = readFlag(args, ["--map", "--ui-map", "--element-map"]);
   const maxElements = readNumberOption(args, ["--max-elements", "--element-limit"]);
   return {
-    ...readBrowserTabTargetArgs(args),
-    ...readToolClaimArgs(args),
+    ...readBrowserOwnedTabTargetArgs(args),
     ...(keepCount == null ? {} : { keepCount }),
     ...(includeDom ? { includeDom: true } : {}),
     ...(skipDom ? { includeDom: false } : {}),
@@ -2597,8 +2606,7 @@ function readBrowserObservationArgs(args: string[]): JsonObject {
 function readBrowserTraceArgs(args: string[]): JsonObject {
   const limit = readNumberOption(args, ["--limit", "--entries"]);
   return {
-    ...readBrowserTabTargetArgs(args),
-    ...readToolClaimArgs(args),
+    ...readBrowserOwnedTabTargetArgs(args),
     ...(limit == null ? {} : { limit }),
   };
 }
@@ -2607,18 +2615,16 @@ function readBrowserOwnedTabTargetArgs(args: string[]): JsonObject {
   return {
     ...readBrowserTabTargetArgs(args),
     ...readToolClaimArgs(args),
+    ...readBrowserLeaseArgs(args),
   };
 }
 
 function readBrowserAgentActionArgs(args: string[]): JsonObject {
-  const leaseTtlMs = readNumberOption(args, ["--lease-ttl-ms", "--lease-ms"]);
   const waitAfterMs = readNumberOption(args, ["--wait-after-ms", "--settle-ms"]);
   const fast = readFlag(args, ["--fast"]);
   return {
     ...readBrowserObservationArgs(args),
     observe: readFlag(args, ["--no-observe"]) ? false : undefined,
-    force: readFlag(args, ["--force"]) ? true : undefined,
-    ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
     ...(waitAfterMs == null ? (fast ? { waitAfterMs: 0 } : {}) : { waitAfterMs }),
   };
 }
@@ -9052,7 +9058,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
           "result",
           "built_in_browser",
           "getStatus",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
         ),
       ],
     };
@@ -9075,7 +9081,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
     }
     if (mode === "end" || mode === "stop" || mode === "close") {
       const explicitSessionId = readValue(args, ["--browser-session", "--browser-session-id"]);
-      const genericArgs = collectGenericObjectArgs(args);
+      const genericArgs = collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args));
       const genericSessionId = typeof genericArgs.sessionId === "string" ? genericArgs.sessionId : null;
       return {
         kind: "execute",
@@ -9115,6 +9121,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (sub === "claim") {
     const claimArgs: JsonObject = readRequiredToolClaimArgs(args, "browser");
     Object.assign(claimArgs, readBrowserTabTargetArgs(args));
+    Object.assign(claimArgs, readBrowserLeaseArgs(args));
     return {
       kind: "execute",
       label: "browser claim",
@@ -9136,6 +9143,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   ) {
     const panelArgs: JsonObject = {};
     Object.assign(panelArgs, readExplicitToolClaimArgs(args));
+    Object.assign(panelArgs, readBrowserLeaseArgs(args));
     maybePut(panelArgs, "url", readValue(args, ["--url"]));
     maybePut(panelArgs, "tabId", readValue(args, ["--tab", "--tab-id"]));
     return {
@@ -9162,7 +9170,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const newTab = readFlag(args, ["--new-tab"]);
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = {
+      ...readToolClaimArgs(args),
+      ...readBrowserLeaseArgs(args),
+    };
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
@@ -9193,7 +9204,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = {
+      ...readToolClaimArgs(args),
+      ...readBrowserLeaseArgs(args),
+    };
     const genericArgs = collectGenericObjectArgs(args);
     const genericUrl =
       typeof genericArgs.url === "string" ? genericArgs.url : null;
@@ -9216,7 +9230,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (sub === "switch" || sub === "activate") {
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
-    const claimArgs = readExplicitToolClaimArgs(args);
+    const claimArgs = {
+      ...readExplicitToolClaimArgs(args),
+      ...readBrowserLeaseArgs(args),
+    };
     const genericArgs = collectGenericObjectArgs(args);
     const genericTabId =
       typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
@@ -9238,7 +9255,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   }
   if (sub === "close" || sub === "close-tab") {
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
-    const genericArgs = collectGenericObjectArgs(args);
+    const genericArgs = collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args));
     const genericTabId =
       typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
     return {

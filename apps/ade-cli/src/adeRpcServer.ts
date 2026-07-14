@@ -2993,8 +2993,10 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
-  const browserActorToken = process.env.ADE_BROWSER_ACTOR_TOKEN?.trim()
-    || asOptionalTrimmedString(identity.browserActorToken);
+  // Browser actor capabilities belong to the connecting CLI process. The
+  // long-lived runtime daemon must never lend an inherited token to another
+  // client, even if it was accidentally launched from an agent-owned shell.
+  const browserActorToken = asOptionalTrimmedString(identity.browserActorToken);
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !resolvedRunId

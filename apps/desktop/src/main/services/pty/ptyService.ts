@@ -9,7 +9,10 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
-import { issueBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import {
+  issueBuiltInBrowserActorCapability,
+  revokeBuiltInBrowserActorCapability,
+} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -2607,6 +2610,9 @@ export function createPtyService({
     if (!entry) return;
     if (entry.disposed) return;
     entry.disposed = true;
+    if (!entry.chatSessionId && isTrackedCliToolType(entry.toolTypeHint)) {
+      revokeBuiltInBrowserActorCapability(entry.sessionId);
+    }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
@@ -4952,6 +4958,9 @@ export function createPtyService({
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        if (!session.chatSessionId && isTrackedCliToolType(session.toolType)) {
+          revokeBuiltInBrowserActorCapability(sessionId);
+        }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "killed", { touch: false });
@@ -4984,6 +4993,9 @@ export function createPtyService({
       }
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
       entry.disposed = true;
+      if (!entry.chatSessionId && isTrackedCliToolType(entry.toolTypeHint)) {
+        revokeBuiltInBrowserActorCapability(entry.sessionId);
+      }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);
         entry.aiTitleTimer = null;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Cookie, CookiesSetDetails, Session } from "electron";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
+import { createBuiltInBrowserStateStore } from "./builtInBrowserStateStore";
 
 const tempDirs: string[] = [];
 
@@ -11,13 +12,13 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function userDataPath(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-profile-migration-"));
+function createTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
 }
 
-function cookie(input: Partial<Cookie> & Pick<Cookie, "name" | "value">): Cookie {
+function profileCookie(input: Partial<Cookie> & Pick<Cookie, "name" | "value">): Cookie {
   return {
     domain: ".example.com",
     expirationDate: Date.now() / 1_000 + 86_400,
@@ -34,7 +35,7 @@ function cookie(input: Partial<Cookie> & Pick<Cookie, "name" | "value">): Cookie
 function sessionWithCookies(initial: Cookie[]) {
   const cookies = [...initial];
   const set = vi.fn(async (details: CookiesSetDetails) => {
-    cookies.push(cookie({
+    cookies.push(profileCookie({
       name: details.name ?? "",
       value: details.value ?? "",
       domain: details.domain ?? new URL(details.url).hostname,
@@ -56,17 +57,17 @@ function sessionWithCookies(initial: Cookie[]) {
   };
 }
 
-describe("builtInBrowserProfileMigration", () => {
+describe("built-in browser profile migration", () => {
   it("migrates persistent legacy cookies once without overwriting the global profile", async () => {
-    const root = userDataPath();
+    const root = createTempDir("ade-browser-profile-migration-");
     const legacyName = "ade-browser-project-0123456789abcdef";
     fs.mkdirSync(path.join(root, "Partitions", legacyName), { recursive: true });
-    const global = sessionWithCookies([cookie({ name: "existing", value: "global" })]);
+    const global = sessionWithCookies([profileCookie({ name: "existing", value: "global" })]);
     const legacy = sessionWithCookies([
-      cookie({ name: "existing", value: "legacy" }),
-      cookie({ name: "migrate", value: "secret" }),
-      cookie({ name: "session-only", value: "temporary", expirationDate: undefined, session: true }),
-      cookie({ name: "expired", value: "old", expirationDate: Date.now() / 1_000 - 60 }),
+      profileCookie({ name: "existing", value: "legacy" }),
+      profileCookie({ name: "migrate", value: "secret" }),
+      profileCookie({ name: "session-only", value: "temporary", expirationDate: undefined, session: true }),
+      profileCookie({ name: "expired", value: "old", expirationDate: Date.now() / 1_000 - 60 }),
     ]);
     const sessions = new Map<string, Session>([
       ["persist:ade-browser", global.session],
@@ -105,7 +106,7 @@ describe("builtInBrowserProfileMigration", () => {
   });
 
   it("ignores unrelated partition directories", async () => {
-    const root = userDataPath();
+    const root = createTempDir("ade-browser-profile-migration-");
     fs.mkdirSync(path.join(root, "Partitions", "ade-browser"), { recursive: true });
     fs.mkdirSync(path.join(root, "Partitions", "other"), { recursive: true });
     const global = sessionWithCookies([]);
@@ -120,16 +121,16 @@ describe("builtInBrowserProfileMigration", () => {
   });
 
   it("keeps the global cookie when legacy hostOnly metadata differs", async () => {
-    const root = userDataPath();
+    const root = createTempDir("ade-browser-profile-migration-");
     const legacyName = "ade-browser-project-fedcba9876543210";
     fs.mkdirSync(path.join(root, "Partitions", legacyName), { recursive: true });
-    const global = sessionWithCookies([cookie({
+    const global = sessionWithCookies([profileCookie({
       name: "session",
       value: "current-global",
       domain: "example.com",
       hostOnly: true,
     })]);
-    const legacy = sessionWithCookies([cookie({
+    const legacy = sessionWithCookies([profileCookie({
       name: "session",
       value: "stale-legacy",
       domain: ".example.com",
@@ -149,5 +150,66 @@ describe("builtInBrowserProfileMigration", () => {
     });
     expect(global.set).not.toHaveBeenCalled();
     expect(global.cookies[0]?.value).toBe("current-global");
+  });
+});
+
+describe("built-in browser tab persistence", () => {
+  function statePath(): string {
+    return path.join(createTempDir("ade-browser-state-"), "browser-state.json");
+  }
+
+  it("persists bounded project tab URLs and restores the active index", async () => {
+    const filePath = statePath();
+    const store = createBuiltInBrowserStateStore({ filePath });
+    store.record("project-0123456789abcdef", {
+      tabs: [
+        { url: "https://github.com/login" },
+        { url: "https://console.aws.amazon.com/" },
+        { url: "file:///tmp/secret" },
+      ],
+      activeIndex: 1,
+    });
+    await store.flush();
+
+    const restored = createBuiltInBrowserStateStore({ filePath }).restore("project-0123456789abcdef");
+    expect(restored).toEqual({
+      tabs: [
+        { url: "https://github.com/login" },
+        { url: "https://console.aws.amazon.com/" },
+      ],
+      activeIndex: 1,
+    });
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+  });
+
+  it("persists an unscoped window collection without accepting agent ownership or session data", async () => {
+    const filePath = statePath();
+    const store = createBuiltInBrowserStateStore({ filePath });
+    store.record("window", {
+      tabs: [{ url: "about:blank" }, { url: "https://example.test" }],
+      activeIndex: 0,
+    });
+    await store.flush();
+
+    expect(store.restore("window")).toEqual({
+      tabs: [{ url: "about:blank" }, { url: "https://example.test/" }],
+      activeIndex: 0,
+    });
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
+      version: 1,
+      collections: {
+        window: expect.objectContaining({
+          tabs: [{ url: "about:blank" }, { url: "https://example.test/" }],
+          activeIndex: 0,
+        }),
+      },
+    });
+  });
+
+  it("ignores malformed persisted state", () => {
+    const filePath = statePath();
+    fs.writeFileSync(filePath, "{not-json", "utf8");
+
+    expect(createBuiltInBrowserStateStore({ filePath }).restore("personal")).toBeNull();
   });
 });
