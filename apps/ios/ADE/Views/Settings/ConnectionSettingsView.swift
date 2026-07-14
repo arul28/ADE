@@ -34,12 +34,9 @@ struct ConnectionSettingsView: View {
               onDisconnect: {
                 syncService.disconnect()
               },
-              onReconnect: { preferTailnet in
+              onReconnect: {
                 Task {
-                  await syncService.reconnectIfPossible(
-                    userInitiated: true,
-                    preferTailnet: preferTailnet
-                  )
+                  await syncService.reconnectIfPossible(userInitiated: true)
                 }
               }
             )
@@ -195,8 +192,9 @@ struct SettingsConnectionSnapshot: Equatable {
   var hostDisplayName: String?
   var pendingHostName: String?
   var routeLine: String?
+  var lastConnectDurationMs: Int?
+  var lastConnectedRouteKind: SyncConnectionRouteKind?
   var canReconnectToSavedHost: Bool
-  var savedReconnectPrefersTailnet: Bool
   var errorMessage: String?
   var showTailscaleOffHint = false
   var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
@@ -230,8 +228,9 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     hostDisplayName: nil,
     pendingHostName: nil,
     routeLine: nil,
+    lastConnectDurationMs: nil,
+    lastConnectedRouteKind: nil,
     canReconnectToSavedHost: false,
-    savedReconnectPrefersTailnet: false,
     errorMessage: nil
   )
   @Published private(set) var pairingSnapshot = SettingsPairingSnapshot()
@@ -269,7 +268,6 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
 
   private func refresh(from syncService: SyncService) {
     let activeProfile = syncService.activeHostProfile
-    let savedReconnectHost = syncService.savedReconnectHost
     let health = syncService.connectionHealth
     let hostDisplayName = Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName)
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
@@ -286,8 +284,9 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         hostDisplayName: hostDisplayName,
         pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
         routeLine: Self.routeLine(address: address, port: activeProfile?.port),
+        lastConnectDurationMs: syncService.lastConnectDurationMs,
+        lastConnectedRouteKind: syncService.lastConnectedRouteKind,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
-        savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
         showTailscaleOffHint: syncService.tailscaleOffHintVisible,
         hostCompatibilityMode: syncService.hostCompatibilityMode,

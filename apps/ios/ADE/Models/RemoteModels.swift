@@ -10,6 +10,11 @@ struct ConnectionDraft: Codable, Equatable {
   var lastBrainDeviceId: String?
 }
 
+struct HostConnectionEndpointState: Codable, Equatable {
+  var endpoint: String
+  var lastSucceededAt: TimeInterval?
+}
+
 struct HostConnectionProfile: Codable, Equatable {
   var hostIdentity: String?
   var hostName: String?
@@ -36,9 +41,11 @@ struct HostConnectionProfile: Codable, Equatable {
   /// Full `wss://…/connect/<machineKey>` cloud-relay URLs learned from a pairing
   /// QR or advertised live by the host in `hello_ok`/`brain_status`. Optional so
   /// profiles persisted before the relay feature decode cleanly. The relay is a
-  /// zero-config fallback: Tailscale/direct routes are preferred when currently
-  /// usable, and the relay is promoted when this phone has no Tailscale tunnel.
+  /// zero-config candidate ranked with the direct routes using persisted health.
   var savedRelayCandidates: [String]?
+  /// Health history for direct and relay routes. Optional so profiles written
+  /// before route stickiness was introduced continue to decode cleanly.
+  var endpointStates: [HostConnectionEndpointState]?
   var updatedAt: String
 
   init(
@@ -56,6 +63,7 @@ struct HostConnectionProfile: Codable, Equatable {
     discoveredLanAddresses: [String],
     tailscaleAddress: String?,
     savedRelayCandidates: [String]? = nil,
+    endpointStates: [HostConnectionEndpointState]? = nil,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
   ) {
     self.hostIdentity = hostIdentity
@@ -72,6 +80,7 @@ struct HostConnectionProfile: Codable, Equatable {
     self.discoveredLanAddresses = discoveredLanAddresses
     self.tailscaleAddress = tailscaleAddress
     self.savedRelayCandidates = savedRelayCandidates
+    self.endpointStates = endpointStates
     self.updatedAt = updatedAt
   }
 

@@ -481,10 +481,7 @@ struct DiscoverHostsSheet: View {
               Button {
                 dismiss()
                 Task {
-                  await syncService.reconnect(
-                    toSavedHost: savedHost,
-                    preferTailnet: savedHost.tailscaleAddress != nil
-                  )
+                  await syncService.reconnect(toSavedHost: savedHost)
                 }
               } label: {
                 DiscoveredHostRow(

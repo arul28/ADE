@@ -1362,6 +1362,21 @@ final class ADETests: XCTestCase {
     XCTAssertNil(health.lastFailureMessage)
   }
 
+  func testSettingsConnectedRouteChipFormatsDurationAndSlowFallback() {
+    XCTAssertEqual(
+      settingsConnectedRouteChipText(durationMs: 300, routeKind: .tailnet),
+      "Connected in 0.3s · tailnet"
+    )
+    XCTAssertEqual(
+      settingsConnectedRouteChipText(durationMs: 1_200, routeKind: .lan),
+      "Connected in 1.2s · lan"
+    )
+    XCTAssertEqual(
+      settingsConnectedRouteChipText(durationMs: 10_001, routeKind: .relay),
+      "relay"
+    )
+  }
+
   func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
     var state = SyncReconnectState()
 
@@ -1752,33 +1767,28 @@ final class ADETests: XCTestCase {
   }
 
   func testSyncConnectPortCandidatesFallbackBetweenAdeDefaultPorts() {
-    XCTAssertEqual(
-      syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"]),
-      SyncDirectHostPorts.portCandidates
-    )
+    let tailnetPorts = syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"])
+    XCTAssertEqual(tailnetPorts, SyncDirectHostPorts.portCandidates)
+    XCTAssertLessThanOrEqual(tailnetPorts.count, 9)
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8788, addresses: ["192.168.1.10"]),
       [8788] + SyncDirectHostPorts.portCandidates.filter { $0 != 8788 }
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["100.75.20.63"]),
-      [9000] + SyncDirectHostPorts.portCandidates
+      [9000]
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["192.168.1.10"]),
       [9000]
     )
-    XCTAssertTrue(
+    XCTAssertFalse(
       syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(8803)
     )
-    XCTAssertTrue(
-      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(SyncDirectHostPorts.fallbackMaxPort)
-    )
-    // The tailnet discovery probe must stay a bounded sweep: probing the full
-    // stale-port recovery range (213 ports, sequentially, 2 s timeout each)
-    // overruns the 45 s refresh interval whenever the host drops packets.
+    // Discovery and real connection attempts share the same bounded default
+    // set; neither can expand a dead tailnet host into 213 sequential dials.
     XCTAssertEqual(SyncTailnetDiscovery.probePortCandidates.first, SyncDirectHostPorts.defaultPort)
-    XCTAssertLessThanOrEqual(SyncTailnetDiscovery.probePortCandidates.count, 16)
+    XCTAssertEqual(SyncTailnetDiscovery.probePortCandidates, SyncDirectHostPorts.portCandidates)
   }
 
   func testSyncConnectionEndpointAttemptsTryPrimaryPortForEveryAddressFirst() {
@@ -1800,95 +1810,113 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncRelayAwareAttemptsPreferTailscaleWhenPhoneIsOnTailnet() {
+  func testSyncRankedAttemptsReachRelayBeforeTailnetFallbackPorts() {
     let relay = "wss://relay.ade-app.dev/connect/machinekey123"
     let addresses = ["100.75.20.63"]
-    let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
-
-    let attempts = syncRelayAwareEndpointAttempts(
-      directAddresses: addresses,
-      ports: ports,
+    let legacyLargeSweep = Array(8787...8999)
+    let directAttempts = syncConnectionEndpointAttempts(
+      addresses: addresses,
+      ports: legacyLargeSweep
+    )
+    let attempts = syncRankedEndpointAttempts(
+      directAttempts: directAttempts,
       relayRoutes: [relay],
-      relayPort: 8787,
-      phoneHasTailnetInterface: true
+      relayPort: 8787
     )
 
     XCTAssertEqual(attempts.first, SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787))
-    XCTAssertEqual(attempts.last, SyncConnectionEndpointAttempt(address: relay, port: 8787))
+    XCTAssertEqual(attempts.dropFirst().first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
+    XCTAssertEqual(attempts.firstIndex { $0.address == relay }, 1)
   }
 
-  func testSyncRelayAwareAttemptsPromoteRelayWhenPhoneIsNotOnTailnet() {
+  func testSyncRankedAttemptsPutLiveLanBeforeStaleLanTailnetAndRelay() {
     let relay = "wss://relay.ade-app.dev/connect/machinekey123"
-    let addresses = ["100.75.20.63"]
+    let addresses = ["192.168.1.100", "192.168.1.240", "100.75.20.63"]
     let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
-
-    let attempts = syncRelayAwareEndpointAttempts(
-      directAddresses: addresses,
-      ports: ports,
+    let directAttempts = syncConnectionEndpointAttempts(addresses: addresses, ports: ports)
+    let attempts = syncRankedEndpointAttempts(
+      directAttempts: directAttempts,
       relayRoutes: [relay],
       relayPort: 8787,
-      phoneHasTailnetInterface: false
-    )
-
-    XCTAssertEqual(attempts.first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
-    XCTAssertEqual(attempts.dropFirst().first, SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787))
-  }
-
-  func testSyncRelayAwareAttemptsGiveLiveLanOneShotBeforeRelayWithoutTailnet() {
-    let relay = "wss://relay.ade-app.dev/connect/machinekey123"
-    let addresses = ["192.168.1.240", "100.75.20.63"]
-    let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
-
-    let attempts = syncRelayAwareEndpointAttempts(
-      directAddresses: addresses,
-      ports: ports,
-      relayRoutes: [relay],
-      relayPort: 8787,
-      phoneHasTailnetInterface: false,
       liveDirectAddresses: ["192.168.1.240"]
     )
 
     XCTAssertEqual(Array(attempts.prefix(3)), [
       SyncConnectionEndpointAttempt(address: "192.168.1.240", port: 8787),
-      SyncConnectionEndpointAttempt(address: relay, port: 8787),
+      SyncConnectionEndpointAttempt(address: "192.168.1.100", port: 8787),
       SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787),
     ])
+    XCTAssertEqual(attempts.dropFirst(3).first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
   }
 
-  func testSyncReconnectProbeAddressesSkipStaleDirectRoutesBeforeRelayWithoutTailnet() {
+  func testSyncRankingKeepsLiveDirectAheadOfStickyRelayAndLastGoodWithinKind() {
     let relay = "wss://relay.ade-app.dev/connect/machinekey123"
-    let addresses = ["192.168.1.240", "100.75.20.63"]
+    let liveLan = "192.168.1.240"
+    let states = [
+      HostConnectionEndpointState(endpoint: liveLan, lastSucceededAt: 100),
+      HostConnectionEndpointState(endpoint: relay, lastSucceededAt: 200),
+    ]
+    let liveDirectAttempts = syncConnectionEndpointAttempts(
+      addresses: [liveLan],
+      ports: [8787, 8788]
+    )
+    let attempts = syncRankedEndpointAttempts(
+      directAttempts: liveDirectAttempts,
+      relayRoutes: [relay],
+      relayPort: 8787,
+      endpointStates: states,
+      lastSuccessfulAddress: relay,
+      liveDirectAddresses: [liveLan]
+    )
+    XCTAssertEqual(attempts.first, SyncConnectionEndpointAttempt(address: liveLan, port: 8787))
+    XCTAssertEqual(attempts.dropFirst().first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
 
-    XCTAssertEqual(
-      syncReconnectProbeAddresses(
-        directAddresses: addresses,
-        relayRoutes: [relay],
-        phoneHasTailnetInterface: false
+    let relayOnly = syncRankedEndpointAttempts(
+      directAttempts: [],
+      relayRoutes: [relay],
+      relayPort: 8787,
+      endpointStates: states,
+      lastSuccessfulAddress: relay
+    )
+    XCTAssertEqual(relayOnly.first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
+
+    let olderLan = "192.168.1.8"
+    let lastGoodLan = "192.168.1.9"
+    let lanAttempts = syncRankedEndpointAttempts(
+      directAttempts: syncConnectionEndpointAttempts(
+        addresses: [olderLan, lastGoodLan],
+        ports: [8787]
       ),
-      [],
-      "Relay should not wait behind TCP probes for stale saved LAN/Tailscale routes."
+      relayRoutes: [],
+      relayPort: 8787,
+      endpointStates: [
+        HostConnectionEndpointState(endpoint: olderLan, lastSucceededAt: 100),
+        HostConnectionEndpointState(endpoint: lastGoodLan, lastSucceededAt: 200),
+      ]
+    )
+    XCTAssertEqual(lanAttempts.first, SyncConnectionEndpointAttempt(address: lastGoodLan, port: 8787))
+    XCTAssertEqual(lanAttempts.dropFirst().first, SyncConnectionEndpointAttempt(address: olderLan, port: 8787))
+  }
+
+  func testSyncEndpointSuccessStateUpdatesOnlyTheWinningRoute() {
+    let states = [
+      HostConnectionEndpointState(endpoint: "192.168.1.8", lastSucceededAt: 100),
+      HostConnectionEndpointState(endpoint: "100.75.20.63", lastSucceededAt: 200),
+    ]
+    let updated = syncEndpointStatesMarkingSucceeded(
+      states,
+      endpoint: "wss://relay.ade-app.dev/connect/machinekey123",
+      at: 300,
+      retaining: [
+        "192.168.1.8",
+        "100.75.20.63",
+        "wss://relay.ade-app.dev/connect/machinekey123",
+      ]
     )
 
-    XCTAssertEqual(
-      syncReconnectProbeAddresses(
-        directAddresses: addresses,
-        relayRoutes: [relay],
-        phoneHasTailnetInterface: false,
-        liveDirectAddresses: ["192.168.1.240"]
-      ),
-      ["192.168.1.240"],
-      "Only a live same-LAN direct route gets probed before relay."
-    )
-
-    XCTAssertEqual(
-      syncReconnectProbeAddresses(
-        directAddresses: addresses,
-        relayRoutes: [relay],
-        phoneHasTailnetInterface: true
-      ),
-      addresses,
-      "When the phone is on Tailscale, direct route probing remains preferred."
-    )
+    XCTAssertEqual(updated.first { $0.endpoint == "192.168.1.8" }?.lastSucceededAt, 100)
+    XCTAssertEqual(updated.first { $0.endpoint == "100.75.20.63" }?.lastSucceededAt, 200)
+    XCTAssertEqual(updated.first { $0.endpoint.hasPrefix("wss://") }?.lastSucceededAt, 300)
   }
 
   func testSyncProjectSwitchRelayCandidatesMergeOnlyForSameHost() {
@@ -2031,7 +2059,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncAutomaticReconnectPrefersSavedTailnetDuringRoam() {
+  func testSyncAutomaticReconnectKeepsLastGoodLanAheadOfTailnet() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
       hostIdentity: "host-1",
@@ -2059,16 +2087,14 @@ final class ADETests: XCTestCase {
       ),
     ])
 
-    service.preferTailnetReconnectForTesting()
-
     XCTAssertEqual(
       service.automaticReconnectAddressesForTesting(profile),
-      ["100.75.20.63", "192.168.1.8"]
+      ["192.168.1.8", "100.75.20.63"]
     )
   }
 
   @MainActor
-  func testSyncAutomaticReconnectPrefersTailnetOnCellularWithoutManualRoamFlag() {
+  func testSyncAutomaticReconnectKeepsLastGoodRouteOnCellular() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
       hostIdentity: "host-1",
@@ -2103,10 +2129,14 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(
       service.automaticReconnectAddressesForTesting(profile),
-      ["100.75.20.63", "192.168.1.8"]
+      ["192.168.1.8", "100.75.20.63"]
     )
-    XCTAssertTrue(
-      syncConnectPortCandidates(primaryPort: profile.port, addresses: service.automaticReconnectAddressesForTesting(profile)).contains(8800)
+    XCTAssertLessThanOrEqual(
+      syncConnectPortCandidates(
+        primaryPort: profile.port,
+        addresses: service.automaticReconnectAddressesForTesting(profile)
+      ).count,
+      9
     )
   }
 
@@ -2203,7 +2233,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncUserReconnectCanPreferSavedTailnetOverStaleLanDiscovery() {
+  func testSyncUserReconnectKeepsLastGoodLanAheadOfSavedTailnet() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
       hostIdentity: "host-1",
@@ -2231,11 +2261,9 @@ final class ADETests: XCTestCase {
       ),
     ])
 
-    service.preferTailnetReconnectForTesting()
-
     XCTAssertEqual(
       service.prioritizedReconnectAddressesForTesting(profile),
-      ["100.75.20.63", "192.168.1.8"]
+      ["192.168.1.8", "100.75.20.63"]
     )
   }
 
@@ -2330,7 +2358,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncAutomaticReconnectDoesNotTreatGenericTailnetShortcutAsEverySavedHost() {
+  func testSyncAutomaticReconnectIgnoresGenericShortcutButKeepsLastGoodRoute() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
       hostIdentity: "host-1",
@@ -2365,12 +2393,12 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(
       service.automaticReconnectAddressesForTesting(profile),
-      ["100.75.20.63"]
+      ["192.168.1.8", "100.75.20.63"]
     )
   }
 
   @MainActor
-  func testSyncAutomaticReconnectWaitsForLiveLanDiscoveryWithoutTailnet() {
+  func testSyncAutomaticReconnectRetriesLastGoodLanWithoutLiveDiscovery() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let profile = HostConnectionProfile(
       hostIdentity: "host-1",
@@ -2386,7 +2414,7 @@ final class ADETests: XCTestCase {
       tailscaleAddress: nil
     )
 
-    XCTAssertEqual(service.automaticReconnectAddressesForTesting(profile), [])
+    XCTAssertEqual(service.automaticReconnectAddressesForTesting(profile), ["192.168.1.8"])
   }
 
   func testSyncForegroundReconnectStartRequiresAutomaticRoute() {
@@ -2597,7 +2625,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       SyncUserFacingError.message(for: ambiguousTailnetAuthError),
-      "Reached a different ADE machine on this route. ADE kept the saved pairing and will keep trying other routes."
+      "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     )
 
     let invalidHelloError = NSError(
@@ -4076,6 +4104,43 @@ final class ADETests: XCTestCase {
     ])
 
     XCTAssertFalse(service.projects.contains { $0.id == "remote-only" })
+  }
+
+  @MainActor
+  func testSyncServiceSocketOpenWithoutHelloDoesNotConnect() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.simulateSocketOpenWithoutHelloForTesting(host: "192.168.1.8")
+
+    XCTAssertEqual(service.connectionState, .connecting)
+    XCTAssertNotEqual(service.connectionState, .connected)
+  }
+
+  @MainActor
+  func testSyncServiceHelloStampsWinningRouteSuccessState() throws {
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
+    }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [:],
+    ])
+
+    let profile = try XCTUnwrap(service.loadProfile())
+    XCTAssertEqual(profile.lastSuccessfulAddress, "127.0.0.1")
+    XCTAssertNotNil(
+      profile.endpointStates?.first { $0.endpoint == "127.0.0.1" }?.lastSucceededAt
+    )
   }
 
   @MainActor
