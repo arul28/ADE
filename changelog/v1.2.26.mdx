@@ -1,0 +1,23 @@
+---
+title: "v1.2.26"
+description: "Release notes for ADE v1.2.26 - July 14, 2026"
+---
+
+v1.2.26 makes ADE's browser, Files workspace, and project opening flows more durable: browser sign-ins persist across projects, more text formats are directly editable, and linked worktrees are guided back into lanes.
+
+---
+
+## Desktop and CLI
+
+- **One durable browser profile.** Browser sign-ins, cookies, permissions, and site data now persist across ADE projects while each project, window, and personal chat keeps its own tab collection. Restored tabs, profile diagnostics, origin approvals, and authenticated agent access make browser work both smoother and more explicit.
+- **More capable Files editing.** Markdown Source and CSV/TSV Source are now editable with the same save flow as code. Large directories load one page at a time, tree updates touch less state, and bounded caches keep long-running sessions from growing indefinitely.
+- **Worktrees open as lanes.** Opening a linked worktree now offers to attach or jump to its lane in the owning project, including from the native Open Repository dialog. Existing worktree-as-project entries can be consolidated without losing their work.
+- **Consistent chat controls.** Model pickers now share project-scoped provider authentication state, compact permission and send menus fit smaller layouts, and reasoning changes animate in the selected direction.
+- **Privacy-bounded analytics controls.** ADE now exposes consent and opt-out controls for capped, allowlisted product analytics across desktop, CLI, iOS, and web surfaces.
+- **More accurate agent state.** Codex, OpenCode, and Cursor subagents now follow their provider-native lifecycles instead of being stopped when the parent turn ends.
+
+## iOS
+
+- Fixed a SwiftUI focus transition that could freeze the Work composer while sending.
+- Replaced the wide usage-chart tab row with a compact selector and tightened the activity layout for smaller screens.
+- Kept weekly and five-hour usage meters correctly identified even when providers return quota windows in a different order.

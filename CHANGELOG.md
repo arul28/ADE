@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.26] - 2026-07-14
+
+### Added
+
+- Added one durable built-in browser profile per ADE installation, with persistent sign-ins and site data, independently restored tab collections, profile diagnostics, origin approvals, and authenticated agent access.
+- Added consent and opt-out controls for capped, allowlisted product analytics across desktop, CLI, iOS, and web surfaces.
+
+### Changed
+
+- Markdown Source and CSV/TSV Source are now editable with the same save flow as code, while large directories page incrementally and bounded Files caches keep long-running sessions under control.
+- Opening a linked worktree now offers to attach or jump to its lane in the owning project, including through the native Open Repository dialog, and existing worktree-as-project entries can be consolidated.
+- Model pickers now share project-scoped provider authentication state; compact permission/send controls and directional reasoning transitions improve smaller chat layouts.
+- The iOS usage activity carousel now uses a compact chart selector and tighter mobile spacing.
+
+### Fixed
+
+- Codex, OpenCode, and Cursor subagents now follow provider-native child lifecycles instead of being synthesized as stopped when a parent turn ends.
+- Weekly and five-hour usage meters remain correctly classified when providers reorder quota windows.
+- Deferred iOS composer focus transitions prevent a SwiftUI update from freezing the main thread during send.
+
 ## [1.2.25] - 2026-07-13
 
 ### Changed
@@ -753,7 +773,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.25...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.26...HEAD
+[1.2.26]: https://github.com/arul28/ADE/compare/v1.2.25...v1.2.26
 [1.2.25]: https://github.com/arul28/ADE/compare/v1.2.24...v1.2.25
 [1.2.24]: https://github.com/arul28/ADE/compare/v1.2.23...v1.2.24
 [1.2.23]: https://github.com/arul28/ADE/compare/v1.2.22...v1.2.23
