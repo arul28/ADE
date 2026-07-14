@@ -1870,6 +1870,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser authorize --tab <id>    Request human access to an authenticated origin
     $ ade --socket browser diagnostics --text      Show non-secret global profile health
     $ ade --socket browser permissions --text      List remembered site permissions
     $ ade --socket browser permissions clear --origin https://example.com
@@ -9037,6 +9038,20 @@ function buildBrowserPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "browser profile diagnostics",
       steps: [actionStep("result", "built_in_browser", "getProfileDiagnostics", {})],
+    };
+  }
+  if (sub === "authorize" || sub === "approve-origin" || sub === "request-access") {
+    return {
+      kind: "execute",
+      label: "browser origin access",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "requestOriginAccess",
+          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+        ),
+      ],
     };
   }
   if (sub === "permissions" || sub === "permission") {

@@ -590,9 +590,11 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -1626,6 +1628,9 @@ declare global {
       };
       builtInBrowser: {
         getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
+        requestOriginAccess: (
+          args?: BuiltInBrowserRequestOriginAccessArgs,
+        ) => Promise<BuiltInBrowserOriginAccessResult>;
         getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
         listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
         clearPermissions: (

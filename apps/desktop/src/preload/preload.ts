@@ -612,9 +612,11 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -6097,6 +6099,13 @@ contextBridge.exposeInMainWorld("ade", {
       args: BuiltInBrowserProjectScopeArgs = {},
     ): Promise<BuiltInBrowserStatus> =>
       builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+    requestOriginAccess: async (
+      args: BuiltInBrowserRequestOriginAccessArgs = {},
+    ): Promise<BuiltInBrowserOriginAccessResult> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserRequestOriginAccess, args),
+      ),
     getProfileDiagnostics: async (): Promise<BuiltInBrowserProfileDiagnostics> =>
       ipcRenderer.invoke(IPC.builtInBrowserGetProfileDiagnostics),
     listPermissions: async (): Promise<BuiltInBrowserPermissionsResult> =>

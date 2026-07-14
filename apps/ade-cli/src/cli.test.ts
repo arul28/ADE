@@ -6817,6 +6817,17 @@ describe("ADE CLI", () => {
       arguments: { domain: "built_in_browser", action: "getProfileDiagnostics", args: {} },
     });
 
+    const authorize = buildCliPlan(["browser", "authorize", "--tab", "tab-1"]);
+    expect(authorize.kind).toBe("execute");
+    if (authorize.kind !== "execute") return;
+    expect(authorize.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "requestOriginAccess",
+        args: { tabId: "tab-1" },
+      },
+    });
+
     const permissions = buildCliPlan(["browser", "permissions"]);
     expect(permissions.kind).toBe("execute");
     if (permissions.kind !== "execute") return;

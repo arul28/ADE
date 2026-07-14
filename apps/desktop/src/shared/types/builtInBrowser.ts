@@ -147,6 +147,15 @@ export type BuiltInBrowserTabTargetArgs = BuiltInBrowserProjectScopeArgs & {
 
 export type BuiltInBrowserStartSessionArgs = BuiltInBrowserClaimArgs;
 
+export type BuiltInBrowserRequestOriginAccessArgs = BuiltInBrowserTabTargetArgs;
+
+export type BuiltInBrowserOriginAccessResult = {
+  origin: string | null;
+  required: boolean;
+  granted: boolean;
+  status: BuiltInBrowserStatus;
+};
+
 export type BuiltInBrowserEndSessionArgs = BuiltInBrowserClaimArgs & {
   sessionId: string;
 };

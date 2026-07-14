@@ -3722,6 +3722,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dismissedAt: null,
         freshProject: false,
       }),
+      requestOriginAccess: resolvedArg({
+        origin: null,
+        required: false,
+        granted: true,
+        status: {} as any,
+      }),
       detectDefaults: resolved({} as any),
       detectExistingLanes: resolved([]),
       setDismissed: resolvedArg({

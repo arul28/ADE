@@ -7309,6 +7309,14 @@ export function registerIpc({
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
   });
 
+  ipcMain.handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserRequestOriginAccess, { windowMs: 10_000, max: 10 });
+    return ensureBuiltInBrowser().requestOriginAccess(
+      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserRequestOriginAccess),
+      win,
+    );
+  });
+
   ipcMain.handle(IPC.builtInBrowserGetProfileDiagnostics, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetProfileDiagnostics, { windowMs: 10_000, max: 20 });
     return ensureBuiltInBrowser().getProfileDiagnostics();

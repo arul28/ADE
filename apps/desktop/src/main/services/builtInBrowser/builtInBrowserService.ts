@@ -31,9 +31,11 @@ import type {
   BuiltInBrowserObservationArgs,
   BuiltInBrowserObservationElementMap,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
+  BuiltInBrowserRequestOriginAccessArgs,
   BuiltInBrowserScrollArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
@@ -58,6 +60,8 @@ import {
   BUILT_IN_BROWSER_PARTITION,
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
+import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
 import {
   createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
@@ -178,6 +182,11 @@ type BrowserTabState = {
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
   ownerLeaseExpiresAt: string | null;
+  agentNavigationGuard: {
+    laneId: string | null;
+    chatSessionId: string | null;
+    expiresAtMs: number;
+  } | null;
 };
 
 type BrowserPendingNetworkRequest = {
@@ -298,31 +307,56 @@ export function createBuiltInBrowserService(args: {
   let activeWindowId: number | null = null;
   const fallbackServices = new Map<"window" | "personal", WindowBrowserService>();
   let lastStorageFlushAt: string | null = null;
+  const userDataPath = app.isReady?.() ? app.getPath("userData") : null;
   const stateFilePath = args.stateFilePath === null
     ? null
-    : args.stateFilePath ?? (app.isReady?.() ? path.join(app.getPath("userData"), "ade-browser-state.json") : null);
+    : args.stateFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-state.json") : null);
   const stateStore = stateFilePath
     ? createBuiltInBrowserStateStore({ filePath: stateFilePath, getLogger: args.getLogger })
     : null;
   const permissionFilePath = args.permissionFilePath === null
     ? null
-    : args.permissionFilePath ?? (app.isReady?.() ? path.join(app.getPath("userData"), "ade-browser-permissions.json") : null);
+    : args.permissionFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-permissions.json") : null);
+  const resolveParentWindow = (): BrowserWindow | null => {
+    if (activeWindowId != null) {
+      const activeWindow = windowClosedListeners.get(activeWindowId)?.win ?? null;
+      if (activeWindow && !activeWindow.isDestroyed()) return activeWindow;
+    }
+    for (const { win } of windowClosedListeners.values()) {
+      if (!win.isDestroyed()) return win;
+    }
+    return null;
+  };
   const permissionController = createBuiltInBrowserPermissionController({
     filePath: permissionFilePath,
     isManagedWebContents: (webContents) => Boolean(webContents && MANAGED_BROWSER_WEB_CONTENTS.has(webContents)),
-    resolveParentWindow: () => {
-      if (activeWindowId != null) {
-        const activeWindow = windowClosedListeners.get(activeWindowId)?.win ?? null;
-        if (activeWindow && !activeWindow.isDestroyed()) return activeWindow;
-      }
-      for (const { win } of windowClosedListeners.values()) {
-        if (!win.isDestroyed()) return win;
-      }
-      return null;
-    },
+    resolveParentWindow,
+    getLogger: args.getLogger,
+  });
+  const agentAccessController = createBuiltInBrowserAgentAccessController({
+    getSession: () => session.fromPartition(BROWSER_PARTITION),
+    resolveParentWindow,
     getLogger: args.getLogger,
   });
   const networkRouter = createBrowserNetworkRouter();
+  const profileMigrationPromise = userDataPath
+    ? migrateLegacyBuiltInBrowserProfiles({
+        userDataPath,
+        getSession: (partition) => session.fromPartition(partition),
+        getLogger: args.getLogger,
+      }).catch((error) => {
+        let migrationLogger = null;
+        try {
+          migrationLogger = args.getLogger?.() ?? null;
+        } catch {
+          // Logging must never prevent the browser profile from opening.
+        }
+        migrationLogger?.warn("built_in_browser.profile_migration_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      })
+    : Promise.resolve(null);
 
   const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
     createBuiltInBrowserWindowService({
@@ -332,7 +366,9 @@ export function createBuiltInBrowserService(args: {
       restoredState: stateStore?.restore(collection.key) ?? null,
       onStateChange: (state) => stateStore?.record(collection.key, state),
       permissionController,
+      agentAccessController,
       networkRouter,
+      waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
     });
 
   const serviceKey = (windowId: number, collection: BrowserCollection): string =>
@@ -447,7 +483,9 @@ export function createBuiltInBrowserService(args: {
         restoredState: stateStore?.restore("window") ?? null,
         onStateChange: (state) => stateStore?.record("window", state),
         permissionController,
+        agentAccessController,
         networkRouter,
+        waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       });
       fallbackServices.set("window", fallbackService);
     }
@@ -495,7 +533,9 @@ export function createBuiltInBrowserService(args: {
           restoredState: stateStore?.restore("personal") ?? null,
           onStateChange: (state) => stateStore?.record("personal", state),
           permissionController,
+          agentAccessController,
           networkRouter,
+          waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         });
         fallbackServices.set("personal", fallbackService);
       }
@@ -520,6 +560,7 @@ export function createBuiltInBrowserService(args: {
 
   const flushStorage = async (): Promise<void> => {
     const startedAt = Date.now();
+    await profileMigrationPromise;
     const browserSession = session.fromPartition(BROWSER_PARTITION);
     const results = await Promise.allSettled([
       stateStore?.flush() ?? Promise.resolve(),
@@ -554,6 +595,7 @@ export function createBuiltInBrowserService(args: {
       return { removed, permissions: permissionController.list() };
     },
     async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
+      await profileMigrationPromise;
       const browserSession = session.fromPartition(BROWSER_PARTITION);
       const cookies = await browserSession.cookies.get({});
       let cacheSizeBytes: number | null = null;
@@ -594,6 +636,12 @@ export function createBuiltInBrowserService(args: {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
       return serviceForInput(input, win).getStatusForInput(input ?? {});
+    },
+    requestOriginAccess(
+      input: BuiltInBrowserRequestOriginAccessArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserOriginAccessResult> {
+      return serviceForInput(input, sourceWindow).requestOriginAccess(input);
     },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
@@ -743,7 +791,9 @@ function createBuiltInBrowserWindowService(args: {
   restoredState?: BuiltInBrowserRestoredCollection | null;
   onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
   permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
+  agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
+  waitForProfileMigration: () => Promise<void>;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
@@ -1041,25 +1091,54 @@ function createBuiltInBrowserWindowService(args: {
     );
   };
 
-  const prepareAgentActionTab = <T extends BuiltInBrowserAgentActionArgs>(
+  const armAgentNavigationGuard = (
+    tab: BrowserTabState,
+    input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId">,
+  ): void => {
+    const laneId = stringOrNull(input.laneId);
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    if (!laneId && !chatSessionId) return;
+    tab.agentNavigationGuard = {
+      laneId,
+      chatSessionId,
+      expiresAtMs: Date.now() + 15_000,
+    };
+  };
+
+  const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
-  ): void => {
+  ): Promise<void> => {
+    await args.waitForProfileMigration();
+    assertTabLeaseAvailable(tab, input);
+    await args.agentAccessController.requireUrlAccess(
+      tab.webContents.getURL(),
+      input,
+      "The agent requested an interactive browser action.",
+    );
+    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
     claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
   };
 
   const prepareAgentReadTab = (
     tab: BrowserTabState,
     input: BuiltInBrowserTabTargetArgs,
   ): void => {
+    assertTabLeaseAvailable(tab, input);
+    args.agentAccessController.assertUrlAccessSync(tab.webContents.getURL(), input);
     claimTabOwnerFromInput(tab, input);
   };
 
-  const claimTargetOwnerFromInput = (input: BuiltInBrowserClaimArgs = {}): boolean => {
-    const tabId = stringOrNull(input.tabId);
-    const tab = tabId ? tabById(tabId) : activeTab();
-    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
-    return claimTabOwnerFromInput(tab, input);
+  const prepareAgentReadTabAsync = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserTabTargetArgs,
+    reason: string,
+  ): Promise<void> => {
+    await args.waitForProfileMigration();
+    assertTabLeaseAvailable(tab, input);
+    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason);
+    claimTabOwnerFromInput(tab, input);
   };
 
   const copyTabOwner = (from: BrowserTabState | null, to: BrowserTabState): void => {
@@ -1068,6 +1147,7 @@ function createBuiltInBrowserWindowService(args: {
     to.ownerChatSessionId = from.ownerChatSessionId;
     to.ownerClaimedAt = from.ownerClaimedAt;
     to.ownerLeaseExpiresAt = from.ownerLeaseExpiresAt;
+    to.agentNavigationGuard = from.agentNavigationGuard ? { ...from.agentNavigationGuard } : null;
   };
 
   const tabMatchesOwnerInput = (
@@ -1242,6 +1322,7 @@ function createBuiltInBrowserWindowService(args: {
     const sessionEntry = sessionFromInput(input);
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
     try {
+      await prepareAgentActionTab(tab, input);
       const result = await fn();
       const trace = finishActionTrace(tab, traceDraft, "ok", {
         sessionId: sessionEntry?.id ?? null,
@@ -1342,6 +1423,17 @@ function createBuiltInBrowserWindowService(args: {
       const opener = tabForWebContents(wc) ?? activeTab();
       const popupUrl = popupUrlForOpen(details.url);
       if (!popupUrl) return { action: "deny" };
+      const guard = opener?.agentNavigationGuard;
+      if (
+        guard
+        && guard.expiresAtMs > Date.now()
+        && args.agentAccessController.isKnownSensitiveUrlSync(popupUrl, guard)
+      ) {
+        emitError(new Error(
+          `Blocked an agent-triggered popup to ${popupUrl}. Navigate to that origin explicitly so ADE can request human approval.`,
+        ));
+        return { action: "deny" };
+      }
       return {
         action: "allow",
         createWindow: () => {
@@ -1353,9 +1445,34 @@ function createBuiltInBrowserWindowService(args: {
       };
     });
     wc.on("will-navigate", (event, url) => {
-      if (isAllowedNavigationUrl(url)) return;
+      if (!isAllowedNavigationUrl(url)) {
+        event.preventDefault();
+        emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
+        return;
+      }
+      const tab = tabForWebContents(wc);
+      const guard = tab?.agentNavigationGuard;
+      if (
+        !guard
+        || guard.expiresAtMs <= Date.now()
+        || !args.agentAccessController.isUrlAccessRequiredSync(url, guard)
+      ) {
+        return;
+      }
       event.preventDefault();
-      emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
+      void args.agentAccessController.authorizeUrl(
+        url,
+        guard,
+        "An agent-triggered page action is navigating to another browser origin.",
+      ).then(async (result) => {
+        if (!result.granted || wc.isDestroyed()) {
+          if (!result.granted) {
+            emitError(new Error(`Blocked agent-triggered navigation to ${result.origin ?? url}.`));
+          }
+          return;
+        }
+        await wc.loadURL(url);
+      }).catch(emitError);
     });
     wc.on("did-start-loading", () => {
       noteNetworkActivity(tabForWebContents(wc));
@@ -1453,6 +1570,7 @@ function createBuiltInBrowserWindowService(args: {
       ownerChatSessionId: null,
       ownerClaimedAt: null,
       ownerLeaseExpiresAt: null,
+      agentNavigationGuard: null,
     };
   };
 
@@ -1708,15 +1826,38 @@ function createBuiltInBrowserWindowService(args: {
     return getStatus();
   }
 
+  async function requestOriginAccess(
+    input: BuiltInBrowserRequestOriginAccessArgs = {},
+  ): Promise<BuiltInBrowserOriginAccessResult> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before requesting origin access.");
+    assertTabLeaseAvailable(tab, input);
+    const result = await args.agentAccessController.authorizeUrl(
+      tab.webContents.getURL(),
+      input,
+      "The agent requested access to inspect or control this browser tab.",
+    );
+    if (!result.granted) {
+      throw new Error(`Human approval was denied for ADE agent access to ${result.origin ?? "this browser origin"}.`);
+    }
+    claimTabOwnerFromInput(tab, input);
+    emitStatus();
+    return { ...result, status: getStatus() };
+  }
+
   function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
-    claimTargetOwnerFromInput(input);
+    const tabId = stringOrNull(input.tabId);
+    const tab = tabId ? tabById(tabId) : activeTab();
+    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab) prepareAgentReadTab(tab, input);
     emitStatus();
     return getStatus();
   }
 
   function startSession(input: BuiltInBrowserStartSessionArgs = {}): BuiltInBrowserSessionResult {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting a browser session.");
-    claimTabOwnerFromInput(tab, input);
+    prepareAgentReadTab(tab, input);
     const now = new Date().toISOString();
     const sessionEntry: BrowserSessionState = {
       id: `bs-${Date.now()}-${randomUUID()}`,
@@ -1914,6 +2055,8 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
@@ -1934,6 +2077,11 @@ function createBuiltInBrowserWindowService(args: {
     }
     const leaseTarget = createNewTab ? null : existingTab ?? activeTab();
     if (leaseTarget) assertTabLeaseAvailable(leaseTarget, input);
+    await args.agentAccessController.requireUrlAccess(
+      targetUrl,
+      input,
+      "The agent requested navigation to this browser origin.",
+    );
     const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
     const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
     const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
@@ -1955,6 +2103,7 @@ function createBuiltInBrowserWindowService(args: {
       tab = ensureActiveTab();
     }
     claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
@@ -1966,11 +2115,18 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
+    await args.waitForProfileMigration();
+    await tabRestorationPromise;
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    await args.agentAccessController.requireUrlAccess(
+      normalizedUrl,
+      input,
+      "The agent requested a new tab at this browser origin.",
+    );
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -1978,6 +2134,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const tab = createTabState();
     claimTabOwnerFromInput(tab, input);
+    armAgentNavigationGuard(tab, input);
     tabs = [...tabs, tab];
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
@@ -1996,13 +2153,12 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
-    assertTabLeaseAvailable(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to switch to this browser tab.");
     const wasDifferentTab = tab.id !== activeTabId;
     if (wasDifferentTab) {
       await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
     }
     activeTabId = tab.id;
-    claimTabOwnerFromInput(tab, input);
     if (wasDifferentTab) {
       clearSelectionInternal();
     }
@@ -2019,7 +2175,7 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const index = tabs.findIndex((entry) => entry.id === tabId);
     if (index < 0) throw new Error(`Browser tab not found: ${tabId}`);
-    assertTabLeaseAvailable(tabs[index]!, input);
+    await prepareAgentReadTabAsync(tabs[index]!, input, "The agent requested access to close this browser tab.");
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
@@ -2053,7 +2209,9 @@ function createBuiltInBrowserWindowService(args: {
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before reloading.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to reload this browser tab.");
+    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
+    armAgentNavigationGuard(tab, input);
     tab.webContents.reload();
     emitStatus();
     return getStatus();
@@ -2061,7 +2219,9 @@ function createBuiltInBrowserWindowService(args: {
 
   async function goBack(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating back.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested backward navigation in this browser tab.");
+    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
+    armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
@@ -2070,7 +2230,9 @@ function createBuiltInBrowserWindowService(args: {
 
   async function goForward(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before navigating forward.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested forward navigation in this browser tab.");
+    await args.agentAccessController.refreshAuthenticatedDomains().catch(() => {});
+    armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
@@ -2079,7 +2241,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before stopping a load.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop this browser tab.");
     const wc = tab.webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
@@ -2088,7 +2250,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function startInspect(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before starting inspect.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested DOM inspection for this browser tab.");
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
@@ -2124,7 +2286,7 @@ function createBuiltInBrowserWindowService(args: {
       : null;
     const wc = inspectWc ?? currentWebContents();
     const tab = wc ? tabForWebContents(wc) : null;
-    if (tab) prepareAgentReadTab(tab, input);
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop DOM inspection.");
     inspecting = false;
     if (wc?.debugger.isAttached()) {
       try {
@@ -2148,7 +2310,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested a screenshot of this browser tab.");
     const wc = tab.webContents;
     try {
       return await capturePageScreenshot(wc);
@@ -2163,7 +2325,7 @@ function createBuiltInBrowserWindowService(args: {
   async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
     const sessionEntry = sessionFromInput(input);
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before observing.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested page content from this browser tab.");
     const screenshot = await captureScreenshot({ tabId: tab.id });
     const dom = input.includeDom === false
       ? null
@@ -2205,7 +2367,6 @@ function createBuiltInBrowserWindowService(args: {
   async function click(input: BuiltInBrowserClickArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clicking.");
     return runTracedAgentAction(tab, "click", input, async () => {
-      prepareAgentActionTab(tab, input);
       const wc = tab.webContents;
       const { x, y } = await resolveClickTarget(tab, input);
       const button = normalizeMouseButton(input.button);
@@ -2234,7 +2395,6 @@ function createBuiltInBrowserWindowService(args: {
   async function typeText(input: BuiltInBrowserTypeTextArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before typing.");
     return runTracedAgentAction(tab, "typeText", input, async () => {
-      prepareAgentActionTab(tab, input);
       const text = stringOrNull(input.text);
       if (!text) throw new Error("Text is required.");
       await withTemporaryDebugger(tab.webContents, async () => {
@@ -2248,7 +2408,6 @@ function createBuiltInBrowserWindowService(args: {
   async function dispatchKey(input: BuiltInBrowserDispatchKeyArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before dispatching a key.");
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
-      prepareAgentActionTab(tab, input);
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
       if (hasElementTarget(input)) {
@@ -2275,7 +2434,6 @@ function createBuiltInBrowserWindowService(args: {
   async function scroll(input: BuiltInBrowserScrollArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before scrolling.");
     return runTracedAgentAction(tab, "scroll", input, async () => {
-      prepareAgentActionTab(tab, input);
       const deltaX = finiteNumber(input.deltaX) ?? 0;
       const deltaY = finiteNumber(input.deltaY) ?? 0;
       if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
@@ -2297,7 +2455,6 @@ function createBuiltInBrowserWindowService(args: {
   async function fill(input: BuiltInBrowserFillArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before filling.");
     return runTracedAgentAction(tab, "fill", input, async () => {
-      prepareAgentActionTab(tab, input);
       const text = typeof input.value === "string"
         ? input.value
         : (typeof input.text === "string" ? input.text : null);
@@ -2314,7 +2471,6 @@ function createBuiltInBrowserWindowService(args: {
   async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clearing.");
     return runTracedAgentAction(tab, "clear", input, async () => {
-      prepareAgentActionTab(tab, input);
       await focusElementTarget(tab, input, { select: true, clear: true });
       emitStatus();
       return actionResult(tab, input);
@@ -2324,7 +2480,6 @@ function createBuiltInBrowserWindowService(args: {
   async function wait(input: BuiltInBrowserWaitArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before waiting.");
     return runTracedAgentAction(tab, "wait", input, async () => {
-      prepareAgentActionTab(tab, input);
       await waitForBrowserCondition(tab, input);
       emitStatus();
       return actionResult(tab, input);
@@ -2333,7 +2488,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before selecting a point.");
-    prepareAgentReadTab(tab, input);
+    await prepareAgentReadTabAsync(tab, input, "The agent requested element inspection in this browser tab.");
     const wc = tab.webContents;
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
@@ -2377,7 +2532,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function selectCurrent(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserSelectResult> {
     const tab = activeTab();
-    if (tab) prepareAgentReadTab(tab, input);
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested selected page content.");
     if (lastSelectedItem) {
       emit({ type: "selection", item: lastSelectedItem });
     }
@@ -2386,7 +2541,7 @@ function createBuiltInBrowserWindowService(args: {
 
   async function clearSelection(input: BuiltInBrowserTabTargetArgs = {}): Promise<{ ok: true }> {
     const tab = activeTab();
-    if (tab) prepareAgentReadTab(tab, input);
+    if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to clear browser selection.");
     if (lastSelectedItem) {
       clearSelectionInternal();
     } else {
@@ -3091,7 +3246,7 @@ function createBuiltInBrowserWindowService(args: {
     return observation;
   };
 
-  const restorePersistedTabs = (): void => {
+  const restorePersistedTabs = async (): Promise<void> => {
     const restored = args.restoredState;
     if (!restored?.tabs.length) return;
     restoringTabs = true;
@@ -3102,26 +3257,34 @@ function createBuiltInBrowserWindowService(args: {
       collectionKey: args.collection.key,
       tabCount: restoredTabs.length,
     });
-    void Promise.allSettled(restoredTabs.map((tab, index) => (
+    const results = await Promise.allSettled(restoredTabs.map((tab, index) => (
       tab.webContents.loadURL(restored.tabs[index]?.url ?? "about:blank")
-    ))).then((results) => {
-      restoringTabs = false;
-      logger()?.info("built_in_browser.tabs_restore_completed", {
-        collectionKey: args.collection.key,
-        tabCount: restoredTabs.length,
-        failedCount: results.filter((result) => result.status === "rejected").length,
-      });
-      emitStatus();
+    )));
+    restoringTabs = false;
+    logger()?.info("built_in_browser.tabs_restore_completed", {
+      collectionKey: args.collection.key,
+      tabCount: restoredTabs.length,
+      failedCount: results.filter((result) => result.status === "rejected").length,
     });
+    emitStatus();
   };
 
-  restorePersistedTabs();
+  const tabRestorationPromise = args.waitForProfileMigration()
+    .then(restorePersistedTabs)
+    .catch((error) => {
+      restoringTabs = false;
+      logger()?.warn("built_in_browser.tabs_restore_failed", {
+        collectionKey: args.collection.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
   return {
     attachToWindow,
     detachFromWindow,
     getStatus,
     getStatusForInput,
+    requestOriginAccess,
     claim,
     startSession,
     listSessions,

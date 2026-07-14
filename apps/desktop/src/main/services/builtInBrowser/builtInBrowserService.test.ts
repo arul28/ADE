@@ -774,6 +774,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-restore-"));
     const stateFilePath = path.join(tempDir, "browser-state.json");
     try {
+      fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
       const projectRootByWindow = new Map<number, string>();
       const win = fakeBrowserWindow();
       projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
@@ -1326,8 +1327,6 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await service.createTab({
       url: "https://example.test",
       activate: true,
-      laneId: "lane-1",
-      chatSessionId: "chat-1",
     });
     const firstTabId = service.getStatus().activeTabId;
     const firstWc = fakes.webContentsInstances[0];
@@ -1359,8 +1358,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus().activeTabId).not.toBe(firstTabId);
     expect(service.getStatus().tabs.at(-1)).toMatchObject({
       url: "https://accounts.google.com/gsi/select",
-      ownerLaneId: "lane-1",
-      ownerChatSessionId: "chat-1",
+      ownerLaneId: null,
+      ownerChatSessionId: null,
     });
     const popupWebPreferences = fakes.webContentsViewInstances.at(-1)?.webPreferences as Record<string, unknown>;
     expect(popupWebPreferences).toMatchObject({
@@ -1381,6 +1380,72 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       url: "https://accounts.google.com/gsi/select",
       tabId: service.getStatus().activeTabId,
     });
+  });
+
+  it("blocks agent-triggered high-risk popups until the origin is human-approved", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://example.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+
+    const response = fakes.webContentsInstances[0]?.openWindow(
+      "https://accounts.google.com/gsi/select",
+    );
+
+    expect(response?.action).toBe("deny");
+    expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("Navigate to that origin explicitly"),
+    });
+  });
+
+  it("requires chat-scoped human approval before agent navigation uses a high-risk origin", async () => {
+    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.navigate({
+      url: "https://github.com/settings/tokens",
+      newTab: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+    expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1);
+    expect(service.getStatus({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).url)
+      .toBe("https://github.com/settings/tokens");
+    expect(() => service.getStatus({ tabId, laneId: "lane-2", chatSessionId: "chat-2" }))
+      .toThrow(/leased by chat chat-1/);
+  });
+
+  it("blocks a high-risk redirect triggered by an agent page action", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://example.test",
+      activate: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
+    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
+    const tabId = service.getStatus().activeTabId ?? "";
+    await service.click({
+      tabId,
+      x: 10,
+      y: 20,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      observe: false,
+    });
+
+    await fakes.webContentsInstances[0]?.loadURL("https://console.aws.amazon.com/");
+    await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    expect(fakes.webContentsInstances[0]?.getURL()).toBe("https://example.test/");
+    await vi.waitFor(() => expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("Blocked agent-triggered navigation"),
+    }));
   });
 
   it("assigns ADE browser downloads to the user's Downloads folder", async () => {
