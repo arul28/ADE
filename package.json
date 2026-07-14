@@ -14,7 +14,7 @@
     "dev:runtime": "node scripts/dev-runtime.mjs",
     "dev:stop": "node scripts/dev-runtime-stop.mjs",
     "dev:runtime:stop": "node scripts/dev-runtime-stop.mjs",
-    "install:apps": "npm --prefix apps/ade-cli install && npm --prefix apps/desktop install && npm --prefix apps/web install && npm --prefix apps/webhook-relay install && npm --prefix apps/tunnel-relay install && npm --prefix apps/push-relay install",
+    "install:apps": "npm --prefix apps/ade-cli install && npm --prefix apps/desktop install && npm --prefix apps/web install && npm --prefix apps/webhook-relay install && npm --prefix apps/tunnel-relay install && npm --prefix apps/push-relay install && npm --prefix apps/account-directory install",
     "package:alpha": "node scripts/package-channel.mjs alpha",
     "package:beta": "node scripts/package-channel.mjs beta",
     "runtime:build": "npm --prefix apps/ade-cli run build",
