@@ -1,5 +1,10 @@
 import { defineConfig } from "tsup";
 
+const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
+if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {
+  throw new Error("ADE_POSTHOG_PROJECT_TOKEN must be a public phc_ project token; personal API keys must never be bundled.");
+}
+
 export default defineConfig({
   entry: {
     "main/main": "src/main/main.ts",
@@ -26,5 +31,7 @@ export default defineConfig({
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),
+    __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
+    __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
   },
 });

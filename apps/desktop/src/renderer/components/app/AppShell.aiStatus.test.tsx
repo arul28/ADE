@@ -85,6 +85,7 @@ function resetStore() {
 describe("AppShell AI provider status", () => {
   const getStatusMock = vi.fn();
   const githubGetStatusMock = vi.fn();
+  const analyticsCaptureMock = vi.fn();
   let chatEventListener: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
   beforeEach(() => {
@@ -94,12 +95,19 @@ describe("AppShell AI provider status", () => {
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
     githubGetStatusMock.mockReset();
+    analyticsCaptureMock.mockReset();
+    analyticsCaptureMock.mockResolvedValue({ accepted: true, reason: "accepted" });
     vi.mocked(listSessionsCached).mockClear();
     githubGetStatusMock.mockResolvedValue(null);
     chatEventListener = null;
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
+        analytics: {
+          capture: analyticsCaptureMock,
+          getStatus: vi.fn(),
+          setEnabled: vi.fn(),
+        },
         app: {
           getWindowSession: vi.fn(async () => ({ project, binding: null })),
           onProjectChanged: vi.fn(() => () => {}),
@@ -164,7 +172,57 @@ describe("AppShell AI provider status", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
     vi.useRealTimers();
+  });
+
+  it("captures a normalized route without query strings or route identifiers", async () => {
+    window.__adeWebClient = true;
+    render(
+      <MemoryRouter initialEntries={["/work/session-sensitive?token=secret#private"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {});
+
+    expect(analyticsCaptureMock).toHaveBeenCalledTimes(3);
+    expect(analyticsCaptureMock).toHaveBeenCalledWith({
+      event: "ade_screen_viewed",
+      properties: {
+        screen: "work",
+        route_kind: "web",
+        source: "renderer_route",
+      },
+      dedupeKey: "web_screen:work",
+      minimumIntervalMs: 2_000,
+    });
+    expect(analyticsCaptureMock).toHaveBeenCalledWith({
+      event: "ade_app_opened",
+      properties: {
+        entry_point: "hosted_web_client",
+        source: "renderer_startup",
+      },
+      dedupeKey: "web_app_opened",
+      minimumIntervalMs: 5 * 60_000,
+    });
+    expect(analyticsCaptureMock).toHaveBeenCalledWith({
+      event: "ade_project_opened",
+      properties: {
+        route_kind: "web",
+        source: "renderer_project",
+      },
+      minimumIntervalMs: 60 * 60_000,
+    });
+    expect(JSON.stringify(analyticsCaptureMock.mock.calls)).not.toContain(project.rootPath);
+    expect(JSON.stringify(analyticsCaptureMock.mock.calls)).not.toContain("secret");
+    for (const [input] of analyticsCaptureMock.mock.calls) {
+      expect(input).not.toHaveProperty("surface");
+      expect(input.properties).not.toHaveProperty("project_id");
+      expect(input.properties).not.toHaveProperty("projectId");
+    }
   });
 
   it("shows the full project error below the top bar and lets the user dismiss it", () => {

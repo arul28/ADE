@@ -100,6 +100,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "github",
   "feedback",
   "usage",
+  "analytics",
   "storage",
   "budget",
   "update",
@@ -156,6 +157,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
+  analytics: ["setEnabled", "flush"],
   storage: ["cleanup"],
   search: ["rebuildIndex"],
 };
@@ -605,6 +607,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "start",
     "stop",
   ],
+  analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
@@ -742,6 +745,18 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Delete one ADE project secret.",
       input: "object { name: string, confirmName: string }",
       example: "ade secrets delete STRIPE_API_KEY",
+    },
+  },
+  analytics: {
+    capture: {
+      description: "Capture one privacy-bounded ADE product event. Event names and properties are strictly allowlisted and quota limited.",
+      input: "object { event, surface, properties?, projectId?, sessionId?, clientEventId?, occurredAt?, dedupeKey?, minimumIntervalMs? }",
+      example: "ade actions run analytics.capture --input-json '{\"event\":\"ade_screen_viewed\",\"surface\":\"tui\",\"properties\":{\"screen\":\"details_help\"}}'",
+    },
+    getStatus: {
+      description: "Read anonymous product analytics configuration and local daily budget counters.",
+      input: "no input",
+      example: "ade actions run analytics.getStatus --text",
     },
   },
   chat: {
@@ -3063,6 +3078,7 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
+    analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),

@@ -31,6 +31,7 @@ struct TerminalSessionScreen: View {
 
   var body: some View {
     lifecycleDecorated
+      .adeAnalyticsScreen(.terminal)
       .onReceive(keyboardShowPublisher) { _ in handleKeyboardWillShow() }
       .onReceive(keyboardHidePublisher) { _ in keyboardVisible = false }
       .onReceive(pasteboardPublisher) { _ in refreshPasteboardState() }

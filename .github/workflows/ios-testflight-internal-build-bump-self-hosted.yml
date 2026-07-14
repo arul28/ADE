@@ -20,10 +20,10 @@ concurrency:
 
 # Auth/env should match `.claude/commands/release.md` Phase 7: identical `asc`/Xcode toolchain as your Studio shell.
 #
-# IMPORTANT: do not declare empty GitHub Secrets as job env vars here — an empty APPLE_* value overrides inherited
-# runner environment and defeats “same ~/.asc / same ENV as `/release`”. Put ASC_APP_ID (or APPLE_IOS_APP_ID),
-# optional APPLE_* for AuthKey injection, toolchain PATH, etc. on the runner service environment (recommended:
-# `$RUNNER_ROOT/.env` for the Actions runner) or rely on ~/.asc/config.json plus your login profile.
+# IMPORTANT: keep APPLE_*/ASC authentication values in the runner environment — an empty GitHub Secret would
+# override inherited auth and defeat “same ~/.asc / same ENV as `/release`”. The public PostHog runtime values are
+# the deliberate exception below: they come from repository secrets and are passed to Xcode through a temporary,
+# mode-0600 xcconfig that the release script deletes after the archive command finishes.
 #
 # Runs every `run` step with `bash --login -eo pipefail` so interactive-path setup (Apple Silicon Homebrew bins,
 # Xcode paths, exporter env hooks) behaves like Terminal when you configured `asc doctor`.
@@ -44,4 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Bump build and ship to internal testers
+        env:
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: bash ./.github/scripts/ios-testflight-internal-build-bump-asc.sh

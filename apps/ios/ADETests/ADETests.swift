@@ -4079,7 +4079,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceKeepsLegacyHelloConnectedInLimitedCompatibilityMode() throws {
+  func testSyncServiceKeepsLegacyHelloConnectedInLimitedCompatibilityMode() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
     try service.applyHelloPayloadForTesting([
@@ -4096,10 +4096,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
+    XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
+    let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
+    XCTAssertTrue(analyticsOptOutAcknowledged)
   }
 
   @MainActor
-  func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() throws {
+  func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
     try service.applyHelloPayloadForTesting([
@@ -4133,6 +4136,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
+    XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
+    let analyticsOptInAcknowledged = await service.setProductAnalyticsClientEnabled(true)
+    XCTAssertTrue(analyticsOptInAcknowledged)
   }
 
   func testMobileAdeUsageStatsDecodesPayloadWithoutNewOptionalBreakdowns() throws {

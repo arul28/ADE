@@ -61,6 +61,9 @@ struct ConnectionSettingsView: View {
           SettingsVoiceInputSection()
             .padding(.horizontal, 16)
 
+          SettingsAnalyticsSection()
+            .padding(.horizontal, 16)
+
           SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
             .padding(.horizontal, 16)
 

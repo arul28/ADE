@@ -196,6 +196,8 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
           ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
         run: cd apps/desktop && npm run dist:mac:${{ matrix.arch }}:signed
@@ -343,6 +345,9 @@ jobs:
         run: node apps/desktop/scripts/set-release-version.mjs
 
       - name: Build ADE runtime binary
+        env:
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
 
       - name: Materialize runtime notarization API key

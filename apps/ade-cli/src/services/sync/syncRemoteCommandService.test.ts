@@ -110,6 +110,30 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("advertises the complete paired-client analytics command contract", () => {
+    const { service } = createService();
+
+    expect(
+      service.getDescriptors().filter((descriptor) => descriptor.action.startsWith("analytics.")),
+    ).toEqual([
+      {
+        action: "analytics.capture",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.getStatus",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "analytics.setClientEnabled",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+    ]);
+  });
+
   it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
     const getAdeUsageStats = vi.fn().mockResolvedValue({ generatedAt: "2026-07-09T12:00:00.000Z", daily: [] });
     const quotaSnapshot = { windows: [], lastPolledAt: "2026-07-09T12:00:00.000Z", errors: [] };

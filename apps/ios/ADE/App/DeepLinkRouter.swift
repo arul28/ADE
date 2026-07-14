@@ -121,6 +121,11 @@ final class DeepLinkRouter {
     // A pairing URL with no fragment carries no payload — swallow it so it
     // doesn't fall through to other handlers, but there's nothing to present.
     guard components.fragment?.isEmpty == false else { return true }
+    ProductAnalytics.shared.captureFeature(
+      .deepLink,
+      outcome: .opened,
+      source: .pairingLink
+    )
     SyncService.shared?.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: url.absoluteString)
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
@@ -228,6 +233,20 @@ final class DeepLinkRouter {
     event: Int? = nil,
     offset: Int? = nil
   ) {
+    let analyticsSource: ADEAnalyticsSource?
+    switch kind {
+    case "session": analyticsSource = .sessionLink
+    case "pr": analyticsSource = .pullRequestLink
+    default: analyticsSource = nil
+    }
+    if let analyticsSource {
+      ProductAnalytics.shared.captureFeature(
+        .deepLink,
+        outcome: .opened,
+        source: analyticsSource
+      )
+    }
+
     var userInfo: [String: Any] = ["kind": kind, "identifier": identifier]
     if let event { userInfo["event"] = event }
     if let offset { userInfo["offset"] = offset }
@@ -329,9 +348,14 @@ final class DeepLinkRouter {
   /// to the paired Mac, which owns the workspace's lane↔issue mapping.
   private func routeLinearIssue(identifier: String, url: URL) {
     if SyncService.shared?.activeProjectId != nil {
+      ProductAnalytics.shared.captureFeature(
+        .deepLink,
+        outcome: .opened,
+        source: .linearIssueLink
+      )
       SyncService.shared?.requestedLinearIssueNavigation = LinearIssueNavigationRequest(identifier: identifier)
     } else {
-      postSendToMac(url: url)
+      postSendToMac(url: url, analyticsSource: .linearIssueLink)
     }
   }
 
@@ -339,7 +363,15 @@ final class DeepLinkRouter {
   /// send-to-mac channel so the presentation layer can pop the confirmation
   /// card. We pass the raw URL through so the card can render the target
   /// plainly without the router needing to know about each shape.
-  private func postSendToMac(url: URL) {
+  private func postSendToMac(
+    url: URL,
+    analyticsSource: ADEAnalyticsSource = .sendToMacLink
+  ) {
+    ProductAnalytics.shared.captureFeature(
+      .deepLink,
+      outcome: .opened,
+      source: analyticsSource
+    )
     NotificationCenter.default.post(
       name: .adeSendToMacRequested,
       object: nil,

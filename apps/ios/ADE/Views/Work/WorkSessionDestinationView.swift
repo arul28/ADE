@@ -793,6 +793,7 @@ struct WorkSessionDestinationView: View {
         trailingControls: { sessionHeaderTrailingControls }
       )
       .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
+      .adeAnalyticsScreen(.workSession)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }

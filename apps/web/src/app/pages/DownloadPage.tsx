@@ -11,6 +11,7 @@ import { SectionHeading } from "../../components/SectionHeading";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
 type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
 
@@ -54,7 +55,8 @@ export function DownloadPage() {
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
         hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE brain.",
         actionHref: LINKS.releasesLatest,
-        actionLabel: "Download for Mac"
+        actionLabel: "Download for Mac",
+        analyticsFeature: MARKETING_FEATURES.DOWNLOAD_MAC,
       },
       {
         key: "windows" as const,
@@ -63,7 +65,8 @@ export function DownloadPage() {
         note: "Installer builds are not published yet.",
         hint: "Use the source build path for now.",
         actionHref: LINKS.releases,
-        actionLabel: "Check releases"
+        actionLabel: "Check releases",
+        analyticsFeature: MARKETING_FEATURES.VIEW_RELEASES,
       },
       {
         key: "linux" as const,
@@ -72,7 +75,8 @@ export function DownloadPage() {
         note: "AppImage and package builds are not published yet.",
         hint: "Use the source build path for now.",
         actionHref: LINKS.releases,
-        actionLabel: "Check releases"
+        actionLabel: "Check releases",
+        analyticsFeature: MARKETING_FEATURES.VIEW_RELEASES,
       },
       {
         key: "ios" as const,
@@ -81,7 +85,8 @@ export function DownloadPage() {
         note: "ADE Mobile is available through TestFlight while the App Store listing is prepared.",
         hint: "Pair once with an ADE machine, then review, approve, and follow push state from the phone.",
         actionHref: LINKS.testflight,
-        actionLabel: "Download for iOS"
+        actionLabel: "Download for iOS",
+        analyticsFeature: MARKETING_FEATURES.DOWNLOAD_IOS,
       }
     ],
     []
@@ -110,13 +115,13 @@ export function DownloadPage() {
 
         <Reveal delay={0.12}>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <LinkButton to={LINKS.releasesLatest} size="lg" variant="primary" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} size="lg" variant="primary" target="_blank" rel="noreferrer">
               Download for Mac <ArrowUpRight className="h-4 w-4" />
             </LinkButton>
-            <LinkButton to={LINKS.testflight} size="lg" variant="secondary" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.testflight} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_IOS} size="lg" variant="secondary" target="_blank" rel="noreferrer">
               Download for iOS <Smartphone className="h-4 w-4" />
             </LinkButton>
-            <LinkButton to={LINKS.github} size="lg" variant="secondary" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.github} analyticsFeature={MARKETING_FEATURES.VIEW_GITHUB} size="lg" variant="secondary" target="_blank" rel="noreferrer">
               GitHub repo <Github className="h-4 w-4" />
             </LinkButton>
           </div>
@@ -150,6 +155,7 @@ export function DownloadPage() {
                         "transition-all duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card hover:shadow-glass-sm"
                       )}
                       href={c.actionHref}
+                      data-ade-analytics-feature={c.analyticsFeature}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -184,6 +190,7 @@ export function DownloadPage() {
                   <a
                     className="focus-ring inline-flex items-center gap-2 rounded-lg border border-border/70 bg-card/70 px-4 py-2 text-sm font-semibold text-fg hover:bg-card"
                     href={LINKS.docs}
+                    data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -192,6 +199,7 @@ export function DownloadPage() {
                   <a
                     className="focus-ring inline-flex items-center gap-2 rounded-lg border border-border/70 bg-card/70 px-4 py-2 text-sm font-semibold text-fg hover:bg-card"
                     href={LINKS.prd}
+                    data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRD}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -206,7 +214,7 @@ export function DownloadPage() {
                     <Laptop className="h-4 w-4" />
                     quickstart
                   </div>
-                  <CopyButton value={sourceCmd} />
+                  <CopyButton value={sourceCmd} analyticsFeature={MARKETING_FEATURES.COPY_SOURCE_COMMAND} />
                 </div>
                 <pre className="mt-4 overflow-auto leading-relaxed">
                   <code>{sourceCmd}</code>

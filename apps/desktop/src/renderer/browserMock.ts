@@ -3155,6 +3155,29 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   (window as any).ade = {
+    analytics: {
+      capture: async () => ({ accepted: false, reason: "not_configured" }),
+      getStatus: async () => ({
+        configured: false,
+        enabled: true,
+        effective: false,
+        host: "https://us.i.posthog.com",
+        dailyBudget: 200,
+        acceptedToday: 0,
+        droppedToday: 0,
+        day: new Date().toISOString().slice(0, 10),
+      }),
+      setEnabled: async (enabled: boolean) => ({
+        configured: false,
+        enabled,
+        effective: false,
+        host: "https://us.i.posthog.com",
+        dailyBudget: 200,
+        acceptedToday: 0,
+        droppedToday: 0,
+        day: new Date().toISOString().slice(0, 10),
+      }),
+    },
     app: {
       ping: resolved("pong" as const),
       getInfo: resolved({

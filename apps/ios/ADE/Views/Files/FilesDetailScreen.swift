@@ -80,6 +80,7 @@ struct FilesDetailScreen: View {
     .adeScreenBackground()
     .adeNavigationGlass()
     .adeRootTabBarHidden()
+    .adeAnalyticsScreen(.fileDetail)
     .navigationTitle(lastPathComponent(relativePath))
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {

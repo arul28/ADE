@@ -1,21 +1,43 @@
+import { useEffect, useState } from "react";
 import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import {
+  isMarketingAnalyticsEnabled,
+  onMarketingAnalyticsPreferenceChange,
+  setMarketingAnalyticsEnabled,
+} from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "April 22, 2026";
+const EFFECTIVE_DATE = "July 13, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
   title: string;
   body: Array<string | { list: string[] }>;
+  analyticsControl?: boolean;
 };
 
 const sections: Section[] = [
   {
     title: "Local-first by design",
     body: [
-      "ADE keeps your code, repositories, prompts, and project data on the machine you control. The desktop app runs entirely on your computer — worktrees, git operations, terminals, processes, tests, and file content stay local. The iOS companion app is a remote viewer and controller for that machine; it does not run agents or store your project content on its own.",
+      "ADE keeps the machine you control as the authority for your code, repositories, prompts, and project data. The desktop app runs worktrees, git operations, terminals, processes, and tests on that machine. The iOS companion does not run agents, but it does keep a local synced or cached subset of project data so its screens can load quickly and remain useful offline.",
+    ],
+  },
+  {
+    title: "Anonymous product analytics",
+    body: [
+      "Configured ADE desktop and runtime surfaces use default-on, anonymous, allowlisted product analytics with an accessible opt-out. Native iOS and browser surfaces ask for consent before collecting analytics. These events help understand activation, retention, feature adoption, and reliability by describing the product surface, a normalized screen or feature category, an allowlisted action or outcome, coarse runtime metadata, and quota health. Random or installation-salted identifiers support retention analysis without an ADE account or person profile.",
+      "Analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, session titles, raw error messages, or stack traces. ADE does not use analytics session recordings, automatic click or page capture, surveys, advertising profiles, or PostHog feature flags.",
+      "Every applicable surface provides a durable control to withdraw consent or opt out. Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
+    ],
+  },
+  {
+    title: "What this website collects",
+    body: [
+      "After you allow analytics, the public marketing site manually records a daily app-open signal, an allowlisted page category, allowlisted CTA or feature-demo clicks, coarse browser error categories, and a daily event-budget summary. Before that choice, it sends no product analytics. It does not derive analytics from link destinations or visible text, and it never sends a full URL, query string, fragment, referrer, error message, or stack trace.",
+      "The site uses a random browser identifier stored in local storage for anonymous retention analysis. It sends at most 40 attempted events per UTC day, with lower per-event and per-feature limits plus burst deduplication. The PostHog project token is public configuration and does not grant account access. Requests omit credentials and referrers, disable PostHog person profiles and GeoIP enrichment, and use no analytics cookies. Like any HTTPS service, PostHog still receives network metadata needed to accept the request.",
     ],
   },
   {
@@ -27,42 +49,48 @@ const sections: Section[] = [
           "A pairing identifier and the machine address you scan or enter, stored on the device.",
           "Camera access, used solely on-device for QR code pairing. Frames are not stored or transmitted.",
           "Local network discovery (Bonjour, _ade-sync._tcp) to find your own ADE machine on the same network.",
+          "A local database and app caches containing the synced project records, file data, chat data, and UI snapshots needed for the mobile features you use.",
         ],
       },
-      "There are no analytics SDKs, no third-party trackers, no account system, and no remote logging in the iOS app. The app does not transmit source code, files, or AI prompts to any ADE-operated server — all traffic flows to the ADE machine you paired with, over your local network or your own VPN.",
+      "The iOS app has no ADE account system and does not put source code, files, prompts, pairing payloads, or machine addresses into analytics. When analytics is configured, the app asks before collecting and keeps the withdrawal control in Settings. Operational sync traffic flows only to the ADE machine you paired with or through ADE's connectivity relay when needed.",
     ],
   },
   {
     title: "What the desktop app collects",
     body: [
-      "The desktop app does not collect telemetry by default. Project files, git history, terminals, and process state remain on your disk. Crash logs, if you choose to share them, are submitted manually.",
+      "Project files, git history, prompts, terminal content, and process output remain on your disk and are excluded from analytics. Anonymous product analytics, when enabled, is limited to the allowlisted categories described above. Raw crash logs are shared only when you choose to submit them.",
     ],
   },
   {
-    title: "Optional cloud and BYOK features",
+    title: "Cloud relay and BYOK features",
     body: [
-      "If you opt in to ADE Cloud features or connect a model provider with your own API key (Anthropic, OpenAI, OpenCode, Cursor, etc.), the prompts and code excerpts you choose to send are transmitted to that provider under that provider's privacy terms. ADE does not retain a separate copy of those requests on its own servers when you use your own keys. Cloud and BYOK features are clearly marked in the desktop app and are off until you enable them.",
+      "ADE can use a Cloudflare-hosted relay to connect already-paired clients when a direct connection is unavailable. Relay traffic is operational sync traffic and is separate from product analytics. If you connect a model provider with your own API key (Anthropic, OpenAI, OpenCode, Cursor, etc.), prompts and code excerpts you choose to send are transmitted to that provider under its privacy terms. ADE does not put those request bodies into product analytics.",
     ],
   },
   {
     title: "Third parties",
     body: [
-      "ADE relies on a small set of infrastructure services. None of them receive your project content unless you opt in to a feature that uses them.",
+      "ADE relies on a small set of infrastructure services. They receive only the data needed for the service described below; product analytics never receives project content.",
+      "ADE requires PostHog and any other analytics processor to provide the same or equivalent protection described in this policy, to act only for the analytics service, and not to use ADE analytics for advertising or independent profiling.",
       {
         list: [
           "GitHub — desktop releases are distributed through GitHub Releases.",
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
+          "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
+          "PostHog — receives anonymous, manually selected product events when analytics is enabled. Person profiles, autocapture, replay, surveys, and feature flags are disabled for ADE analytics.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
         ],
       },
-      "ADE does not sell personal data, does not share it with advertisers, and does not include third-party analytics in the iOS app.",
+      "ADE does not sell personal data or share analytics with advertisers.",
     ],
   },
   {
     title: "Retention",
     body: [
-      "Pairing identifiers persist on the iOS device until you uninstall the app or unpair from the machine. Computer data persists on your local disk and is yours to keep, move, or delete. Data sent to AI providers is governed by each provider's retention policy.",
+      "Unpairing an iOS device clears its saved machine profile and pairing credentials, but synced project data, caches, analytics preference, and local quota counters can remain in the app container until you remove the app's data. iOS analytics opt-out cancels pending requests and removes the anonymous analytics identifier; opting in later creates a new identifier. Because iOS Keychain items can survive an uninstall on some systems, unpair before uninstalling when you want to clear pairing credentials explicitly.",
+      "Desktop and runtime analytics state — including its anonymous installation identifier, identifier-hashing salt, preference, and quota counters — is stored under the machine's .ade/secrets directory until you delete that state. Opting out immediately stops analytics transmission and discards queued events, but retains that local state so toggling cannot reset quota limits. Computer project data otherwise remains on your local disk and is yours to keep, move, or delete.",
+      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. To request earlier deletion or ask what can be associated with your anonymous installation, email arulsharma1028@gmail.com. Because ADE has no analytics account or person profile, we may need information from your installation and may be unable to associate an anonymous historical event with you. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {
@@ -73,10 +101,13 @@ const sections: Section[] = [
           "Revoke camera or local network access in iOS Settings → ADE.",
           "Unpair the iOS app from the machine to clear the stored pairing.",
           "Disable cloud and BYOK features in the desktop app at any time.",
-          "Uninstall the apps to remove all locally stored ADE data on the device.",
+          "Turn anonymous product analytics off on each applicable ADE surface.",
+          "Unpair first to clear pairing credentials, then uninstall or clear app/site data to remove the corresponding app-container or browser data.",
         ],
       },
+      "On this website, the control below is durable in local storage. You can also call window.adeAnalytics.setEnabled(false) from the browser console.",
     ],
+    analyticsControl: true,
   },
   {
     title: "Children",
@@ -97,6 +128,32 @@ const sections: Section[] = [
     ],
   },
 ];
+
+function AnalyticsPreferenceControl() {
+  const [enabled, setEnabled] = useState(() => isMarketingAnalyticsEnabled());
+
+  useEffect(() => onMarketingAnalyticsPreferenceChange(setEnabled), []);
+
+  return (
+    <div className="mt-4 flex flex-col gap-3 rounded-xl border border-border/70 bg-bg/50 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <div className="text-sm font-semibold text-fg">Anonymous website analytics</div>
+        <div className="mt-1 text-xs text-muted-fg">
+          {enabled ? "On — only manual, allowlisted, quota-bounded events are sent." : "Off — no website analytics events are sent."}
+        </div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        className="focus-ring inline-flex min-w-36 items-center justify-center rounded-lg border border-border bg-card px-4 py-2 text-sm font-semibold text-fg hover:bg-muted/70"
+        onClick={() => setMarketingAnalyticsEnabled(!enabled)}
+      >
+        Turn analytics {enabled ? "off" : "on"}
+      </button>
+    </div>
+  );
+}
 
 export function PrivacyPage() {
   useDocumentTitle("ADE Privacy");
@@ -131,6 +188,7 @@ export function PrivacyPage() {
                         </ul>
                       )
                     )}
+                    {section.analyticsControl ? <AnalyticsPreferenceControl /> : null}
                   </div>
                 </div>
               </Reveal>

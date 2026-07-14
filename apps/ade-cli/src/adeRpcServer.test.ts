@@ -95,6 +95,13 @@ function createRuntime() {
       dbPath: path.join(projectRoot, ".ade", "ade.db")
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    productAnalyticsService: {
+      capture: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      getStatus: vi.fn(() => ({ configured: true, enabled: true, effective: true })),
+      setEnabled: vi.fn(),
+      flush: vi.fn(async () => true),
+      shutdown: vi.fn(async () => {}),
+    } as any,
     db: {
       getJson: vi.fn((key: string) => (kv.has(key) ? kv.get(key) : null)),
       setJson: vi.fn((key: string, value: unknown) => {
@@ -2825,6 +2832,20 @@ describe("adeRpcServer", () => {
       action: "write",
       args: { terminalId: "session-1", data: "y\n" },
     });
+    await callTool(handler, "run_ade_action", {
+      domain: "analytics",
+      action: "capture",
+      args: {
+        event: "ade_screen_viewed",
+        surface: "mobile",
+        projectId: "/private/forged-project",
+        properties: { screen: "details_help" },
+      },
+    });
+    await callTool(handler, "run_ade_action", {
+      domain: "analytics",
+      action: "flush",
+    });
 
     const usageEventCalls = (fixture.runtime.db.run as ReturnType<typeof vi.fn>).mock.calls.filter(
       (call: unknown[]) => typeof call[0] === "string" && call[0].includes("insert into usage_events"),
@@ -2835,6 +2856,48 @@ describe("adeRpcServer", () => {
       terminalId: "session-1",
       data: "y\n",
     });
+    expect(fixture.runtime.productAnalyticsService.capture).toHaveBeenCalledTimes(1);
+    expect(fixture.runtime.productAnalyticsService.capture).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: "tui", projectId: "project-1" }),
+    );
+    expect(fixture.runtime.productAnalyticsService.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects product analytics capture from agent-run identities", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+
+    const inventory = await callTool(handler, "list_ade_actions", { domain: "analytics" });
+    expect(inventory?.isError).toBeUndefined();
+    expect(inventory.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ name: "analytics.getStatus" }),
+    );
+    expect(inventory.structuredContent.actions).not.toContainEqual(
+      expect.objectContaining({ name: "analytics.capture" }),
+    );
+
+    const result = await callTool(handler, "run_ade_action", {
+      domain: "analytics",
+      action: "capture",
+      args: {
+        event: "ade_daily_usage_summary",
+        surface: "api",
+        properties: { summary_kind: "overall", interaction_count: 999_999 },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.error ?? result.structuredContent ?? {})).toContain(
+      "reserved for authenticated ADE user clients",
+    );
+    expect(fixture.runtime.productAnalyticsService.capture).not.toHaveBeenCalled();
   });
 
   it("routes Linear attach/detach/list and the issue write-bridge through run_ade_action", async () => {

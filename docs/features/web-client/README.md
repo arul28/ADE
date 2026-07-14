@@ -55,6 +55,11 @@ Browser `window.ade` adapter:
 
 - `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs a
   sync-backed `window.ade` surface and hides native-only capabilities.
+- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - affirmative
+  browser-local analytics preference, runtime-scoped status/capture calls, and
+  per-connection consent reassertion. A failed opt-out acknowledgement closes
+  the sync connection so the host cannot keep recording exportable web
+  mutations for that peer.
 - `apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts` -
   remote-command dispatch through `SyncRemoteCommandDescriptor` scope/policy,
   with fallback for unsupported hosts.
@@ -117,6 +122,10 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/app/HeaderSheet.tsx` - shared portaled
   sheet scaffold and dialog focus-trap helpers used by the Mobile and Web
   top-bar sheets.
+- `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
+  - reused route/project lifecycle capture plus the hosted-web consent banner.
+  It sends only normalized inputs through `window.ade.analytics`; the browser
+  client never talks to PostHog directly.
 
 Machine runtime and sync host:
 
@@ -130,12 +139,16 @@ Machine runtime and sync host:
   status, history, orchestration, and rebase surfaces, plus the
   runtime-scoped `sync.getWebPairingInfo` command (pairing URL, PIN,
   machine name, relay availability) that backs the iOS "Pair a browser" sheet.
+- `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` and
+  `syncHostService.ts` - bind untrusted browser capture requests to the host's
+  `web` surface/project and keep `analytics.setClientEnabled` peer-scoped. A
+  browser choice never changes the machine-wide desktop/runtime preference.
 - `apps/ade-cli/src/services/sync/syncPairingStore.ts` - PIN pairing result
   store: per-device secret plus optional DPoP public key.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
   validation and replay guard.
-- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - optional cloud
-  tunnel identity and browser/phone-facing
+- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - default-on cloud
+  tunnel identity, persisted Settings/CLI kill-switch, and browser/phone-facing
   `wss://<relay>/connect/<machineKey>` URL.
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/tunnel-relay/` - brain-side Cloudflare tunnel client and the relay
@@ -209,6 +222,12 @@ Tests:
 - **IndexedDB is the pairing store.** Clearing site data removes the paired
   secret and the non-extractable DPoP private key, so the browser must pair
   again. The private key cannot be exported for backup or migration.
+- **Analytics consent is browser-local and fail-closed.** The preference lives
+  in local storage, while the host keeps an in-memory consent bit for that
+  paired socket. Every adapter connection reasserts the local choice before
+  capture; missing storage or a failed disable acknowledgement does not fall
+  back to machine-wide consent. Accepted events still consume the host's
+  shared 200-event daily budget. See [logging and product analytics](../../logging.md).
 - **The pairing URL fragment must stay a fragment.** The payload is safe to
   copy because it omits the PIN and fragments are not sent to servers. Do not
   move it into a query parameter or server route.
@@ -310,7 +329,7 @@ agent/chat mutations.
 
 | Transport | Endpoint shape | Hosted page | Use |
 |---|---|---:|---|
-| Cloud tunnel relay | `wss://<relay>/connect/<machineKey>` | Yes | Default browser-safe route when the operator enables Cloud relay fallback. The default relay base is in `syncCloudRelayStore.ts`; the runtime keeps the outbound host socket open through `syncTunnelClientService.ts`. |
+| Cloud tunnel relay | `wss://<relay>/connect/<machineKey>` | Yes | Default-on browser-safe route with an explicit Settings/CLI kill-switch. The default relay base is in `syncCloudRelayStore.ts`; the runtime keeps the outbound host socket open through `syncTunnelClientService.ts`. |
 | Manual secure endpoint | `wss://...` | Yes | Operator-managed TLS endpoint, commonly Tailscale Serve or another local reverse proxy that forwards to the machine sync socket. `PairFlow.tsx` exposes this as the manual endpoint field. |
 | Local dev loopback | `ws://127.0.0.1:<port>` or `ws://localhost:<port>` | No | Allowed only from `http:` / localhost pages. Use with `npm --prefix apps/desktop run dev:webclient` or local browser testing. |
 | Raw LAN / Tailscale IP | `ws://192.168.x.x:<port>` or `ws://100.x.x.x:<port>` | No | Works only from local/http contexts. Blocked from the hosted HTTPS page as mixed content. |

@@ -5,6 +5,7 @@ import { render } from "ink-testing-library";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
+import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "../productAnalytics";
 
 const mocks = vi.hoisted(() => ({
   connectToAde: vi.fn(),
@@ -250,6 +251,42 @@ describe("AdeCodeApp polling", () => {
     await unmountApp(instance);
   });
 
+  it("does not emit analytics for polling or background event streams", async () => {
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+    const analyticsCalls = () => vi.mocked(connection.action).mock.calls.filter(
+      ([domain, action]) => domain === "analytics" && action === "capture",
+    );
+
+    expect(analyticsCalls().map(([, , input]) => (input as { event?: string }).event)).toEqual([
+      "ade_app_opened",
+      "ade_screen_viewed",
+    ]);
+    const initialAnalyticsCount = analyticsCalls().length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+      [...chatListeners][0]?.(event("background-chat", 2, "status"));
+      await vi.advanceTimersByTimeAsync(BACKGROUND_REFRESH_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    expect(analyticsCalls()).toHaveLength(initialAnalyticsCount);
+    await unmountApp(instance);
+  });
+
+  it("flushes analytics through the active connection before a signal exit", async () => {
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+    const heartbeatOptions = mocks.startTuiHeartbeat.mock.calls[0]?.[1] as {
+      beforeSignalExit?: (signal: NodeJS.Signals) => Promise<void>;
+    };
+
+    expect(heartbeatOptions.beforeSignalExit).toBeTypeOf("function");
+    await heartbeatOptions.beforeSignalExit?.("SIGTERM");
+
+    expect(connection.action).toHaveBeenCalledWith("analytics", "flush");
+    await unmountApp(instance);
+  });
+
   it("refreshes summaries for background chat events without hydrating active history", async () => {
     const instance = await renderApp(<AdeCodeApp project={project} />);
 
@@ -365,6 +402,56 @@ describe("AdeCodeApp polling", () => {
     expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(1);
 
     await unmountApp(instance);
+  });
+});
+
+describe("TUI product analytics policy", () => {
+  it("derives closed screen names and binds capture to the TUI surface", async () => {
+    expect(deriveTuiAnalyticsScreen({
+      activePane: "chat",
+      drawerSection: "lanes",
+      rightPaneKind: "empty",
+      gridViewActive: false,
+      addModeActive: false,
+      terminalControlActive: false,
+    })).toBe("chat");
+    expect(deriveTuiAnalyticsScreen({
+      activePane: "drawer",
+      drawerSection: "chats",
+      rightPaneKind: "empty",
+      gridViewActive: false,
+      addModeActive: false,
+      terminalControlActive: false,
+    })).toBe("drawer_chats");
+    expect(deriveTuiAnalyticsScreen({
+      activePane: "details",
+      drawerSection: "lanes",
+      rightPaneKind: "model-picker",
+      gridViewActive: false,
+      addModeActive: false,
+      terminalControlActive: false,
+    })).toBe("details_model_picker");
+    expect(deriveTuiAnalyticsScreen({
+      activePane: "addMode",
+      drawerSection: "lanes",
+      rightPaneKind: "empty",
+      gridViewActive: false,
+      addModeActive: true,
+      terminalControlActive: true,
+    })).toBe("terminal_control");
+
+    const action = vi.fn(async () => ({ accepted: true, reason: "accepted" as const }));
+    const tuiConnection = { action } as unknown as AdeCodeConnection;
+    await expect(captureTuiProductAnalytics(tuiConnection, {
+      event: "ade_screen_viewed",
+      properties: { screen: "chat" },
+    })).resolves.toEqual({ accepted: true, reason: "accepted" });
+    expect(action).toHaveBeenCalledWith("analytics", "capture", expect.objectContaining({
+      event: "ade_screen_viewed",
+      surface: "tui",
+      clientEventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      properties: { screen: "chat" },
+    }));
   });
 });
 

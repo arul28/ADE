@@ -947,6 +947,9 @@ export type SyncSendToSessionArgs = {
 export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
+  | "analytics.capture"
+  | "analytics.getStatus"
+  | "analytics.setClientEnabled"
   | "usage.getAdeStats"
   | "usage.getQuotaSnapshot"
   | "usage.refreshQuota"

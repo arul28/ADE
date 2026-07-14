@@ -77,6 +77,7 @@ struct FilesSearchScreen: View {
       }
       .adeScreenBackground()
       .navigationTitle("Search files")
+      .adeAnalyticsScreen(.fileSearch)
       .navigationBarTitleDisplayMode(.inline)
       .adeNavigationGlass()
       .toolbar {

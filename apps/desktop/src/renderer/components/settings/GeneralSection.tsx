@@ -6,6 +6,7 @@ import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
+import { ProductAnalyticsSection } from "./ProductAnalyticsSection";
 import { ProjectSection } from "./ProjectSection";
 
 export function GeneralSection() {
@@ -22,6 +23,8 @@ export function GeneralSection() {
       <AgentCompletionSoundSection />
 
       <PrChatTranscriptsSection />
+
+      <ProductAnalyticsSection />
 
       <ProjectSection />
 

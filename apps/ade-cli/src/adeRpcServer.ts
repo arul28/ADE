@@ -3338,11 +3338,16 @@ async function runTool(args: {
       : [domain as AdeActionDomain];
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
+    const isUserClient = !session.identity.runId
+      && !session.identity.stepId
+      && !session.identity.attemptId
+      && !session.identity.chatSessionId;
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
           return {
@@ -3390,6 +3395,35 @@ async function runTool(args: {
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
     let result: unknown;
+    const isUserClient = !session.identity.runId
+      && !session.identity.stepId
+      && !session.identity.attemptId
+      && !session.identity.chatSessionId;
+    if (domain === "analytics" && action === "capture") {
+      if (!isUserClient) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Product analytics capture is reserved for authenticated ADE user clients.",
+        );
+      }
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "analytics.capture requires object arguments.");
+      }
+      const {
+        projectId: _untrustedProjectId,
+        dedupeKey,
+        ...safeAnalyticsArgs
+      } = rawObjectArgs;
+      const surface = usageClientSurfaceFromRpcName(session.clientName);
+      scopedObjectArgs = {
+        ...safeAnalyticsArgs,
+        surface,
+        projectId: runtime.projectId,
+        ...(safeAnalyticsArgs.event === "ade_project_opened"
+          ? { dedupeKey: `${surface}_project_opened:${runtime.projectId}` }
+          : { dedupeKey }),
+      };
+    }
     if (!callerIsCto && domain === "pty") {
       scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
@@ -3469,11 +3503,10 @@ async function runTool(args: {
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
     };
-    const isUserClient = !session.identity.runId
-      && !session.identity.stepId
-      && !session.identity.attemptId
-      && !session.identity.chatSessionId;
-    if (isUserClient) {
+    // Analytics control-plane calls are plumbing, not user product activity.
+    // Recording capture/flush/consent here would recursively manufacture
+    // feature-usage rows (and signal-exit flushes could consume event quota).
+    if (isUserClient && domain !== "analytics") {
       const requestedSessionId = typeof scopedObjectArgs.sessionId === "string"
         ? scopedObjectArgs.sessionId
         : null;
@@ -3483,6 +3516,7 @@ async function runTool(args: {
         action: usageActionFromRpcDomain(domain, action),
         feature: domain,
         sessionId: statusHints.chatSessionId ?? requestedSessionId,
+        analyticsEligible: runtime.productAnalyticsService?.getStatus().effective === true,
       });
     }
     return {

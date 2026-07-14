@@ -24,6 +24,13 @@ notice() {
   printf '::notice::%s\n' "$*" >&2
 }
 
+cleanup_posthog_xcconfig() {
+  if [[ -n "${posthog_xcconfig:-}" ]]; then
+    rm -f "${posthog_xcconfig}"
+  fi
+  unset ADE_POSTHOG_PROJECT_TOKEN_SECRET ADE_POSTHOG_HOST_SECRET || true
+}
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     err "missing required command: $1"
@@ -102,6 +109,40 @@ configure_api_key_for_xcode() {
   export ASC_ISSUER_ID="$issuer"
 }
 
+create_posthog_xcconfig() {
+  local root="$1"
+  local token="${ADE_POSTHOG_PROJECT_TOKEN:-}"
+  local host="${ADE_POSTHOG_HOST:-}"
+  local validator="${root}/apps/ios/Scripts/validate-posthog-project-token.sh"
+
+  if [[ ! -f "${validator}" ]]; then
+    err "missing PostHog configuration validator at ${validator}"
+    exit 1
+  fi
+
+  # Read the token over stdin so it never appears in a process argument or log.
+  printf '%s\n%s\n' "${token}" "${host}" | /bin/sh "${validator}" --stdin
+
+  umask 077
+  posthog_xcconfig="$(mktemp "${RUNNER_TEMP:-/tmp}/ade-posthog.XXXXXX")"
+
+  # Xcode imports these protected environment variables only when the
+  # xcconfig references them. Keeping the values out of the file also keeps
+  # xcodebuild's "Build settings from configuration file" log secret-free.
+  export ADE_POSTHOG_PROJECT_TOKEN_SECRET="${token}"
+  export ADE_POSTHOG_HOST_SECRET="${host}"
+  {
+    printf '%s\n' 'ADE_POSTHOG_PROJECT_TOKEN = $(ADE_POSTHOG_PROJECT_TOKEN_SECRET)'
+    printf '%s\n' 'ADE_POSTHOG_HOST = $(ADE_POSTHOG_HOST_SECRET)'
+  } >"${posthog_xcconfig}"
+
+  if [[ -n "${token}" ]]; then
+    notice 'PostHog product analytics is configured for this iOS archive.'
+  else
+    notice 'PostHog product analytics is not configured; this iOS archive will remain analytics-inert.'
+  fi
+}
+
 main() {
   require_cmd asc
   require_cmd jq
@@ -165,6 +206,8 @@ main() {
   local ipa_path="${work_dir}/ADE.ipa"
   rm -rf "${archive_path}" "${ipa_path}"
 
+  create_posthog_xcconfig "${root}"
+
   asc doctor
 
   notice "Building marketing_version=${marketing} (from Xcode project); new build_number=${build_number} (from asc); internal groups: ${group_csv}"
@@ -188,8 +231,13 @@ main() {
     --archive-xcodebuild-flag "${ASC_KEY_ID}" \
     --archive-xcodebuild-flag "-authenticationKeyIssuerID" \
     --archive-xcodebuild-flag "${ASC_ISSUER_ID}" \
+    --archive-xcodebuild-flag "-xcconfig" \
+    --archive-xcodebuild-flag "${posthog_xcconfig}" \
     --archive-xcodebuild-flag "CURRENT_PROJECT_VERSION=${build_number}" \
     --archive-xcodebuild-flag "MARKETING_VERSION=${marketing}"
+
+  cleanup_posthog_xcconfig
+  posthog_xcconfig=""
 
   local builds_json build_id
   builds_json="$(asc builds list --app "${app_id}" --platform IOS --version "${marketing}" --build-number "${build_number}" --limit 25 --output json)"
@@ -227,4 +275,9 @@ main() {
   fi
 }
 
-main "$@"
+posthog_xcconfig=""
+trap cleanup_posthog_xcconfig EXIT
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

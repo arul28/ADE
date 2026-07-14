@@ -89,6 +89,21 @@ import {
 } from "../../desktop/src/shared/agentSkillRoots";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
+import {
+  createProductAnalyticsService,
+  defaultProductAnalyticsStateFile,
+  getSharedProductAnalyticsService,
+  type ProductAnalyticsService,
+} from "../../desktop/src/main/services/analytics/productAnalyticsService";
+import {
+  createUsageProductAnalyticsExporter,
+  type UsageProductAnalyticsExporter,
+} from "../../desktop/src/main/services/analytics/usageProductAnalyticsExporter";
+import {
+  captureDailyUsageAnalytics,
+  completedDailyUsageAnalyticsTarget,
+} from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
+import { captureAgentTurnSettledAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
@@ -133,6 +148,10 @@ import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+
+declare const __ADE_VERSION__: string | undefined;
+
+const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -237,6 +256,8 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  productAnalyticsService?: ProductAnalyticsService | null;
+  usageProductAnalyticsExporter?: UsageProductAnalyticsExporter | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
@@ -491,6 +512,25 @@ export async function createAdeRuntime(args: {
     displayName: project.displayName,
     baseRef
   });
+
+  // Product analytics is machine-scoped and lazy: constructing the service
+  // performs no network work, and a missing build token makes it a no-op. The
+  // shared instance enforces one bounded daily budget across every project
+  // scope in this process.
+  const productAnalyticsStateFile = defaultProductAnalyticsStateFile(resolveMachineAdeLayout().adeDir);
+  const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
+    createProductAnalyticsService({
+      stateFilePath: productAnalyticsStateFile,
+      logger,
+      appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+      runtimeMode: resolvedArgs.syncRuntime?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+    }));
+  const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
+    db,
+    analytics: productAnalyticsService,
+    logger,
+  });
+  usageProductAnalyticsExporter.start();
 
   const operationService = createOperationService({ db, projectId });
   const keybindingsService = createKeybindingsService({ db });
@@ -1062,6 +1102,11 @@ export async function createAdeRuntime(args: {
       onEvent: (event) => {
         pushEvent("runtime", event as unknown as Record<string, unknown>);
       },
+      onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
       onSessionEnded: (event) => {
         pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
       },
@@ -1376,11 +1421,47 @@ export async function createAdeRuntime(args: {
     });
   }
 
-  const usageTrackingService = createUsageTrackingService({
+  let lastDailyAnalyticsDay: string | null = null;
+  let dailyAnalyticsInFlight: Promise<void> | null = null;
+  let usageTrackingService: ReturnType<typeof createUsageTrackingService>;
+  usageTrackingService = createUsageTrackingService({
     logger,
     db,
     pollIntervalMs: 120_000,
-    onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
+    onUpdate: (snapshot) => {
+      pushEvent("runtime", { type: "usage", snapshot });
+      if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
+      const target = completedDailyUsageAnalyticsTarget();
+      if (!target || lastDailyAnalyticsDay === target.day) return;
+      const current = Promise.resolve()
+        .then(async () => {
+          // Report the last completed local day. Capturing the in-progress
+          // "today" bucket on the first poll systematically missed providers,
+          // models, and actions used later in the day.
+          const stats = await usageTrackingService.getAdeUsageStats({
+            preset: "today",
+            until: target.occurredAt,
+            scope: "project",
+          });
+          captureDailyUsageAnalytics({
+            analytics: productAnalyticsService,
+            stats,
+            projectId,
+            reportDay: target.day,
+            occurredAt: target.occurredAt,
+          });
+          lastDailyAnalyticsDay = target.day;
+        })
+        .catch((error) => {
+          logger.debug("product_analytics.daily_summary_failed", {
+            errorKind: error instanceof Error ? error.name : "unknown",
+          });
+        })
+        .finally(() => {
+          if (dailyAnalyticsInFlight === current) dailyAnalyticsInFlight = null;
+        });
+      dailyAnalyticsInFlight = current;
+    },
     projectRoot,
   });
   const storageInsightsService = createStorageInsightsService({
@@ -1440,6 +1521,7 @@ export async function createAdeRuntime(args: {
     syncService = createSyncService({
       db,
       usageTrackingService,
+      productAnalyticsService,
       logger,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,
@@ -1630,6 +1712,8 @@ export async function createAdeRuntime(args: {
     processService,
     feedbackReporterService,
     usageTrackingService,
+    productAnalyticsService,
+    usageProductAnalyticsExporter,
     storageInsightsService,
     budgetCapService,
     automationService,
@@ -1658,6 +1742,7 @@ export async function createAdeRuntime(args: {
       swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
+      swallow(() => usageProductAnalyticsExporter.stop());
       swallow(() => storageInsightsService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => processService.disposeAll());

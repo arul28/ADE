@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, BookOpen, Download, Github, Smartphone } from "lucide-react";
 import { CopyButton } from "../CopyButton";
 import { LINKS } from "../../lib/links";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
 const BREW_INSTALL_CMD = "brew install --cask arul28/ade/ade";
 
@@ -69,6 +70,7 @@ export function Lede() {
           />
           <CopyButton
             value={BREW_INSTALL_CMD}
+            analyticsFeature={MARKETING_FEATURES.COPY_INSTALL_COMMAND}
             compact
             className="h-auto shrink-0 rounded-none border-0 bg-transparent px-2.5 py-2 text-[color:var(--color-cream)] shadow-none hover:bg-white/[0.06] hover:shadow-none"
           />
@@ -82,6 +84,7 @@ export function Lede() {
         <div className="flex flex-wrap items-center justify-center gap-3">
           <a
             href={LINKS.releasesLatest}
+            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[24px] py-3.5 text-[15px] font-medium text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
@@ -90,6 +93,7 @@ export function Lede() {
           </a>
           <a
             href={LINKS.testflight}
+            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[24px] py-3.5 text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
@@ -100,6 +104,7 @@ export function Lede() {
         <p className="flex flex-wrap items-center justify-center gap-x-2 text-[13px] text-[color:var(--color-cream-faint)]">
           <a
             href={LINKS.github}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-[color:var(--color-cream-muted)] underline decoration-[color:var(--color-hairline-strong)] underline-offset-4 transition-colors hover:text-[color:var(--color-cream)]"
@@ -109,6 +114,7 @@ export function Lede() {
           <span aria-hidden>·</span>
           <a
             href={LINKS.docs}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-[color:var(--color-cream-muted)] underline decoration-[color:var(--color-hairline-strong)] underline-offset-4 transition-colors hover:text-[color:var(--color-cream)]"

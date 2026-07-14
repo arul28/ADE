@@ -1465,18 +1465,19 @@ function isDuplicateColumnError(error: unknown): boolean {
   return /duplicate column name/i.test(message);
 }
 
-function safeAddColumn(db: MigrationDb, sql: string): void {
+function safeAddColumn(db: MigrationDb, sql: string): boolean {
   const parsed = parseAlterTableAddColumn(sql);
   if (!parsed) {
     db.run(sql);
-    return;
+    return true;
   }
-  if (migrationHasColumn(db, parsed.tableName, parsed.columnName)) return;
+  if (migrationHasColumn(db, parsed.tableName, parsed.columnName)) return false;
   try {
     db.run(sql);
+    return true;
   } catch (error) {
     if (isDuplicateColumnError(error) && migrationHasColumn(db, parsed.tableName, parsed.columnName)) {
-      return;
+      return false;
     }
     console.warn("kvDb.migrate.add_column_failed", {
       tableName: parsed.tableName,
@@ -2209,12 +2210,20 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       action text not null,
       feature text not null,
       session_id text,
-      occurred_at text not null
+      occurred_at text not null,
+      analytics_exported_at text
     )
   `);
+  const analyticsExportColumnAdded = safeAddColumn(db, "alter table usage_events add column analytics_exported_at text");
+  if (analyticsExportColumnAdded) {
+    // Rows created before anonymous analytics existed were recorded under an
+    // explicitly local-only contract. Never retroactively upload them.
+    db.run("update usage_events set analytics_exported_at = 'pre_analytics' where analytics_exported_at is null");
+  }
   db.run("create index if not exists idx_usage_events_occurred on usage_events(occurred_at)");
   db.run("create index if not exists idx_usage_events_client_occurred on usage_events(client_surface, occurred_at)");
   db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
+  db.run("create index if not exists idx_usage_events_analytics_pending on usage_events(analytics_exported_at, occurred_at)");
 
   // Phase 7 GitHub PR tracking (lane -> PR mapping).
   db.run(`

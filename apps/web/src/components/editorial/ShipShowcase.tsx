@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { cn } from "../../lib/cn";
+import {
+  ANALYTICS_FEATURE_ATTRIBUTE,
+  MARKETING_FEATURES,
+  type MarketingFeature,
+} from "../../lib/marketingAnalytics";
 
 const ROTATE_MS = 18000;
 
@@ -48,6 +53,7 @@ type ToolsShots = {
 
 type ShowcaseTab = {
   id: string;
+  analyticsFeature: MarketingFeature;
   number: string;
   label: string;
   title: string;
@@ -77,6 +83,7 @@ type ShowcaseTab = {
 const TABS: ShowcaseTab[] = [
   {
     id: "lanes",
+    analyticsFeature: MARKETING_FEATURES.SHOWCASE_WORKTREES,
     number: "01",
     label: "Worktrees",
     title: "Git worktrees on the fly.",
@@ -95,6 +102,7 @@ const TABS: ShowcaseTab[] = [
   },
   {
     id: "chat",
+    analyticsFeature: MARKETING_FEATURES.SHOWCASE_AGENT_CHAT,
     number: "02",
     label: "Agent chat",
     title: "One prompt box. Every agent.",
@@ -114,6 +122,7 @@ const TABS: ShowcaseTab[] = [
   },
   {
     id: "prs",
+    analyticsFeature: MARKETING_FEATURES.SHOWCASE_PULL_REQUESTS,
     number: "03",
     label: "Pull requests",
     title: "Review and merge. No GitHub tab.",
@@ -130,6 +139,7 @@ const TABS: ShowcaseTab[] = [
   },
   {
     id: "tools",
+    analyticsFeature: MARKETING_FEATURES.SHOWCASE_WORK_TOOLS,
     number: "04",
     label: "Work tools",
     title: "Browser, sim, tools — beside the chat.",
@@ -726,6 +736,7 @@ export function ShipShowcase() {
                 role="tab"
                 aria-selected={selected}
                 onClick={() => selectTab(index)}
+                {...{ [ANALYTICS_FEATURE_ATTRIBUTE]: item.analyticsFeature }}
                 className={cn(
                   "group relative overflow-hidden rounded-[8px] border px-4 py-3 text-left transition-all duration-300 sm:px-5 sm:py-3.5",
                   selected

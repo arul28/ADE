@@ -5991,6 +5991,14 @@ function personalChatUserPromptFallback(
   }
 }
 
+export type AgentChatTurnSettledEvent = Readonly<{
+  sessionId: string;
+  turnId: string;
+  status: Extract<AgentChatEvent, { type: "done" }>["status"];
+  provider: AgentChatProvider;
+  sessionSurface: AgentChatSurface;
+}>;
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -6028,6 +6036,8 @@ export function createAgentChatService(args: {
     | Promise<CodexComputerUseMcpConfig | null>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   onEvent?: (event: AgentChatEventEnvelope) => void;
+  /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
+  onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -6070,12 +6080,14 @@ export function createAgentChatService(args: {
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     onEvent,
+    onTurnSettled,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
   } = args;
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
+  const notifiedSettledTurns = new Set<string>();
 
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
@@ -10987,6 +10999,29 @@ export function createAgentChatService(args: {
     }
   };
 
+  const notifyTurnSettled = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "done" }>,
+  ): void => {
+    if (!onTurnSettled) return;
+    const callbackKey = `${managed.session.id}:${event.turnId}`;
+    if (notifiedSettledTurns.has(callbackKey)) return;
+    rememberBoundedId(notifiedSettledTurns, callbackKey, 1_024);
+    try {
+      onTurnSettled({
+        sessionId: managed.session.id,
+        turnId: event.turnId,
+        status: event.status,
+        provider: managed.session.provider,
+        sessionSurface: managed.session.surface ?? "work",
+      });
+    } catch (error) {
+      logger.warn("agent_chat.turn_settled_callback_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  };
+
   /**
    * Push a transient envelope to renderer subscribers without persisting it
    * to the transcript or session preview. Used for purely UI-state patches
@@ -11229,6 +11264,9 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+    if (normalizedEvent.type === "done") {
+      notifyTurnSettled(managed, normalizedEvent);
+    }
   };
 
   type ScheduledWorkEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;

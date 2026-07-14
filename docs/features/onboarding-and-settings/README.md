@@ -141,13 +141,18 @@ Renderer — settings:
   not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — consolidated general preferences: GitHub and Linear connections,
-  voice input, launch-prompt clipboard, agent completion sound, PR
+  anonymous product analytics, voice input, launch-prompt clipboard, agent completion sound, PR
   chat transcript gists, project `.ade` health, and environment
   (About + compact `AdeCliSection`). Each block uses
   `SettingsSectionShell` for a branded header. Deep links:
   `#github-connection`, `#linear-connection`, `#voice-input`,
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#pr-chat-transcripts`.
+- `apps/desktop/src/renderer/components/settings/ProductAnalyticsSection.tsx`
+  — machine-wide desktop/runtime product-analytics status and durable opt-out.
+  It shows the configured/effective state and installation daily ceiling but
+  never exposes or accepts credentials. Native iOS and hosted web keep their
+  own affirmative client choices; see [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
   and permission guidance. Embedded inside General. Also hosts the
@@ -517,7 +522,7 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` (GitHub/Linear connections, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
+| General | `GeneralSection.tsx` (GitHub/Linear connections, product analytics, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. Product analytics exposes only status and the machine-wide opt-out. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, and the user-message minimap toggle. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus the project-wide **Pause all scheduled work** control for Claude wakeups, cron tasks, and loops. Pausing keeps schedules armed and suppresses `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |

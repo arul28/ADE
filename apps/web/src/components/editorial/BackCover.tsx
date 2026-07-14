@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Download, Github, Smartphone } from "lucide-react";
 import { Link } from "react-router-dom";
 import { LINKS } from "../../lib/links";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { IPhoneFrame } from "./IPhoneFrame";
 
 /**
@@ -75,6 +76,7 @@ export function BackCover() {
           >
             <a
               href={LINKS.releasesLatest}
+              data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-bg)] transition-colors duration-200 hover:bg-white"
@@ -85,6 +87,7 @@ export function BackCover() {
             </a>
             <a
               href={LINKS.testflight}
+              data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
@@ -94,6 +97,7 @@ export function BackCover() {
             </a>
             <a
               href={LINKS.github}
+              data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"

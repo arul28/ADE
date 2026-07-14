@@ -377,6 +377,7 @@ struct CreatePrWizardView: View {
       .background(backdrop)
       .adeNavigationGlass()
       .navigationTitle("Open pull request")
+      .adeAnalyticsScreen(.pullRequestCreate)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

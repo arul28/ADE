@@ -31,6 +31,10 @@ const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
 const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0.0.0";
+const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
+if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {
+  throw new Error("ADE_POSTHOG_PROJECT_TOKEN must be a public phc_ project token; personal API keys must never be bundled.");
+}
 
 export default defineConfig([
   {
@@ -61,6 +65,8 @@ export default defineConfig([
       options.define = {
         ...(options.define ?? {}),
         __ADE_VERSION__: JSON.stringify(version),
+        __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
+        __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
       };
       options.alias = {
         ...(options.alias ?? {}),
@@ -100,6 +106,8 @@ export default defineConfig([
       options.define = {
         ...(options.define ?? {}),
         __ADE_VERSION__: JSON.stringify(version),
+        __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
+        __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
       };
       options.alias = {
         ...(options.alias ?? {}),

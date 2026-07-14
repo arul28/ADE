@@ -575,6 +575,7 @@ struct PrDetailView: View {
     .scrollContentBackground(.hidden)
     .background(prLiquidGlassBackdrop().ignoresSafeArea())
     .adeNavigationGlass()
+    .adeAnalyticsScreen(.pullRequestDetail)
     .safeAreaInset(edge: .top, spacing: 0) {
       detailNavigationHeader
     }

@@ -66,6 +66,7 @@ struct CtoSettingsScreen: View {
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .navigationTitle("CTO settings")
+      .adeAnalyticsScreen(.ctoSettings)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {

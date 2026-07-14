@@ -2,9 +2,11 @@
 
 ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
-replication layer over a **WebSocket** transport. The design is local-first,
-peer-to-peer, and has zero cloud dependency — two machines on the same LAN
-(or Tailscale tailnet) converge their application state directly.
+replication layer over a **WebSocket** transport. The design is local-first:
+direct LAN/Tailscale routes are preferred, while the default-on cloud tunnel
+relay is a byte-transport fallback that can be disabled explicitly. Two
+machines on the same LAN (or Tailscale tailnet) converge their application
+state directly.
 
 This README covers the sync model, the runtime/controller role split, what
 does and does not travel, and the layers that implement it. Deep-dives:
@@ -104,6 +106,7 @@ iOS compatibility tests in the same branch.
 | Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
+| Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
 | Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected ADE desktops |
 | Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
 
@@ -239,6 +242,11 @@ Cross-machine Work chat handoff:
   the renderer bridge for machine-level project setup and destination actions.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
+
+- `productAnalyticsRemoteCommand.ts` — treats browser/phone analytics input as
+  untrusted, binds the peer surface and canonical host project, strips claimed
+  identity fields, and applies the peer's consent bit before dispatch. Paired
+  consent never changes the machine-wide preference.
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the

@@ -178,12 +178,23 @@ final class DictationController: ObservableObject {
         refreshActiveTargetVisibility()
         do {
             try await service.start()
+            ProductAnalytics.shared.captureFeature(
+                .voiceDictation,
+                outcome: .started,
+                source: .composer
+            )
         } catch is CancellationError {
             activeTargetId = nil
             refreshActiveTargetVisibility()
         } catch {
             activeTargetId = nil
             refreshActiveTargetVisibility()
+            ProductAnalytics.shared.captureFeature(
+                .voiceDictation,
+                outcome: .failed,
+                source: .composer
+            )
+            ProductAnalytics.shared.captureError(.voiceDictation)
             ADEHaptics.warning()
         }
     }
@@ -203,7 +214,7 @@ final class DictationController: ObservableObject {
     }
 
     /// Cancel the active recording without producing a transcript.
-    func cancelRecording() {
+    func cancelRecording(origin: FinishOrigin = .composer) {
         guard service.isRecording || service.isStarting || service.isPreparing else { return }
         ADEHaptics.warning()
         Task { [weak self] in
@@ -213,6 +224,11 @@ final class DictationController: ObservableObject {
                 self.isFinishing = false
                 self.activeTargetId = nil
                 self.refreshActiveTargetVisibility()
+                ProductAnalytics.shared.captureFeature(
+                    .voiceDictation,
+                    outcome: .cancelled,
+                    source: origin.analyticsSource
+                )
             }
         }
     }
@@ -229,7 +245,14 @@ final class DictationController: ObservableObject {
         refreshActiveTargetVisibility()
 
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else {
+            ProductAnalytics.shared.captureFeature(
+                .voiceDictation,
+                outcome: .failed,
+                source: origin.analyticsSource
+            )
+            return
+        }
 
         if let target {
             // A composer is currently visible: insert there, whether it is the
@@ -246,6 +269,11 @@ final class DictationController: ObservableObject {
         if origin != .composer && !originalTargetVisible {
             showClipboardNotice()
         }
+        ProductAnalytics.shared.captureFeature(
+            .voiceDictation,
+            outcome: .completed,
+            source: origin.analyticsSource
+        )
     }
 
     private func refreshActiveTargetVisibility() {
@@ -278,4 +306,13 @@ final class DictationController: ObservableObject {
         }
     }
 
+}
+
+private extension DictationController.FinishOrigin {
+    var analyticsSource: ADEAnalyticsSource {
+        switch self {
+        case .composer: return .composer
+        case .globalPill: return .globalPill
+        }
+    }
 }
