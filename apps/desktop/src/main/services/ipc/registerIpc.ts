@@ -88,6 +88,7 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearPermissionsArgs,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
@@ -2446,6 +2447,19 @@ export function registerIpc({
     channel: string,
   ): BuiltInBrowserProjectScopeArgs =>
     parseBuiltInBrowserProjectScopeArgs(builtInBrowserRecord(value, channel, false), channel);
+
+  const parseBuiltInBrowserClearPermissionsArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserClearPermissionsArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const origin = optionalBuiltInBrowserString(record, "origin", channel, 2048);
+    const permission = optionalBuiltInBrowserString(record, "permission", channel, 128);
+    return {
+      ...(origin ? { origin } : {}),
+      ...(permission ? { permission } : {}),
+    };
+  };
 
   const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
@@ -7293,6 +7307,23 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGetProfileDiagnostics, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetProfileDiagnostics, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().getProfileDiagnostics();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserListPermissions, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserListPermissions, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().listPermissions();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserClearPermissions, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearPermissions, { windowMs: 10_000, max: 10 });
+    return ensureBuiltInBrowser().clearPermissions(
+      parseBuiltInBrowserClearPermissionsArgs(arg, IPC.builtInBrowserClearPermissions),
+    );
   });
 
   ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {

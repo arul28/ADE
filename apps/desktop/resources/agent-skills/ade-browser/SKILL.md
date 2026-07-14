@@ -15,7 +15,7 @@ Within a project, attribution is per tab and per chat agent. `ade browser open`,
 
 The CLI does not own the browser pane. `BuiltInBrowserService` lives in Electron main because it owns a `WebContentsView`, so the runtime daemon (`ade serve`, which runs under `ELECTRON_RUN_AS_NODE=1` with no Electron APIs) can't host it directly.
 
-Calls travel: CLI → runtime daemon (`~/.ade/sock/ade.sock`) → desktop bridge socket (`<adeHome>/sock/desktop-bridge.sock`) → real `BuiltInBrowserService` in Electron main → response back. The runtime registers a lazy JSON-RPC proxy whose allowlisted methods (`getStatus`, `showPanel`, `setBounds`, `navigate`, `createTab`, `switchTab`, `closeTab`, `reload`, `goBack`, `goForward`, `stop`, `startSession`, `listSessions`, `endSession`, `observe`, `getTrace`, `click`, `typeText`, `dispatchKey`, `scroll`, `fill`, `clear`, `wait`, `startInspect`, `stopInspect`, `captureScreenshot`, `selectPoint`, `selectCurrent`, `clearSelection`, `claim`) forward over the bridge.
+Calls travel: CLI → runtime daemon (`~/.ade/sock/ade.sock`) → desktop bridge socket (`<adeHome>/sock/desktop-bridge.sock`) → real `BuiltInBrowserService` in Electron main → response back. The runtime registers a lazy JSON-RPC proxy whose allowlisted methods (`getStatus`, `getProfileDiagnostics`, `listPermissions`, `clearPermissions`, `showPanel`, `setBounds`, `navigate`, `createTab`, `switchTab`, `closeTab`, `reload`, `goBack`, `goForward`, `stop`, `startSession`, `listSessions`, `endSession`, `observe`, `getTrace`, `click`, `typeText`, `dispatchKey`, `scroll`, `fill`, `clear`, `wait`, `startInspect`, `stopInspect`, `captureScreenshot`, `selectPoint`, `selectCurrent`, `clearSelection`, `claim`) forward over the bridge. Global profile diagnostics and permission administration are human-only: the runtime rejects those methods when the CLI is bound to an ADE chat agent.
 
 Requirement: ADE Desktop must be running with a project open. Without it, calls fail with `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` — that's the headless case, not a bug. Other runtime domains keep working.
 
@@ -28,6 +28,9 @@ ade help browser
 ade --socket browser panel --text
 ade --socket browser status --text
 ade --socket browser tabs --text
+ade --socket browser diagnostics --text
+ade --socket browser permissions --text
+ade --socket browser permissions clear --origin https://example.com
 ade --socket browser open <url> --text
 ade --socket browser open <url> --panel --text
 ade --socket browser session start --tab <id> --text
@@ -80,6 +83,8 @@ ade --socket browser clear-selection --text
 - Use `wait`, `fill`, `clear-field`, and `press` for Playwright-like agent actions. These commands focus located elements and reject disabled targets; `wait` can target selectors/text/test ids, URL substrings, or load state. `wait --network-idle` waits for `document.readyState === "complete"`, no pending browser requests, and a quiet window controlled by `--network-idle-ms` (default 500).
 - Prefer `observe --map --text` before precise work. The text output gives numbered elements plus `handle` values; use `--handle` for the next click/fill/press/wait so ADE does not have to infer from brittle coordinates.
 - Lane/chat-owned browser tabs are leased. ADE injects the launched agent's `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into status, session, observation, screenshot, trace, navigation-control, selection, and page-action calls. A bound agent cannot impersonate another owner or use `--force`; only an unbound human CLI can force a recovery takeover. Passive panel reveal stays usable without claiming the active tab.
+- Browser tab URLs and the active index restore from a bounded machine-local store. Agent leases, lightweight browser sessions, and session-cookie values are never synthesized or restored by that store, so a restarted agent must claim a tab again and sites retain control over logout/expiry semantics.
+- Site permissions are deny-by-default and scoped to the requesting origin, embedding origin, and device type where relevant. Native prompts default to Block. Only an unbound human CLI may inspect global profile cookie-domain diagnostics or list/clear remembered permission decisions.
 - `observe` and post-action observations save a screenshot plus a bounded DOM element list, console diagnostics, failed-network diagnostics, and pending request count by default. Add `--map` to write a numbered visual element map image, then use the listed `handle` values with `click`/`fill`/`clear-field`/`press`/`wait`. Handles can replay into same-origin iframes and open shadow roots when the saved element included frame/shadow context. Use `--fast` on actions when the page does not need the default settle delay.
 - Use `ade --socket browser trace --tab <id> --text` when an action gets stuck. The trace is a bounded per-tab action log with before/after URL, target metadata, observation id, duration, and errors. Fill/type traces record text length rather than typed text.
 - Browser observations are scratch files under `.ade/cache/browser-observations/` and prune aggressively to the latest 3 observations per tab by default. Use `--no-dom` for image-only scratch captures and proof commands only for reviewer-facing evidence.

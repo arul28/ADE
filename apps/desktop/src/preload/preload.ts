@@ -606,10 +606,14 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearPermissionsArgs,
+  BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserPermissionsResult,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
@@ -6093,6 +6097,14 @@ contextBridge.exposeInMainWorld("ade", {
       args: BuiltInBrowserProjectScopeArgs = {},
     ): Promise<BuiltInBrowserStatus> =>
       builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+    getProfileDiagnostics: async (): Promise<BuiltInBrowserProfileDiagnostics> =>
+      ipcRenderer.invoke(IPC.builtInBrowserGetProfileDiagnostics),
+    listPermissions: async (): Promise<BuiltInBrowserPermissionsResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserListPermissions),
+    clearPermissions: async (
+      args: BuiltInBrowserClearPermissionsArgs = {},
+    ): Promise<BuiltInBrowserClearPermissionsResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
     ): Promise<BuiltInBrowserStatus> =>

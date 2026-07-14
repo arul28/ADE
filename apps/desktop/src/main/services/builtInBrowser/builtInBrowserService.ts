@@ -11,6 +11,8 @@ import type {
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserClearArgs,
+  BuiltInBrowserClearPermissionsArgs,
+  BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserClaimArgs,
   BuiltInBrowserClickArgs,
   BuiltInBrowserContextItem,
@@ -29,6 +31,8 @@ import type {
   BuiltInBrowserObservationArgs,
   BuiltInBrowserObservationElementMap,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserPermissionsResult,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserScrollArgs,
   BuiltInBrowserScreenshot,
@@ -55,10 +59,13 @@ import {
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
-  shouldAllowGoogleAuthPermissionCheck,
-  shouldAllowGoogleAuthPermissionRequest,
+  createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
 import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
+import {
+  createBuiltInBrowserStateStore,
+  type BuiltInBrowserRestoredCollection,
+} from "./builtInBrowserStateStore";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
@@ -210,6 +217,43 @@ type BrowserDownloadListener = (
   downloadWebContents: WebContents,
 ) => void;
 
+type BrowserNetworkObserver = {
+  onRequestStarted: (details: Record<string, unknown>) => void;
+  onRequestFinished: (details: Record<string, unknown>, error: string | null) => void;
+};
+
+function createBrowserNetworkRouter() {
+  const configuredSessions = new WeakSet<Electron.Session>();
+  const observers = new Set<BrowserNetworkObserver>();
+
+  return {
+    configureSession(browserSession: Electron.Session): void {
+      if (configuredSessions.has(browserSession)) return;
+      configuredSessions.add(browserSession);
+      const webRequest = browserSession.webRequest as unknown as {
+        onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
+        onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
+        onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
+      };
+      webRequest.onBeforeRequest?.((details, callback) => {
+        for (const observer of observers) observer.onRequestStarted(details);
+        callback?.({});
+      });
+      webRequest.onCompleted?.((details) => {
+        for (const observer of observers) observer.onRequestFinished(details, null);
+      });
+      webRequest.onErrorOccurred?.((details) => {
+        const error = stringOrNull(details.error) ?? "request failed";
+        for (const observer of observers) observer.onRequestFinished(details, error);
+      });
+    },
+    subscribe(observer: BrowserNetworkObserver): () => void {
+      observers.add(observer);
+      return () => observers.delete(observer);
+    },
+  };
+}
+
 function normalizedProjectRoot(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -239,6 +283,8 @@ export function createBuiltInBrowserService(args: {
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
+  stateFilePath?: string | null;
+  permissionFilePath?: string | null;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -250,13 +296,43 @@ export function createBuiltInBrowserService(args: {
   const activeServiceKeyByWindow = new Map<number, string>();
   const windowClosedListeners = new Map<number, { win: BrowserWindow; listener: () => void }>();
   let activeWindowId: number | null = null;
-  let fallbackService: WindowBrowserService | null = null;
+  const fallbackServices = new Map<"window" | "personal", WindowBrowserService>();
+  let lastStorageFlushAt: string | null = null;
+  const stateFilePath = args.stateFilePath === null
+    ? null
+    : args.stateFilePath ?? (app.isReady?.() ? path.join(app.getPath("userData"), "ade-browser-state.json") : null);
+  const stateStore = stateFilePath
+    ? createBuiltInBrowserStateStore({ filePath: stateFilePath, getLogger: args.getLogger })
+    : null;
+  const permissionFilePath = args.permissionFilePath === null
+    ? null
+    : args.permissionFilePath ?? (app.isReady?.() ? path.join(app.getPath("userData"), "ade-browser-permissions.json") : null);
+  const permissionController = createBuiltInBrowserPermissionController({
+    filePath: permissionFilePath,
+    isManagedWebContents: (webContents) => Boolean(webContents && MANAGED_BROWSER_WEB_CONTENTS.has(webContents)),
+    resolveParentWindow: () => {
+      if (activeWindowId != null) {
+        const activeWindow = windowClosedListeners.get(activeWindowId)?.win ?? null;
+        if (activeWindow && !activeWindow.isDestroyed()) return activeWindow;
+      }
+      for (const { win } of windowClosedListeners.values()) {
+        if (!win.isDestroyed()) return win;
+      }
+      return null;
+    },
+    getLogger: args.getLogger,
+  });
+  const networkRouter = createBrowserNetworkRouter();
 
   const createServiceForWindow = (win: BrowserWindow, collection: BrowserCollection): WindowBrowserService =>
     createBuiltInBrowserWindowService({
       getLogger: args.getLogger,
       onEvent: (payload) => args.onEvent?.(payload, win),
       collection,
+      restoredState: stateStore?.restore(collection.key) ?? null,
+      onStateChange: (state) => stateStore?.record(collection.key, state),
+      permissionController,
+      networkRouter,
     });
 
   const serviceKey = (windowId: number, collection: BrowserCollection): string =>
@@ -341,8 +417,8 @@ export function createBuiltInBrowserService(args: {
     }
     if (existing) return existing.service;
 
-    fallbackService?.dispose();
-    fallbackService = null;
+    for (const fallback of fallbackServices.values()) fallback.dispose();
+    fallbackServices.clear();
     ensureWindowClosedListener(win);
     const service = createServiceForWindow(win, collection);
     windowServices.set(key, { win, service });
@@ -362,12 +438,18 @@ export function createBuiltInBrowserService(args: {
     }
     const first = windowServices.values().next().value as WindowBrowserEntry | undefined;
     if (first) return first.service;
+    let fallbackService = fallbackServices.get("window") ?? null;
     if (!fallbackService) {
       fallbackService = createBuiltInBrowserWindowService({
         getLogger: args.getLogger,
         onEvent: (payload) => args.onEvent?.(payload, null),
         collection: collectionForProjectRoot(null, "window"),
+        restoredState: stateStore?.restore("window") ?? null,
+        onStateChange: (state) => stateStore?.record("window", state),
+        permissionController,
+        networkRouter,
       });
+      fallbackServices.set("window", fallbackService);
     }
     return fallbackService;
   };
@@ -404,12 +486,18 @@ export function createBuiltInBrowserService(args: {
         ? activeWindow
         : null;
     if (!win) {
+      let fallbackService = fallbackServices.get("personal") ?? null;
       if (!fallbackService) {
         fallbackService = createBuiltInBrowserWindowService({
           getLogger: args.getLogger,
           onEvent: (payload) => args.onEvent?.(payload, null),
           collection: collectionForProjectRoot(null, "personal"),
+          restoredState: stateStore?.restore("personal") ?? null,
+          onStateChange: (state) => stateStore?.record("personal", state),
+          permissionController,
+          networkRouter,
         });
+        fallbackServices.set("personal", fallbackService);
       }
       return fallbackService;
     }
@@ -434,6 +522,8 @@ export function createBuiltInBrowserService(args: {
     const startedAt = Date.now();
     const browserSession = session.fromPartition(BROWSER_PARTITION);
     const results = await Promise.allSettled([
+      stateStore?.flush() ?? Promise.resolve(),
+      permissionController.flush(),
       Promise.resolve().then(() => browserSession.cookies.flushStore()),
       Promise.resolve().then(() => browserSession.flushStorageData()),
     ]);
@@ -443,6 +533,7 @@ export function createBuiltInBrowserService(args: {
     if (failures.length > 0) {
       throw new AggregateError(failures, "Failed to flush ADE browser storage.");
     }
+    lastStorageFlushAt = new Date().toISOString();
     try {
       args.getLogger?.().info("built_in_browser.storage_flushed", {
         partition: BROWSER_PARTITION,
@@ -455,6 +546,43 @@ export function createBuiltInBrowserService(args: {
 
   return {
     flushStorage,
+    listPermissions(): BuiltInBrowserPermissionsResult {
+      return { permissions: permissionController.list() };
+    },
+    async clearPermissions(input: BuiltInBrowserClearPermissionsArgs = {}): Promise<BuiltInBrowserClearPermissionsResult> {
+      const removed = await permissionController.clear(input);
+      return { removed, permissions: permissionController.list() };
+    },
+    async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
+      const browserSession = session.fromPartition(BROWSER_PARTITION);
+      const cookies = await browserSession.cookies.get({});
+      let cacheSizeBytes: number | null = null;
+      try {
+        cacheSizeBytes = await browserSession.getCacheSize();
+      } catch (error) {
+        args.getLogger?.().debug("built_in_browser.cache_size_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const cookieDomains = [...new Set(cookies
+        .map((cookie) => cookie.domain?.replace(/^\./, "").toLowerCase())
+        .filter((domain): domain is string => Boolean(domain)))]
+        .sort();
+      const persistentCookieCount = cookies.filter((cookie) => cookie.expirationDate != null).length;
+      return {
+        partition: BROWSER_PARTITION,
+        storageProfileKey: "global",
+        persistentProfile: true,
+        cookieCount: cookies.length,
+        persistentCookieCount,
+        sessionCookieCount: cookies.length - persistentCookieCount,
+        cookieDomains,
+        cacheSizeBytes,
+        persistedPermissionDecisionCount: permissionController.count(),
+        tabRestorationEnabled: Boolean(stateStore),
+        lastStorageFlushAt,
+      };
+    },
     attachToWindow(nextWin: BrowserWindow): void {
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
@@ -601,8 +729,8 @@ export function createBuiltInBrowserService(args: {
       }
       windowServices.clear();
       activeServiceKeyByWindow.clear();
-      fallbackService?.dispose();
-      fallbackService = null;
+      for (const fallback of fallbackServices.values()) fallback.dispose();
+      fallbackServices.clear();
       activeWindowId = null;
     },
   };
@@ -612,6 +740,10 @@ function createBuiltInBrowserWindowService(args: {
   getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
   collection: BrowserCollection;
+  restoredState?: BuiltInBrowserRestoredCollection | null;
+  onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
+  permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
+  networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
@@ -626,10 +758,12 @@ function createBuiltInBrowserWindowService(args: {
   let debuggerDetachListener: DebuggerDetachListener | null = null;
   let inspectListenerWebContents: WebContents | null = null;
   let browserDownloadListener: BrowserDownloadListener | null = null;
+  let unsubscribeNetworkObserver: (() => void) | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
+  let restoringTabs = false;
   const configuredWebContents = new WeakSet<WebContents>();
   const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
@@ -654,6 +788,14 @@ function createBuiltInBrowserWindowService(args: {
 
   const emitStatus = (): void => {
     const status = getStatus();
+    if (!restoringTabs && args.onStateChange) {
+      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+      const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
+      args.onStateChange({
+        tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
+        activeIndex,
+      });
+    }
     let key: string | null = null;
     try {
       key = JSON.stringify(status);
@@ -1181,6 +1323,9 @@ function createBuiltInBrowserWindowService(args: {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
     MANAGED_BROWSER_WEB_CONTENTS.add(wc);
+    wc.once("destroyed", () => {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
+    });
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -1420,21 +1565,12 @@ function createBuiltInBrowserWindowService(args: {
     const browserSession = browserSessionForProfile();
     configuredBrowserSession = browserSession;
     configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
-    const webRequest = browserSession.webRequest as unknown as {
-      onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
-      onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
-      onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
-    };
-    webRequest.onBeforeRequest?.((details, callback) => {
-      trackNetworkRequestStart(details);
-      callback?.({});
+    args.permissionController.configureSession(browserSession);
+    unsubscribeNetworkObserver = args.networkRouter.subscribe({
+      onRequestStarted: trackNetworkRequestStart,
+      onRequestFinished: trackNetworkRequestEnd,
     });
-    webRequest.onCompleted?.((details) => {
-      trackNetworkRequestEnd(details, null);
-    });
-    webRequest.onErrorOccurred?.((details) => {
-      trackNetworkRequestEnd(details, stringOrNull(details.error) ?? "request failed");
-    });
+    args.networkRouter.configureSession(browserSession);
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) {
@@ -1490,38 +1626,6 @@ function createBuiltInBrowserWindowService(args: {
       });
     };
     browserSession.on("will-download", browserDownloadListener);
-    browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
-      if (shouldAllowGoogleAuthPermissionCheck(permission, requestingOrigin, details)) {
-        logger()?.debug("built_in_browser.permission_check_allowed", {
-          permission,
-          requestingOrigin,
-          requestingUrl: details.requestingUrl ?? null,
-        });
-        return true;
-      }
-      logger()?.debug("built_in_browser.permission_check_denied", {
-        permission,
-        requestingOrigin,
-        requestingUrl: details.requestingUrl ?? null,
-      });
-      return false;
-    });
-    browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-      if (shouldAllowGoogleAuthPermissionRequest(permission, details)) {
-        logger()?.debug("built_in_browser.permission_request_allowed", {
-          permission,
-          requestingUrl: stringOrNull(details.requestingUrl),
-        });
-        callback(true);
-        return;
-      }
-      logger()?.debug("built_in_browser.permission_request_denied", {
-        permission,
-        requestingOrigin: "requestingOrigin" in details ? details.requestingOrigin : null,
-        requestingUrl: stringOrNull(details.requestingUrl),
-      });
-      callback(false);
-    });
     browserSessionConfigured = true;
   };
 
@@ -1574,6 +1678,7 @@ function createBuiltInBrowserWindowService(args: {
         && (!currentTab.view || win.contentView.children.includes(currentTab.view))
       ),
       partition: BROWSER_PARTITION,
+      storageProfileKey: "global",
       collectionKey: args.collection.key,
       collectionProjectRoot: args.collection.projectRoot,
       persistentProfile: true,
@@ -1789,6 +1894,9 @@ function createBuiltInBrowserWindowService(args: {
     tab.view = null;
     tab.webContents = nextWebContents;
     tab.ownsWebContents = false;
+    if (previousWebContents.id !== nextWebContents.id) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(previousWebContents);
+    }
     if (!activeTabId) activeTabId = tab.id;
 
     if (previousOwned && previousWebContents.id !== nextWebContents.id && !previousWebContents.isDestroyed()) {
@@ -1917,6 +2025,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     const [removed] = tabs.splice(index, 1);
     if (removed) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
       endSessionsForTab(removed.id);
       if (removed.view && win && !win.isDestroyed()) {
         try {
@@ -2307,8 +2416,11 @@ function createBuiltInBrowserWindowService(args: {
       winClosedListener = null;
     }
     removeBrowserDownloadListener();
+    unsubscribeNetworkObserver?.();
+    unsubscribeNetworkObserver = null;
     removeTabViewsFromWindow();
     for (const tab of tabs) {
+      MANAGED_BROWSER_WEB_CONTENTS.delete(tab.webContents);
       if (tab.ownsWebContents) {
         try {
           tab.webContents.close();
@@ -2978,6 +3090,32 @@ function createBuiltInBrowserWindowService(args: {
     await fs.writeFile(jsonPath, `${JSON.stringify(observation, null, 2)}\n`, "utf8");
     return observation;
   };
+
+  const restorePersistedTabs = (): void => {
+    const restored = args.restoredState;
+    if (!restored?.tabs.length) return;
+    restoringTabs = true;
+    const restoredTabs = restored.tabs.slice(0, MAX_BROWSER_TABS).map(() => createTabState());
+    tabs = restoredTabs;
+    activeTabId = restoredTabs[restored.activeIndex]?.id ?? restoredTabs[0]?.id ?? null;
+    logger()?.info("built_in_browser.tabs_restore_started", {
+      collectionKey: args.collection.key,
+      tabCount: restoredTabs.length,
+    });
+    void Promise.allSettled(restoredTabs.map((tab, index) => (
+      tab.webContents.loadURL(restored.tabs[index]?.url ?? "about:blank")
+    ))).then((results) => {
+      restoringTabs = false;
+      logger()?.info("built_in_browser.tabs_restore_completed", {
+        collectionKey: args.collection.key,
+        tabCount: restoredTabs.length,
+        failedCount: results.filter((result) => result.status === "rejected").length,
+      });
+      emitStatus();
+    });
+  };
+
+  restorePersistedTabs();
 
   return {
     attachToWindow,

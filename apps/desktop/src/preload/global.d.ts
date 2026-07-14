@@ -584,10 +584,14 @@ import type {
   AppControlTypeTextArgs,
   BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserClearPermissionsArgs,
+  BuiltInBrowserClearPermissionsResult,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserOpenPanelArgs,
+  BuiltInBrowserPermissionsResult,
+  BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
@@ -1622,6 +1626,11 @@ declare global {
       };
       builtInBrowser: {
         getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
+        getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
+        listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
+        clearPermissions: (
+          args?: BuiltInBrowserClearPermissionsArgs,
+        ) => Promise<BuiltInBrowserClearPermissionsResult>;
         showPanel: (
           args?: BuiltInBrowserOpenPanelArgs,
         ) => Promise<BuiltInBrowserStatus>;

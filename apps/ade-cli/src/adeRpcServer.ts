@@ -2427,6 +2427,13 @@ function scopeBuiltInBrowserAdeActionArgs(
   if (!callerChatSessionId) return browserArgs;
 
   const method = `run_ade_action:built_in_browser.${action}`;
+  if (
+    action === "getProfileDiagnostics"
+    || action === "listPermissions"
+    || action === "clearPermissions"
+  ) {
+    builtInBrowserAccessDenied(method);
+  }
   const callerLaneId = resolveChatSessionLaneId(runtime, session);
   const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
   const requestedLaneId = asOptionalTrimmedString(browserArgs.laneId);

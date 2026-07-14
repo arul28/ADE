@@ -3054,6 +3054,18 @@ describe("adeRpcServer", () => {
       args: { tabId: "tab-1", chatSessionId: "chat-2" },
     });
     expect(impersonated.isError).toBe(true);
+    const diagnostics = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "getProfileDiagnostics",
+      args: {},
+    });
+    expect(diagnostics.isError).toBe(true);
+    const permissionClear = await callTool(handler, "run_ade_action", {
+      domain: "built_in_browser",
+      action: "clearPermissions",
+      args: {},
+    });
+    expect(permissionClear.isError).toBe(true);
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
   });
 

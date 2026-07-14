@@ -1870,6 +1870,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser diagnostics --text      Show non-secret global profile health
+    $ ade --socket browser permissions --text      List remembered site permissions
+    $ ade --socket browser permissions clear --origin https://example.com
+    $ ade --socket browser permissions clear --all
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
@@ -9028,6 +9032,39 @@ function buildBrowserPlan(args: string[]): CliPlan {
       label: "browser actions",
       steps: [listActionsStep("actions", "built_in_browser")],
     };
+  if (sub === "diagnostics" || sub === "profile" || sub === "profile-diagnostics") {
+    return {
+      kind: "execute",
+      label: "browser profile diagnostics",
+      steps: [actionStep("result", "built_in_browser", "getProfileDiagnostics", {})],
+    };
+  }
+  if (sub === "permissions" || sub === "permission") {
+    const mode = firstPositional(args) ?? "list";
+    if (mode === "list" || mode === "ls" || mode === "status") {
+      return {
+        kind: "execute",
+        label: "browser permissions",
+        steps: [actionStep("result", "built_in_browser", "listPermissions", {})],
+      };
+    }
+    if (mode === "clear" || mode === "reset" || mode === "remove") {
+      const origin = readValue(args, ["--origin", "--site"]);
+      const permission = readValue(args, ["--permission"]);
+      if (!origin && !permission && !readFlag(args, ["--all"])) {
+        throw new CliUsageError("browser permissions clear requires --origin, --permission, or --all.");
+      }
+      return {
+        kind: "execute",
+        label: "browser permissions clear",
+        steps: [actionStep("result", "built_in_browser", "clearPermissions", {
+          ...(origin ? { origin } : {}),
+          ...(permission ? { permission } : {}),
+        })],
+      };
+    }
+    throw new CliUsageError(`Unknown browser permissions command: ${mode}`);
+  }
   if (sub === "status" || sub === "tabs" || sub === "list") {
     return {
       kind: "execute",

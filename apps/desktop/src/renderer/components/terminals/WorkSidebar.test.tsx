@@ -278,6 +278,7 @@ const appControlContextItem: AppControlContextItem = {
 const defaultBrowserStatus: BuiltInBrowserStatus = {
   attached: false,
   partition: "persist:ade-browser",
+  storageProfileKey: "global",
   collectionKey: "window",
   collectionProjectRoot: null,
   persistentProfile: true,

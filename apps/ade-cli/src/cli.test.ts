@@ -6810,6 +6810,42 @@ describe("ADE CLI", () => {
       arguments: { domain: "built_in_browser", action: "showPanel", args: {} },
     });
 
+    const diagnostics = buildCliPlan(["browser", "diagnostics"]);
+    expect(diagnostics.kind).toBe("execute");
+    if (diagnostics.kind !== "execute") return;
+    expect(diagnostics.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "getProfileDiagnostics", args: {} },
+    });
+
+    const permissions = buildCliPlan(["browser", "permissions"]);
+    expect(permissions.kind).toBe("execute");
+    if (permissions.kind !== "execute") return;
+    expect(permissions.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "listPermissions", args: {} },
+    });
+
+    const clearPermission = buildCliPlan([
+      "browser",
+      "permissions",
+      "clear",
+      "--origin",
+      "https://example.com",
+      "--permission",
+      "geolocation",
+    ]);
+    expect(clearPermission.kind).toBe("execute");
+    if (clearPermission.kind !== "execute") return;
+    expect(clearPermission.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "clearPermissions",
+        args: { origin: "https://example.com", permission: "geolocation" },
+      },
+    });
+    expect(() => buildCliPlan(["browser", "permissions", "clear"])).toThrow(
+      /requires --origin, --permission, or --all/,
+    );
+
     const panelWithUrl = buildCliPlan([
       "browser",
       "panel",

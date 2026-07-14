@@ -21,6 +21,9 @@ type BridgeReturn<Method extends BuiltInBrowserDesktopBridgeMethod> =
 
 export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "getStatus",
+  "getProfileDiagnostics",
+  "listPermissions",
+  "clearPermissions",
   "claim",
   "startSession",
   "listSessions",
