@@ -56,6 +56,7 @@
             "icon": "code-branch",
             "pages": [
               "lanes/overview",
+              "lanes/repos-and-worktrees",
               "lanes/creating",
               "lanes/stacks",
               "lanes/environment"

@@ -20,6 +20,10 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
+import {
+  inspectProjectPathCached,
+  invalidateProjectPathInspectionCache,
+} from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   removeProjectIconOverride,
@@ -363,6 +367,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectPathInspection,
   ProjectIcon,
   ProjectInfo,
   OpenProjectBinding,
@@ -3647,6 +3652,12 @@ export function registerIpc({
     }
   );
 
+  ipcMain.handle(
+    IPC.projectInspectPath,
+    async (_event, arg: { path?: unknown; fresh?: unknown } = {}): Promise<ProjectPathInspection> =>
+      inspectProjectPathCached(String(arg?.path ?? ""), { fresh: arg?.fresh === true }),
+  );
+
   // Project-root allowlist for icon resolution. Tab/catalog icons are
   // resolved for the *current* project root and any *recently opened*
   // project root — including ones that live outside Downloads/Documents/Temp
@@ -5138,6 +5149,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.attach(arg);
+    invalidateProjectPathInspectionCache();
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;

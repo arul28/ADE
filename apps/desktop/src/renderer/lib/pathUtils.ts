@@ -2,6 +2,22 @@ function normalizeSeparators(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
+/** Abbreviate the user's home directory to `~` for compact local paths. */
+export function abbreviateHome(value: string): string {
+  // HOME isn't reliably set on Windows; fall back to USERPROFILE so Windows
+  // local paths still abbreviate. Compare with separators normalized so a
+  // backslash home prefix still matches a normalized value.
+  const rawHome = typeof process !== "undefined"
+    ? (process.env?.HOME ?? process.env?.USERPROFILE ?? "")
+    : "";
+  const home = normalizeSeparators(rawHome);
+  const normalized = normalizeSeparators(value);
+  if (home && (normalized === home || normalized.startsWith(`${home}/`))) {
+    return `~${normalized.slice(home.length)}`;
+  }
+  return value;
+}
+
 function isWindowsDriveRoot(value: string): boolean {
   return /^[A-Za-z]:\/$/.test(value);
 }

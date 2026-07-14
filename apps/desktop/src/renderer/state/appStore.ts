@@ -2,7 +2,7 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
@@ -769,6 +769,12 @@ export type AppState = {
       }
     | null;
   projectTransitionError: ProjectTransitionError | null;
+  /**
+   * Set when an in-app open targets an EXTERNAL linked git worktree whose owning
+   * repo is resolvable. Drives WorktreeOpenDialog; the open itself is deferred
+   * until the user picks lane-vs-standalone. Null when no prompt is pending.
+   */
+  worktreeOpenPrompt: { inspection: ProjectPathInspection } | null;
   isNewTabOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
@@ -936,7 +942,11 @@ export type AppState = {
     includeAutoRebaseStatus?: boolean;
   }) => Promise<void>;
   openRepo: () => Promise<ProjectInfo | null>;
-  switchProjectToPath: (rootPath: string) => Promise<void>;
+  switchProjectToPath: (
+    rootPath: string,
+    opts?: { skipWorktreeGate?: boolean },
+  ) => Promise<void>;
+  dismissWorktreeOpenPrompt: () => void;
   switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
   closeProject: () => Promise<void>;
 };
@@ -1079,6 +1089,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   showWelcome: true,
   projectTransition: null,
   projectTransitionError: null,
+  worktreeOpenPrompt: null,
   isNewTabOpen: false,
   personalChatsTabOpen: false,
   laneSnapshots: [],
@@ -1212,6 +1223,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+  dismissWorktreeOpenPrompt: () => set({ worktreeOpenPrompt: null }),
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
     set((prev) => ({
@@ -1745,7 +1757,29 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  switchProjectToPath: async (rootPath: string) => {
+  switchProjectToPath: async (
+    rootPath: string,
+    opts?: { skipWorktreeGate?: boolean },
+  ) => {
+    // Worktree gate: when opening a path that is NOT already a warm tab, inspect
+    // it first. If it's an external linked worktree whose owning repo resolves,
+    // surface the WorktreeOpenDialog instead of silently creating a standalone
+    // project — and defer the open until the user chooses. Runs before any state
+    // mutation so an early return leaves no dangling "switching" transition.
+    // Warm-tab switches (rootPath already in openProjectTabRoots) bypass the gate
+    // entirely. inspectPath failures fall through to the normal open — the gate
+    // must never break project opening.
+    if (!opts?.skipWorktreeGate && !get().openProjectTabRoots.includes(rootPath)) {
+      try {
+        const inspection = await window.ade.project.inspectPath(rootPath);
+        if (inspection.kind === "linked-worktree" && inspection.parent !== null) {
+          set({ worktreeOpenPrompt: { inspection } });
+          return;
+        }
+      } catch {
+        // Ignore — proceed with the normal open below.
+      }
+    }
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;

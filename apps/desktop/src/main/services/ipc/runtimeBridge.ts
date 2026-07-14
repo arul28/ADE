@@ -56,9 +56,20 @@ import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { runGit } from "../git/git";
 import { getProjectWorkSummary } from "../projects/projectDetailService";
+import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { readGlobalState } from "../state/globalState";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+
+// Lane attach/adopt performed through the runtime action path never touches the
+// in-process IPC.lanesAttach handler, so the project-path inspection cache must
+// be invalidated here too or it can serve a pre-attach result for up to its TTL.
+const LANE_INSPECTION_INVALIDATING_ACTIONS = new Set(["attach", "adoptAttached"]);
+function invalidateInspectionCacheForLaneAction(domain: string, action: string): void {
+  if (domain === "lane" && LANE_INSPECTION_INVALIDATING_ACTIONS.has(action)) {
+    invalidateProjectPathInspectionCache();
+  }
+}
 
 type RuntimeBridgeArgs = {
   appVersion: string;
@@ -931,11 +942,13 @@ export function registerRuntimeBridge({
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await remoteConnectionService.callAction(
+      const result = await remoteConnectionService.callAction(
         target.id,
         projectId,
         actionRequest,
       );
+      invalidateInspectionCacheForLaneAction(domain, action);
+      return result;
     },
   );
 
@@ -1065,10 +1078,12 @@ export function registerRuntimeBridge({
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await localRuntimeConnectionPool.callActionForRoot(
+      const result = await localRuntimeConnectionPool.callActionForRoot(
         rootPath,
         actionRequest,
       );
+      invalidateInspectionCacheForLaneAction(domain, action);
+      return result;
     },
   );
 

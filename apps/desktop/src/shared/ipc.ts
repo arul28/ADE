@@ -36,6 +36,7 @@ export const IPC = {
   projectChooseDirectory: "ade.project.chooseDirectory",
   projectBrowseDirectories: "ade.project.browseDirectories",
   projectGetDetail: "ade.project.getDetail",
+  projectInspectPath: "ade.project.inspectPath",
   projectResolveIcon: "ade.project.resolveIcon",
   projectChooseIcon: "ade.project.chooseIcon",
   projectRemoveIcon: "ade.project.removeIcon",

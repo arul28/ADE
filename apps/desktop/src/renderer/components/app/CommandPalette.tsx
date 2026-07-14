@@ -16,6 +16,7 @@ import {
   FolderOpen,
   MagnifyingGlass,
   Stack,
+  TreeStructure,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -31,6 +32,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
+  WorktreeParentRef,
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
@@ -53,6 +55,7 @@ import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
+import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { ReadmeMarkdown } from "./ReadmeMarkdown";
 import { RemoteProjectOpenDialog } from "../projects/RemoteProjectOpenDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
@@ -99,6 +102,7 @@ type BrowseRow = {
   path: string;
   kind: "parent" | "directory";
   isGitRepo: boolean;
+  worktreeOf?: WorktreeParentRef;
 };
 
 type ProjectLocation =
@@ -837,6 +841,7 @@ export function CommandPalette({
         path: withTrailingSeparator(entry.fullPath),
         kind: "directory",
         isGitRepo: entry.isGitRepo,
+        worktreeOf: entry.worktreeOf,
       });
     }
     return rows;
@@ -1991,8 +1996,16 @@ export function CommandPalette({
                                           </span>
                                         )}
                                         <div className="min-w-0">
-                                          <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                            {row.title}
+                                          <div className="flex min-w-0 items-center gap-1.5">
+                                            <span className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                              {row.title}
+                                            </span>
+                                            {row.worktreeOf ? (
+                                              <WorktreeBadge
+                                                worktreeOf={row.worktreeOf}
+                                                compact
+                                              />
+                                            ) : null}
                                           </div>
                                           <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                                             {row.hint}
@@ -2505,6 +2518,12 @@ function BrowsePreview({
           <div className="truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
             {highlightedPath}
           </div>
+          {showingDetailForPath?.worktreeOf ? (
+            <div className="text-[11px] leading-relaxed text-[var(--color-muted-fg)]">
+              Opening will offer to add it as a lane in{" "}
+              {showingDetailForPath.worktreeOf.displayName}.
+            </div>
+          ) : null}
         </div>
 
         {isLoading ? (
@@ -2544,6 +2563,11 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
+        {detail.worktreeOf && (
+          <StatusChip icon={<TreeStructure size={11} weight="bold" />} tone="accent">
+            worktree of {detail.worktreeOf.displayName}
+          </StatusChip>
+        )}
         {detail.branchName && (
           <StatusChip
             icon={<BranchIcon size={11} weight="bold" />}

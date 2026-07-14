@@ -86,6 +86,22 @@ Related pages for the broader "home" experience:
 - `apps/desktop/src/renderer/components/app/CommandPalette.tsx` —
   keyboard-first project browser and create/clone/open flows used by the
   welcome screen and global command palette.
+- `apps/desktop/src/renderer/components/projects/WorktreeOpenDialog.tsx` —
+  interstitial shown when an in-app open targets an external linked git
+  worktree (driven by `appStore.worktreeOpenPrompt`, mounted in
+  `AppShell`). Offers the recommended lane action plus the
+  open-as-separate-project escape hatch.
+- `apps/desktop/src/renderer/components/projects/MergeWorktreeProjectDialog.tsx`
+  — merges a legacy worktree-opened-as-project recents row into its owning
+  project (attach as lane + `forgetRecent`), opened from the merge
+  affordance on badged welcome recents rows.
+- `apps/desktop/src/renderer/components/projects/worktreeLaneFlow.ts` —
+  shared open-worktree-as-lane flow (`openWorktreeAsLane`,
+  `deriveLaneName`) used by both dialogs, including the
+  `lane_already_linked` coded-error recovery path.
+- `apps/desktop/src/renderer/components/projects/WorktreeBadge.tsx` —
+  "worktree of X" accent badge rendered on welcome recents rows, palette
+  browse rows (compact), and the browse preview pane.
 - `apps/desktop/src/renderer/components/app/ReadmeMarkdown.tsx` —
   sanitized README preview renderer for the project browser. It preserves
   common README alignment markup but renders image sources as alt text so
@@ -162,10 +178,36 @@ main process because they execute before a runtime binding exists.
   lane count and last-opened timestamp. Remote recent rows are ignored
   for local detail metadata so a remote and local project with the same
   path string cannot collide.
+  The detail also carries `worktreeOf` (via `resolveWorktreeParentRef`)
+  so the browse preview can badge linked worktrees; `projectBrowserService`
+  populates the same field on `ProjectBrowseEntry` rows for git entries
+  using only the cheap `.git` gitdir-pointer read.
   `registerIpc.ts` wraps `project.getDetail(rootPath)` in a short
   per-root promise cache (10 s, capped at 64 entries) so moving through
   the project browser does not recompute git/README/language metadata
   for the same highlighted path on every render.
+- `apps/desktop/src/main/services/projects/projectPathInspector.ts` —
+  backs `ade.project.inspectPath`: classifies a path as `not-git` /
+  `repo-root` / `ade-managed-worktree` / `linked-worktree` via
+  `git rev-parse` (toplevel, then `--git-dir` vs `--git-common-dir`),
+  resolves the linked parent working tree (bare repos yield no parent),
+  reads the current branch ref, looks up `parent.existingLane` in the
+  owning project's `.ade/ade.db`, and counts `standaloneState`
+  chats/lanes in the worktree's own `.ade/ade.db` (including legacy
+  `tool_type = 'other'` chat rows). `inspectProjectPathCached` adds the
+  per-path promise cache (10 s TTL, 64 entries, `fresh` bypass);
+  `invalidateProjectPathInspectionCache` is called after lane
+  attach/adopt from `registerIpc.ts` and `runtimeBridge.ts`.
+- `apps/desktop/src/main/services/projects/worktreeParent.ts` — pure
+  `.git`-file helpers: `parseGitDirPointer` / `readGitDirPointer`,
+  `resolveGitMetadataDirectory` (shared with the recents lane count),
+  and `resolveWorktreeParentRef`, which maps a linked worktree to its
+  parent repo (`<parent>/.git/worktrees/<name>` shape) or to the owning
+  project root for ADE-managed worktrees — all without shelling out.
+- `apps/desktop/src/main/services/projects/readOnlySqlite.ts` — shared
+  read-only `node:sqlite` `DatabaseSync` opener plus `hasTable` /
+  `hasColumn` guards, used by `recentProjectSummary.ts` and
+  `projectPathInspector.ts` for foreign-project `.ade/ade.db` reads.
 - `apps/desktop/src/main/services/projects/projectIconResolver.ts` —
   best-effort icon discovery and user-overridable selection for a
   project root. Discovery walks a fixed list of base directories
@@ -244,7 +286,10 @@ Shared types:
   `iconDataUrl`, the host-resolved logo for the remote project tab),
   and `ProjectDetail` dirty breakdowns consumed by the TopBar tab
   strip, welcome rows, project browser preview, and mobile-facing
-  project catalog.
+  project catalog. Also home to the worktree-consolidation types:
+  `WorktreeParentRef` (the optional `worktreeOf` field on
+  `ProjectDetail`, `RecentProjectSummary`, and `ProjectBrowseEntry`),
+  `WorktreeParentInfo`, and `ProjectPathInspection`.
 
 Preload bridge:
 
@@ -285,7 +330,66 @@ a prior session. Shows:
 
 `registerIpc.ts` caches converted recent summaries for 5 seconds keyed by
 root/display/last-opened plus remote identity and pinned state, and clears
-the cache after forget / reorder / pin writes. Local project rows open via
+the cache after forget / reorder / pin writes.
+
+### Worktree-as-project consolidation
+
+Opening a directory that is an external linked git worktree (created with
+`git worktree add` outside ADE) no longer silently creates a standalone
+project. `appStore.switchProjectToPath(rootPath, opts?)` gates at the top of
+the funnel: for paths not already open as a project tab it calls
+`window.ade.project.inspectPath(path, { fresh? })` (IPC
+`ade.project.inspectPath`, handled by `inspectProjectPathCached` in
+`projectPathInspector.ts` — a per-path promise cache, 10 s TTL capped at 64
+entries, that `fresh: true` bypasses). The cache is cleared after every
+lane attach/adopt on both write paths: the in-process `IPC.lanesAttach`
+handler in `registerIpc.ts` and the runtime-bridge action dispatch
+(`lane` domain, `attach` / `adoptAttached`) in `runtimeBridge.ts`, which
+never touches the in-process handler. When the inspection reports
+`kind: "linked-worktree"` with a resolvable non-bare parent working tree,
+the store sets `worktreeOpenPrompt` and returns without opening;
+inspection failures fall through to the normal open so the gate can never
+break project opening. `WorktreeOpenDialog` (mounted in `AppShell`) then
+offers the recommended action — open the existing lane in the owning
+project, attach the worktree as a lane there, or add the parent repo as the
+project first — plus a quiet "Open as a separate project instead" escape
+hatch (`switchProjectToPath(path, { skipWorktreeGate: true })`). Bare or
+unresolvable parents skip the prompt and open standalone.
+
+The attach flow itself lives in `worktreeLaneFlow.ts`
+(`openWorktreeAsLane`): it switches to the parent project (gate skipped),
+routes to `parent.existingLane` when the inspection already found one, and
+otherwise calls `lanes.attach` with a lane name derived from the branch ref
+(falling back to the worktree basename). `laneService.attach` now throws
+coded `lane_already_linked` errors (via `codedError` /
+`encodeCodedErrorMessage`) for already-linked paths and branches; the flow
+recovers from that code by re-inspecting with `fresh: true` and navigating
+to the lane it finds, rethrowing only when no lane resolves. Attach also
+emits a `lane-created` lifecycle event, so the global lane toast fires.
+
+The inspection carries `parent.existingLane` (read from the owning
+project's `.ade/ade.db` via the shared read-only `DatabaseSync` helpers in
+`readOnlySqlite.ts`) and `standaloneState` chat/lane counts read from the
+worktree's own `.ade/ade.db`. `MergeWorktreeProjectDialog` (opened from a
+welcome recents row's merge affordance) uses both: it re-inspects with
+`fresh: true` on open, warns that existing chats/lanes stay under the
+retired project, then runs `openWorktreeAsLane` and retires the recents row
+with `forgetRecent`. The forget is fail-soft — the lane exists by then, so
+a forget failure never reports the merge as failed — while a merge failure
+after the project switch already happened surfaces a persistent
+"Merge failed" error toast (the dialog's inline error is no longer
+visible on the new project).
+
+`worktreeOf` (`WorktreeParentRef`, derived from the `.git` file's
+`gitdir:` pointer in `worktreeParent.ts` without shelling out to git) is
+populated on `ProjectDetail`, `RecentProjectSummary`, and
+`ProjectBrowseEntry`; the welcome recents rows, palette browse rows, and
+`BrowsePreview` render it via `WorktreeBadge` ("worktree of X", compact
+label in browse rows), and badged local recents rows expose the merge
+affordance. Known v1 bypasses: the OS "Open repository" dialog and inbound
+deeplinks reach the main process's `switchProjectFromDialog` directly, and
+TopBar warm-tab switches pass `skipWorktreeGate`, so none of them show the
+prompt. Local project rows open via
 `appStore.switchProjectToPath(path)` and the normal project open flow
 (`adeProjectService.openProject`). Connected remote rows open via
 `appStore.switchRemoteProject(targetId, projectId)`; disconnected remote

@@ -1239,6 +1239,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects add /path/to/project
     $ ade projects remove <project-id>
     $ ade projects touch <project-id>
+    $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   code: `${ADE_BANNER}
   ADE Code
@@ -13063,8 +13064,25 @@ function buildProjectsPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "inspect") {
+    const targetPath = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
+    return {
+      kind: "execute",
+      label: "projects inspect",
+      steps: [
+        {
+          key: "result",
+          method: "projects.inspectPath",
+          params: { path: targetPath },
+        },
+      ],
+    };
+  }
   throw new CliUsageError(
-    `projects supports list, add, remove, or touch; got '${sub}'.`,
+    `projects supports list, add, remove, touch, or inspect; got '${sub}'.`,
   );
 }
 

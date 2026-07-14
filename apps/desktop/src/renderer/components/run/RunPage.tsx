@@ -7,6 +7,7 @@ import {
   ChatCircleDots,
   DesktopTower,
   Folder,
+  GitMerge,
   Play,
   Plus,
   PushPin,
@@ -26,7 +27,10 @@ import {
 } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
+import { MergeWorktreeProjectDialog } from "../projects/MergeWorktreeProjectDialog";
+import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
+import { abbreviateHome } from "../../lib/pathUtils";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import {
   AddCommandDialog,
@@ -438,16 +442,6 @@ function recentKey(rp: RecentProjectSummary): string {
     : rp.rootPath;
 }
 
-// Abbreviate the user's home directory to `~` for compact local paths.
-function abbreviateHome(path: string): string {
-  const home =
-    typeof process !== "undefined" ? (process.env?.HOME ?? "") : "";
-  if (home && (path === home || path.startsWith(`${home}/`))) {
-    return `~${path.slice(home.length)}`;
-  }
-  return path;
-}
-
 // A single recents row. Local rows resolve a project icon (and tint their tile
 // with the sampled accent); remote rows use a host-resolved icon when present,
 // plus the amber machine badge and connection dot. Offline remote rows are
@@ -460,6 +454,7 @@ function RecentProjectRow({
   onOpen,
   onTogglePin,
   onForget,
+  onMerge,
 }: {
   rp: RecentProjectSummary;
   connectionState: RemoteRuntimeConnectionState | null;
@@ -468,6 +463,7 @@ function RecentProjectRow({
   onOpen: () => void;
   onTogglePin: () => void;
   onForget: () => void;
+  onMerge?: () => void;
 }) {
   const [accentColor, setAccentColor] = useState<string | null>(null);
   const isRemote = rp.kind === "remote" && Boolean(rp.remote);
@@ -487,6 +483,7 @@ function RecentProjectRow({
   const tileColor = tileAccent ?? COLORS.accent;
   const edgeColor = isRemote ? REMOTE_ACCENT : (tileAccent ?? COLORS.accent);
   const showRowActions = !connecting;
+  const showMergeAction = Boolean(onMerge && rp.worktreeOf && showRowActions);
 
   const dotColor = connected
     ? "#34D399"
@@ -505,7 +502,7 @@ function RecentProjectRow({
           alignItems: "center",
           gap: 12,
           padding: "12px 16px",
-          paddingRight: showRowActions ? 64 : 16,
+          paddingRight: showMergeAction ? 90 : showRowActions ? 64 : 16,
           width: "100%",
           background: "rgba(255,255,255,0.02)",
           border: `1px solid ${COLORS.border}`,
@@ -625,6 +622,9 @@ function RecentProjectRow({
                 {rp.remote.runtimeName}
               </span>
             ) : null}
+            {!isRemote && rp.worktreeOf ? (
+              <WorktreeBadge worktreeOf={rp.worktreeOf} />
+            ) : null}
           </div>
           <div
             style={{
@@ -710,6 +710,42 @@ function RecentProjectRow({
             zIndex: 2,
           }}
         >
+          {onMerge && rp.worktreeOf ? (
+            <button
+              type="button"
+              aria-label={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
+              title={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onMerge();
+              }}
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: 6,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                color: COLORS.textDim,
+                cursor: "pointer",
+                transition: "background 0.15s ease, color 0.15s ease",
+                padding: 0,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background =
+                  "color-mix(in srgb, var(--color-accent) 22%, transparent)";
+                e.currentTarget.style.color = COLORS.accent;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                e.currentTarget.style.color = COLORS.textDim;
+              }}
+            >
+              <GitMerge size={12} weight="bold" />
+            </button>
+          ) : null}
           <button
             type="button"
             aria-label={
@@ -830,6 +866,9 @@ function WelcomeScreen() {
     () => new Set(),
   );
   const [rowError, setRowError] = useState<string | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<RecentProjectSummary | null>(
+    null,
+  );
   const [isDragOver, setIsDragOver] = useState(false);
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
@@ -1265,6 +1304,7 @@ function WelcomeScreen() {
                   connectingKeys.has(key) ? "connecting" : baseState;
                 const isOpenLocal =
                   !isRemote && project?.rootPath === rp.rootPath;
+                const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
                 return (
                   <RecentProjectRow
                     key={key}
@@ -1275,6 +1315,7 @@ function WelcomeScreen() {
                     onOpen={() => handleOpen(rp)}
                     onTogglePin={() => void handleTogglePin(rp)}
                     onForget={() => handleForget(rp)}
+                    onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
                   />
                 );
               })}
@@ -1330,6 +1371,18 @@ function WelcomeScreen() {
             Undo
           </button>
         </div>
+      ) : null}
+
+      {mergeTarget ? (
+        <MergeWorktreeProjectDialog
+          recent={mergeTarget}
+          recentKey={recentKey(mergeTarget)}
+          onClose={() => setMergeTarget(null)}
+          onRecentsUpdated={(next) => {
+            setRecentProjects(next);
+            setMergeTarget(null);
+          }}
+        />
       ) : null}
 
       <CommandPalette

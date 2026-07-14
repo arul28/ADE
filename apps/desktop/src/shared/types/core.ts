@@ -213,6 +213,31 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type WorktreeParentRef = {
+  rootPath: string;
+  displayName: string;
+};
+
+export type WorktreeParentInfo = WorktreeParentRef & {
+  isKnownAdeProject: boolean;
+  existingLane: {
+    id: string;
+    name: string;
+    branchRef: string;
+    color: string | null;
+    laneType: string;
+  } | null;
+};
+
+export type ProjectPathInspection = {
+  inputPath: string;
+  worktreeRoot: string | null;
+  kind: "not-git" | "repo-root" | "ade-managed-worktree" | "linked-worktree";
+  branchRef: string | null;
+  parent: WorktreeParentInfo | null;
+  standaloneState: { chatCount: number; laneCount: number } | null;
+};
+
 export type OpenProjectBinding =
   | {
       kind: "local";
@@ -339,6 +364,11 @@ export type ProjectBrowseEntry = {
   name: string;
   fullPath: string;
   isGitRepo: boolean;
+  /**
+   * When the entry is a linked git worktree, the repo it belongs to. Populated
+   * cheaply from the `.git` gitdir pointer (no git shell-out) for git entries.
+   */
+  worktreeOf?: WorktreeParentRef;
 };
 
 export type ProjectLanguageShare = {
@@ -361,6 +391,7 @@ export type ProjectDirtyBreakdown = {
 export type ProjectDetail = {
   rootPath: string;
   isGitRepo: boolean;
+  worktreeOf?: WorktreeParentRef;
   branchName: string | null;
   dirtyCount: number | null;
   /** Split of the dirty count into staged / unstaged / untracked for the hover tooltip. */
@@ -410,6 +441,7 @@ export type RecentProjectSummary = {
   displayName: string;
   lastOpenedAt: string;
   exists: boolean;
+  worktreeOf?: WorktreeParentRef;
   laneCount?: number;
   /** Defaults to "local" when absent (back-compat with older callers). */
   kind?: "local" | "remote";

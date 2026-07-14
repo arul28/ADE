@@ -176,6 +176,56 @@ describe("CommandPalette", () => {
     });
   });
 
+  it("shows a worktree-of badge and callout in the browse preview for a linked worktree", async () => {
+    getDetail.mockResolvedValueOnce({
+      rootPath: "/Users/admin/Projects/app-feature",
+      isGitRepo: true,
+      worktreeOf: { rootPath: "/Users/admin/Projects/app", displayName: "app" },
+      branchName: "feature/x",
+      dirtyCount: 0,
+      dirtyBreakdown: null,
+      aheadBehind: null,
+      lastCommit: null,
+      readmeExcerpt: null,
+      languages: [],
+      laneCount: null,
+      lastOpenedAt: null,
+      subdirectoryCount: null,
+    });
+    browseDirectories.mockResolvedValue({
+      inputPath: "/Users/admin/Projects/app-feature",
+      resolvedPath: "/Users/admin/Projects/app-feature",
+      directoryPath: "/Users/admin/Projects/app-feature",
+      // No parent row so the single git entry auto-highlights and its detail loads.
+      parentPath: null,
+      exactDirectoryPath: "/Users/admin/Projects/app-feature",
+      openableProjectRoot: null,
+      entries: [
+        {
+          name: "app-feature",
+          fullPath: "/Users/admin/Projects/app-feature",
+          isGitRepo: true,
+          worktreeOf: {
+            rootPath: "/Users/admin/Projects/app",
+            displayName: "app",
+          },
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <CommandPalette open intent="project-browse" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    // The preview chip (RepoDetailBlocks) is distinct from the row's short chip.
+    expect(await screen.findByText("worktree of app")).toBeTruthy();
+    expect(
+      screen.getByText(/Opening will offer to add it as a lane in app\./),
+    ).toBeTruthy();
+  });
+
   it("can fall back to the directory picker from the browser footer", async () => {
     const switchProjectToPath = vi.fn(async () => {});
     seedStore({ switchProjectToPath });
