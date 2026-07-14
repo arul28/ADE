@@ -66,7 +66,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { normalizeAdeRuntimeRole } from "./runtimeRoles";
+import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
@@ -2950,30 +2950,6 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
   return callerCtx.role === "cto"
     || callerCtx.role === "orchestrator"
     || callerCtx.role === "agent";
-}
-
-function canDefaultRoleServeRequestedRole(
-  defaultRole: SessionIdentity["role"] | null,
-  requestedRole: SessionIdentity["role"],
-): boolean {
-  if (requestedRole === "external") return true;
-  if (!defaultRole) return false;
-  if (defaultRole === "cto") return true;
-  if (defaultRole === "orchestrator") return requestedRole !== "cto";
-  if (defaultRole === "agent") return requestedRole === "agent";
-  if (defaultRole === "evaluator") return requestedRole === "evaluator";
-  return false;
-}
-
-function resolveSessionRole(
-  defaultRole: SessionIdentity["role"] | null,
-  requestedRole: SessionIdentity["role"] | null,
-): SessionIdentity["role"] {
-  if (!defaultRole) return "external";
-  if (!requestedRole) return defaultRole;
-  return canDefaultRoleServeRequestedRole(defaultRole, requestedRole)
-    ? requestedRole
-    : defaultRole;
 }
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {

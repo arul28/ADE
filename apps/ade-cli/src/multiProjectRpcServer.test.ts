@@ -28,6 +28,48 @@ function createRegistry() {
   return { root, projectRoot, expectedProjectRoot, registry };
 }
 
+function makeAccountAuthServiceMock() {
+  return {
+    startLogin: vi.fn(async () => ({
+      sessionId: "test-session",
+      authorizeUrl: "https://accounts.example/authorize",
+      expiresAt: "2026-05-10T00:05:00.000Z",
+    })),
+    pollLogin: vi.fn(async () => ({
+      status: "pending" as const,
+      message: null,
+      authStatus: {
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      },
+    })),
+    getStatus: vi.fn(() => ({
+      signedIn: false,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: null,
+    })),
+    getAccessToken: vi.fn(async () => "test-access-token"),
+    signOut: vi.fn(() => ({
+      signedIn: false,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: null,
+    })),
+    dispose: vi.fn(),
+  };
+}
+
+function restoreEnvVar(key: string, previous: string | undefined) {
+  if (previous === undefined) delete process.env[key];
+  else process.env[key] = previous;
+}
+
 function makeRuntime(label: string) {
   return {
     operationService: {
@@ -100,6 +142,140 @@ describe("multi-project RPC server", () => {
     expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
     expect(registry.list()).toHaveLength(0);
     handler.dispose();
+  });
+
+  it("allows the open account.status action for a non-cto caller", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "agent";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "agent" } },
+      });
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: { action: "status" },
+      });
+      expect(result).toMatchObject({ domain: "account", action: "status" });
+      expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("rejects cto-only account actions for a non-cto caller", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "agent";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "agent" } },
+      });
+      for (const action of ["getToken", "startLogin", "signOut"]) {
+        await expect(
+          handler({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "account.call",
+            params: { action },
+          }),
+        ).rejects.toThrow(/requires the cto role/);
+      }
+      expect(accountAuthService.getAccessToken).not.toHaveBeenCalled();
+      expect(accountAuthService.startLogin).not.toHaveBeenCalled();
+      expect(accountAuthService.signOut).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("rejects cto-only account actions when the caller sends no identity", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    delete process.env.ADE_DEFAULT_ROLE;
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {},
+      });
+      await expect(
+        handler({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "account.call",
+          params: { action: "getToken" },
+        }),
+      ).rejects.toThrow(/requires the cto role/);
+      expect(accountAuthService.getAccessToken).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("allows cto-only account actions for a cto caller", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: { action: "getToken" },
+      });
+      expect(result).toMatchObject({
+        domain: "account",
+        action: "getToken",
+        result: "test-access-token",
+      });
+      expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
   });
 
   it("reports a build hash for manually-started CLI entrypoints", async () => {

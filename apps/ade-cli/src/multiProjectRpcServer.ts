@@ -34,7 +34,11 @@ import {
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
-import { normalizeAdeRuntimeRole } from "./runtimeRoles";
+import {
+  callerHasRoleAtLeast,
+  isCtoOnlyAdeAction,
+} from "../../desktop/src/main/services/adeActions/registry";
+import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
@@ -435,11 +439,6 @@ function readLimit(value: unknown): number {
     : 100;
 }
 
-// The entrypoint cannot change during the process lifetime, so hash it once and
-// reuse the result. `undefined` means "not computed yet"; `null` is a cached
-// failure (missing/unreadable entrypoint) that must not retry on every call.
-let cachedRuntimeBuildHash: string | null | undefined;
-
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & {
@@ -623,6 +622,13 @@ export function createMultiProjectRpcRequestHandler(
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
 
+  // The entrypoint cannot change during the process lifetime, so hash it once
+  // and reuse the result. Kept per-handler (not module-scoped) so tests that
+  // mutate `process.argv[1]` between handlers each recompute a fresh hash.
+  // `undefined` means "not computed yet"; `null` is a cached failure
+  // (missing/unreadable entrypoint) that must not retry on every call.
+  let cachedRuntimeBuildHash: string | null | undefined;
+
   const computeRuntimeBuildHash = (): string | null => {
     if (cachedRuntimeBuildHash !== undefined) return cachedRuntimeBuildHash;
     const entrypoint = process.argv[1];
@@ -740,6 +746,29 @@ export function createMultiProjectRpcRequestHandler(
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
           "account.call requires action.",
+        );
+      }
+      // Gate credential-bearing account actions (getToken/startLogin/pollLogin/
+      // signOut) to cto-role callers, mirroring the run_ade_action gate in
+      // adeRpcServer. The caller's requested role (from ade/initialize identity)
+      // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
+      // honestly asserts a non-cto role cannot reach these actions. `status`
+      // stays open to any role.
+      const identityRecord =
+        isRecord(initializedParams) && isRecord(initializedParams.identity)
+          ? (initializedParams.identity as Record<string, unknown>)
+          : null;
+      const requestedRole = normalizeAdeRuntimeRole(
+        identityRecord ? identityRecord.role : null,
+      );
+      const callerRole = resolveSessionRole(
+        normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+        requestedRole,
+      );
+      if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(callerRole, "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          `account.${action} requires the cto role.`,
         );
       }
       registerAccountProjects();

@@ -234,6 +234,12 @@ type CliPlan =
       preferHeadless?: boolean;
       machineOnly?: boolean;
       machineAutoStart?: boolean;
+      /**
+       * Force the connection for this plan to assert a specific runtime role
+       * instead of the global CLI default. Used by `ade logout`, whose `signOut`
+       * account action is CTO-only, so it must connect as the machine operator.
+       */
+      connectRole?: GlobalOptions["role"];
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -11486,6 +11492,8 @@ function buildCliPlan(
       formatter: "account-auth",
       machineOnly: true,
       machineAutoStart: true,
+      // signOut is a CTO-only account action; connect as the machine operator.
+      connectRole: "cto",
       steps: [accountActionStep("result", "signOut")],
     };
   }
@@ -17564,8 +17572,13 @@ async function runAccountLogin(
 ): Promise<{ output: string; exitCode: number }> {
   let connection: CliConnection;
   try {
+    // `ade login` drives the CTO-only account actions (startLogin/pollLogin),
+    // so it connects as the machine operator at cto role. This also ensures the
+    // machine brain it attaches to runs at defaultRole cto (the runtime-role
+    // mismatch check respawns an under-privileged brain), so the account gate
+    // resolves the caller to cto.
     connection = await createConnection(
-      { ...options, headless: false },
+      { ...options, headless: false, role: "cto" },
       { autoRegisterProject: false, machineRuntimeOnly: true },
     );
   } catch (error) {
@@ -17863,7 +17876,7 @@ async function executePlan(
   options: GlobalOptions,
 ): Promise<unknown> {
   let connection: CliConnection;
-  const connectionOptions =
+  const baseConnectionOptions =
     plan.machineOnly
       ? {
           ...options,
@@ -17873,6 +17886,13 @@ async function executePlan(
       : plan.preferHeadless && !options.requireSocket
         ? { ...options, headless: true }
         : options;
+  // A plan may force a specific runtime role for its connection (e.g. `ade
+  // logout`, whose signOut account action is CTO-only). Honor it so the caller
+  // asserts the operator role and the machine account gate resolves to cto.
+  const connectionOptions =
+    plan.connectRole
+      ? { ...baseConnectionOptions, role: plan.connectRole }
+      : baseConnectionOptions;
   try {
     connection = await createConnection(connectionOptions, {
       autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),
