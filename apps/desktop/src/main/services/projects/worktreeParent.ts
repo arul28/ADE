@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WorktreeParentRef } from "../../../shared/types";
-import { findAdeManagedWorktreeRoot } from "../../../../../ade-cli/src/services/projects/projectRoots";
+import { findAdeManagedWorktreeRoot, realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 
 export function parseGitDirPointer(content: string, worktreeRoot: string): string | null {
   const match = content.trim().match(/^gitdir:\s*(.+)$/);
@@ -53,8 +53,13 @@ export function resolveWorktreeParentRef(worktreeRoot: string): WorktreeParentRe
     return null;
   }
 
+  // Canonicalize the same way projectPathInspector's toParentInfo does, so a
+  // repo under a symlinked directory resolves to the identical rootPath in both
+  // paths — the badge label and the inspection-driven merge/open gate compare
+  // these strings, and a mismatch produces wrong labels and broken equality.
+  const resolvedParentRoot = realpathIfExists(parentRoot);
   return {
-    rootPath: parentRoot,
-    displayName: path.basename(parentRoot),
+    rootPath: resolvedParentRoot,
+    displayName: path.basename(resolvedParentRoot),
   };
 }

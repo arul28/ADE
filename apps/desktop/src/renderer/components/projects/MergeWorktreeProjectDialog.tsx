@@ -280,6 +280,25 @@ export function MergeWorktreeProjectDialog({
                   </div>
                 ) : null}
 
+                {!loading && !inspection?.parent && !error ? (
+                  <div
+                    role="alert"
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      color: COLORS.warning,
+                      background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
+                      border: "1px solid color-mix(in srgb, var(--color-warning) 34%, transparent)",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                    }}
+                  >
+                    Couldn't resolve the owning project for this worktree — it may
+                    have moved or been removed. Open the folder directly instead.
+                  </div>
+                ) : null}
+
                 {error ? (
                   <div
                     role="alert"

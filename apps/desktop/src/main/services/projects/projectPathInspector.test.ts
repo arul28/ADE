@@ -280,6 +280,9 @@ describe("worktree parent disk metadata", () => {
     expect(canonical(parent!.rootPath)).toBe(canonical(mainRoot));
     expect(canonical(detail.worktreeOf!.rootPath)).toBe(canonical(mainRoot));
     expect(canonical(recent.worktreeOf!.rootPath)).toBe(canonical(mainRoot));
+    // rootPath is already canonicalized (matches inspectProjectPath's parent),
+    // so path-equality against the inspection gate holds under symlinked roots.
+    expect(parent!.rootPath).toBe(canonical(mainRoot));
   });
 
   it("returns null for a repository whose .git entry is a directory", () => {
