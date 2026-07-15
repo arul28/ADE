@@ -141,6 +141,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "pollLogin",
     "startDeviceLogin",
     "pollDeviceLogin",
+    "status",
     "cancelLogin",
     "signOut",
     "getToken",

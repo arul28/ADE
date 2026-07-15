@@ -1642,7 +1642,7 @@ describe("runtime account actions", () => {
     expect(isCtoOnlyAdeAction("account", "signOut")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "getToken")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "createToken")).toBe(true);
-    expect(isCtoOnlyAdeAction("account", "status")).toBe(false);
+    expect(isCtoOnlyAdeAction("account", "status")).toBe(true);
   });
 });
 

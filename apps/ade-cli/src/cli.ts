@@ -3452,7 +3452,11 @@ function buildActionRunStep(args: string[]): InvocationStep {
     if (!Array.isArray(argsList))
       throw new CliUsageError("--args-list-json must be a JSON array.");
     if (domain === "account") {
-      if ((action === "pollLogin" || action === "pollDeviceLogin") && typeof argsList[0] === "string") {
+      if (
+        (action === "pollLogin" || action === "pollDeviceLogin")
+        && argsList.length === 1
+        && typeof argsList[0] === "string"
+      ) {
         return accountActionStep("result", action, { sessionId: argsList[0] });
       }
       if (argsList.length === 0) return accountActionStep("result", action);
@@ -17750,8 +17754,9 @@ export function detectAccountLoginMode(args: {
   platform?: NodeJS.Platform;
 } = {}): AccountLoginMode {
   const env = args.env ?? process.env;
+  if (args.explicitHeadless) return "device";
   if (env.ADE_ACCOUNT_TOKEN?.trim()) return "env-token";
-  if (args.explicitHeadless || args.browserOpenFailed) return "device";
+  if (args.browserOpenFailed) return "device";
   if (env.SSH_TTY?.trim() || env.SSH_CONNECTION?.trim() || env.SSH_CLIENT?.trim()) {
     return "device";
   }
@@ -17821,13 +17826,26 @@ async function runAccountLogin(
       explicitHeadless: plan.explicitHeadless || options.headless,
     });
     if (mode === "env-token") {
-      const status = await runAccountAction("status");
+      let status = await runAccountAction("status");
       const source = asString(status.source);
       if (status.signedIn === true && source === "env-token") {
         process.stderr.write("Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.\n");
         return { output: formatOutput(status, options, "account-auth"), exitCode: 0 };
       }
       if (source === "env-token") {
+        try {
+          const raw = await connection.request("account.call", { action: "getToken", args: {} });
+          const token = unwrapActionEnvelope(raw);
+          if (typeof token !== "string" || !token.trim()) throw new Error("empty account token");
+          status = await runAccountAction("status");
+          if (status.signedIn === true && asString(status.source) === "env-token") {
+            process.stderr.write("Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.\n");
+            return { output: formatOutput(status, options, "account-auth"), exitCode: 0 };
+          }
+        } catch {
+          // Report only fixed guidance. Credential values and upstream token errors
+          // must not cross the CLI boundary.
+        }
         throw new CliExecutionError(
           "ADE_ACCOUNT_TOKEN is expired or invalid.",
           { nextAction: "Replace it with a current access token or durable refresh token, then restart the ADE brain." },
@@ -17860,16 +17878,29 @@ async function runAccountLogin(
       );
     };
 
-    const timedOut = async (): Promise<{ output: string; exitCode: number }> => {
-      process.stderr.write("ADE account sign-in timed out.\n");
+    const timedOut = async (
+      flowStatus?: JsonObject,
+    ): Promise<{ output: string; exitCode: number }> => {
       const status = await runAccountAction("status");
-      return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
+      const ignoredEnvCredential = mode === "device"
+        && (plan.explicitHeadless || options.headless)
+        && asString(status.source) === "env-token";
+      if (status.signedIn === true && !ignoredEnvCredential) return finishSignedIn(status);
+      process.stderr.write("ADE account sign-in timed out.\n");
+      const outputStatus = ignoredEnvCredential && flowStatus ? flowStatus : status;
+      return {
+        output: formatOutput(outputStatus, options, "account-auth"),
+        exitCode: 1,
+      };
     };
 
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
-      const start = await runAccountAction("startDeviceLogin", { projectRoot });
+      const start = await runAccountAction("startDeviceLogin", {
+        projectRoot,
+        ignoreEnvCredential: plan.explicitHeadless || options.headless,
+      });
       const sessionId = asString(start.sessionId);
       const userCode = asString(start.userCode);
       const verificationUri = asString(start.verificationUri);
@@ -17890,7 +17921,6 @@ async function runAccountLogin(
         "\nWaiting for sign-in…\n",
       );
       while (true) {
-        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut();
         const sleepMs = Math.max(1, intervalSec) * 1000;
         await sleep(Number.isFinite(deadlineMs)
           ? Math.min(sleepMs, Math.max(1, deadlineMs - Date.now()))
@@ -17903,6 +17933,7 @@ async function runAccountLogin(
           if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
             intervalSec = poll.intervalSec;
           }
+          if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut(authStatus);
           continue;
         }
         const message = asString(poll.message) ?? "ADE account device sign-in failed.";
@@ -17948,7 +17979,6 @@ async function runAccountLogin(
     );
     const deadlineMs = deadlineFor(expiresAt);
     while (true) {
-      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut();
       await sleep(Number.isFinite(deadlineMs)
         ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
         : 500);
@@ -17956,7 +17986,10 @@ async function runAccountLogin(
       const pollStatus = asString(poll.status);
       const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
       if (pollStatus === "signed_in") return finishSignedIn(authStatus);
-      if (pollStatus === "pending") continue;
+      if (pollStatus === "pending") {
+        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut(authStatus);
+        continue;
+      }
       const message = asString(poll.message) ?? "ADE account sign-in failed.";
       process.stderr.write(`${message}\n`);
       return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };

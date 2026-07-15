@@ -480,6 +480,98 @@ describe("AccountAuthService device authorization", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(service.getStatus()).toMatchObject({ signedIn: true, source: "loopback" });
   });
+
+  it("bounds device bridge requests and preserves the session after a polling timeout", async () => {
+    const accessToken = jwt({ sub: "device-timeout-user" });
+    let tokenPolls = 0;
+    const fetchImpl = vi.fn((input: string, init?: RequestInit): Promise<Response> => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (input.endsWith("/device/code")) {
+        return Promise.resolve(jsonResponse({
+          device_code: "device-timeout-code",
+          user_code: "TIME-OUT1",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 1,
+        }));
+      }
+      tokenPolls += 1;
+      if (tokenPolls === 1) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("response body aborted")), {
+              once: true,
+            });
+          }),
+        } as Response);
+      }
+      return Promise.resolve(jsonResponse({ access_token: accessToken, expires_in: 3600 }));
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "device-timeout-session",
+      fetchImpl,
+      deviceBridgeRequestTimeoutMs: 5,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "pending",
+      intervalSec: 1,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "device-timeout-user" },
+    });
+  });
+
+  it("preserves device sessions across retryable 429 and 5xx bridge responses", async () => {
+    const accessToken = jwt({ sub: "device-retry-user" });
+    const tokenResponses = [
+      jsonResponse({ error: "rate_limited" }, 429),
+      jsonResponse({ error: "temporarily_unavailable" }, 503),
+      jsonResponse({ access_token: accessToken, expires_in: 3600 }),
+    ];
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "device-retry-code",
+          user_code: "RETR-Y123",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      return tokenResponses.shift()!;
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "device-retry-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "slow_down",
+      intervalSec: 10,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "pending",
+      intervalSec: 10,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "device-retry-user" },
+    });
+  });
 });
 
 describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
@@ -557,7 +649,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     activeServices.push(consumingService);
 
     expect(consumingService.getStatus()).toMatchObject({
-      signedIn: true,
+      signedIn: false,
       source: "env-token",
       expiresAt: null,
     });
@@ -617,7 +709,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     });
     activeServices.push(service);
 
-    expect(service.getStatus()).toMatchObject({ signedIn: true, source: "env-token", expiresAt: null });
+    expect(service.getStatus()).toMatchObject({ signedIn: false, source: "env-token", expiresAt: null });
     await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
     expect(service.getStatus()).toMatchObject({
       signedIn: true,
@@ -640,11 +732,70 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     });
     activeServices.push(service);
 
-    expect(service.getStatus()).toMatchObject({ signedIn: true, source: "env-token" });
+    expect(service.getStatus()).toMatchObject({ signedIn: false, source: "env-token" });
     await expect(service.getAccessToken()).rejects.toThrow(
       /Legacy ADE_ACCOUNT_TOKEN.*ade account token create/,
     );
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never lets an older in-flight refresh overwrite or return another env credential", async () => {
+    const env = { ADE_ACCOUNT_TOKEN: "refresh-account-a" } as NodeJS.ProcessEnv;
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const accountAAccessToken = jwt({
+      sub: "account-a",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const accountBAccessToken = jwt({
+      sub: "account-b",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    let resolveAccountA: ((response: Response) => void) | null = null;
+    const refreshBodies: Record<string, string>[] = [];
+    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit): Promise<Response> => {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      refreshBodies.push(body);
+      if (body.refresh_token === "refresh-account-a") {
+        return new Promise<Response>((resolve) => {
+          resolveAccountA = resolve;
+        });
+      }
+      return jsonResponse({
+        access_token: accountBAccessToken,
+        refresh_token: "refresh-account-b-rotated",
+        expires_in: 3600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const accountARefresh = service.getAccessToken();
+    await vi.waitFor(() => expect(resolveAccountA).not.toBeNull());
+    env.ADE_ACCOUNT_TOKEN = "refresh-account-b";
+    const accountBRefresh = service.getAccessToken();
+    await expect(accountBRefresh).resolves.toBe(accountBAccessToken);
+    resolveAccountA!(jsonResponse({
+      access_token: accountAAccessToken,
+      refresh_token: "refresh-account-a-rotated",
+      expires_in: 3600,
+    }));
+
+    await expect(accountARefresh).resolves.toBe(accountBAccessToken);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      source: "env-token",
+      userId: "account-b",
+    });
+    expect(refreshBodies.map((body) => body.refresh_token)).toEqual([
+      "refresh-account-a",
+      "refresh-account-b",
+    ]);
   });
 
   it("surfaces access-token expiry instead of attempting an interactive flow", async () => {

@@ -218,6 +218,11 @@ describe("ADE CLI", () => {
     })).toBe("env-token");
     expect(detectAccountLoginMode({
       explicitHeadless: true,
+      env: { ADE_ACCOUNT_TOKEN: "inherited", DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("device");
+    expect(detectAccountLoginMode({
+      explicitHeadless: true,
       env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
       platform: "linux",
     })).toBe("device");
@@ -1679,6 +1684,15 @@ describe("ADE CLI", () => {
         '{"laneId":"lane-1"}',
       ]),
     ).toThrow(/--args-list-json must be a JSON array/);
+    expect(() =>
+      buildCliPlan([
+        "actions",
+        "run",
+        "account.pollDeviceLogin",
+        "--args-list-json",
+        '["device-session","unexpected"]',
+      ]),
+    ).toThrow(/account actions accept object input/);
   });
 
   it("builds chat create with both model and modelId plus explicit reasoning and fast-mode args", () => {
@@ -2893,6 +2907,9 @@ describe("ADE CLI", () => {
           };
         }
         if (request.method === "account.call") {
+          if (request.params?.action === "getToken") {
+            throw new Error("expired token rejected");
+          }
           return {
             domain: "account",
             action: "status",
@@ -2926,8 +2943,292 @@ describe("ADE CLI", () => {
       expect(JSON.stringify(caught)).not.toContain(expiredToken);
       expect(requests.filter((request) => request.method === "account.call")).toEqual([
         { method: "account.call", params: { action: "status", args: {} } },
+        { method: "account.call", params: { action: "getToken", args: {} } },
       ]);
     } finally {
+      if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
+      else process.env.ADE_ACCOUNT_TOKEN = previousToken;
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("verifies a refresh-token env credential before reporting login success", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-env-refresh-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: any }> = [];
+    let verified = false;
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "cto",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "getToken") {
+            verified = true;
+            return { domain: "account", action, result: "access-token-must-not-print", statusHints: {} };
+          }
+          if (action === "status") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                signedIn: verified,
+                userId: verified ? "env-user" : null,
+                email: verified ? "env@example.com" : null,
+                name: null,
+                expiresAt: verified ? "2026-07-14T13:00:00.000Z" : null,
+                source: "env-token",
+              },
+              statusHints: {},
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const previousToken = process.env.ADE_ACCOUNT_TOKEN;
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      process.env.ADE_ACCOUNT_TOKEN = "refresh-env-secret-must-not-print";
+      const result = await runCli(["--socket", socketPath, "login", "--text"]);
+      expect(result).toEqual({
+        output: "Signed in as env@example.com (env-token)\n",
+        exitCode: 0,
+      });
+      expect(JSON.stringify(result)).not.toContain("access-token-must-not-print");
+      expect(requests.filter((request) => request.method === "account.call"))
+        .toEqual([
+          { method: "account.call", params: { action: "status", args: {} } },
+          { method: "account.call", params: { action: "getToken", args: {} } },
+          { method: "account.call", params: { action: "status", args: {} } },
+        ]);
+    } finally {
+      stderrWrite.mockRestore();
+      if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
+      else process.env.ADE_ACCOUNT_TOKEN = previousToken;
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("runs explicit headless login despite inherited env auth", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-explicit-device-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: any }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "cto",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "startDeviceLogin") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                sessionId: "device-at-deadline",
+                userCode: "DEAD-LINE",
+                verificationUri: "https://directory.example.test/device",
+                expiresAt: new Date(Date.now() + 10).toISOString(),
+                intervalSec: 1,
+              },
+              statusHints: {},
+            };
+          }
+          if (action === "pollDeviceLogin") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                status: "signed_in",
+                authStatus: {
+                  signedIn: true,
+                  userId: "headless-user",
+                  email: "headless@example.com",
+                  name: null,
+                  expiresAt: "2026-07-14T13:00:00.000Z",
+                  source: "device",
+                },
+              },
+              statusHints: {},
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const previousToken = process.env.ADE_ACCOUNT_TOKEN;
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      process.env.ADE_ACCOUNT_TOKEN = "inherited-token-that-must-not-short-circuit";
+      const result = await runCli([
+        "--socket",
+        socketPath,
+        "login",
+        "--headless",
+        "--text",
+      ]);
+      expect(result).toEqual({
+        output: "Signed in as headless@example.com (device)\n",
+        exitCode: 0,
+      });
+      expect(requests.filter((request) => request.method === "account.call")).toEqual([
+        {
+          method: "account.call",
+          params: {
+            action: "startDeviceLogin",
+            args: { projectRoot: expect.any(String), ignoreEnvCredential: true },
+          },
+        },
+        {
+          method: "account.call",
+          params: { action: "pollDeviceLogin", args: { sessionId: "device-at-deadline" } },
+        },
+      ]);
+    } finally {
+      stderrWrite.mockRestore();
+      if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
+      else process.env.ADE_ACCOUNT_TOKEN = previousToken;
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("accepts current-flow deadline success but ignores inherited env auth", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: any }> = [];
+    let deadlineStatusSource: "device" | "env-token" = "device";
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "cto",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "startDeviceLogin") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                sessionId: "device-at-deadline",
+                userCode: "DEAD-LINE",
+                verificationUri: "https://directory.example.test/device",
+                expiresAt: new Date(Date.now()).toISOString(),
+                intervalSec: 1,
+              },
+              statusHints: {},
+            };
+          }
+          if (action === "pollDeviceLogin") {
+            return {
+              domain: "account",
+              action,
+              result: { status: "pending", authStatus: { signedIn: false } },
+              statusHints: {},
+            };
+          }
+          if (action === "status") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                signedIn: true,
+                userId: deadlineStatusSource === "device" ? "deadline-user" : "inherited-env-user",
+                email: deadlineStatusSource === "device"
+                  ? "deadline@example.com"
+                  : "inherited@example.com",
+                name: null,
+                expiresAt: "2026-07-14T13:00:00.000Z",
+                source: deadlineStatusSource,
+              },
+              statusHints: {},
+            };
+          }
+          if (action === "cancelLogin") {
+            return {
+              domain: "account",
+              action,
+              result: { signedIn: true, source: deadlineStatusSource },
+              statusHints: {},
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const previousToken = process.env.ADE_ACCOUNT_TOKEN;
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      const result = await runCli(["--socket", socketPath, "login", "--headless", "--text"]);
+      expect(result).toEqual({
+        output: "Signed in as deadline@example.com (device)\n",
+        exitCode: 0,
+      });
+      expect(requests.filter((request) => request.method === "account.call")
+        .map((request) => request.params?.action)).toEqual([
+        "startDeviceLogin",
+        "pollDeviceLogin",
+        "status",
+      ]);
+
+      requests.length = 0;
+      deadlineStatusSource = "env-token";
+      process.env.ADE_ACCOUNT_TOKEN = "valid-inherited-env-token";
+      const ignoredEnvResult = await runCli([
+        "--socket",
+        socketPath,
+        "login",
+        "--headless",
+        "--text",
+      ]);
+      expect(ignoredEnvResult).toEqual({
+        output: "Not signed in — local use does not require an account.\n",
+        exitCode: 1,
+      });
+      expect(requests.filter((request) => request.method === "account.call")
+        .map((request) => request.params?.action)).toEqual([
+        "startDeviceLogin",
+        "pollDeviceLogin",
+        "status",
+        "cancelLogin",
+      ]);
+    } finally {
+      stderrWrite.mockRestore();
       if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
       else process.env.ADE_ACCOUNT_TOKEN = previousToken;
       stop?.();

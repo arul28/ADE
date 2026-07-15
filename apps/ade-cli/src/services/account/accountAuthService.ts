@@ -8,6 +8,7 @@ const LOOPBACK_HOST = "127.0.0.1";
 const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
+const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -137,7 +138,7 @@ type TokenResponse = {
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
-  startDeviceLogin(): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   getAccessToken(): Promise<string>;
@@ -150,7 +151,7 @@ export type AccountAuthService = {
 export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
-  startDeviceLogin(): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(args?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(args: { sessionId?: string }): Promise<AccountDeviceLoginPollResult>;
   status(): AccountAuthStatus;
   cancelLogin(args: { sessionId?: string }): void;
@@ -163,7 +164,7 @@ export async function getSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
 ): Promise<string | null> {
   const status = service.getStatus();
-  if (!status.signedIn) return null;
+  if (!status.signedIn && status.source !== "env-token") return null;
   try {
     const accessToken = (await service.getAccessToken()).trim();
     return accessToken && service.getStatus().userId ? accessToken : null;
@@ -482,7 +483,9 @@ export function createAccountActionDomainService(
   return {
     startLogin: () => service.startLogin(),
     pollLogin: (args) => service.pollLogin(readNonEmptyString(args?.sessionId) ?? ""),
-    startDeviceLogin: () => service.startDeviceLogin(),
+    startDeviceLogin: (args) => service.startDeviceLogin({
+      ignoreEnvCredential: args?.ignoreEnvCredential === true,
+    }),
     pollDeviceLogin: (args) => service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? ""),
     status: () => service.getStatus(),
     cancelLogin: (args) => service.cancelLogin(readNonEmptyString(args?.sessionId) ?? ""),
@@ -516,7 +519,9 @@ export async function callAccountAction(args: {
   } else if (action === "startLogin") {
     result = await domain.startLogin();
   } else if (action === "startDeviceLogin") {
-    result = await domain.startDeviceLogin();
+    result = await domain.startDeviceLogin({
+      ignoreEnvCredential: actionArgs.ignoreEnvCredential === true,
+    });
   } else if (action === "status") {
     result = domain.status();
   } else if (action === "cancelLogin") {
@@ -537,6 +542,7 @@ export function createAccountAuthService(args: {
   getOAuthConfig: () => AccountOAuthConfig | Promise<AccountOAuthConfig>;
   getDeviceBridgeUrl?: () => string | Promise<string>;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+  deviceBridgeRequestTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
@@ -549,13 +555,20 @@ export function createAccountAuthService(args: {
   const randomUUID = args.randomUUID ?? nodeRandomUUID;
   const logger = args.logger ?? { info: () => {}, warn: () => {} };
   const env = args.env ?? process.env;
+  const requestedDeviceBridgeTimeoutMs = args.deviceBridgeRequestTimeoutMs;
+  const deviceBridgeRequestTimeoutMs = typeof requestedDeviceBridgeTimeoutMs === "number"
+    && Number.isFinite(requestedDeviceBridgeTimeoutMs)
+    && requestedDeviceBridgeTimeoutMs > 0
+    ? Math.trunc(requestedDeviceBridgeTimeoutMs)
+    : DEVICE_BRIDGE_REQUEST_TIMEOUT_MS;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   let refreshInFlight: Promise<AccountSessionRecord> | null = null;
-  let envRefreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let envRefreshInFlight: Promise<string> | null = null;
   let envSession: AccountSessionRecord | null = null;
   let envSessionCredential: string | null = null;
   let envRefreshToken: string | null = null;
+  let envCredentialEpoch = 0;
   let authEpoch = 0;
 
   const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
@@ -565,6 +578,7 @@ export function createAccountAuthService(args: {
     inspected: EnvCredential,
   ): void => {
     if (envSessionCredential === credential) return;
+    envCredentialEpoch += 1;
     envSessionCredential = credential;
     envSession = null;
     envRefreshInFlight = null;
@@ -583,8 +597,7 @@ export function createAccountAuthService(args: {
       : { userId: null, email: null, name: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
-      signedIn: inspected.kind !== "invalid"
-        && (!isAccessToken || (Number.isFinite(expiresAtMs) && expiresAtMs > now())),
+      signedIn: isAccessToken && Number.isFinite(expiresAtMs) && expiresAtMs > now(),
       userId: claims.userId,
       email: claims.email,
       name: claims.name,
@@ -851,8 +864,27 @@ export function createAccountAuthService(args: {
       : env.ADE_ACCOUNT_DIRECTORY_URL ?? "",
   );
 
-  const startDeviceLogin = async (): Promise<AccountDeviceLoginStartResult> => {
-    if (readEnvCredential()) {
+  const requestDeviceBridge = (
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> => fetchImpl(url, {
+    ...init,
+    signal: AbortSignal.timeout(deviceBridgeRequestTimeoutMs),
+  });
+
+  const deviceBridgeStartError = (error: unknown): Error => {
+    const errorName = error instanceof Error ? error.name : "";
+    return new Error(
+      errorName === "TimeoutError" || errorName === "AbortError"
+        ? "ADE account device service timed out. Check the account directory connection and retry."
+        : "ADE account device service could not be reached. Check the account directory connection and retry.",
+    );
+  };
+
+  const startDeviceLogin = async (
+    options: { ignoreEnvCredential?: boolean } = {},
+  ): Promise<AccountDeviceLoginStartResult> => {
+    if (readEnvCredential() && !options.ignoreEnvCredential) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
     }
     for (const [sessionId, session] of pendingDeviceSessions) {
@@ -865,12 +897,22 @@ export function createAccountAuthService(args: {
     }
     const deviceSecret = randomBytes(32).toString("base64url");
     const bridgeUrl = await resolveDeviceBridgeUrl();
-    const response = await fetchImpl(`${bridgeUrl}/device/code`, {
-      method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ device_secret: deviceSecret }),
-    });
-    const payload = asRecord(await response.json().catch(() => ({})));
+    let response: Response;
+    try {
+      response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ device_secret: deviceSecret }),
+      });
+    } catch (error) {
+      throw deviceBridgeStartError(error);
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = asRecord(await response.json());
+    } catch (error) {
+      throw deviceBridgeStartError(error);
+    }
     if (!response.ok) {
       throw new Error(
         readNonEmptyString(payload.error_description)
@@ -930,22 +972,69 @@ export function createAccountAuthService(args: {
     }
 
     const epochAtPoll = authEpoch;
-    const response = await fetchImpl(`${session.bridgeUrl}/device/token`, {
-      method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({
-        device_code: session.deviceCode,
-        device_secret: session.deviceSecret,
-      }),
-    });
-    const payload = asRecord(await response.json().catch(() => ({})));
+    let response: Response;
+    try {
+      response = await requestDeviceBridge(`${session.bridgeUrl}/device/token`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({
+          device_code: session.deviceCode,
+          device_secret: session.deviceSecret,
+        }),
+      });
+    } catch {
+      if (pendingDeviceSessions.get(normalizedSessionId) !== session) {
+        return {
+          status: "error",
+          message: "ADE account device sign-in was cancelled.",
+          intervalSec: null,
+          authStatus: toStatus(readSession()),
+        };
+      }
+      if (session.expiresAtMs <= now()) {
+        pendingDeviceSessions.delete(normalizedSessionId);
+        return {
+          status: "expired",
+          message: "ADE account device sign-in expired.",
+          intervalSec: null,
+          authStatus: toStatus(readSession()),
+        };
+      }
+      return {
+        status: "pending",
+        message: null,
+        intervalSec: session.intervalSec,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = asRecord(await response.json());
+    } catch {
+      if (pendingDeviceSessions.get(normalizedSessionId) !== session) {
+        return {
+          status: "error",
+          message: "ADE account device sign-in was cancelled.",
+          intervalSec: null,
+          authStatus: toStatus(readSession()),
+        };
+      }
+      return {
+        status: "pending",
+        message: null,
+        intervalSec: session.intervalSec,
+        authStatus: toStatus(readSession()),
+      };
+    }
     if (!response.ok) {
       const errorCode = readNonEmptyString(payload.error);
-      const intervalSec = readPositiveNumber(payload.interval) ?? session.intervalSec;
-      if (errorCode === "authorization_pending" || errorCode === "slow_down") {
+      const retryableResponse = response.status === 429 || response.status >= 500;
+      const intervalSec = readPositiveNumber(payload.interval)
+        ?? (response.status === 429 ? session.intervalSec + 5 : session.intervalSec);
+      if (errorCode === "authorization_pending" || errorCode === "slow_down" || retryableResponse) {
         session.intervalSec = intervalSec;
         return {
-          status: errorCode === "slow_down" ? "slow_down" : "pending",
+          status: errorCode === "slow_down" || response.status === 429 ? "slow_down" : "pending",
           message: null,
           intervalSec,
           authStatus: toStatus(readSession()),
@@ -1050,7 +1139,11 @@ export function createAccountAuthService(args: {
         }
       }
       if (!envRefreshInFlight) {
-        envRefreshInFlight = (async () => {
+        const credentialAtRefresh = envCredential;
+        const epochAtRefresh = envCredentialEpoch;
+        const refreshTokenAtRefresh = envRefreshToken ?? inspected.token;
+        let refreshPromise: Promise<string> | null = null;
+        refreshPromise = (async (): Promise<string> => {
           let config: AccountOAuthConfig;
           if (inspected.oauthConfig) {
             config = normalizeOAuthConfig(inspected.oauthConfig);
@@ -1070,7 +1163,7 @@ export function createAccountAuthService(args: {
               tokenUrl: `${config.issuer}/oauth/token`,
               body: {
                 grant_type: "refresh_token",
-                refresh_token: envRefreshToken ?? inspected.token,
+                refresh_token: refreshTokenAtRefresh,
                 client_id: config.clientId,
               },
             });
@@ -1079,15 +1172,27 @@ export function createAccountAuthService(args: {
               "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
             );
           }
-          envRefreshToken = token.refreshToken ?? envRefreshToken ?? inspected.token;
+          if (
+            envCredentialEpoch !== epochAtRefresh
+            || envSessionCredential !== credentialAtRefresh
+            || readEnvCredential() !== credentialAtRefresh
+            || envRefreshInFlight !== refreshPromise
+          ) {
+            return getAccessToken();
+          }
+          envRefreshToken = token.refreshToken ?? refreshTokenAtRefresh;
           const refreshed = buildSessionRecord(token, envSession, "loopback");
           envSession = refreshed;
-          return refreshed;
-        })().finally(() => {
-          envRefreshInFlight = null;
-        });
+          return refreshed.accessToken;
+        })();
+        envRefreshInFlight = refreshPromise;
       }
-      return (await envRefreshInFlight).accessToken;
+      const refreshPromise = envRefreshInFlight;
+      try {
+        return await refreshPromise;
+      } finally {
+        if (envRefreshInFlight === refreshPromise) envRefreshInFlight = null;
+      }
     }
 
     const record = readSession();

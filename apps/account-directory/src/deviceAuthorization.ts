@@ -234,22 +234,29 @@ async function checkDeviceRateLimit(
     || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || "unknown-client";
   const clientHash = await sha256(`${scope}:${clientIdentity}`);
-  const existing = await env.DB.prepare("select window_started_at, attempts from device_approval_rate_limits where client_hash = ?")
-    .bind(clientHash)
-    .first<{ window_started_at: number; attempts: number }>();
-  if (!existing || now - existing.window_started_at >= DEVICE_RATE_LIMIT_WINDOW_MS) {
-    await env.DB.prepare(`
-      insert into device_approval_rate_limits (client_hash, window_started_at, attempts)
-      values (?, ?, 1)
-      on conflict(client_hash) do update set window_started_at = excluded.window_started_at, attempts = 1
-    `).bind(clientHash, now).run();
-    return true;
-  }
-  if (existing.attempts >= maxAttempts) return false;
-  await env.DB.prepare("update device_approval_rate_limits set attempts = attempts + 1 where client_hash = ?")
-    .bind(clientHash)
-    .run();
-  return true;
+  const admitted = await env.DB.prepare(`
+    insert into device_approval_rate_limits (client_hash, window_started_at, attempts)
+    values (?, ?, 1)
+    on conflict(client_hash) do update set
+      window_started_at = case
+        when excluded.window_started_at - window_started_at >= ? then excluded.window_started_at
+        else window_started_at
+      end,
+      attempts = case
+        when excluded.window_started_at - window_started_at >= ? then 1
+        else attempts + 1
+      end
+    where excluded.window_started_at - window_started_at >= ?
+       or attempts < ?
+  `).bind(
+    clientHash,
+    now,
+    DEVICE_RATE_LIMIT_WINDOW_MS,
+    DEVICE_RATE_LIMIT_WINDOW_MS,
+    DEVICE_RATE_LIMIT_WINDOW_MS,
+    maxAttempts,
+  ).run();
+  return changes(admitted) === 1;
 }
 
 async function handleDeviceCode(

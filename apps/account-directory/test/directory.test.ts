@@ -52,7 +52,9 @@ class FakeD1Statement {
   }
 
   async first<T>(): Promise<T | null> {
-    return this.db.first<T>(this.sql, this.values);
+    const result = this.db.first<T>(this.sql, this.values);
+    await this.db.waitForConcurrentRateLimitReads(this.sql);
+    return result;
   }
 
   async all<T>(): Promise<{ results: T[] }> {
@@ -69,6 +71,27 @@ class FakeD1Database {
   rows: StoredMachine[] = [];
   deviceRows: StoredDeviceAuthorization[] = [];
   approvalRateLimits = new Map<string, { window_started_at: number; attempts: number }>();
+  private rateLimitReadBarrier: {
+    remaining: number;
+    promise: Promise<void>;
+    release: () => void;
+  } | null = null;
+
+  synchronizeRateLimitReads(expectedReads: number): void {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.rateLimitReadBarrier = { remaining: expectedReads, promise, release };
+  }
+
+  async waitForConcurrentRateLimitReads(sql: string): Promise<void> {
+    const barrier = this.rateLimitReadBarrier;
+    if (!barrier || !sql.toLowerCase().includes("from device_approval_rate_limits")) return;
+    barrier.remaining -= 1;
+    if (barrier.remaining === 0) barrier.release();
+    await barrier.promise;
+  }
 
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(sql, this);
@@ -128,8 +151,9 @@ class FakeD1Database {
     }
     if (normalized.includes("delete from machines")) {
       const [userId, machineKey] = values;
+      const before = this.rows.length;
       this.rows = this.rows.filter((row) => row.user_id !== userId || row.machine_key !== machineKey);
-      return 1;
+      return before - this.rows.length;
     }
     if (normalized.includes("delete from device_authorizations")) {
       const cutoff = Number(values[0]);
@@ -176,15 +200,21 @@ class FakeD1Database {
       return 1;
     }
     if (normalized.includes("insert into device_approval_rate_limits")) {
-      this.approvalRateLimits.set(String(values[0]), {
-        window_started_at: Number(values[1]),
-        attempts: 1,
-      });
-      return 1;
-    }
-    if (normalized.includes("update device_approval_rate_limits")) {
-      const record = this.approvalRateLimits.get(String(values[0]));
-      if (!record) return 0;
+      const clientHash = String(values[0]);
+      const now = Number(values[1]);
+      const windowMs = Number(values[2]);
+      const maxAttempts = Number(values[5]);
+      const record = this.approvalRateLimits.get(clientHash);
+      if (!record) {
+        this.approvalRateLimits.set(clientHash, { window_started_at: now, attempts: 1 });
+        return 1;
+      }
+      if (now - record.window_started_at >= windowMs) {
+        record.window_started_at = now;
+        record.attempts = 1;
+        return 1;
+      }
+      if (record.attempts >= maxAttempts) return 0;
       record.attempts += 1;
       return 1;
     }
@@ -253,7 +283,13 @@ class FakeD1Database {
       }
       if (normalized.includes("set status = 'expired'")) {
         const row = this.deviceRows.find((entry) => entry.device_code === values[0]);
-        if (!row || (normalized.includes("status = 'pending'") && row.status !== "pending")) return 0;
+        const pendingOnly = /status\s*=\s*'pending'/.test(normalized);
+        const pendingOrApproved = /status\s+in\s*\(\s*'pending'\s*,\s*'approved'\s*\)/.test(normalized);
+        if (
+          !row
+          || (pendingOnly && row.status !== "pending")
+          || (pendingOrApproved && row.status !== "pending" && row.status !== "approved")
+        ) return 0;
         row.status = "expired";
         row.code_verifier = null;
         row.oauth_state_hash = null;
@@ -543,6 +579,18 @@ describe("device authorization bridge", () => {
     );
     expect(replay.status).toBe(401);
     expect(await replay.json()).toEqual({ error: "invalid_grant" });
+
+    const expiredReplay = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: deviceSecret,
+      }),
+      env,
+      { now: () => now + 595_000 },
+    );
+    expect(expiredReplay.status).toBe(400);
+    expect(await expiredReplay.json()).toEqual({ error: "expired" });
+    expect(env.DB.deviceRows[0]?.status).toBe("consumed");
   });
 
   it("returns expired for a device code after its short TTL", async () => {
@@ -657,6 +705,49 @@ describe("device authorization bridge", () => {
       { now: () => now },
     );
     expect(approval.status).toBe(404);
+    expect(env.DB.approvalRateLimits.size).toBe(2);
+    expect(Array.from(env.DB.approvalRateLimits.values(), (entry) => entry.attempts).sort()).toEqual([1, 10]);
+  });
+
+  it("atomically admits at most ten concurrent device-code issuances per client", async () => {
+    const env = makeEnv();
+    let now = Date.parse("2026-07-14T12:00:00.000Z");
+    env.DB.synchronizeRateLimitReads(25);
+    const responses = await Promise.all(Array.from({ length: 25 }, () => handleRequest(
+      new Request("https://directory.test/device/code", {
+        method: "POST",
+        headers: {
+          "cf-connecting-ip": "203.0.113.9",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ device_secret: "daemon-device-secret-with-at-least-32-bytes" }),
+      }),
+      env,
+      { now: () => now },
+    )));
+
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(10);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(15);
+    expect(new Set(responses.map((response) => response.status))).toEqual(new Set([200, 429]));
+    expect(env.DB.deviceRows).toHaveLength(10);
+    expect(Array.from(env.DB.approvalRateLimits.values(), (entry) => entry.attempts)).toEqual([10]);
+
+    now += 60_000;
+    const nextWindow = await handleRequest(
+      new Request("https://directory.test/device/code", {
+        method: "POST",
+        headers: {
+          "cf-connecting-ip": "203.0.113.9",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ device_secret: "daemon-device-secret-with-at-least-32-bytes" }),
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(nextWindow.status).toBe(200);
+    expect(env.DB.deviceRows).toHaveLength(11);
+    expect(Array.from(env.DB.approvalRateLimits.values(), (entry) => entry.attempts)).toEqual([1]);
   });
 
   it("rate-limits user-code lookups on the hosted approval page", async () => {
@@ -782,5 +873,15 @@ describe("machine directory", () => {
     expect(await secondList.json()).toEqual({
       machines: [expect.objectContaining({ machineKey: "shared-machine" })],
     });
+
+    const removed = await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind("user_2", "shared-machine")
+      .run();
+    const missing = await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind("user_2", "shared-machine")
+      .run();
+    expect(removed.meta.changes).toBe(1);
+    expect(missing.meta.changes).toBe(0);
+    expect(env.DB.rows).toHaveLength(0);
   });
 });
