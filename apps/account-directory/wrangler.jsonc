@@ -5,6 +5,7 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "ONLINE_WINDOW_MS": "90000"
   },

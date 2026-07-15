@@ -13,6 +13,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser. `ade secrets list|get|set|delete` is the typed surface for encrypted project-scoped ADE secrets that agents may read when the user names a secret. `ade new chat --mode chat|cli --lane <lane|auto> --provider codex --model <id> --reasoning-effort <tier> --no-fast --permissions full-auto --type <subagent|peer|none> --prompt "..."` mirrors the desktop New Chat toggle. `ade chat create` / `ade new --mode chat` default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID` so agent-spawned chats link back to the spawning chat (`--parent <sessionId>` overrides, `--no-parent` opts out). `--type` (chat mode only; alias `--spawn-type`) sets the child's `AgentChatSpawnKind` and thereby its completion-report policy — see [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting). `ade chat read <session> --text` reads recent transcript messages. `ade chat scheduled-work list [session] [--all]` reads the runtime's durable management store, while `ade chat scheduled-work cancel <session> <id>` uses the same provider-aware cancellation path as desktop Settings. `ade chat ... --personal` lists, creates, reads, sends to, interrupts, archives, and deletes machine-owned projectless chats through the running brain. `ade lanes link-linear-issue <laneId> --linear-issue-json '{...}'` (aliases `link-linear`, `linear-link`) links Linear issues to an existing lane. |
+| `apps/ade-cli/src/services/account/accountAuthService.ts` | Optional ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering, builds lane-scoped ADE guidance / `ADE_AGENT_SKILLS_DIRS` for CLI launches, injects an explicitly enabled and verified direct Computer Use MCP client into tracked Codex launches, and returns GitHub + ADE PR URLs from PR creation tools when available. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
@@ -92,6 +93,18 @@ into a child lane instead of a fresh one — see
 When a chat targets a provider whose CLI is missing or unauthenticated on the active runtime, the chat surfaces an inline `AgentCliAuthCard`. The card is built by `classifyAgentCliError` from `apps/ade-cli/src/services/agentRegistry.ts` and gives the user a tracked terminal action for install or login.
 
 The important invariant is runtime locality: a desktop window bound to a remote `ade serve` daemon launches the install/auth command on that remote machine, not locally.
+
+### ADE account auth for agents and CI
+
+ADE accounts remain optional for local workflows. On an SSH or display-less
+runtime, `ade login` prints a device verification URL and short code that can
+be approved in any browser; browser-capable local runtimes retain the loopback
+OAuth callback. Fully non-interactive automation provisions a versioned,
+self-contained refresh credential once with `ade account token create`, stores
+it in a secret manager, and exposes it to the machine brain as
+`ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
+the consuming host needs no local Clerk configuration. The token never enters
+project files or operational logs, and account actions remain CTO-only.
 
 ## Identity shape
 

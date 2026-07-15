@@ -85,6 +85,17 @@ function resolveOAuthConfig(args: {
   };
 }
 
+function resolveDeviceBridgeUrl(args: {
+  env: NodeJS.ProcessEnv;
+  projectRoots: Iterable<string>;
+}): string {
+  for (const projectRoot of args.projectRoots) {
+    const value = readProjectSecret(projectRoot, "ADE_ACCOUNT_DIRECTORY_URL");
+    if (value) return value;
+  }
+  return args.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || "";
+}
+
 function resolveAttestationConfig(args: {
   env: NodeJS.ProcessEnv;
   projectRoots: Iterable<string>;
@@ -149,6 +160,11 @@ export function getSharedAccountAuthService(args: {
       env: args.env ?? process.env,
       projectRoots: rootsFor(secretsDir),
     }),
+    getDeviceBridgeUrl: () => resolveDeviceBridgeUrl({
+      env: args.env ?? process.env,
+      projectRoots: rootsFor(secretsDir),
+    }),
+    env: args.env ?? process.env,
     logger: args.logger,
   });
   sharedServices.set(secretsDir, service);

@@ -18,6 +18,7 @@ import {
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
+  scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
@@ -3549,6 +3550,9 @@ async function runTool(args: {
           Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
         );
       }
+    }
+    if (domain === "account" && action === "status") {
+      result = scopeAccountStatusForRole(result, callerCtx.role);
     }
     const record = isRecord(result) ? result : null;
     const statusHints = {

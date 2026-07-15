@@ -37,6 +37,7 @@ import { createHeadlessGitHubService } from "./headlessLinearServices";
 import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
+  scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
@@ -69,6 +70,7 @@ export type MultiProjectRpcHandlerOptions = {
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
   accountAuthService?: AccountAuthService;
+  registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -446,9 +448,11 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const registerAccountConfigRoot = options.registerAccountConfigRoot
+    ?? registerAccountConfigProjectRoot;
   const registerAccountProjects = (): void => {
     for (const project of projectRegistry.list()) {
-      registerAccountConfigProjectRoot(project.rootPath);
+      registerAccountConfigRoot(project.rootPath);
     }
   };
   registerAccountProjects();
@@ -748,12 +752,13 @@ export function createMultiProjectRpcRequestHandler(
           "account.call requires action.",
         );
       }
-      // Gate credential-bearing account actions (getToken/startLogin/pollLogin/
-      // signOut) to cto-role callers, mirroring the run_ade_action gate in
+      // Gate credential-bearing account actions (tokens plus interactive login
+      // start/poll/cancel/sign-out) to cto-role callers, mirroring the run_ade_action gate in
       // adeRpcServer. The caller's requested role (from ade/initialize identity)
       // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
       // honestly asserts a non-cto role cannot reach these actions. `status`
-      // stays open to any role.
+      // stays open to any role, with identity fields removed below for non-CTO
+      // callers.
       const identityRecord =
         isRecord(initializedParams) && isRecord(initializedParams.identity)
           ? (initializedParams.identity as Record<string, unknown>)
@@ -771,28 +776,31 @@ export function createMultiProjectRpcRequestHandler(
           `account.${action} requires the cto role.`,
         );
       }
-      // `ade login` connects with autoRegisterProject:false, so the invoking
-      // project is never in projects.json. Register its root as an account-config
-      // source (WITHOUT projects.add) so startLogin can read that project's
-      // CLERK_* secrets; this preserves the "login does no projects.add" invariant.
-      if (action === "startLogin") {
-        const startArgs = isRecord(params.args) ? params.args : {};
-        const startProjectRoot =
-          typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";
-        if (startProjectRoot) {
+      // Account auth commands connect with autoRegisterProject:false, so the
+      // invoking project may not be in projects.json. Register its root only as
+      // an account-config source (WITHOUT projects.add) so login and durable-token
+      // creation can resolve that project's CLERK_* secrets after a brain restart.
+      if (action === "startLogin" || action === "startDeviceLogin" || action === "createToken") {
+        const accountArgs = isRecord(params.args) ? params.args : {};
+        const accountProjectRoot =
+          typeof accountArgs.projectRoot === "string" ? accountArgs.projectRoot.trim() : "";
+        if (accountProjectRoot) {
           // Prioritize the invoking project's root so its CLERK_* secrets win
           // over any project registered earlier in a multi-project brain.
-          registerAccountConfigProjectRoot(startProjectRoot, undefined, {
+          registerAccountConfigRoot(accountProjectRoot, undefined, {
             prioritize: true,
           });
         }
       }
       registerAccountProjects();
-      return await callAccountAction({
+      const response = await callAccountAction({
         service: accountAuthService,
         action,
         actionArgs: isRecord(params.args) ? params.args : {},
       });
+      return action === "status"
+        ? { ...response, result: scopeAccountStatusForRole(response.result, callerRole) }
+        : response;
     }
 
     if (method === "personalChats.call") {

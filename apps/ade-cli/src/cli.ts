@@ -154,6 +154,7 @@ type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  injectProjectRootIntoArgs?: boolean;
 };
 
 type FormatterId =
@@ -161,6 +162,7 @@ type FormatterId =
   | "doctor"
   | "auth"
   | "account-auth"
+  | "account-token"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -276,7 +278,7 @@ type CliPlan =
       pollIntervalMs: number;
     }
   | { kind: "github-app-login"; maxWaitSec: number | null }
-  | { kind: "account-login"; maxWaitSec: number | null };
+  | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -521,9 +523,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
-    $ ade login [--max-wait <seconds>]              Sign in to the optional ADE account
+    $ ade login [--headless] [--max-wait <seconds>] Sign in to the optional ADE account
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
+    $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
@@ -1037,12 +1040,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE accounts are optional. Signing in unlocks remote-machine and account
   directory features; every local ADE workflow continues to work signed out.
 
-    $ ade login                    Open Clerk sign-in in the system browser
+    $ ade login                    Sign in with loopback OAuth or auto-detected device flow
+    $ ade login --headless         Print a verification URL + code for another browser
     $ ade logout                   Clear the shared machine account session
     $ ade auth status --text       Show the shared machine account status
+    $ ade account token create     Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
-    --max-wait <seconds>           Give up waiting before the five-minute OAuth
+    --headless                     Force the copy-paste device authorization flow.
+    --max-wait <seconds>           Give up waiting before the authorization
                                    session expires.
 `,
   search: `${ADE_BANNER}
@@ -3447,11 +3453,15 @@ function buildActionRunStep(args: string[]): InvocationStep {
     if (!Array.isArray(argsList))
       throw new CliUsageError("--args-list-json must be a JSON array.");
     if (domain === "account") {
-      if (action === "pollLogin" && typeof argsList[0] === "string") {
+      if (
+        (action === "pollLogin" || action === "pollDeviceLogin")
+        && argsList.length === 1
+        && typeof argsList[0] === "string"
+      ) {
         return accountActionStep("result", action, { sessionId: argsList[0] });
       }
       if (argsList.length === 0) return accountActionStep("result", action);
-      throw new CliUsageError("account actions accept object input; pollLogin also accepts [sessionId].");
+      throw new CliUsageError("account actions accept object input; polling actions also accept [sessionId].");
     }
     return actionCallStep("result", "run_ade_action", {
       domain,
@@ -3464,10 +3474,10 @@ function buildActionRunStep(args: string[]): InvocationStep {
   if (scalarJson != null) {
     if (domain === "account") {
       const scalar = parseJson(scalarJson, "--scalar-json");
-      if (action === "pollLogin" && typeof scalar === "string") {
+      if ((action === "pollLogin" || action === "pollDeviceLogin") && typeof scalar === "string") {
         return accountActionStep("result", action, { sessionId: scalar });
       }
-      throw new CliUsageError("Only account.pollLogin accepts scalar input.");
+      throw new CliUsageError("Only account polling actions accept scalar input.");
     }
     return actionCallStep("result", "run_ade_action", {
       domain,
@@ -3479,10 +3489,10 @@ function buildActionRunStep(args: string[]): InvocationStep {
   const scalar = readValue(args, ["--scalar", "--arg-value"]);
   if (scalar != null) {
     if (domain === "account") {
-      if (action === "pollLogin") {
+      if (action === "pollLogin" || action === "pollDeviceLogin") {
         return accountActionStep("result", action, { sessionId: scalar });
       }
-      throw new CliUsageError("Only account.pollLogin accepts scalar input.");
+      throw new CliUsageError("Only account polling actions accept scalar input.");
     }
     return actionCallStep("result", "run_ade_action", {
       domain,
@@ -11554,9 +11564,11 @@ function buildCliPlan(
   }
   if (primary === "login") {
     const maxWaitSec = readIntOption(args, ["--max-wait", "--timeout-sec"]);
+    const explicitHeadless = readFlag(args, ["--headless"]);
     return {
       kind: "account-login",
       maxWaitSec: typeof maxWaitSec === "number" ? maxWaitSec : null,
+      explicitHeadless,
     };
   }
   if (primary === "logout") {
@@ -11603,7 +11615,30 @@ function buildCliPlan(
       formatter: "account-auth",
       machineOnly: true,
       machineAutoStart: true,
+      // This first-party typed command intentionally shows the operator their
+      // account identity; generic agent actions keep the redacted status view.
+      connectRole: "cto",
       steps: [accountActionStep("result", "status")],
+    };
+  }
+  if (primary === "account") {
+    const [sub, mode] = args.filter(
+      (arg) => arg !== "--" && !arg.startsWith("-"),
+    );
+    if (sub !== "token" || mode !== "create") {
+      throw new CliUsageError("account currently supports token create.");
+    }
+    return {
+      kind: "execute",
+      label: "account token create",
+      formatter: "account-token",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [{
+        ...accountActionStep("result", "createToken"),
+        injectProjectRootIntoArgs: true,
+      }],
     };
   }
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
@@ -17275,7 +17310,14 @@ function formatTextOutput(
         ?? asString(value.name)
         ?? asString(value.userId)
         ?? "ADE account";
-      return `Signed in as ${identity}`;
+      const source = asString(value.source);
+      return `Signed in as ${identity}${source ? ` (${source})` : ""}`;
+    }
+    case "account-token": {
+      const token = isRecord(value) ? asString(value.token) : null;
+      if (!token) return "No durable ADE account token is available. Run `ade login` and retry.";
+      return `${token}\n\nSet this secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. ` +
+        "It grants ADE account access; store it in your secret manager and do not commit or log it.";
     }
     case "projects-list":
       return formatProjectsList(value);
@@ -17710,10 +17752,34 @@ function graphWaitState(value: unknown): {
   };
 }
 
+export type AccountLoginMode = "loopback" | "device" | "env-token";
+
+export function detectAccountLoginMode(args: {
+  explicitHeadless?: boolean;
+  browserOpenFailed?: boolean;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+} = {}): AccountLoginMode {
+  const env = args.env ?? process.env;
+  if (args.explicitHeadless) return "device";
+  if (env.ADE_ACCOUNT_TOKEN?.trim()) return "env-token";
+  if (args.browserOpenFailed) return "device";
+  if (env.SSH_TTY?.trim() || env.SSH_CONNECTION?.trim() || env.SSH_CLIENT?.trim()) {
+    return "device";
+  }
+  const platform = args.platform ?? process.platform;
+  const displayBasedPlatform = ["linux", "freebsd", "openbsd", "sunos", "aix"].includes(platform);
+  if (displayBasedPlatform && !env.DISPLAY?.trim() && !env.WAYLAND_DISPLAY?.trim()) {
+    return "device";
+  }
+  return "loopback";
+}
+
 /**
- * Interactive machine-account authorization. The daemon owns the loopback
- * listener, PKCE verifier, token exchange, and credential persistence; the CLI
- * only opens the returned URL and polls the daemon over one live connection.
+ * Interactive machine-account authorization. The daemon owns either the
+ * loopback listener or the device-code secret, token exchange, and credential
+ * persistence; the CLI only presents the browser instructions and polls over
+ * one live CTO connection.
  */
 async function runAccountLogin(
   plan: CliPlan & { kind: "account-login" },
@@ -17758,13 +17824,137 @@ async function runAccountLogin(
   // and startLogin reports "unconfigured" even when the project has the secrets.
   const { projectRoot } = resolveRoots(options);
 
-  // Track the pending loopback session so EVERY non-success exit (timeout, poll
-  // error, thrown error) cancels it in `finally`; a browser tab that completes
-  // after the CLI gave up must not silently exchange the code and sign the
-  // machine in later. Cleared on success so a completed login is never cancelled.
+  // Track either pending flow so every non-success exit drops daemon-held
+  // verifier/secret state. Cleared on success so a completed login is not cancelled.
   let pendingSessionId: string | null = null;
 
   try {
+    const explicitHeadless = plan.explicitHeadless || options.headless;
+    const mode = detectAccountLoginMode({
+      explicitHeadless,
+    });
+    if (!explicitHeadless) {
+      let status = await runAccountAction("status");
+      const source = asString(status.source);
+      if (status.signedIn === true && source === "env-token") {
+        process.stderr.write("Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.\n");
+        return { output: formatOutput(status, options, "account-auth"), exitCode: 0 };
+      }
+      if (source === "env-token") {
+        try {
+          const raw = await connection.request("account.call", { action: "getToken", args: {} });
+          const token = unwrapActionEnvelope(raw);
+          if (typeof token !== "string" || !token.trim()) throw new Error("empty account token");
+          status = await runAccountAction("status");
+          if (status.signedIn === true && asString(status.source) === "env-token") {
+            process.stderr.write("Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.\n");
+            return { output: formatOutput(status, options, "account-auth"), exitCode: 0 };
+          }
+        } catch {
+          // Report only fixed guidance. Credential values and upstream token errors
+          // must not cross the CLI boundary.
+        }
+        throw new CliExecutionError(
+          "ADE_ACCOUNT_TOKEN is expired or invalid.",
+          { nextAction: "Replace it with a current access token or durable refresh token, then restart the ADE brain." },
+        );
+      }
+    }
+    if (mode === "env-token") {
+      throw new CliExecutionError(
+        "ADE_ACCOUNT_TOKEN is set in this shell, but the running ADE brain did not inherit it.",
+        { nextAction: "Restart the ADE brain from this environment, then retry `ade login`." },
+      );
+    }
+
+    const finishSignedIn = (authStatus: JsonObject): { output: string; exitCode: number } => {
+      const identity = asString(authStatus.email)
+        ?? asString(authStatus.name)
+        ?? asString(authStatus.userId)
+        ?? "ADE account";
+      process.stderr.write(`Signed in as ${identity}\n`);
+      pendingSessionId = null;
+      return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 0 };
+    };
+
+    const deadlineFor = (expiresAt: string | null): number => {
+      const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+      const maxWaitDeadlineMs = plan.maxWaitSec != null
+        ? Date.now() + plan.maxWaitSec * 1000
+        : Number.NaN;
+      return Math.min(
+        Number.isFinite(expiresAtMs) ? expiresAtMs : Number.POSITIVE_INFINITY,
+        Number.isFinite(maxWaitDeadlineMs) ? maxWaitDeadlineMs : Number.POSITIVE_INFINITY,
+      );
+    };
+
+    const timedOut = async (
+      pollAction: "pollLogin" | "pollDeviceLogin",
+      sessionId: string,
+    ): Promise<{ output: string; exitCode: number }> => {
+      const finalPoll = await runAccountAction(pollAction, { sessionId });
+      const finalPollStatus = asString(finalPoll.status);
+      const authStatus = isRecord(finalPoll.authStatus) ? finalPoll.authStatus : finalPoll;
+      if (finalPollStatus === "signed_in") return finishSignedIn(authStatus);
+      process.stderr.write("ADE account sign-in timed out.\n");
+      return {
+        output: formatOutput({ signedIn: false }, options, "account-auth"),
+        exitCode: 1,
+      };
+    };
+
+    const runDeviceFlow = async (
+      onStarted?: () => Promise<void>,
+    ): Promise<{ output: string; exitCode: number }> => {
+      const start = await runAccountAction("startDeviceLogin", {
+        projectRoot,
+        ignoreEnvCredential: plan.explicitHeadless || options.headless,
+      });
+      const sessionId = asString(start.sessionId);
+      const userCode = asString(start.userCode);
+      const verificationUri = asString(start.verificationUri);
+      const verificationUriComplete = asString(start.verificationUriComplete);
+      const expiresAt = asString(start.expiresAt);
+      if (!sessionId || !userCode || !verificationUri) {
+        throw new CliExecutionError("ADE account device login did not start.", { start });
+      }
+      await onStarted?.();
+      pendingSessionId = sessionId;
+      let intervalSec = typeof start.intervalSec === "number" && start.intervalSec > 0
+        ? start.intervalSec
+        : 5;
+      const deadlineMs = deadlineFor(expiresAt);
+      process.stderr.write(
+        `\nTo finish signing in, open ${verificationUri} and enter code: ${userCode}\n` +
+        (verificationUriComplete ? `Or open: ${verificationUriComplete}\n` : "") +
+        "\nWaiting for sign-in…\n",
+      );
+      while (true) {
+        const sleepMs = Math.max(1, intervalSec) * 1000;
+        await sleep(Number.isFinite(deadlineMs)
+          ? Math.min(sleepMs, Math.max(1, deadlineMs - Date.now()))
+          : sleepMs);
+        const poll = await runAccountAction("pollDeviceLogin", { sessionId });
+        const pollStatus = asString(poll.status);
+        const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+        if (pollStatus === "signed_in") return finishSignedIn(authStatus);
+        if (pollStatus === "pending" || pollStatus === "slow_down") {
+          if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
+            intervalSec = poll.intervalSec;
+          }
+          if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+            return timedOut("pollDeviceLogin", sessionId);
+          }
+          continue;
+        }
+        const message = asString(poll.message) ?? "ADE account device sign-in failed.";
+        process.stderr.write(`${message}\n`);
+        return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+      }
+    };
+
+    if (mode === "device") return await runDeviceFlow();
+
     const start = await runAccountAction("startLogin", { projectRoot });
     const sessionId = asString(start.sessionId);
     const authorizeUrl = asString(start.authorizeUrl);
@@ -17773,57 +17963,52 @@ async function runAccountLogin(
       throw new CliExecutionError("ADE account login did not start.", { start });
     }
     pendingSessionId = sessionId;
-
     const openResult = openUrlViaOs(authorizeUrl);
+    if (detectAccountLoginMode({ browserOpenFailed: openResult.failed }) === "device") {
+      process.stderr.write(
+        `Could not open the browser automatically: ${openResult.message}\nTrying device sign-in.\n`,
+      );
+      let deviceFlowStarted = false;
+      try {
+        return await runDeviceFlow(async () => {
+          deviceFlowStarted = true;
+          try {
+            await runAccountAction("cancelLogin", { sessionId });
+          } catch {
+            // The loopback session expires on its own; a ready device flow can continue.
+          }
+        });
+      } catch (error) {
+        if (deviceFlowStarted) throw error;
+        process.stderr.write(
+          "Device sign-in is unavailable; continuing with manual browser sign-in.\n",
+        );
+      }
+    }
     process.stderr.write(
       `\nSign in to ADE in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
     );
-    if (openResult.failed) {
-      process.stderr.write(`Could not open the browser automatically: ${openResult.message}\n`);
-    }
-
-    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-    const maxWaitDeadlineMs = plan.maxWaitSec != null
-      ? Date.now() + plan.maxWaitSec * 1000
-      : Number.NaN;
-    const deadlineMs = Math.min(
-      Number.isFinite(expiresAtMs) ? expiresAtMs : Number.POSITIVE_INFINITY,
-      Number.isFinite(maxWaitDeadlineMs) ? maxWaitDeadlineMs : Number.POSITIVE_INFINITY,
-    );
-
+    const deadlineMs = deadlineFor(expiresAt);
     while (true) {
-      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
-        process.stderr.write("ADE account sign-in timed out.\n");
-        const status = await runAccountAction("status");
-        return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
-      }
-      await sleep(
-        Number.isFinite(deadlineMs)
-          ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
-          : 500,
-      );
+      await sleep(Number.isFinite(deadlineMs)
+        ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
+        : 500);
       const poll = await runAccountAction("pollLogin", { sessionId });
       const pollStatus = asString(poll.status);
       const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
-      if (pollStatus === "signed_in") {
-        const identity = asString(authStatus.email)
-          ?? asString(authStatus.name)
-          ?? asString(authStatus.userId)
-          ?? "ADE account";
-        process.stderr.write(`Signed in as ${identity}\n`);
-        // Success: do not cancel the session we just completed.
-        pendingSessionId = null;
-        return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 0 };
+      if (pollStatus === "signed_in") return finishSignedIn(authStatus);
+      if (pollStatus === "pending") {
+        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+          return timedOut("pollLogin", sessionId);
+        }
+        continue;
       }
-      if (pollStatus === "pending") continue;
       const message = asString(poll.message) ?? "ADE account sign-in failed.";
       process.stderr.write(`${message}\n`);
       return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
     }
   } finally {
-    // Cancel the still-live loopback session on any non-success exit (timeout,
-    // poll error, thrown error). Best-effort and idempotent: a cancel failure
-    // must not mask the real result. Cleared to null on success above.
+    // Best-effort and idempotent: cancellation must not mask the real result.
     if (pendingSessionId) {
       try {
         await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
@@ -18111,8 +18296,17 @@ async function executePlan(
     const values: JsonObject = {};
     for (const step of plan.steps) {
       try {
-        const params =
+        const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;
+        const params = step.injectProjectRootIntoArgs
+          ? {
+              ...(resolvedParams ?? {}),
+              args: {
+                ...(isRecord(resolvedParams?.args) ? resolvedParams.args : {}),
+                projectRoot: connection.projectRoot,
+              },
+            }
+          : resolvedParams;
         const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {

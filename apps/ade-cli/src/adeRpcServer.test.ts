@@ -2919,6 +2919,42 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.productAnalyticsService.flush).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps account status open to agents without exposing account identity", async () => {
+    const fixture = createRuntime();
+    (fixture.runtime as any).accountAuthService = {
+      getStatus: vi.fn(() => ({
+        signedIn: true,
+        userId: "user_123",
+        email: "person@example.com",
+        name: "Person",
+        expiresAt: "2026-07-15T10:00:00.000Z",
+        source: "env-token",
+      })),
+    };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const inventory = await callTool(handler, "list_ade_actions", { domain: "account" });
+    expect(inventory?.isError).toBeUndefined();
+    expect(inventory.structuredContent.actions).toContainEqual(
+      expect.objectContaining({ name: "account.status" }),
+    );
+
+    const status = await callTool(handler, "run_ade_action", {
+      domain: "account",
+      action: "status",
+    });
+    expect(status?.isError).toBeUndefined();
+    expect(status.structuredContent.result).toEqual({
+      signedIn: true,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: "2026-07-15T10:00:00.000Z",
+      source: "env-token",
+    });
+  });
+
   it("rejects product analytics capture from agent-run identities", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

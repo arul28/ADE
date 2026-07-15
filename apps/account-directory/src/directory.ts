@@ -1,4 +1,8 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import {
+  handleDeviceAuthorizationRequest,
+  type DeviceAuthorizationRequestOptions,
+} from "./deviceAuthorization";
 
 export interface Env {
   DB: D1Database;
@@ -322,11 +326,18 @@ async function handleDelete(
   return json({ ok: true, machineKey });
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  options: DeviceAuthorizationRequestOptions = {},
+): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return request.method === "GET" ? json({ ok: true }) : text("method not allowed", 405);
   }
+
+  const deviceResponse = await handleDeviceAuthorizationRequest(request, env, options);
+  if (deviceResponse) return deviceResponse;
 
   const route = routeAccount(url.pathname);
   if (!route) return text("not found", 404);

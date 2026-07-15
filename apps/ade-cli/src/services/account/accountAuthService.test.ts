@@ -174,6 +174,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       email: null,
       name: null,
       expiresAt: null,
+      source: null,
     });
     const start = await service.startLogin();
     const authorizeUrl = new URL(start.authorizeUrl);
@@ -207,6 +208,10 @@ describe("AccountAuthService OAuth PKCE login", () => {
       userId: "user_123",
       email: "person@example.com",
       name: "Person Example",
+      oauthConfig: {
+        issuer: "https://clerk.example.test",
+        clientId: "client-public",
+      },
     });
     await expect(service.pollLogin(start.sessionId)).resolves.toEqual({
       status: "signed_in",
@@ -217,8 +222,99 @@ describe("AccountAuthService OAuth PKCE login", () => {
         email: "person@example.com",
         name: "Person Example",
         expiresAt: "2026-07-14T13:00:00.000Z",
+        source: "loopback",
       },
     });
+  });
+
+  it("pins loopback OAuth context across callback exchange, refresh, and token creation", async () => {
+    const store = new MemoryCredentialStore();
+    const configA = { issuer: "https://clerk-a.example.test/", clientId: " client-a " };
+    const configB = { issuer: "https://clerk-b.example.test", clientId: "client-b" };
+    let activeConfig = configA;
+    const getOAuthConfig = vi.fn(() => activeConfig);
+    const initialAccessToken = jwt({ sub: "config-a-user", version: 1 });
+    const refreshedAccessToken = jwt({ sub: "config-a-user", version: 2 });
+    const tokenRequests: Array<{ url: string; body: Record<string, string> }> = [];
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      tokenRequests.push({ url: input, body });
+      if (body.grant_type === "authorization_code") {
+        return jsonResponse({
+          access_token: initialAccessToken,
+          refresh_token: "config-a-refresh",
+          expires_in: 60,
+        });
+      }
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "config-a-refresh-rotated",
+        expires_in: 3600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig,
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomBytes: (size) => Buffer.alloc(size, 0x3a),
+      randomUUID: () => "login-session-pinned-config",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startLogin();
+    const authorizeUrl = new URL(start.authorizeUrl);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+    activeConfig = configB;
+
+    const callback = await fetch(
+      `${redirectUri}?code=config-a-code&state=${encodeURIComponent(state)}`,
+    );
+    expect(callback.status).toBe(200);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: initialAccessToken,
+      refreshToken: "config-a-refresh",
+      oauthConfig: {
+        issuer: "https://clerk-a.example.test",
+        clientId: "client-a",
+      },
+    });
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    const durable = await service.createToken();
+    const durablePayload = JSON.parse(Buffer.from(
+      durable.token.slice("ade_account_v1.".length),
+      "base64url",
+    ).toString("utf8"));
+
+    expect(tokenRequests).toEqual([
+      {
+        url: "https://clerk-a.example.test/oauth/token",
+        body: {
+          grant_type: "authorization_code",
+          code: "config-a-code",
+          code_verifier: Buffer.alloc(32, 0x3a).toString("base64url"),
+          client_id: "client-a",
+          redirect_uri: redirectUri,
+        },
+      },
+      {
+        url: "https://clerk-a.example.test/oauth/token",
+        body: {
+          grant_type: "refresh_token",
+          refresh_token: "config-a-refresh",
+          client_id: "client-a",
+        },
+      },
+    ]);
+    expect(durablePayload).toEqual({
+      version: 1,
+      refreshToken: "config-a-refresh-rotated",
+      issuer: "https://clerk-a.example.test",
+      clientId: "client-a",
+    });
+    expect(getOAuthConfig).toHaveBeenCalledTimes(1);
   });
 
   it("cancelLogin closes the loopback listener so a late completion cannot sign in", async () => {
@@ -257,6 +353,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       email: null,
       name: null,
       expiresAt: null,
+      source: null,
     });
 
     // The pending session is gone; polling reports it was not found rather than
@@ -324,6 +421,810 @@ describe("AccountAuthService OAuth PKCE login", () => {
   });
 });
 
+describe("AccountAuthService device authorization", () => {
+  it("starts through the bridge, polls, and stores the approved session with device source", async () => {
+    const store = new MemoryCredentialStore();
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const accessToken = jwt({ sub: "device-user", email: "device@example.com" });
+    let tokenPolls = 0;
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+        });
+        return jsonResponse({
+          device_code: "bridge-device-code",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://directory.example.test/device",
+          verification_uri_complete: "https://directory.example.test/device?user_code=ABCD-EFGH",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      expect(input).toBe("https://directory.example.test/device/token");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        device_code: "bridge-device-code",
+        device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+      });
+      tokenPolls += 1;
+      return tokenPolls === 1
+        ? jsonResponse({ error: "authorization_pending", interval: 5 }, 400)
+        : jsonResponse({
+            access_token: accessToken,
+            refresh_token: "device-refresh-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test/",
+      now: () => nowMs,
+      randomBytes: (size) => Buffer.alloc(size, 0x77),
+      randomUUID: () => "device-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    await expect(service.startDeviceLogin()).resolves.toEqual({
+      sessionId: "device-session",
+      userCode: "ABCD-EFGH",
+      verificationUri: "https://directory.example.test/device",
+      verificationUriComplete: "https://directory.example.test/device?user_code=ABCD-EFGH",
+      expiresAt: "2026-07-14T12:10:00.000Z",
+      intervalSec: 5,
+    });
+    await expect(service.pollDeviceLogin("device-session")).resolves.toMatchObject({
+      status: "pending",
+      intervalSec: 5,
+      authStatus: { signedIn: false, source: null },
+    });
+    await expect(service.pollDeviceLogin("device-session")).resolves.toEqual({
+      status: "signed_in",
+      message: null,
+      intervalSec: null,
+      authStatus: {
+        signedIn: true,
+        userId: "device-user",
+        email: "device@example.com",
+        name: null,
+        expiresAt: "2026-07-14T13:00:00.000Z",
+        source: "device",
+      },
+    });
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken,
+      refreshToken: "device-refresh-token",
+      authSource: "device",
+    });
+  });
+
+  it("coalesces concurrent polls so a one-time device code is redeemed once", async () => {
+    const store = new MemoryCredentialStore();
+    const accessToken = jwt({ sub: "coalesced-device-user", email: "coalesced@example.com" });
+    let tokenRequests = 0;
+    let resolveTokenResponse: ((response: Response) => void) | null = null;
+    const tokenResponse = new Promise<Response>((resolve) => {
+      resolveTokenResponse = resolve;
+    });
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "one-time-device-code",
+          user_code: "ONCE-ONLY",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      tokenRequests += 1;
+      if (tokenRequests === 1) return tokenResponse;
+      return jsonResponse({
+        error: "invalid_grant",
+        error_description: "Device code was already redeemed.",
+      }, 400);
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "coalesced-device-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    const firstPoll = service.pollDeviceLogin(start.sessionId);
+    const secondPoll = service.pollDeviceLogin(start.sessionId);
+    expect(tokenRequests).toBe(1);
+
+    resolveTokenResponse!(jsonResponse({
+      access_token: accessToken,
+      refresh_token: "coalesced-refresh-token",
+      expires_in: 3600,
+    }));
+    const results = await Promise.all([firstPoll, secondPoll]);
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        status: "signed_in",
+        authStatus: expect.objectContaining({ userId: "coalesced-device-user" }),
+      }),
+      expect.objectContaining({
+        status: "signed_in",
+        authStatus: expect.objectContaining({ userId: "coalesced-device-user" }),
+      }),
+    ]);
+    expect(tokenRequests).toBe(1);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken,
+      refreshToken: "coalesced-refresh-token",
+      authSource: "device",
+    });
+  });
+
+  it("shares cancellation across coalesced device polls and rejects a late token", async () => {
+    const store = new MemoryCredentialStore();
+    let resolveTokenResponse: ((response: Response) => void) | null = null;
+    const tokenResponse = new Promise<Response>((resolve) => {
+      resolveTokenResponse = resolve;
+    });
+    let tokenRequests = 0;
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "cancelled-device-code",
+          user_code: "CANC-ELLD",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      tokenRequests += 1;
+      return tokenResponse;
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "cancelled-coalesced-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    const firstPoll = service.pollDeviceLogin(start.sessionId);
+    const secondPoll = service.pollDeviceLogin(start.sessionId);
+    service.cancelLogin(start.sessionId);
+    resolveTokenResponse!(jsonResponse({
+      access_token: jwt({ sub: "late-device-user" }),
+      refresh_token: "late-refresh-token",
+      expires_in: 3600,
+    }));
+
+    await expect(Promise.all([firstPoll, secondPoll])).resolves.toEqual([
+      expect.objectContaining({ status: "error", message: expect.stringContaining("cancelled") }),
+      expect.objectContaining({ status: "error", message: expect.stringContaining("cancelled") }),
+    ]);
+    expect(tokenRequests).toBe(1);
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("keeps an explicit device identity active instead of reverting to inherited env auth", async () => {
+    const store = new MemoryCredentialStore();
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const inheritedAccessToken = jwt({
+      sub: "inherited-user",
+      email: "inherited@example.com",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const deviceAccessToken = jwt({ sub: "device-user", email: "device@example.com" });
+    const env = { ADE_ACCOUNT_TOKEN: inheritedAccessToken } as NodeJS.ProcessEnv;
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "explicit-device-code",
+          user_code: "EXPL-ICIT",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: deviceAccessToken,
+          refresh_token: "explicit-device-refresh",
+          expires_in: 3600,
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      env,
+      now: () => nowMs,
+      randomUUID: () => "explicit-device-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin({ ignoreEnvCredential: true });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: {
+        userId: "device-user",
+        email: "device@example.com",
+        source: "device",
+      },
+    });
+    expect(env.ADE_ACCOUNT_TOKEN).toBe(inheritedAccessToken);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "device-user",
+      email: "device@example.com",
+      source: "device",
+    });
+    await expect(service.getAccessToken()).resolves.toBe(deviceAccessToken);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: deviceAccessToken,
+      authSource: "device",
+      suppressEnvCredential: true,
+    });
+
+    const restartedService = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env,
+      now: () => nowMs,
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(restartedService);
+    expect(restartedService.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "device-user",
+      email: "device@example.com",
+      source: "device",
+    });
+    await expect(restartedService.getAccessToken()).resolves.toBe(deviceAccessToken);
+
+    restartedService.signOut();
+    expect(restartedService.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "inherited-user",
+      email: "inherited@example.com",
+      source: "env-token",
+    });
+  });
+
+  it("persists bridge OAuth context for directory-only refresh and durable token creation", async () => {
+    const store = new MemoryCredentialStore();
+    let nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const initialAccessToken = jwt({ sub: "directory-only-user" });
+    const refreshedAccessToken = jwt({ sub: "directory-only-user", version: 2 });
+    const localConfig = vi.fn(() => {
+      throw new Error("local Clerk config must not be read");
+    });
+    const deviceFetch = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "directory-only-code",
+          user_code: "DIRY-ONLY",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: initialAccessToken,
+          refresh_token: "directory-refresh-initial",
+          expires_in: 60,
+          oauth_issuer: "https://public-clerk.example.test/",
+          oauth_client_id: "directory-public-client",
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: localConfig,
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      now: () => nowMs,
+      randomUUID: () => "directory-only-session",
+      fetchImpl: deviceFetch,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "directory-only-user", source: "device" },
+    });
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "directory-refresh-initial",
+      oauthConfig: {
+        issuer: "https://public-clerk.example.test",
+        clientId: "directory-public-client",
+      },
+    });
+
+    nowMs += 61_000;
+    const refreshFetch = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      expect(input).toBe("https://public-clerk.example.test/oauth/token");
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "directory-refresh-initial",
+        client_id: "directory-public-client",
+      });
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "directory-refresh-rotated",
+        expires_in: 3600,
+      });
+    });
+    const restartedService = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: localConfig,
+      now: () => nowMs,
+      fetchImpl: refreshFetch,
+    });
+    activeServices.push(restartedService);
+
+    await expect(restartedService.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    const durable = await restartedService.createToken();
+    const durablePayload = JSON.parse(Buffer.from(
+      durable.token.slice("ade_account_v1.".length),
+      "base64url",
+    ).toString("utf8"));
+    expect(durablePayload).toEqual({
+      version: 1,
+      refreshToken: "directory-refresh-rotated",
+      issuer: "https://public-clerk.example.test",
+      clientId: "directory-public-client",
+    });
+    expect(localConfig).not.toHaveBeenCalled();
+    expect(refreshFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed OAuth context in a successful bridge token response", async () => {
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "malformed-context-code",
+          user_code: "BADF-IELD",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: jwt({ sub: "untrusted-context-user" }),
+          refresh_token: "untrusted-context-refresh",
+          expires_in: 3600,
+          oauth_issuer: "http://attacker.example.test",
+          oauth_client_id: "attacker-client",
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://local.example.test", clientId: "local-client" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "malformed-context-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "error",
+      message: "ADE account device token response included invalid OAuth context.",
+      authStatus: { signedIn: false },
+    });
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("pins concurrent device sessions to the bridge that created each code", async () => {
+    let activeBridge = "https://directory-a.example.test";
+    const getDeviceBridgeUrl = vi.fn(() => activeBridge);
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce("device-session-a")
+      .mockReturnValueOnce("device-session-b");
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input);
+      const bridge = url.hostname.startsWith("directory-a") ? "a" : "b";
+      if (url.pathname === "/device/code") {
+        return jsonResponse({
+          device_code: `device-code-${bridge}`,
+          user_code: bridge === "a" ? "AAAA-AAAA" : "BBBB-BBBB",
+          verification_uri: `${url.origin}/device`,
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      expect(url.pathname).toBe("/device/token");
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        device_code: `device-code-${bridge}`,
+      });
+      return jsonResponse({ error: "authorization_pending", interval: 5 }, 400);
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl,
+      randomUUID,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const first = await service.startDeviceLogin();
+    activeBridge = "https://directory-b.example.test";
+    const second = await service.startDeviceLogin();
+
+    await expect(service.pollDeviceLogin(first.sessionId)).resolves.toMatchObject({ status: "pending" });
+    await expect(service.pollDeviceLogin(second.sessionId)).resolves.toMatchObject({ status: "pending" });
+    expect(fetchImpl.mock.calls.map(([input]) => input)).toEqual([
+      "https://directory-a.example.test/device/code",
+      "https://directory-b.example.test/device/code",
+      "https://directory-a.example.test/device/token",
+      "https://directory-b.example.test/device/token",
+    ]);
+    expect(getDeviceBridgeUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels daemon-held device redemption state without changing an existing session", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const fetchImpl = vi.fn(async (): Promise<Response> => jsonResponse({
+      device_code: "bridge-device-code",
+      user_code: "ABCD-EFGH",
+      verification_uri: "https://directory.example.test/device",
+      expires_in: 600,
+      interval: 5,
+    }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "device-session-cancel",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    service.cancelLogin(start.sessionId);
+
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({ status: "error" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(service.getStatus()).toMatchObject({ signedIn: true, source: "loopback" });
+  });
+
+  it("bounds device bridge requests and preserves the session after a polling timeout", async () => {
+    const accessToken = jwt({ sub: "device-timeout-user" });
+    let tokenPolls = 0;
+    const fetchImpl = vi.fn((input: string, init?: RequestInit): Promise<Response> => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (input.endsWith("/device/code")) {
+        return Promise.resolve(jsonResponse({
+          device_code: "device-timeout-code",
+          user_code: "TIME-OUT1",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 1,
+        }));
+      }
+      tokenPolls += 1;
+      if (tokenPolls === 1) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("response body aborted")), {
+              once: true,
+            });
+          }),
+        } as Response);
+      }
+      return Promise.resolve(jsonResponse({ access_token: accessToken, expires_in: 3600 }));
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "device-timeout-session",
+      fetchImpl,
+      deviceBridgeRequestTimeoutMs: 5,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "pending",
+      intervalSec: 1,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "device-timeout-user" },
+    });
+  });
+
+  it("preserves device sessions across retryable 429 and 5xx bridge responses", async () => {
+    const accessToken = jwt({ sub: "device-retry-user" });
+    const tokenResponses = [
+      jsonResponse({ error: "rate_limited" }, 429),
+      jsonResponse({ error: "temporarily_unavailable" }, 503),
+      jsonResponse({ access_token: accessToken, expires_in: 3600 }),
+    ];
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "device-retry-code",
+          user_code: "RETR-Y123",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      return tokenResponses.shift()!;
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "device-retry-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "slow_down",
+      intervalSec: 10,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "pending",
+      intervalSec: 10,
+    });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "device-retry-user" },
+    });
+  });
+});
+
+describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
+  it("uses a non-expired access token directly without a flow or disk write", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const accessToken = jwt({
+      sub: "env-user",
+      email: "env@example.com",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: { ADE_ACCOUNT_TOKEN: accessToken } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toEqual({
+      signedIn: true,
+      userId: "env-user",
+      email: "env@example.com",
+      name: null,
+      expiresAt: "2026-07-14T13:00:00.000Z",
+      source: "env-token",
+    });
+    await expect(service.getAccessToken()).resolves.toBe(accessToken);
+    await expect(service.startLogin()).rejects.toThrow(/no interactive sign-in is required/);
+    await expect(service.startDeviceLogin()).rejects.toThrow(/no interactive sign-in is required/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("refreshes a newly provisioned token without local OAuth configuration", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const issuingStore = new MemoryCredentialStore();
+    issuingStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const issuingService = createAccountAuthService({
+      credentialStore: issuingStore,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => nowMs,
+    });
+    activeServices.push(issuingService);
+    const provisioned = await issuingService.createToken();
+    expect(provisioned.token).toMatch(/^ade_account_v1\./);
+    expect(provisioned.token).not.toContain("refresh-old");
+
+    const localConfig = vi.fn(() => {
+      throw new Error("local Clerk config must not be read");
+    });
+    const refreshedAccessToken = jwt({
+      sub: "env-self-contained-user",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      expect(input).toBe("https://clerk.example.test/oauth/token");
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-old",
+        client_id: "client-public",
+      });
+      return jsonResponse({ access_token: refreshedAccessToken, expires_in: 3600 });
+    });
+    const consumingService = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: localConfig,
+      env: { ADE_ACCOUNT_TOKEN: provisioned.token } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(consumingService);
+
+    expect(consumingService.getStatus()).toMatchObject({
+      signedIn: false,
+      source: "env-token",
+      expiresAt: null,
+    });
+    await expect(getSignedInAccountAccessToken(consumingService)).resolves.toBe(refreshedAccessToken);
+    expect(localConfig).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const rejectedService = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: localConfig,
+      env: { ADE_ACCOUNT_TOKEN: provisioned.token } as NodeJS.ProcessEnv,
+      fetchImpl: vi.fn(async () => jsonResponse({
+        error: "invalid_grant",
+        error_description: "rejected refresh-old",
+      }, 400)),
+    });
+    activeServices.push(rejectedService);
+    let rejected: unknown;
+    try {
+      await rejectedService.getAccessToken();
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toMatch(/ADE_ACCOUNT_TOKEN refresh failed/);
+    expect(JSON.stringify(rejected)).not.toContain("refresh-old");
+    expect(JSON.stringify(rejected)).not.toContain(provisioned.token);
+  });
+
+  it("keeps legacy opaque refresh tokens working with local config and never persists or logs them", async () => {
+    const envRefreshToken = "refresh-secret-that-must-not-be-logged";
+    const loggerEvents: unknown[] = [];
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const refreshedAccessToken = jwt({
+      sub: "env-refresh-user",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit): Promise<Response> => {
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: envRefreshToken,
+        client_id: "client-public",
+      });
+      return jsonResponse({ access_token: refreshedAccessToken, expires_in: 3600 });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: { ADE_ACCOUNT_TOKEN: envRefreshToken } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl,
+      logger: {
+        info: (message, meta) => loggerEvents.push([message, meta]),
+        warn: (message, meta) => loggerEvents.push([message, meta]),
+      },
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({ signedIn: false, source: "env-token", expiresAt: null });
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      source: "env-token",
+      userId: "env-refresh-user",
+      expiresAt: "2026-07-14T13:00:00.000Z",
+    });
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+    expect(JSON.stringify(loggerEvents)).not.toContain(envRefreshToken);
+  });
+
+  it("gives migration guidance when a legacy opaque refresh token has no local config", async () => {
+    const legacyRefreshToken = "legacy-refresh-secret";
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "", clientId: "" }),
+      env: { ADE_ACCOUNT_TOKEN: legacyRefreshToken } as NodeJS.ProcessEnv,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({ signedIn: false, source: "env-token" });
+    await expect(service.getAccessToken()).rejects.toThrow(
+      /Legacy ADE_ACCOUNT_TOKEN.*ade account token create/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never lets an older in-flight refresh overwrite or return another env credential", async () => {
+    const env = { ADE_ACCOUNT_TOKEN: "refresh-account-a" } as NodeJS.ProcessEnv;
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const accountAAccessToken = jwt({
+      sub: "account-a",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const accountBAccessToken = jwt({
+      sub: "account-b",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    let resolveAccountA: ((response: Response) => void) | null = null;
+    const refreshBodies: Record<string, string>[] = [];
+    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit): Promise<Response> => {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      refreshBodies.push(body);
+      if (body.refresh_token === "refresh-account-a") {
+        return new Promise<Response>((resolve) => {
+          resolveAccountA = resolve;
+        });
+      }
+      return jsonResponse({
+        access_token: accountBAccessToken,
+        refresh_token: "refresh-account-b-rotated",
+        expires_in: 3600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const accountARefresh = service.getAccessToken();
+    await vi.waitFor(() => expect(resolveAccountA).not.toBeNull());
+    env.ADE_ACCOUNT_TOKEN = "refresh-account-b";
+    const accountBRefresh = service.getAccessToken();
+    await expect(accountBRefresh).resolves.toBe(accountBAccessToken);
+    resolveAccountA!(jsonResponse({
+      access_token: accountAAccessToken,
+      refresh_token: "refresh-account-a-rotated",
+      expires_in: 3600,
+    }));
+
+    await expect(accountARefresh).resolves.toBe(accountBAccessToken);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      source: "env-token",
+      userId: "account-b",
+    });
+    expect(refreshBodies.map((body) => body.refresh_token)).toEqual([
+      "refresh-account-a",
+      "refresh-account-b",
+    ]);
+  });
+
+  it("surfaces access-token expiry instead of attempting an interactive flow", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const expired = jwt({ exp: Math.floor((nowMs - 60_000) / 1000) });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: { ADE_ACCOUNT_TOKEN: expired } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({
+      signedIn: false,
+      source: "env-token",
+      expiresAt: "2026-07-14T11:59:00.000Z",
+    });
+    await expect(service.getAccessToken()).rejects.toThrow(/ADE_ACCOUNT_TOKEN access token expired/);
+  });
+});
+
 describe("AccountAuthService refresh and sign-out", () => {
   it("refreshes inside the two-minute skew and retains identity plus a non-rotated refresh token", async () => {
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
@@ -384,6 +1285,7 @@ describe("AccountAuthService refresh and sign-out", () => {
       email: null,
       name: null,
       expiresAt: null,
+      source: null,
     });
     resolveRefresh!(jsonResponse({
       access_token: jwt({ sub: "user_new" }),
@@ -429,5 +1331,24 @@ describe("AccountAuthService refresh and sign-out", () => {
       getStatus: () => ({ signedIn: true, userId: "user_1", email: null, name: null, expiresAt: null }),
       getAccessToken: async () => { throw new Error("refresh failed"); },
     })).resolves.toBeNull();
+  });
+
+  it("creates a durable agent token only from an interactive refresh-token session", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      authSource: "device",
+    })));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    activeServices.push(service);
+
+    await expect(service.createToken()).resolves.toEqual({
+      token: expect.stringMatching(/^ade_account_v1\./),
+      source: "refresh_token",
+      guidance: expect.stringContaining("self-contained secret as ADE_ACCOUNT_TOKEN"),
+    });
   });
 });

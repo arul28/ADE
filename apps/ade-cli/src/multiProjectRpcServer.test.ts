@@ -46,6 +46,26 @@ function makeAccountAuthServiceMock() {
         expiresAt: null,
       },
     })),
+    startDeviceLogin: vi.fn(async () => ({
+      sessionId: "device-session",
+      userCode: "ABCD-EFGH",
+      verificationUri: "https://accounts.example/device",
+      verificationUriComplete: "https://accounts.example/device?user_code=ABCD-EFGH",
+      expiresAt: "2026-05-10T00:10:00.000Z",
+      intervalSec: 5,
+    })),
+    pollDeviceLogin: vi.fn(async () => ({
+      status: "pending" as const,
+      message: null,
+      intervalSec: 5,
+      authStatus: {
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      },
+    })),
     getStatus: vi.fn(() => ({
       signedIn: false,
       userId: null,
@@ -54,6 +74,11 @@ function makeAccountAuthServiceMock() {
       expiresAt: null,
     })),
     getAccessToken: vi.fn(async () => "test-access-token"),
+    createToken: vi.fn(async () => ({
+      token: "test-refresh-token",
+      source: "refresh_token" as const,
+      guidance: "Set ADE_ACCOUNT_TOKEN.",
+    })),
     cancelLogin: vi.fn(),
     signOut: vi.fn(() => ({
       signedIn: false,
@@ -98,6 +123,8 @@ describe("multi-project RPC server", () => {
     const accountAuthService = {
       startLogin: vi.fn(),
       pollLogin: vi.fn(),
+      startDeviceLogin: vi.fn(),
+      pollDeviceLogin: vi.fn(),
       getStatus: vi.fn(() => ({
         signedIn: false,
         userId: null,
@@ -106,6 +133,7 @@ describe("multi-project RPC server", () => {
         expiresAt: null,
       })),
       getAccessToken: vi.fn(),
+      createToken: vi.fn(),
       cancelLogin: vi.fn(),
       signOut: vi.fn(),
       dispose: vi.fn(),
@@ -149,6 +177,14 @@ describe("multi-project RPC server", () => {
   it("allows the open account.status action for a non-cto caller", async () => {
     const { registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();
+    (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      signedIn: true,
+      userId: "user_123",
+      email: "person@example.com",
+      name: "Person",
+      expiresAt: "2026-07-15T10:00:00.000Z",
+      source: "env-token",
+    });
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "agent";
     try {
@@ -169,7 +205,19 @@ describe("multi-project RPC server", () => {
         method: "account.call",
         params: { action: "status" },
       });
-      expect(result).toMatchObject({ domain: "account", action: "status" });
+      expect(result).toEqual({
+        domain: "account",
+        action: "status",
+        result: {
+          signedIn: true,
+          userId: null,
+          email: null,
+          name: null,
+          expiresAt: "2026-07-15T10:00:00.000Z",
+          source: "env-token",
+        },
+        statusHints: {},
+      });
       expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
       handler.dispose();
     } finally {
@@ -194,7 +242,15 @@ describe("multi-project RPC server", () => {
         method: "ade/initialize",
         params: { identity: { role: "agent" } },
       });
-      for (const action of ["getToken", "startLogin", "cancelLogin", "signOut"]) {
+      for (const action of [
+        "getToken",
+        "createToken",
+        "startLogin",
+        "startDeviceLogin",
+        "pollDeviceLogin",
+        "cancelLogin",
+        "signOut",
+      ]) {
         await expect(
           handler({
             jsonrpc: "2.0",
@@ -205,7 +261,10 @@ describe("multi-project RPC server", () => {
         ).rejects.toThrow(/requires the cto role/);
       }
       expect(accountAuthService.getAccessToken).not.toHaveBeenCalled();
+      expect(accountAuthService.createToken).not.toHaveBeenCalled();
       expect(accountAuthService.startLogin).not.toHaveBeenCalled();
+      expect(accountAuthService.startDeviceLogin).not.toHaveBeenCalled();
+      expect(accountAuthService.pollDeviceLogin).not.toHaveBeenCalled();
       expect(accountAuthService.cancelLogin).not.toHaveBeenCalled();
       expect(accountAuthService.signOut).not.toHaveBeenCalled();
       handler.dispose();
@@ -275,6 +334,46 @@ describe("multi-project RPC server", () => {
         result: "test-access-token",
       });
       expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("prioritizes the invoking project config root for durable token creation", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const registerAccountConfigRoot = vi.fn();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+        registerAccountConfigRoot,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: {
+          action: "createToken",
+          args: { projectRoot },
+        },
+      });
+
+      expect(registerAccountConfigRoot).toHaveBeenCalledWith(projectRoot, undefined, {
+        prioritize: true,
+      });
+      expect(accountAuthService.createToken).toHaveBeenCalledTimes(1);
+      expect(registry.list()).toEqual([]);
       handler.dispose();
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
