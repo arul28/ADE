@@ -7,12 +7,13 @@ import type {
   SyncPairingQrPayload,
   SyncPeerMetadata,
 } from "../../../../shared/types/sync";
-import { AdeSyncClient, AdeSyncError } from "../client";
+import type { AdeAccountMachine } from "../../../../shared/types/account";
+import { AdeSyncClient } from "../client";
 import type { WebSocketLike } from "../connection";
 import { deriveBrowserSyncEndpoints } from "../endpoints";
 import { MemoryStorage, WebClientEnvStore, type WebClientEnvironmentRecord } from "../envStore";
 import { generateDpopKeyPair, exportPublicKeyX963Base64, rawEcdsaSignatureToDer, signDpopProof } from "../dpop";
-import { randomHex, uuid } from "../ids";
+import { randomHex } from "../ids";
 import {
   assembleProjectCatalogChunks,
   decodeEnvelopeText,
@@ -448,6 +449,176 @@ describe("browser sync connection and client", () => {
     expect(environment.lastGoodEndpoint).toBe("wss://relay.example/connect/machine-key");
     expect(await new WebClientEnvStore(storage).getSelectedEnvId()).toBe(environment.envId);
     expect(client.getStatus().state).toBe("connected");
+    client.dispose();
+  });
+
+  it("refreshes DPoP per account relay and reconnects with the paired secret on current endpoints", async () => {
+    const storage = new MemoryStorage();
+    await makeEnvironment(storage, {
+      secret: "stored-paired-secret",
+      relayUrl: "wss://stale-relay.example/connect/machine-key",
+      machineKeyUrl: "wss://stale-relay.example/connect/machine-key",
+      lastGoodEndpoint: "wss://stale-relay.example/connect/machine-key",
+      explicitWssEndpoints: ["wss://stale-relay.example/connect/machine-key"],
+      addressCandidates: [{ host: "10.0.0.1", kind: "lan" }],
+    });
+    const accountToken = "account-access-token-never-persisted";
+    const accountDpopNonces: string[] = [];
+    const accountMachine: AdeAccountMachine = {
+      machineKey: "machine-key",
+      deviceId: hostPeer.deviceId,
+      name: hostPeer.deviceName,
+      platform: "macOS",
+      deviceType: "desktop",
+      reachableEndpoints: [
+        { kind: "relay", url: "ws://plaintext-relay.example/connect/machine-key" },
+        { kind: "lan", url: "wss://arbitrary-origin.example/sync" },
+        { kind: "lan", host: "attacker.example", port: 8787 },
+        { kind: "lan", host: "192.168.1.10", port: 8787 },
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-key" },
+        { kind: "relay", url: "wss://relay-two.example/connect/machine-key" },
+      ],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const accountScript = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      const payload = envelope.payload as {
+        peer: SyncPeerMetadata;
+        auth: { kind: string; accountToken?: string; dpop?: { nonce?: string }; secret?: string };
+      };
+      if (payload.auth.kind === "paired") {
+        expect(payload.auth).toMatchObject({
+          secret: "stored-paired-secret",
+          dpop: expect.any(Object),
+        });
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+        return;
+      }
+      expect(payload.auth).toMatchObject({
+        kind: "account",
+        accountToken,
+        dpop: expect.any(Object),
+      });
+      accountDpopNonces.push(payload.auth.dpop?.nonce ?? "");
+      if (socket.url.includes("relay-one")) {
+        socket.serverSend({
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: { code: "auth_failed", message: "Retry the next relay." },
+        });
+        return;
+      }
+      socket.serverSend({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: helloOk(),
+      });
+    });
+    const accountClient = new AdeSyncClient({
+      storage,
+      socketFactory: accountScript.factory,
+      document: null,
+    });
+
+    const environment = await accountClient.pairWithAccountMachine({
+      machine: accountMachine,
+      accessToken: accountToken,
+      deviceName: "ADE Browser",
+      relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+    });
+
+    expect(accountScript.sockets.map((socket) => socket.url)).toEqual([
+      "wss://relay-one.example/connect/machine-key",
+      "wss://relay-two.example/connect/machine-key",
+    ]);
+    expect(accountDpopNonces).toHaveLength(2);
+    expect(new Set(accountDpopNonces).size).toBe(2);
+    expect(environment.secret).toBe("stored-paired-secret");
+    expect(environment.explicitWssEndpoints).not.toContain("wss://stale-relay.example/connect/machine-key");
+    expect(environment.explicitWssEndpoints).not.toContain("wss://arbitrary-origin.example/sync");
+    expect(environment.addressCandidates).toContainEqual({ host: "192.168.1.10", kind: "lan" });
+    expect(environment.addressCandidates).not.toContainEqual(expect.objectContaining({ host: "attacker.example" }));
+    expect(environment.port).toBe(8787);
+    expect(JSON.stringify(await accountClient.listEnvironments())).not.toContain(accountToken);
+
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    accountScript.sockets[1]?.close(1006, "Connection dropped");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    for (let attempt = 0; attempt < 20 && !accountScript.sockets[2]?.sent[0]; attempt += 1) {
+      await flush();
+    }
+    expect(accountScript.sockets[2]?.url).toBe("wss://relay-two.example/connect/machine-key");
+    expect(accountScript.sockets[2]?.sent[0]?.payload).toMatchObject({
+      auth: {
+        kind: "paired",
+        secret: "stored-paired-secret",
+        dpop: expect.any(Object),
+      },
+    });
+    expect(accountClient.getStatus().state).toBe("connected");
+    accountClient.dispose();
+  });
+
+  it("rejects an ordinary paired hello from a different host identity", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, {
+      relayUrl: null,
+      machineKeyUrl: null,
+      lastGoodEndpoint: null,
+      addressCandidates: [],
+      port: 0,
+      explicitWssEndpoints: ["wss://stale-route.example/sync"],
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      socket.serverSend({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          ...helloOk(),
+          brain: { ...hostPeer, deviceId: "different-host" },
+        },
+      });
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await expect(client.connect(environment.envId)).rejects.toThrow(/identity.*stored pairing/i);
+    expect(client.getStatus().state).not.toBe("connected");
+    client.dispose();
+  });
+
+  it("fails closed without opening a socket when the directory has no WSS relay route", async () => {
+    const storage = new MemoryStorage();
+    const script = createSocketFactory(() => {
+      throw new Error("account bearer must not reach this socket");
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await expect(client.pairWithAccountMachine({
+      machine: {
+        machineKey: "hostile",
+        deviceId: hostPeer.deviceId,
+        name: "Hostile",
+        platform: "macOS",
+        deviceType: "desktop",
+        reachableEndpoints: [
+          { kind: "relay", url: "ws://relay.example/connect/hostile" },
+          { kind: "lan", url: "wss://arbitrary-origin.example/sync" },
+          { kind: "relay", url: "wss://arbitrary-origin.example/connect/hostile" },
+          { kind: "relay", url: "wss://relay.example/connect/hostile?bearer=steal" },
+        ],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+      accessToken: "account-token",
+      deviceName: "ADE Browser",
+      relayBaseUrls: ["https://allowed-relay.example"],
+    })).rejects.toMatchObject({ code: "secure_relay_unavailable" });
+    expect(script.sockets).toHaveLength(0);
     client.dispose();
   });
 

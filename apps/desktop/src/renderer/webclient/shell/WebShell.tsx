@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { accountMachineConnectionState } from "../../../shared/accountDirectory";
+import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
+import type { BrowserAccountSnapshot } from "../account/client";
 import type { AdeSyncClientStatus, WebClientEnvironmentRecord } from "../sync";
 import { parseWebPath } from "./webRoutes";
 import { COLORS, MONO_FONT, SANS_FONT, connectionTone } from "./shellTokens";
@@ -85,14 +88,113 @@ function useDismiss(open: boolean, close: () => void) {
   return ref;
 }
 
+const AccountMachineMenu = React.memo(function AccountMachineMenu({
+  account,
+  connectingMachineKey,
+  onSelect,
+  onSignIn,
+  onSignOut,
+  onRetry,
+}: {
+  account: BrowserAccountSnapshot;
+  connectingMachineKey: string | null;
+  onSelect: (machine: AdeAccountMachine) => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  onRetry: () => void;
+}) {
+  const identity = account.email ?? account.name ?? account.userId ?? "ADE account";
+  return (
+    <>
+      <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px 6px", gap: 10 }}>
+        <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+          Account machines
+        </span>
+        {account.state === "signed_in" || account.state === "directory_unavailable" ? (
+          <button type="button" onClick={onSignOut} style={{ border: "none", background: "transparent", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 10, cursor: "pointer" }}>
+            Sign out
+          </button>
+        ) : account.state !== "unconfigured" && account.state !== "loading" ? (
+          <button type="button" onClick={onSignIn} style={{ border: "none", background: "transparent", color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 10, cursor: "pointer" }}>
+            {account.state === "auth_expired" ? "Sign in again" : "Sign in"}
+          </button>
+        ) : null}
+      </div>
+      {account.state === "signed_in" ? (
+        <div style={{ display: "grid", gap: 2, maxHeight: 220, overflow: "auto" }}>
+          <div style={{ padding: "0 8px 4px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 10 }}>
+            Signed in as {identity}
+          </div>
+          {account.machines.length === 0 ? (
+            <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>
+              No account machines
+            </div>
+          ) : account.machines.map((machine) => {
+            const connectionState = accountMachineConnectionState(machine, account.relayBaseUrls);
+            const available = connectionState === "available";
+            const connecting = connectingMachineKey === machine.machineKey;
+            return (
+              <button
+                key={machine.machineKey}
+                type="button"
+                disabled={!available || connecting}
+                onClick={() => onSelect(machine)}
+                title={connectionState === "offline" ? "Offline" : !available ? "No secure relay route" : machine.machineKey}
+                style={{
+                  ...menuItemStyle,
+                  height: 36,
+                  opacity: available ? 1 : 0.5,
+                  cursor: available && !connecting ? "pointer" : "not-allowed",
+                }}
+              >
+                <span style={{ display: "grid", minWidth: 0 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textSecondary }}>
+                    {machine.name ?? machine.machineKey}
+                  </span>
+                  <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
+                    {machine.lastSeenAt == null ? "last seen unknown" : new Date(machine.lastSeenAt).toLocaleString()}
+                  </span>
+                </span>
+                <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
+                  {connecting ? "connecting" : connectionState}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : account.state === "directory_unavailable" ? (
+        <button type="button" style={menuItemStyle} onClick={onRetry}>
+          <span style={{ color: COLORS.textMuted }}>Directory unavailable</span>
+          <span style={{ color: COLORS.textSecondary }}>Retry</span>
+        </button>
+      ) : account.state === "auth_expired" ? (
+        <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Account session expired</div>
+      ) : account.state === "unconfigured" ? (
+        <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Account sign-in not configured</div>
+      ) : account.state === "loading" ? (
+        <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Loading account machines…</div>
+      ) : (
+        <button type="button" style={menuItemStyle} onClick={onSignIn}>Sign in to ADE…</button>
+      )}
+    </>
+  );
+});
+
 export function WebShell({
   status,
   environments,
   activeEnvId,
   catalog,
   activeProjectId,
+  account,
+  connectingAccountMachineKey,
   onSwitchEnv,
+  onSwitchAccountMachine,
   onPairNew,
+  onAccountSignIn,
+  onAccountSignOut,
+  onRetryAccountDirectory,
   onForgetEnv,
   onSwitchProject,
   onOpenChats,
@@ -103,8 +205,14 @@ export function WebShell({
   activeEnvId: string | null;
   catalog: SyncMobileProjectSummary[];
   activeProjectId: string | null;
+  account: BrowserAccountSnapshot;
+  connectingAccountMachineKey: string | null;
   onSwitchEnv: (environment: WebClientEnvironmentRecord) => void;
+  onSwitchAccountMachine: (machine: AdeAccountMachine) => void;
   onPairNew: () => void;
+  onAccountSignIn: () => void;
+  onAccountSignOut: () => void;
+  onRetryAccountDirectory: () => void;
   onForgetEnv: (environment: WebClientEnvironmentRecord) => void;
   onSwitchProject: (project: SyncMobileProjectSummary) => void;
   onOpenChats: () => void;
@@ -121,6 +229,14 @@ export function WebShell({
 
   const machineRef = useDismiss(machineMenu, useCallback(() => { setMachineMenu(false); setConfirmForget(null); }, []));
   const projectRef = useDismiss(projectMenu, useCallback(() => setProjectMenu(false), []));
+  const selectAccountMachine = useCallback((machine: AdeAccountMachine) => {
+    setMachineMenu(false);
+    onSwitchAccountMachine(machine);
+  }, [onSwitchAccountMachine]);
+  const signInToAccount = useCallback(() => {
+    setMachineMenu(false);
+    onAccountSignIn();
+  }, [onAccountSignIn]);
 
   const openInDesktop = useCallback(() => {
     const path = `${window.location.pathname}${window.location.search}`;
@@ -235,6 +351,14 @@ export function WebShell({
                   </div>
                 );
               })}
+              <AccountMachineMenu
+                account={account}
+                connectingMachineKey={connectingAccountMachineKey}
+                onSelect={selectAccountMachine}
+                onSignIn={signInToAccount}
+                onSignOut={onAccountSignOut}
+                onRetry={onRetryAccountDirectory}
+              />
               <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
               <button type="button" style={menuItemStyle} onClick={() => { setMachineMenu(false); onPairNew(); }}>
                 Pair new machine…

@@ -938,6 +938,39 @@ describe("machine directory", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("allows only the configured hosted origin to preflight and read the directory", async () => {
+    const env = makeEnv({ WEB_CLIENT_ORIGIN: "https://app.ade.dev" });
+    const token = await mintToken();
+    const preflight = await handleRequest(new Request("https://directory.test/account/machines", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.ade.dev",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization",
+      },
+    }), env);
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://app.ade.dev");
+    expect(preflight.headers.get("access-control-allow-headers")).toBe("authorization");
+
+    const allowed = await handleRequest(new Request("https://directory.test/account/machines", {
+      headers: { origin: "https://app.ade.dev", authorization: `Bearer ${token}` },
+    }), env);
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://app.ade.dev");
+
+    const hostilePreflight = await handleRequest(new Request("https://directory.test/account/machines", {
+      method: "OPTIONS",
+      headers: { origin: "https://evil.example" },
+    }), env);
+    expect(hostilePreflight.status).toBe(403);
+    const hostileRead = await handleRequest(new Request("https://directory.test/account/machines", {
+      headers: { origin: "https://evil.example", authorization: `Bearer ${token}` },
+    }), env);
+    expect(hostileRead.status).toBe(403);
+    expect(hostileRead.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("upserts registration heartbeats and isolates rows by Clerk sub", async () => {
     const env = makeEnv();
     const firstToken = await mintToken({ sub: "user_1" });

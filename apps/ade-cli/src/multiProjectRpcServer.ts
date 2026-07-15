@@ -49,6 +49,7 @@ import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
+import { AccountMachineDirectoryService } from "./services/account/accountMachineDirectoryService";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -753,7 +754,8 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       // Gate credential-bearing account actions (tokens plus interactive login
-      // start/poll/cancel/sign-out) to cto-role callers, mirroring the run_ade_action gate in
+      // start/poll/cancel/sign-out and machine directory access) to cto-role callers,
+      // mirroring the run_ade_action gate in
       // adeRpcServer. The caller's requested role (from ade/initialize identity)
       // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
       // honestly asserts a non-cto role cannot reach these actions. `status`
@@ -793,6 +795,18 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
+      if (action === "listMachines" || action === "pairMachine") {
+        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
+          appVersion: options.serverVersion,
+        });
+        const actionArgs = isRecord(params.args) ? params.args : {};
+        const result = action === "listMachines"
+          ? await machineDirectory.listMachines()
+          : await machineDirectory.pairMachine(
+              typeof actionArgs.machine === "string" ? actionArgs.machine : "",
+            );
+        return { domain: "account", action, result, statusHints: {} };
+      }
       const response = await callAccountAction({
         service: accountAuthService,
         action,

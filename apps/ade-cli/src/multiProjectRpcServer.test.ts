@@ -250,6 +250,8 @@ describe("multi-project RPC server", () => {
         "pollDeviceLogin",
         "cancelLogin",
         "signOut",
+        "listMachines",
+        "pairMachine",
       ]) {
         await expect(
           handler({

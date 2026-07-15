@@ -26,6 +26,10 @@ import {
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
+import {
+  accountMachineConnectionState,
+  parseAccountMachine,
+} from "../../desktop/src/shared/accountDirectory";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
@@ -163,6 +167,7 @@ type FormatterId =
   | "auth"
   | "account-auth"
   | "account-token"
+  | "account-machines"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -278,7 +283,8 @@ type CliPlan =
       pollIntervalMs: number;
     }
   | { kind: "github-app-login"; maxWaitSec: number | null }
-  | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean };
+  | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
+  | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -527,6 +533,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade logout                                    Sign out of the ADE account
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
+    $ ade machines list                             List machines from the ADE account directory
+    $ ade machines connect <id|name>                Connect ADE Code to an online account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
@@ -1050,6 +1058,26 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --headless                     Force the copy-paste device authorization flow.
     --max-wait <seconds>           Give up waiting before the authorization
                                    session expires.
+`,
+  machines: `${ADE_BANNER}
+  ADE account machines
+
+  The machine directory is optional. Local ADE, PIN pairing, saved SSH targets,
+  and explicit remote addresses continue to work while signed out.
+
+    $ ade machines list --text
+    $ ade machines connect <machine-key>
+    $ ade machines connect <device-id> --project <project-id|name|path>
+    $ ade machines hop <unambiguous-name> --session <session-id|title>
+
+  Machine keys and device ids are stable selectors. An exact display name is
+  accepted only when it identifies one machine; ambiguous names fail with the
+  stable machine keys to choose from. Offline machines are listed but cannot be
+  connected.
+
+  Sign in with \`ade login\`. \`connect\` and its \`hop\` alias pair through the
+  account-authenticated sync bridge, save an ordinary DPoP-bound paired target,
+  then launch ADE Code through that validated target.
 `,
   search: `${ADE_BANNER}
   ADE Search
@@ -11268,6 +11296,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--pr-url",
   "--process",
   "--process-id",
+  "--project",
   "--project-root",
   "--poll-interval-ms",
   "--prompt",
@@ -11422,6 +11451,7 @@ function buildCliPlan(
     updates: "update",
     operation: "operations",
     project: "projects",
+    machine: "machines",
     quota: "usage",
     quotas: "usage",
     disk: "storage",
@@ -11547,6 +11577,9 @@ function buildCliPlan(
   }
   if (primary === "projects" || primary === "project") {
     return buildProjectsPlan(args);
+  }
+  if (primary === "machines" || primary === "machine") {
+    return buildMachinesPlan(args);
   }
   if (primary === "new" || primary === "create") {
     return buildNewPlan(args);
@@ -11929,6 +11962,49 @@ async function runAdeCode(
     return { output: "", exitCode };
   }
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
+  return { output: "", exitCode };
+}
+
+async function runAccountMachineConnect(
+  plan: CliPlan & { kind: "account-machine-connect" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+  } catch (error) {
+    throw new CliExecutionError("Failed to initialize the ADE brain for account machine connection.", {
+      cause: error instanceof Error ? error.message : String(error),
+      nextAction: "Start the machine ADE brain with `ade brain start`, then retry.",
+    });
+  }
+
+  let targetId: string;
+  try {
+    const raw = await connection.request("account.call", {
+      action: "pairMachine",
+      args: { machine: plan.machine },
+    });
+    const paired = unwrapActionEnvelope(raw);
+    targetId = isRecord(paired) ? asString(paired.targetId) ?? "" : "";
+    if (!targetId) {
+      throw new CliExecutionError("Account machine pairing did not return a saved remote target.", {
+        machine: plan.machine,
+      });
+    }
+  } finally {
+    await connection.close();
+  }
+
+  const modulePath = resolveAdeCodeModulePath();
+  const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
+  const exitCode = await runAdeCodeRemote(
+    ["--target", targetId, ...plan.remoteArgs],
+    runAdeCodeCli,
+  );
   return { output: "", exitCode };
 }
 
@@ -13125,6 +13201,39 @@ export function shouldAutoRegisterProjectForPlan(
   plan: CliPlan & { kind: "execute" },
 ): boolean {
   return plan.steps.some((step) => !isMachineRuntimeScopedMethod(step.method));
+}
+
+function buildMachinesPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls") {
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError("machines list does not accept a machine selector.");
+    }
+    return {
+      kind: "execute",
+      label: "account machines list",
+      formatter: "account-machines",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [accountActionStep("result", "listMachines")],
+    };
+  }
+  if (sub === "connect" || sub === "hop" || sub === "code") {
+    const machine = readValue(args, ["--machine", "--target"])
+      ?? firstStandalonePositional(args);
+    if (!machine?.trim()) {
+      throw new CliUsageError(
+        `machines ${sub} requires a stable machine key, device id, or unambiguous display name.`,
+      );
+    }
+    return {
+      kind: "account-machine-connect",
+      machine: machine.trim(),
+      remoteArgs: args,
+    };
+  }
+  throw new CliUsageError("machines supports list, connect, or hop.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -17205,6 +17314,47 @@ function formatAppControlSelection(value: unknown): string {
   ]);
 }
 
+function formatAccountMachines(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const state = asString(result.state) ?? "unavailable";
+  if (state === "signed_out") {
+    return "Not signed in — run `ade login`. Local, PIN, and explicit remote paths still work.";
+  }
+  if (state === "auth_expired") {
+    return "ADE account session expired — run `ade login` again. Local and explicit remote paths still work.";
+  }
+  if (state !== "ok") {
+    return asString(result.message) ?? "The ADE account machine directory is unavailable.";
+  }
+  const machines = Array.isArray(result.machines)
+    ? result.machines.flatMap((entry) => {
+        const machine = parseAccountMachine(entry);
+        return machine ? [machine] : [];
+      })
+    : [];
+  const rows = machines.map((machine) => {
+    const connectionState = accountMachineConnectionState(machine);
+    const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
+      ? new Date(machine.lastSeenAt).toLocaleString()
+      : "never";
+    return [
+      asString(machine.machineKey) ?? "—",
+      asString(machine.name) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      connectionState,
+      lastSeenAt,
+    ];
+  });
+  return [
+    renderTable(
+      ["machine key", "name", "status", "last seen"],
+      rows,
+      "No machines are registered to this ADE account.",
+    ),
+    "",
+    "Connect with: ade machines connect <machine-key>",
+  ].join("\n");
+}
+
 function formatTextOutput(
   value: unknown,
   formatter: FormatterId | undefined,
@@ -17319,6 +17469,8 @@ function formatTextOutput(
       return `${token}\n\nSet this secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. ` +
         "It grants ADE account access; store it in your secret manager and do not commit or log it.";
     }
+    case "account-machines":
+      return formatAccountMachines(value);
     case "projects-list":
       return formatProjectsList(value);
     case "linear-quick-view":
@@ -18514,6 +18666,7 @@ async function runCli(
   if (
     plan.kind === "skill" ||
     plan.kind === "ade-code" ||
+    plan.kind === "account-machine-connect" ||
     plan.kind === "brain" ||
     plan.kind === "runtime" ||
     plan.kind === "serve" ||
@@ -18638,6 +18791,9 @@ async function runCli(
     }
     if (plan.kind === "account-login") {
       return await runAccountLogin(plan, parsed.options);
+    }
+    if (plan.kind === "account-machine-connect") {
+      return await runAccountMachineConnect(plan, parsed.options);
     }
     if (plan.kind === "github-app-login") {
       return await runGithubAppLogin(plan, parsed.options);

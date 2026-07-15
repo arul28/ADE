@@ -98,6 +98,7 @@ const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "exit",
   "runtime/info",
   "machineInfo.get",
+  "account.call",
   "projects.list",
   "projects.add",
   "projects.remove",

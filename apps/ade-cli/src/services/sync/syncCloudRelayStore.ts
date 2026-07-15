@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
 
-const DEFAULT_RELAY_URL = "https://ade-tunnel-relay.arulsharma1028.workers.dev";
+const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
 export type SyncCloudRelayConfig = {
   /**

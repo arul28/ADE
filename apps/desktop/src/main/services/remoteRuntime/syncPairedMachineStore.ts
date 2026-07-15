@@ -13,11 +13,19 @@ import type {
 } from "../../../shared/types/pairedRuntime";
 import type {
   SyncPairingHostIdentity,
+  SyncHelloPayload,
   SyncPairingResultPayload,
   SyncPeerMetadata,
 } from "../../../shared/types/sync";
+import type { AdeAccountMachine } from "../../../shared/types/account";
+import {
+  accountMachinePairedSyncEndpoints,
+  accountMachineSecureSyncEndpoints,
+  resolveAccountHelloPairing,
+} from "../../../shared/accountDirectory";
 import {
   buildDesktopPairedHello,
+  createDesktopSyncDpopProof,
   normalizeSyncEndpoint,
   openSyncEnvelopeConnection,
   waitForSyncEnvelope,
@@ -34,6 +42,15 @@ export type PairWithMachineOptions = Omit<
   appVersion?: string;
   pairingTimeoutMs?: number;
   runtimeHostGrant?: string | null;
+};
+
+export type PairWithAccountMachineOptions = Omit<
+  OpenSyncEnvelopeConnectionOptions,
+  "endpoint"
+> & {
+  appVersion?: string;
+  pairingTimeoutMs?: number;
+  relayBaseUrls?: readonly string[];
 };
 
 function nowIso(): string {
@@ -473,6 +490,149 @@ export class DesktopPairedMachineStore {
     } finally {
       connection.close(1000, "Desktop pairing finished.");
     }
+  }
+
+  async pairWithAccountMachine(
+    machine: AdeAccountMachine,
+    accountTokenValue: string,
+    deviceNameValue: string,
+    options: PairWithAccountMachineOptions = {},
+  ): Promise<DesktopPairedMachineCredentials> {
+    const accountToken = accountTokenValue.trim();
+    const deviceName = deviceNameValue.trim();
+    const expectedHostDeviceId = machine.deviceId?.trim() ?? "";
+    if (!machine.online) throw new Error("That account machine is offline.");
+    if (!accountToken) throw new Error("ADE account sign-in is required.");
+    if (!deviceName) throw new Error("Desktop device name is required.");
+    if (!expectedHostDeviceId) throw new Error("The account machine is missing a stable device id.");
+
+    const accountRelayEndpoints = accountMachineSecureSyncEndpoints(
+      machine,
+      options.relayBaseUrls,
+    );
+    if (accountRelayEndpoints.length === 0) {
+      throw new Error("That machine has no directory-verified WSS relay route for account authentication.");
+    }
+    const pairedEndpoints = accountMachinePairedSyncEndpoints(
+      machine,
+      options.relayBaseUrls,
+    );
+
+    const existing = this.get(expectedHostDeviceId) ?? this.get(machine.machineKey);
+    const keys = existing
+      ? { privateKey: existing.dpopPrivateKey, publicKey: existing.dpopPublicKey }
+      : generateDpopKeyPair();
+    const localDeviceId = existing?.deviceId ?? randomUUID();
+    const siteId = existing?.siteId ?? randomUUID();
+    const createdAt = existing?.createdAt ?? nowIso();
+    const proofCredentials = {
+      deviceId: localDeviceId,
+      secret: accountToken,
+      dpopPrivateKey: keys.privateKey,
+      dpopPublicKey: keys.publicKey,
+    };
+    const peer: SyncPeerMetadata = {
+      deviceId: localDeviceId,
+      deviceName,
+      platform: process.platform === "darwin"
+        ? "macOS"
+        : process.platform === "win32"
+          ? "windows"
+          : process.platform === "linux"
+            ? "linux"
+            : "unknown",
+      deviceType: "desktop",
+      siteId,
+      dbVersion: 0,
+      capabilities: [],
+      ...(options.appVersion?.trim() ? { appVersion: options.appVersion.trim() } : {}),
+    };
+    const failures: string[] = [];
+    for (const endpoint of accountRelayEndpoints) {
+      const connection = await openSyncEnvelopeConnection({
+        endpoint,
+        connectTimeoutMs: options.connectTimeoutMs,
+        createWebSocket: options.createWebSocket,
+      }).catch((error) => {
+        failures.push(error instanceof Error ? error.message : String(error));
+        return null;
+      });
+      if (!connection) continue;
+      try {
+        const hello: SyncHelloPayload = {
+          peer,
+          auth: {
+            kind: "account",
+            deviceId: localDeviceId,
+            accountToken,
+            dpop: createDesktopSyncDpopProof(proofCredentials),
+          },
+        };
+        const requestId = `account-${randomUUID()}`;
+        const response = waitForSyncEnvelope(
+          connection,
+          (envelope) => envelope.requestId === requestId
+            && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
+          options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+        );
+        connection.send("hello", hello, requestId);
+        const envelope = await response;
+        if (envelope.type === "hello_error") {
+          const payload = envelope.payload as { message?: unknown };
+          throw new Error(
+            typeof payload.message === "string" && payload.message.trim()
+              ? payload.message.trim()
+              : "Account authentication was rejected.",
+          );
+        }
+        const helloOk = envelope.payload as PairedRuntimeHelloOkPayload;
+        const hostIdentity = hostIdentityFromPeer(helloOk.brain);
+        if (hostIdentity.deviceId !== expectedHostDeviceId) {
+          throw new Error("Account machine endpoint identity did not match the directory record.");
+        }
+        const pairing = resolveAccountHelloPairing({
+          accountPairing: helloOk.accountPairing,
+          existingPairing: existing
+            ? { deviceId: existing.deviceId, secret: existing.secret }
+            : null,
+          expectedDeviceId: localDeviceId,
+        });
+        if (!pairing) {
+          throw new Error("Account-authenticated host did not provide or recognize paired credentials.");
+        }
+        const savedEndpoints = uniqueEndpoints(
+          endpoint,
+          ...pairedEndpoints,
+          helloOk.cloudRelayWssUrl,
+        );
+        return this.save({
+          version: 1,
+          hostIdentity,
+          machineKey: machine.machineKey,
+          deviceId: localDeviceId,
+          siteId,
+          deviceName,
+          secret: pairing.secret,
+          dpopPrivateKey: keys.privateKey,
+          dpopPublicKey: keys.publicKey,
+          endpoints: savedEndpoints,
+          relayUrl: helloOk.cloudRelayWssUrl ?? null,
+          endpointStates: savedEndpoints.map((candidate) => ({
+            endpoint: candidate,
+            lastSucceededAt: candidate === endpoint ? Date.now() : null,
+          })),
+          createdAt,
+          updatedAt: nowIso(),
+        });
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      } finally {
+        connection.close(1000, "Account pairing finished.");
+      }
+    }
+    throw new Error(
+      `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${failures.slice(0, 3).join("; ")}`,
+    );
   }
 
   private read(): DesktopPairedMachinesFile {

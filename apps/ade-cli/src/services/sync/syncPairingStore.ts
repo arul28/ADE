@@ -127,13 +127,17 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
     options?: NewPairingRecordOptions,
+    accountVerified = false,
   ): { deviceId: string; secret: string } => {
-    // The server grant is necessary but not sufficient: pairing/account links
-    // can be used by phone/browser/custom clients, which must never become full
-    // runtime hosts. Consume every presented grant to preserve its one-time
-    // semantics, then authorize only a peer that connected as a desktop.
+    // Consume every presented grant to preserve its one-time semantics. PIN
+    // pairing still requires that grant for runtime RPC; verified same-owner
+    // account pairing may authorize a desktop hop directly.
     const consumedRuntimeHostGrant = consumeRuntimeHostGrant(options?.runtimeHostGrant);
-    const runtimeHostGranted = consumedRuntimeHostGrant && peer.deviceType === "desktop";
+    // A same-owner Clerk attestation is itself the approved account hop gate.
+    // Only desktop peers receive runtime RPC; phone/browser peers remain on the
+    // mobile allowlist even when they authenticate with the same account.
+    const runtimeHostGranted = peer.deviceType === "desktop"
+      && (consumedRuntimeHostGrant || accountVerified);
     const secret = randomBytes(24).toString("hex");
     const records = readRecords();
     const existing = records[peer.deviceId] ?? null;
@@ -191,7 +195,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!isVerifiedAccountAttestation(attestation)) {
         throw pairingError("account_not_verified", "Account attestation was not verified.");
       }
-      return writeNewPairingRecord(peer, options);
+      return writeNewPairingRecord(peer, options, true);
     },
 
     /**

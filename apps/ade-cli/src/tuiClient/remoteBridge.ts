@@ -8,6 +8,7 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
 } from "../../../desktop/src/shared/types/remoteRuntime";
+import type { RuntimeRpcTransport } from "../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
 
 type JsonRpcResponse = {
   jsonrpc: "2.0";
@@ -418,6 +419,107 @@ export async function startRemoteBridge(args: {
         try {
           fs.rmdirSync(bridgeDir);
         } catch {}
+      }
+    },
+  };
+}
+
+/**
+ * Expose a paired sync runtime transport through the same local socket shape
+ * consumed by `ade code`. Unlike the SSH bridge this never constructs or
+ * executes a shell command from directory data; every route is revalidated by
+ * the paired transport before bytes are forwarded.
+ */
+export async function startSyncRemoteBridge(args: {
+  target: RemoteRuntimeTarget;
+  openTransport: (target: RemoteRuntimeTarget) => Promise<RuntimeRpcTransport>;
+}): Promise<RemoteBridge> {
+  const activeSockets = new Set<net.Socket>();
+  const activeTransports = new Set<RuntimeRpcTransport>();
+  const bridgeDir = process.platform === "win32"
+    ? null
+    : fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-paired-"));
+  if (bridgeDir) {
+    try { fs.chmodSync(bridgeDir, 0o700); } catch {}
+  }
+  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
+  let closing = false;
+  const currentTarget = (): RemoteRuntimeTarget => {
+    try {
+      return new RemoteTargetRegistry().get(args.target.id) ?? args.target;
+    } catch {
+      return args.target;
+    }
+  };
+
+  const server = net.createServer((socket) => {
+    activeSockets.add(socket);
+    socket.pause();
+    let transport: RuntimeRpcTransport | null = null;
+    let settled = false;
+    const teardown = (reason?: string): void => {
+      if (settled) return;
+      settled = true;
+      activeSockets.delete(socket);
+      if (transport) activeTransports.delete(transport);
+      if (!closing && reason) process.stderr.write(`Paired ADE bridge closed: ${reason}\n`);
+      socket.destroy();
+      try { transport?.close(); } catch {}
+    };
+    socket.on("error", (error) => teardown(error.message));
+    socket.on("close", () => teardown());
+    void args.openTransport(currentTarget()).then((opened) => {
+      if (settled || closing) {
+        opened.close();
+        return;
+      }
+      transport = opened;
+      activeTransports.add(opened);
+      opened.onData((chunk) => {
+        if (!settled && !socket.destroyed) socket.write(chunk);
+      });
+      opened.onError?.((error) => teardown(error.message));
+      opened.onClose?.(() => teardown("remote runtime connection closed"));
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk) => {
+        try { opened.write(String(chunk)); } catch (error) {
+          teardown(error instanceof Error ? error.message : String(error));
+        }
+      });
+      socket.resume();
+    }).catch((error) => teardown(error instanceof Error ? error.message : String(error)));
+  });
+  server.maxConnections = 1;
+
+  await new Promise<void>((resolve, reject) => {
+    const onListening = () => { cleanup(); resolve(); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    const cleanup = () => {
+      server.off("listening", onListening);
+      server.off("error", onError);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+    if (bridgeSocketPath) server.listen(bridgeSocketPath);
+    else server.listen(0, "127.0.0.1");
+  });
+
+  const socketUrl = bridgeSocketPath
+    ?? `tcp://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    socketUrl,
+    close: async () => {
+      closing = true;
+      for (const socket of [...activeSockets]) socket.destroy();
+      for (const transport of [...activeTransports]) {
+        try { transport.close(); } catch {}
+      }
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (bridgeSocketPath) {
+        try { fs.unlinkSync(bridgeSocketPath); } catch {}
+      }
+      if (bridgeDir) {
+        try { fs.rmdirSync(bridgeDir); } catch {}
       }
     },
   };

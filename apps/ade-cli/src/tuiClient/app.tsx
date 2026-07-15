@@ -2818,6 +2818,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useTerminalProcessRestore();
   const [connection, setConnection] = useState<AdeCodeConnection | null>(null);
   const [mode, setMode] = useState<RuntimeMode | "connecting">("connecting");
+  const [accountLabel, setAccountLabel] = useState("account loading…");
   const [connectionRetrySeq, setConnectionRetrySeq] = useState(0);
   // True after an attached socket drops unexpectedly, until we re-attach. Drives
   // the reconnect probe below and a one-shot "reconnecting…" notice.
@@ -3188,6 +3189,38 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     multiViewRef.current = multiView;
   }, [multiView]);
+
+  useEffect(() => {
+    if (!connection) {
+      setAccountLabel("account loading…");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await connection.request<unknown>("account.call", { action: "status", args: {} });
+        if (cancelled) return;
+        const envelope = raw && typeof raw === "object" && !Array.isArray(raw)
+          ? raw as Record<string, unknown>
+          : {};
+        const result = envelope.result && typeof envelope.result === "object" && !Array.isArray(envelope.result)
+          ? envelope.result as Record<string, unknown>
+          : envelope;
+        if (result.signedIn !== true) {
+          setAccountLabel("account signed out · ade login");
+          return;
+        }
+        const identity = [result.email, result.name, result.userId]
+          .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+        setAccountLabel(`account ${identity?.trim() ?? "signed in"}`);
+      } catch {
+        if (!cancelled) setAccountLabel("account unavailable");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connection]);
 
   useEffect(() => {
     addModeRef.current = addMode;
@@ -15623,6 +15656,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           lane={activeLane}
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
           remoteLabel={remoteLaunch ? project.remoteLabel ?? "remote" : null}
+          accountLabel={accountLabel}
         />
         {goalBannerText ? (
           <Box paddingX={1} flexShrink={0}>

@@ -1,18 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ProjectInfo } from "../../../shared/types";
+import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
-import {
+import type {
   AdeSyncClient,
-  type AdeSyncClientStatus,
-  type WebClientEnvironmentRecord,
+  AdeSyncClientStatus,
+  WebClientEnvironmentRecord,
 } from "../sync";
+import {
+  BrowserAccountClient,
+  type BrowserAccountSnapshot,
+} from "../account/client";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
-import { Welcome } from "./Welcome";
 import { PairFlow } from "./PairFlow";
 import { ProjectPicker } from "./ProjectPicker";
 import { WebShell } from "./WebShell";
+import { MachinePicker } from "./MachinePicker";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 
 type AdeWebAdapter = {
@@ -88,24 +93,34 @@ function readStashedTarget(): DeeplinkTarget | null {
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "welcome"; note?: string }
+  | { kind: "machine-picker" }
   | { kind: "pairing"; reloadOnSuccess: boolean }
   | { kind: "connecting"; name: string }
   | { kind: "project-picker"; projects: SyncMobileProjectSummary[] }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string; canRetry: boolean };
 
-export function WebClientRoot({ client }: { client: AdeSyncClient }) {
+export function WebClientRoot({
+  client,
+  accountClient: providedAccountClient,
+}: {
+  client: AdeSyncClient;
+  accountClient?: BrowserAccountClient;
+}) {
+  const [accountClient] = useState(() => providedAccountClient ?? new BrowserAccountClient());
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [status, setStatus] = useState<AdeSyncClientStatus>(() => client.getStatus());
   const [environments, setEnvironments] = useState<WebClientEnvironmentRecord[]>([]);
   const [catalog, setCatalog] = useState<SyncMobileProjectSummary[]>([]);
+  const [account, setAccount] = useState<BrowserAccountSnapshot>(() => accountClient.getSnapshot());
+  const [connectingAccountMachineKey, setConnectingAccountMachineKey] = useState<string | null>(null);
 
   const adapterRef = useRef<AdeWebAdapter | null>(null);
   const stashedTargetRef = useRef<DeeplinkTarget | null>(null);
   const bootedRef = useRef(false);
   const fatalRebootRef = useRef(false);
   const phaseIsReadyRef = useRef(false);
+  const connectingAccountMachineRef = useRef<string | null>(null);
   phaseIsReadyRef.current = phase.kind === "ready";
 
   const refreshEnvironments = useCallback(async () => {
@@ -117,6 +132,11 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
   const showPairing = useCallback((reloadOnSuccess: boolean) => {
     fatalRebootRef.current = false;
     setPhase({ kind: "pairing", reloadOnSuccess });
+  }, []);
+
+  const showMachinePicker = useCallback(() => {
+    fatalRebootRef.current = false;
+    setPhase({ kind: "machine-picker" });
   }, []);
 
   // Bring the connected machine's catalog + selected project online, then mount
@@ -205,6 +225,33 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     }
   }, [client, afterConnect]);
 
+  const connectToAccountMachine = useCallback(async (machine: AdeAccountMachine) => {
+    if (connectingAccountMachineRef.current) return;
+    connectingAccountMachineRef.current = machine.machineKey;
+    setConnectingAccountMachineKey(machine.machineKey);
+    try {
+      const accessToken = await accountClient.getAccessToken();
+      await client.pairWithAccountMachine({
+        machine,
+        accessToken,
+        deviceName: `ADE Web on ${window.location.hostname || "browser"}`,
+        relayBaseUrls: accountClient.getRelayBaseUrls(),
+      });
+      await refreshEnvironments();
+      await afterConnect();
+    } catch (error) {
+      setAccount(accountClient.getSnapshot());
+      setPhase({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+        canRetry: true,
+      });
+    } finally {
+      connectingAccountMachineRef.current = null;
+      setConnectingAccountMachineKey(null);
+    }
+  }, [accountClient, afterConnect, client, refreshEnvironments]);
+
   // ---- Boot sequence ------------------------------------------------------
   useEffect(() => {
     if (bootedRef.current) return;
@@ -224,16 +271,29 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
         stashedTargetRef.current = readStashedTarget();
       }
 
-      const list = await refreshEnvironments();
-      if (list.length === 0) {
-        setPhase({ kind: "welcome" });
+      if (path === "/account/callback") {
+        setAccount((current) => ({ ...current, state: "loading", message: null }));
+      }
+      const [list, accountSnapshot] = await Promise.all([
+        refreshEnvironments(),
+        accountClient.bootstrap(),
+      ]);
+      setAccount(accountSnapshot);
+      if (
+        list.length === 0
+        || list.length > 1
+        || accountSnapshot.state === "signed_in"
+        || accountSnapshot.state === "directory_unavailable"
+        || accountSnapshot.state === "auth_expired"
+      ) {
+        setPhase({ kind: "machine-picker" });
         return;
       }
       await connectTo(list[0]);
     })().catch((error) => {
       setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
     });
-  }, [connectTo, refreshEnvironments]);
+  }, [accountClient, connectTo, refreshEnvironments]);
 
   // ---- Live status subscription ------------------------------------------
   useEffect(() => {
@@ -249,7 +309,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
           if (phaseIsReadyRef.current) {
             window.location.assign("/");
           } else {
-            setPhase({ kind: "welcome" });
+            setPhase({ kind: "machine-picker" });
           }
         })();
       }
@@ -290,21 +350,55 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
 
   const onPairNew = useCallback(() => showPairing(true), [showPairing]);
 
+  const onAccountSignIn = useCallback(() => {
+    void accountClient.startSignIn().catch((error) => {
+      setPhase({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+        canRetry: false,
+      });
+    });
+  }, [accountClient]);
+
+  const onAccountSignOut = useCallback(() => {
+    setAccount(accountClient.signOut());
+    showMachinePicker();
+  }, [accountClient, showMachinePicker]);
+
+  const onRetryDirectory = useCallback(() => {
+    setAccount((current) => ({ ...current, state: "loading", message: null }));
+    void accountClient.loadMachines().then(setAccount).catch(() => {
+      setAccount(accountClient.getSnapshot());
+    });
+  }, [accountClient]);
+
   // ---- Render -------------------------------------------------------------
   switch (phase.kind) {
     case "loading":
       return <Connecting name={null} />;
     case "connecting":
       return <Connecting name={phase.name} />;
-    case "welcome":
-      return <Welcome onPair={() => showPairing(false)} />;
+    case "machine-picker":
+      return (
+        <MachinePicker
+          environments={environments}
+          account={account}
+          connectingMachineKey={connectingAccountMachineKey}
+          onSelect={(environment) => void connectTo(environment)}
+          onSelectAccountMachine={(machine) => void connectToAccountMachine(machine)}
+          onPair={() => showPairing(false)}
+          onSignIn={onAccountSignIn}
+          onSignOut={onAccountSignOut}
+          onRetryDirectory={onRetryDirectory}
+        />
+      );
     case "pairing":
       return (
         <PairFlow
           client={client}
           hash={window.location.hash}
-          onBack={environments.length > 0 ? () => setPhase({ kind: "loading" }) : undefined}
-          onPaired={(environment) => {
+          onBack={() => setPhase({ kind: "machine-picker" })}
+          onPaired={() => {
             fatalRebootRef.current = false;
             // Consumed the pairing payload — clear it from the address bar.
             window.history.replaceState(null, "", "/");
@@ -352,9 +446,9 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
             <button
               type="button"
               style={primaryButton({ height: 36, background: "transparent", color: COLORS.textSecondary, border: `1px solid ${COLORS.border}` })}
-              onClick={() => setPhase({ kind: "welcome" })}
+              onClick={showMachinePicker}
             >
-              Pair a machine
+              Choose a machine
             </button>
           </div>
         </ScreenShell>
@@ -368,8 +462,14 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
           activeEnvId={status.selectedEnvId}
           catalog={catalog}
           activeProjectId={status.activeProjectId}
+          account={account}
+          connectingAccountMachineKey={connectingAccountMachineKey}
           onSwitchEnv={onSwitchEnv}
+          onSwitchAccountMachine={(machine) => void connectToAccountMachine(machine)}
           onPairNew={onPairNew}
+          onAccountSignIn={onAccountSignIn}
+          onAccountSignOut={onAccountSignOut}
+          onRetryAccountDirectory={onRetryDirectory}
           onForgetEnv={onForgetEnv}
           onSwitchProject={onSwitchProject}
           onOpenChats={() => {

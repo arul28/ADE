@@ -7,7 +7,10 @@
   "preview_urls": false,
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "ONLINE_WINDOW_MS": "90000"
+    "ONLINE_WINDOW_MS": "90000",
+    // Exact hosted web-client origin allowed to read /account/machines.
+    // Set to the production HTTPS origin before deployment.
+    "WEB_CLIENT_ORIGIN": ""
   },
   "d1_databases": [
     {

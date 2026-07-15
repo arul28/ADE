@@ -59,10 +59,27 @@ describe("Header", () => {
   });
 
   it("shows the connected remote machine when launched remotely", () => {
-    const result = render(<Header projectName="ADE" lane={lane()} remoteLabel="Mac Studio" />);
+    const result = render(
+      <Header
+        projectName="ADE"
+        lane={lane()}
+        remoteLabel="Mac Studio"
+        accountLabel="account user@example.test"
+      />,
+    );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("connected to Mac Studio");
+    expect(frame).toContain("account user@example.test");
+  });
+
+  it("keeps signed-out account status local-first", () => {
+    const result = render(
+      <Header projectName="ADE" lane={null} accountLabel="account signed out · ade login" />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("account signed out · ade login");
   });
 
   it("suppresses the project label when it repeats the branch basename", () => {

@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
+import type { AdeAccountMachine } from "../../../shared/types/account";
+import {
+  accountMachinePairedSyncEndpoints,
+  accountMachineSecureSyncEndpoints,
+  fetchAccountMachines,
+  MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES,
+  parseAccountMachinesPayload,
+  resolveAccountHelloPairing,
+  selectAccountMachine,
+} from "../../../shared/accountDirectory";
 import { parseTrustedDirectoryBaseUrl } from "./accountBridge";
+
+function machine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine {
+  return {
+    machineKey: "mk-studio",
+    deviceId: "device-studio",
+    name: "Studio",
+    platform: "macOS",
+    deviceType: "desktop",
+    reachableEndpoints: [],
+    lastSeenAt: 1,
+    online: true,
+    ...overrides,
+  };
+}
 
 // The bearer sent to the directory is the machine's account token, so the only
 // security-relevant unit is where that token is allowed to go: an https origin,
@@ -55,5 +79,115 @@ describe("parseTrustedDirectoryBaseUrl", () => {
     expect(parseTrustedDirectoryBaseUrl("https://h?x=1")).toBeNull();
     expect(parseTrustedDirectoryBaseUrl("https://h#f")).toBeNull();
     expect(parseTrustedDirectoryBaseUrl("https://user:pass@h")).toBeNull();
+  });
+});
+
+describe("shared account directory trust boundary", () => {
+  it("uses only verified WSS relay routes for the account bearer, then admits direct routes for the paired secret", () => {
+    const value = machine({
+      reachableEndpoints: [
+        { kind: "relay", url: "ws://relay.example/connect/mk-studio" },
+        { kind: "relay", url: "wss://relay.example/connect/mk-studio?token=evil" },
+        { kind: "relay", url: "wss://user:pass@relay.example/connect/mk-studio" },
+        { kind: "lan", url: "wss://arbitrary.example/sync" },
+        { kind: "lan", host: "10.0.0.8", port: 8787 },
+        { kind: "tailnet", url: "ws://100.64.0.8:8787" },
+        { kind: "relay", url: "wss://arbitrary-relay.example/connect/mk-studio" },
+        { kind: "relay", url: "wss://relay.example/connect/wrong-machine" },
+        { kind: "relay", url: "wss://relay.example/connect/mk-studio" },
+      ],
+    });
+
+    expect(accountMachineSecureSyncEndpoints(value, ["https://relay.example"])).toEqual([
+      "wss://relay.example/connect/mk-studio",
+    ]);
+    expect(accountMachinePairedSyncEndpoints(value, ["https://relay.example"])).toEqual([
+      "ws://10.0.0.8:8787/",
+      "ws://100.64.0.8:8787/",
+      "wss://relay.example/connect/mk-studio",
+    ]);
+  });
+
+  it("selects stable ids first and fails ambiguous display names with choices", () => {
+    const machines = [
+      machine({ machineKey: "mk-a", deviceId: "dev-a" }),
+      machine({ machineKey: "mk-b", deviceId: "dev-b" }),
+    ];
+    expect(selectAccountMachine(machines, "dev-b").machineKey).toBe("mk-b");
+    expect(() => selectAccountMachine(machines, "Studio"))
+      .toThrow(/ambiguous.*mk-a.*mk-b/i);
+
+    const collidingStableIds = [
+      machine({ machineKey: "shared", deviceId: "dev-a", name: "First" }),
+      machine({ machineKey: "mk-b", deviceId: "shared", name: "shared" }),
+    ];
+    expect(() => selectAccountMachine(collidingStableIds, "shared"))
+      .toThrow(/identifier.*ambiguous.*shared.*mk-b/i);
+  });
+
+  it("never mixes a partial account pairing response with stored credentials", () => {
+    const existingPairing = { deviceId: "browser-1", secret: "stored-secret" };
+    expect(resolveAccountHelloPairing({
+      accountPairing: undefined,
+      existingPairing,
+      expectedDeviceId: "browser-1",
+    })).toEqual(existingPairing);
+    expect(resolveAccountHelloPairing({
+      accountPairing: { deviceId: "browser-1", secret: "" },
+      existingPairing,
+      expectedDeviceId: "browser-1",
+    })).toBeNull();
+  });
+
+  it("bounds hostile directory payloads and reports auth expiry without leaking the bearer", async () => {
+    const payload = parseAccountMachinesPayload({
+      machines: [
+        { ...machine(), machineKey: "x".repeat(513) },
+        { ...machine(), reachableEndpoints: [{ kind: "relay", url: "javascript:alert(1)" }] },
+        { ...machine(), machineKey: "duplicate" },
+        { ...machine(), machineKey: "duplicate", name: "attacker overwrite" },
+      ],
+    });
+    expect(payload).toHaveLength(2);
+    expect(payload.find((entry) => entry.machineKey === "duplicate")?.name).toBe("Studio");
+
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "top-secret-bearer",
+      fetchImpl: async (input, init) => {
+        calls.push({ input: String(input), init });
+        return new Response(null, { status: 401 });
+      },
+    });
+    expect(result.state).toBe("auth_expired");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBe("https://directory.example/account/machines");
+    expect(calls[0]?.input).not.toContain("top-secret-bearer");
+    expect(calls[0]?.init).toMatchObject({
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      redirect: "error",
+    });
+    expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe("Bearer top-secret-bearer");
+  });
+
+  it("rejects a streamed directory response before it can grow without bound", async () => {
+    const chunkBytes = 1024 * 1024;
+    let emittedBytes = 0;
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "top-secret-bearer",
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          emittedBytes += chunkBytes;
+          controller.enqueue(new Uint8Array(chunkBytes));
+          if (emittedBytes > MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES) controller.close();
+        },
+      }), { status: 200 }),
+    });
+
+    expect(result).toMatchObject({ state: "unavailable", machines: [] });
+    expect(emittedBytes).toBeLessThanOrEqual(MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES + chunkBytes);
   });
 });
