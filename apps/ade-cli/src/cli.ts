@@ -3632,7 +3632,7 @@ function buildLanePlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "lane create",
-      ...(!createArgs.parentLaneId && typeof createArgs.name === "string" && createArgs.name.trim()
+      ...(!createArgs.parentLaneId && !createArgs.baseBranch && typeof createArgs.name === "string" && createArgs.name.trim()
         ? { laneCreationNudge: { newLaneName: createArgs.name.trim() } }
         : {}),
       steps: [
@@ -4221,6 +4221,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const laneCreationNudge = lane.autoCreateLane
     && lane.createLaneArgs
     && !lane.createLaneArgs.parentLaneId
+    && !lane.createLaneArgs.baseBranch
     && typeof lane.createLaneArgs.name === "string"
     && lane.createLaneArgs.name.trim()
     ? { newLaneName: lane.createLaneArgs.name.trim() }
