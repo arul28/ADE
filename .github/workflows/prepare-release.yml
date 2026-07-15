@@ -20,7 +20,7 @@ jobs:
       tag_name: ${{ steps.resolve.outputs.tag_name }}
       target_sha: ${{ steps.resolve.outputs.target_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

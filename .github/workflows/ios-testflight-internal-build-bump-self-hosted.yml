@@ -38,7 +38,7 @@ jobs:
       ASC_PUBLISH_WAIT_TIMEOUT: 60m
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_ref }}
           fetch-depth: 0
