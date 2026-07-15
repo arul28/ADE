@@ -144,6 +144,7 @@ import {
   SYNC_HOST_MAX_PAYLOAD_BYTES,
   type SharedSyncListener,
   type SyncPeerHandoffSnapshot,
+  type SyncTransportOrigin,
 } from "./sharedSyncListener";
 import {
   assertAdeLoopbackListener,
@@ -430,6 +431,7 @@ type PeerState = {
   backpressuredSinceMs: number | null;
   remoteAddress: string | null;
   remotePort: number | null;
+  transportOrigin: SyncTransportOrigin;
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
@@ -2171,7 +2173,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.authTimeout = null;
   }
 
-  function registerPeer(ws: WebSocket, remoteAddress: string | null, remotePort: number | null): PeerState {
+  function registerPeer(
+    ws: WebSocket,
+    remoteAddress: string | null,
+    remotePort: number | null,
+    transportOrigin: SyncTransportOrigin,
+  ): PeerState {
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -2190,6 +2197,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       backpressuredSinceMs: null,
       remoteAddress,
       remotePort,
+      transportOrigin,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
@@ -2288,7 +2296,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   server?.on("connection", (ws, request) => {
-    registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null);
+    registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null, "direct");
   });
 
   /**
@@ -2325,7 +2333,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws.removeAllListeners("message");
       ws.removeAllListeners("close");
       ws.removeAllListeners("error");
-      const peer = registerPeer(ws, sanitizeRemoteAddress(snapshot.remoteAddress), snapshot.remotePort);
+      const peer = registerPeer(
+        ws,
+        sanitizeRemoteAddress(snapshot.remoteAddress),
+        snapshot.remotePort,
+        snapshot.transportOrigin ?? "direct",
+      );
       if (snapshot.metadata && snapshot.authKind) {
         const pairingRecord = isRecordBackedSyncAuthKind(snapshot.authKind) && snapshot.pairedDeviceId
           ? pairingStore.getPairingRecord(snapshot.pairedDeviceId)
@@ -2454,7 +2467,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let detachSharedListener: (() => void) | null = null;
   if (sharedListener) {
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
-      registerPeer(connection.ws, sanitizeRemoteAddress(connection.remoteAddress), connection.remotePort);
+      registerPeer(
+        connection.ws,
+        sanitizeRemoteAddress(connection.remoteAddress),
+        connection.remotePort,
+        connection.transportOrigin,
+      );
     });
     void adoptHandedOffPeers().catch((error) => {
       args.logger.warn("sync_host.peer_adoption_failed", {
@@ -4712,6 +4730,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (hello.auth?.kind === "account") {
           const accountAuth = hello.auth;
           if (accountAuth.deviceId !== hello.peer.deviceId) return true;
+          // Account bearer credentials must never traverse or authenticate a
+          // plaintext direct sync route. Existing devices reconnect directly
+          // with their stored paired secret + DPoP key instead.
+          if (peer.transportOrigin !== "relay-bridge") {
+            args.logger.warn("sync_host.account_auth_requires_relay", {
+              deviceId: accountAuth.deviceId,
+              transportOrigin: peer.transportOrigin,
+            });
+            return true;
+          }
+          const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
           try {
             const ownerStatus = args.accountAuthService?.getStatus();
             const ownerUserId = ownerStatus?.signedIn ? ownerStatus.userId?.trim() || null : null;
@@ -4728,10 +4757,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               expectedUserId: ownerUserId,
               config,
             });
-            const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
             // A known device is pinned to its existing key; only a genuinely new
-            // device id may TOFU-adopt the inline key. The account token is the
-            // challenge secret, binding that verified token to the device key.
+            // device id arriving through the authenticated relay bridge may
+            // TOFU-adopt the inline key. The account token is the challenge
+            // secret, binding that verified token to the device key.
             const dpopFailure = evaluatePairedHelloDpop({
               storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
               deviceId: accountAuth.deviceId,
@@ -4747,8 +4776,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               });
               return true;
             }
+            if (existingPairingRecord) {
+              // Account re-auth confirms the owner and possession of the
+              // already-pinned device key. Preserve the paired secret that
+              // direct LAN/tailnet reconnects depend on; only first adoption
+              // is allowed to mint a new pairing record.
+              authenticatedPairingRecord = existingPairingRecord;
+              return false;
+            }
             const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
-              dpopPublicKey: existingPairingRecord ? null : accountAuth.dpop?.publicKey ?? null,
+              dpopPublicKey: accountAuth.dpop?.publicKey ?? null,
               runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
             });
             if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
@@ -5705,6 +5742,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ws: peer.ws,
             remoteAddress: peer.remoteAddress,
             remotePort: peer.remotePort,
+            transportOrigin: peer.transportOrigin,
             metadata: peer.metadata,
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,

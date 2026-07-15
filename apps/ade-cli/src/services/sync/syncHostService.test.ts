@@ -39,13 +39,14 @@ import {
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
-import { createSharedSyncListener } from "./sharedSyncListener";
+import { createSharedSyncListener, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
 import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
+import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
 // the LAN can reach it. These tests assert the LOOPBACK-only posture (no LAN
@@ -648,6 +649,7 @@ describe("brain project actions fallback handler", () => {
       ws,
       remoteAddress: request.socket.remoteAddress ?? null,
       remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
     }));
     let client: WebSocket | null = null;
     try {
@@ -772,6 +774,7 @@ describe("brain project actions fallback handler", () => {
         ws,
         remoteAddress: request.socket.remoteAddress ?? null,
         remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "direct",
       });
     });
 
@@ -851,6 +854,7 @@ describe("brain project actions fallback handler", () => {
         ws,
         remoteAddress: request.socket.remoteAddress ?? null,
         remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "direct",
       });
     });
     let client: WebSocket | null = null;
@@ -913,6 +917,7 @@ describe("brain project actions fallback handler", () => {
         ws,
         remoteAddress: request.socket.remoteAddress ?? null,
         remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "direct",
       });
     });
 
@@ -1267,6 +1272,31 @@ describe("sync host account authentication", () => {
     };
   }
 
+  function signPairedDpop(args: {
+    privateKey: ReturnType<typeof makeDpopKeyPair>["privateKey"];
+    publicKeyX963: string;
+    deviceId: string;
+    secret: string;
+  }) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = `paired-${args.deviceId}-${Math.random()}`;
+    const challenge = buildSyncDpopChallenge({
+      deviceId: args.deviceId,
+      secretSha256Hex: sha256Hex(args.secret),
+      timestamp,
+      nonce,
+    });
+    return {
+      publicKey: args.publicKeyX963,
+      timestamp,
+      nonce,
+      signature: createSign("sha256")
+        .update(challenge, "utf8")
+        .sign(args.privateKey)
+        .toString("base64"),
+    };
+  }
+
   function accountDependencies(signedIn = true) {
     return {
       accountAuthService: {
@@ -1286,8 +1316,10 @@ describe("sync host account authentication", () => {
     };
   }
 
-  async function openAccountClient(port: number) {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  async function openAccountClient(port: number, relayBridgeProof?: string | null) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, relayBridgeProof
+      ? { headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof } }
+      : undefined);
     const tracked = trackClientEnvelopes(ws);
     await new Promise<void>((resolve, reject) => {
       ws.once("open", resolve);
@@ -1318,7 +1350,7 @@ describe("sync host account authentication", () => {
     }));
   }
 
-  it("authenticates the owner with JWKS + DPoP, mints a record, and enables the grant-gated desktop runtime channel", async () => {
+  it("adopts a new account device only from an authenticated relay socket parked across host handoff", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
     const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
@@ -1326,21 +1358,12 @@ describe("sync host account authentication", () => {
     const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
     const runtimeHostGrant = pairingStore.issueRuntimeHostGrant();
     const baseArgs = createHostArgs(projectRoot, []);
-    const host = createSyncHostService({
-      ...baseArgs,
-      ...accountDependencies(),
-      pinStore,
-      pairingSecretsPath,
-      discoveryEnabled: false,
-      deviceRegistryService: {
-        ...baseArgs.deviceRegistryService,
-        upsertPeerMetadata: vi.fn(),
-      },
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    let host: ReturnType<typeof createSyncHostService> | null = null;
     let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
     try {
-      const port = await host.waitUntilListening();
-      client = await openAccountClient(port);
+      const port = await listener.ensureListening([0]);
+      client = await openAccountClient(port, listener.getRelayBridgeProof());
       const peer = {
         deviceId: "account-desktop-runtime",
         deviceName: "Account desktop runtime",
@@ -1364,6 +1387,22 @@ describe("sync host account authentication", () => {
         }),
         runtimeHostGrant,
       });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(client.envelopes).toEqual([]);
+
+      host = createSyncHostService({
+        ...baseArgs,
+        ...accountDependencies(),
+        pinStore,
+        pairingSecretsPath,
+        sharedListener: listener,
+        discoveryEnabled: false,
+        deviceRegistryService: {
+          ...baseArgs.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      expect(await host.waitUntilListening()).toBe(port);
 
       const hello = await waitForValue(
         () => client?.envelopes.find((envelope) => envelope.type === "hello_ok"),
@@ -1386,12 +1425,82 @@ describe("sync host account authentication", () => {
       })).toBe(true);
     } finally {
       client?.ws.close();
-      await host.dispose();
+      await host?.dispose();
+      await listener.close();
       cleanup();
     }
   });
 
-  it("pins account re-authentication to an existing DPoP key and never silently re-keys the record", async () => {
+  it("rejects missing, forged, and stale relay proofs for first-time account adoption", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const staleListener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const staleProof = staleListener.getRelayBridgeProof();
+    await staleListener.close();
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const accountToken = await mintAccountToken();
+      const rejectedProofs = [
+        ["missing", null],
+        ["forged-static", "c".repeat(43)],
+        ["stale-process", staleProof],
+      ] as const;
+      for (const [label, proof] of rejectedProofs) {
+        const peer = {
+          deviceId: `account-${label}-relay-proof`,
+          deviceName: `Account ${label} relay proof`,
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: `account-${label}-relay-proof-site`,
+          dbVersion: 0,
+        } satisfies SyncPeerMetadata;
+        const dpopKey = makeDpopKeyPair();
+        const client = await openAccountClient(port, proof);
+        clients.push(client);
+        sendAccountHello({
+          ws: client.ws,
+          peer,
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: dpopKey.privateKey,
+            publicKeyX963: dpopKey.publicKeyX963,
+            deviceId: peer.deviceId,
+            accountToken,
+          }),
+        });
+        await waitForValue(
+          () => client.envelopes.find((envelope) => envelope.type === "hello_error"),
+          `${label} relay proof rejection`,
+        );
+        expect(pairingStore.getPairingRecord(peer.deviceId)).toBeNull();
+      }
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("rejects direct account auth for an existing device but accepts direct paired auth with its stored DPoP key", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
     const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
@@ -1407,14 +1516,23 @@ describe("sync host account authentication", () => {
     } satisfies SyncPeerMetadata;
     const legitimateKey = makeDpopKeyPair();
     const attackerKey = makeDpopKeyPair();
-    pinStore.setPin("428193");
-    pairingStore.pairPeer(peer, "428193", { dpopPublicKey: legitimateKey.publicKeyX963 });
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const pairing = pairingStore.pairPeerViaAccount(peer, attestation, {
+      dpopPublicKey: legitimateKey.publicKeyX963,
+    });
     const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const host = createSyncHostService({
       ...baseArgs,
       ...accountDependencies(),
       pinStore,
       pairingSecretsPath,
+      sharedListener: listener,
       discoveryEnabled: false,
       deviceRegistryService: {
         ...baseArgs.deviceRegistryService,
@@ -1424,11 +1542,29 @@ describe("sync host account authentication", () => {
     const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
     try {
       const port = await host.waitUntilListening();
-      const accountToken = await mintAccountToken();
-      const attackerClient = await openAccountClient(port);
-      clients.push(attackerClient);
+      const directAccountClient = await openAccountClient(port);
+      clients.push(directAccountClient);
       sendAccountHello({
-        ws: attackerClient.ws,
+        ws: directAccountClient.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: legitimateKey.privateKey,
+          publicKeyX963: legitimateKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => directAccountClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "direct stored-key account rejection",
+      );
+      expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
+
+      const relayAttackerClient = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayAttackerClient);
+      sendAccountHello({
+        ws: relayAttackerClient.ws,
         peer,
         accountToken,
         dpop: signAccountDpop({
@@ -1439,15 +1575,15 @@ describe("sync host account authentication", () => {
         }),
       });
       await waitForValue(
-        () => attackerClient.envelopes.find((envelope) => envelope.type === "hello_error"),
-        "stored-key account hijack rejection",
+        () => relayAttackerClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "relay stored-key account hijack rejection",
       );
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
 
-      const legitimateClient = await openAccountClient(port);
-      clients.push(legitimateClient);
+      const relayAccountClient = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayAccountClient);
       sendAccountHello({
-        ws: legitimateClient.ws,
+        ws: relayAccountClient.ws,
         peer,
         accountToken,
         dpop: signAccountDpop({
@@ -1459,13 +1595,38 @@ describe("sync host account authentication", () => {
         }),
       });
       await waitForValue(
-        () => legitimateClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
-        "stored-key account hello_ok",
+        () => relayAccountClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "relay stored-key account hello_ok",
       );
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
+
+      const directPairedClient = await openAccountClient(port);
+      clients.push(directPairedClient);
+      directPairedClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        payload: {
+          peer,
+          auth: {
+            kind: "paired",
+            deviceId: peer.deviceId,
+            secret: pairing.secret,
+            dpop: signPairedDpop({
+              privateKey: legitimateKey.privateKey,
+              publicKeyX963: legitimateKey.publicKeyX963,
+              deviceId: peer.deviceId,
+              secret: pairing.secret,
+            }),
+          },
+        },
+      }));
+      await waitForValue(
+        () => directPairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "direct account-minted paired hello_ok after relay re-auth",
+      );
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();
+      await listener.close();
       cleanup();
     }
   });
@@ -1477,11 +1638,13 @@ describe("sync host account authentication", () => {
     const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
     const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
     const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const host = createSyncHostService({
       ...baseArgs,
       ...accountDependencies(),
       pinStore,
       pairingSecretsPath,
+      sharedListener: listener,
       discoveryEnabled: false,
       deviceRegistryService: {
         ...baseArgs.deviceRegistryService,
@@ -1500,7 +1663,7 @@ describe("sync host account authentication", () => {
         siteId: "account-missing-dpop-site",
         dbVersion: 0,
       } satisfies SyncPeerMetadata;
-      const missing = await openAccountClient(port);
+      const missing = await openAccountClient(port, listener.getRelayBridgeProof());
       clients.push(missing);
       sendAccountHello({ ws: missing.ws, peer: missingPeer, accountToken, dpop: null });
       await waitForValue(
@@ -1514,7 +1677,7 @@ describe("sync host account authentication", () => {
         deviceName: "Invalid DPoP",
         siteId: "account-invalid-dpop-site",
       };
-      const invalid = await openAccountClient(port);
+      const invalid = await openAccountClient(port, listener.getRelayBridgeProof());
       clients.push(invalid);
       const dpopKey = makeDpopKeyPair();
       sendAccountHello({
@@ -1539,6 +1702,7 @@ describe("sync host account authentication", () => {
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();
+      await listener.close();
       cleanup();
     }
   });
@@ -1550,11 +1714,13 @@ describe("sync host account authentication", () => {
     const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
     pinStore.setPin("428193");
     const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const host = createSyncHostService({
       ...baseArgs,
       ...accountDependencies(false),
       pinStore,
       pairingSecretsPath,
+      sharedListener: listener,
       discoveryEnabled: false,
       deviceRegistryService: {
         ...baseArgs.deviceRegistryService,
@@ -1574,7 +1740,7 @@ describe("sync host account authentication", () => {
       } satisfies SyncPeerMetadata;
       const accountToken = await mintAccountToken();
       const dpopKey = makeDpopKeyPair();
-      const accountClient = await openAccountClient(port);
+      const accountClient = await openAccountClient(port, listener.getRelayBridgeProof());
       clients.push(accountClient);
       sendAccountHello({
         ws: accountClient.ws,
@@ -1612,6 +1778,7 @@ describe("sync host account authentication", () => {
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();
+      await listener.close();
       cleanup();
     }
   });

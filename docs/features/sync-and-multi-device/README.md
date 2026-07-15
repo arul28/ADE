@@ -1022,6 +1022,22 @@ feature is merged or because a deliberately isolated-port host is running.
   active), so a paired hello cannot skip proof-of-possession by racing a
   connection during a host restart. Keys are not restorable from
   device backups — a restored phone re-pairs with the PIN.
+- **Account bearer transport**: every `hello.auth.kind = "account"` is
+  accepted only when the shared listener verified that the socket came from
+  ADE's in-process cloud-relay bridge. The tunnel client attaches a private,
+  per-process 256-bit proof to its loopback WebSocket upgrade; the listener
+  validates the decoded proof with a constant-time comparison and carries the
+  resulting `relay-bridge` provenance through parked-socket host handoffs.
+  Missing, forged, or stale proof fails closed as a direct connection. The
+  runtime rejects account auth on LAN, tailnet, loopback, and every other
+  direct route before verifying the bearer, even when that device already has
+  a pairing record. Existing devices use `auth.kind = "paired"` with their
+  durable per-device secret and pinned DPoP key on direct routes; PIN pairing
+  remains available on LAN. This guarantees ADE does not send or accept the
+  Clerk account bearer over plaintext direct sync. It does not sender-bind a
+  bearer stolen outside ADE: generic bearer replay through a TLS relay remains
+  possible until the account session/token is sender-constrained to a device
+  key or equivalent platform attestation.
 - **Pairing**: two independent paths. Machine-to-machine pairing uses
   the shared bootstrap token from the machine secrets directory.
   Phone pairing uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
