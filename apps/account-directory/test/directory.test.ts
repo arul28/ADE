@@ -53,7 +53,7 @@ class FakeD1Statement {
 
   async first<T>(): Promise<T | null> {
     const result = this.db.first<T>(this.sql, this.values);
-    await this.db.waitForConcurrentRateLimitReads(this.sql);
+    await this.db.waitForConcurrentReads(this.sql);
     return result;
   }
 
@@ -76,6 +76,11 @@ class FakeD1Database {
     promise: Promise<void>;
     release: () => void;
   } | null = null;
+  private oauthStateReadBarrier: {
+    remaining: number;
+    promise: Promise<void>;
+    release: () => void;
+  } | null = null;
 
   synchronizeRateLimitReads(expectedReads: number): void {
     let release = () => {};
@@ -85,9 +90,22 @@ class FakeD1Database {
     this.rateLimitReadBarrier = { remaining: expectedReads, promise, release };
   }
 
-  async waitForConcurrentRateLimitReads(sql: string): Promise<void> {
-    const barrier = this.rateLimitReadBarrier;
-    if (!barrier || !sql.toLowerCase().includes("from device_approval_rate_limits")) return;
+  synchronizeOAuthStateReads(expectedReads: number): void {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.oauthStateReadBarrier = { remaining: expectedReads, promise, release };
+  }
+
+  async waitForConcurrentReads(sql: string): Promise<void> {
+    const normalized = sql.toLowerCase();
+    const barrier = normalized.includes("from device_approval_rate_limits")
+      ? this.rateLimitReadBarrier
+      : normalized.includes("from device_authorizations") && normalized.includes("where oauth_state_hash")
+        ? this.oauthStateReadBarrier
+        : null;
+    if (!barrier) return;
     barrier.remaining -= 1;
     if (barrier.remaining === 0) barrier.release();
     await barrier.promise;
@@ -242,6 +260,18 @@ class FakeD1Database {
         if (!row) return 0;
         row.code_verifier = String(values[0]);
         row.oauth_state_hash = String(values[1]);
+        return 1;
+      }
+      if (normalized.includes("set oauth_state_hash = null")) {
+        const row = this.deviceRows.find((entry) =>
+          entry.device_code === values[0]
+          && entry.status === "pending"
+          && entry.oauth_state_hash === values[1]
+          && entry.code_verifier !== null
+          && entry.expires_at > Number(values[2])
+        );
+        if (!row) return 0;
+        row.oauth_state_hash = null;
         return 1;
       }
       if (normalized.includes("set status = 'approved'")) {
@@ -608,6 +638,66 @@ describe("device authorization bridge", () => {
     expect(expiredReplay.status).toBe(400);
     expect(await expiredReplay.json()).toEqual({ error: "expired" });
     expect(env.DB.deviceRows[0]?.status).toBe("consumed");
+  });
+
+  it("claims concurrent duplicate callbacks before the one-time OAuth exchange", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    const approval = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code)),
+      env,
+      { now: () => now },
+    );
+    const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+    const callbackUrl = `https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`;
+    env.DB.synchronizeOAuthStateReads(2);
+
+    let resolveSuccessfulExchange: ((response: Response) => void) | null = null;
+    const successfulExchange = new Promise<Response>((resolve) => {
+      resolveSuccessfulExchange = resolve;
+    });
+    let exchangeCalls = 0;
+    const fetchImpl = vi.fn((): Promise<Response> => {
+      exchangeCalls += 1;
+      return exchangeCalls === 1
+        ? successfulExchange
+        : Promise.resolve(new Response(JSON.stringify({ error: "invalid_grant" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }));
+    });
+
+    const callbacks = Promise.all([
+      handleRequest(new Request(callbackUrl), env, { now: () => now, fetchImpl: fetchImpl as typeof fetch }),
+      handleRequest(new Request(callbackUrl), env, { now: () => now, fetchImpl: fetchImpl as typeof fetch }),
+    ]);
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    resolveSuccessfulExchange!(new Response(JSON.stringify({
+      access_token: "winner-access-token",
+      refresh_token: "winner-refresh-token",
+      token_type: "Bearer",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const responses = await callbacks;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(env.DB.deviceRows[0]).toMatchObject({
+      status: "approved",
+      access_token: "winner-access-token",
+      refresh_token: "winner-refresh-token",
+      error_message: null,
+      code_verifier: null,
+      oauth_state_hash: null,
+    });
   });
 
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {

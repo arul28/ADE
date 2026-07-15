@@ -429,6 +429,18 @@ async function handleDeviceCallback(
     return approvalMessage("Code expired", "Return to ADE and start sign-in again.", 410);
   }
 
+  // Browser retries can race while Clerk is consuming the one-time code. Clear
+  // the indexed state as an atomic claim so only one callback may exchange it.
+  const claimed = await env.DB.prepare(`
+    update device_authorizations
+       set oauth_state_hash = null
+     where device_code = ? and status = 'pending' and oauth_state_hash = ?
+       and code_verifier is not null and expires_at > ?
+  `).bind(row.device_code, stateHash, now).run();
+  if (changes(claimed) < 1) {
+    return approvalMessage("Sign-in already processing", "Finish the ADE sign-in already open in this browser.", 409);
+  }
+
   const oauthError = nonEmptyString(url.searchParams.get("error"));
   const code = nonEmptyString(url.searchParams.get("code"));
   if (oauthError || !code) {
