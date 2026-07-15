@@ -1539,6 +1539,7 @@ export async function createAdeRuntime(args: {
       usageTrackingService,
       productAnalyticsService,
       logger,
+      accountAuthService,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,
       projectRoot,

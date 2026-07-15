@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
 import type { AccountAuthService } from "./accountAuthService";
 import {
+  getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./sharedAccountAuthService";
@@ -92,5 +93,28 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
     const authorizeUrl = new URL(start.authorizeUrl);
     expect(authorizeUrl.origin).toBe("https://invoking.example.test");
     expect(authorizeUrl.searchParams.get("client_id")).toBe("invoking-client");
+  });
+});
+
+describe("getSharedAccountAttestationConfig", () => {
+  it("resolves issuer, JWKS URL, and OAuth client id from one winning project", () => {
+    const issuerRoot = makeProjectRoot({ CLERK_ISSUER: "https://issuer-a.example.test" });
+    const otherRoot = makeProjectRoot({
+      CLERK_JWKS_URL: "https://wrong-project.example.test/jwks",
+      CLERK_OAUTH_CLIENT_ID: "wrong-project-client",
+    });
+
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [issuerRoot, otherRoot],
+      env: {
+        CLERK_JWKS_URL: "https://env.example.test/jwks",
+        CLERK_OAUTH_CLIENT_ID: "env-client",
+      } as NodeJS.ProcessEnv,
+    })).toEqual({
+      issuer: "https://issuer-a.example.test",
+      jwksUrl: "https://env.example.test/jwks",
+      oauthClientId: "env-client",
+    });
   });
 });
