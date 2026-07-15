@@ -470,6 +470,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           ref={workSurfaceRef}
           className="h-full min-h-0 w-full"
           aria-hidden={!isWorkRoute}
+          data-ade-animation-state={isWorkRoute ? "running" : "paused"}
           style={!isWorkRoute
             ? {
               position: "absolute",
@@ -497,6 +498,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           ref={lanesSurfaceRef}
           className="h-full min-h-0 w-full"
           aria-hidden={!isLanesRoute}
+          data-ade-animation-state={isLanesRoute ? "running" : "paused"}
           style={!isLanesRoute
             ? {
               position: "absolute",
@@ -642,6 +644,7 @@ function ProjectSurface({
         ref={surfaceRef}
         className="h-full min-h-0 w-full"
         aria-hidden={!active}
+        data-ade-animation-state={active ? "running" : "paused"}
         data-project-root={project.rootPath}
         style={!active
           ? {
