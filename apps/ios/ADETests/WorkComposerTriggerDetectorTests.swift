@@ -185,6 +185,29 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   }
 
   @MainActor
+  func testAmbiguousOpeningPromptRestoresOnceIntoMountedComposer() {
+    let draft = WorkChatComposerDraftState()
+    let restore = WorkChatComposerDraftRestore(
+      text: "Check whether this already started",
+      id: UUID()
+    )
+
+    draft.applyRestore(restore)
+    XCTAssertEqual(draft.text, "Check whether this already started")
+    XCTAssertTrue(draft.isFocused)
+
+    XCTAssertEqual(draft.consumeSendableText(), "Check whether this already started")
+    draft.applyRestore(restore)
+    XCTAssertEqual(draft.text, "", "The same restoration token must not refill a draft after the user sends it.")
+
+    draft.applyRestore(WorkChatComposerDraftRestore(
+      text: "A later unconfirmed send",
+      id: UUID()
+    ))
+    XCTAssertEqual(draft.text, "A later unconfirmed send")
+  }
+
+  @MainActor
   func testChatComposerDefersAndCoalescesRequestedFocusTransitions() async {
     let draft = WorkChatComposerDraftState()
     let controller = WorkComposerSuggestionController()

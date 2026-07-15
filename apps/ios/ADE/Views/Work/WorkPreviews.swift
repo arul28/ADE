@@ -460,6 +460,8 @@ private enum WorkPreviewData {
       canSendMessages: true,
       sendWillQueue: false,
       sendWillQueueIsReconnect: false,
+      transportHealth: .connected,
+      composerDraftRestore: nil,
       transitionNamespace: nil,
       onOpenLane: {},
       onSend: { _, _ in true },

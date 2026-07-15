@@ -59,6 +59,8 @@
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
+		B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* SyncRecoveryPolicy.swift */; };
+		B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */; };
 		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */; };
@@ -413,6 +415,8 @@
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
+		B70000000000000000000001 /* SyncRecoveryPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicy.swift; path = ADE/Services/SyncRecoveryPolicy.swift; sourceTree = "<group>"; };
+		B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncRecoveryPolicyTests.swift; path = ADETests/SyncRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
 		B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteProjectAddSheet.swift; path = ADE/App/RemoteProjectAddSheet.swift; sourceTree = "<group>"; };
@@ -820,6 +824,7 @@
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
 				AE00000000000000000000A3 /* LiveActivityService.swift */,
@@ -974,6 +979,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
@@ -1276,6 +1282,7 @@
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
+				B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
 				E20000000000000000000042 /* FilesModels.swift in Sources */,
@@ -1445,6 +1452,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,

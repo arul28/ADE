@@ -395,6 +395,7 @@ struct WorkSessionDestinationView: View {
   @State var artifactDrawerPresented = false
   @State var sending = false
   @State var errorMessage: String?
+  @State var openingDeliveryWarning: String?
   @State var announcedLaneId: String?
   /// Lane→PR resolved asynchronously for the header overflow menu's "Open PR"
   /// item. Nil until resolved (or when the lane has no cached PR), which keeps
@@ -428,6 +429,13 @@ struct WorkSessionDestinationView: View {
   @State var canonicalTranscriptRefreshInFlight = false
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
+  @State var composerDraftRestore: WorkChatComposerDraftRestore?
+
+  var initialOpeningPromptNeedsManualRetry: Bool {
+    initialOpeningPromptDispatchHandled
+      && initialOpeningDeliveryState == "failed"
+      && !trimmedInitialOpeningPrompt.isEmpty
+  }
 
   @MainActor
   func setTranscript(_ next: [WorkChatEnvelope]) {
@@ -899,6 +907,10 @@ struct WorkSessionDestinationView: View {
         chatSummary = initialChatSummary
         setTranscript(initialTranscript ?? [])
         seedTranscriptFromPresentationCacheIfNeeded()
+        if initialOpeningPromptNeedsManualRetry, let initialOpeningPrompt {
+          composerDraftRestore = WorkChatComposerDraftRestore(text: initialOpeningPrompt)
+          openingDeliveryWarning = SyncRequestTimeout.chatSendMessage
+        }
         stageInitialOpeningPromptEchoIfNeeded()
         await load()
         await sendInitialOpeningPromptIfNeeded()
@@ -1117,7 +1129,7 @@ struct WorkSessionDestinationView: View {
       artifactContentRenderSignature: artifactContentRenderSignature,
       artifactDrawerPresentedSnapshot: artifactDrawerPresented,
       sendingSnapshot: sending,
-      errorMessageSnapshot: errorMessage,
+      errorMessageSnapshot: errorMessage ?? openingDeliveryWarning,
       expandedToolCardIds: $expandedToolCardIds,
       artifactContent: $artifactContent,
       fullscreenImage: $fullscreenImage,
@@ -1132,6 +1144,8 @@ struct WorkSessionDestinationView: View {
       canSendMessages: canSendChatMessages && !viewingSubagent,
       sendWillQueue: sendWillQueueChatMessage || shouldSteer,
       sendWillQueueIsReconnect: sendWillQueueChatMessage,
+      transportHealth: syncService.connectionHealth.transport,
+      composerDraftRestore: composerDraftRestore,
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
       onOpenLane: openLaneAction,
@@ -1920,7 +1934,8 @@ struct WorkSessionDestinationView: View {
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { $0.id == echo.id }
-      errorMessage = "Opening message did not reach the machine. The chat exists; tap Send to retry. \(error.localizedDescription)"
+      composerDraftRestore = WorkChatComposerDraftRestore(text: prompt)
+      errorMessage = error.localizedDescription
     }
   }
 

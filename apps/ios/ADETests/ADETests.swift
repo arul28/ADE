@@ -1237,15 +1237,15 @@ final class ADETests: XCTestCase {
     }
   }
 
-  func testSyncRequestTimeoutUsesThirtySecondFriendlyReconnectMessage() {
+  func testSyncRequestTimeoutUsesFriendlyHealthCheckAndAmbiguousSendMessages() {
     XCTAssertEqual(SyncRequestTimeout.defaultTimeoutNanoseconds, 30_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.chatSendTimeoutNanoseconds, 120_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.commandTimeoutNanoseconds(for: "lanes.delete"), 240_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.commandTimeoutNanoseconds(for: "lanes.rename"), 30_000_000_000)
-    XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Reconnecting now.")
+    XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Try again.")
     XCTAssertEqual(
       SyncRequestTimeout.error(message: SyncRequestTimeout.chatSendMessage).localizedDescription,
-      "The machine is still starting this chat turn. Live updates will keep syncing."
+      "ADE couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
     )
   }
 
@@ -1311,6 +1311,10 @@ final class ADETests: XCTestCase {
         canSendLiveRequests: true,
         queueable: false
       )
+    )
+    XCTAssertFalse(
+      SyncAttemptedLiveFailurePolicy.preserveForManualRetry == .enqueueSafely,
+      "An ambiguous live chat send must use the manual-retry policy instead of the durable queue."
     )
   }
 
@@ -2468,6 +2472,52 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(UserDefaults.standard.bool(forKey: pausedKey))
   }
 
+  @MainActor
+  func testAutomaticTransportFailureSchedulesRecoveryWithoutNavigation() {
+    let pausedKey = "ade.sync.autoReconnectPausedByUser"
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
+    UserDefaults.standard.removeObject(forKey: pausedKey)
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    let service = SyncService(database: database)
+    let profile = HostConnectionProfile(
+      hostIdentity: "recovery-test-host",
+      hostName: "Recovery test Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "recovery-test-phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "recovery-test-host",
+      lastSuccessfulAddress: "127.0.0.1",
+      savedAddressCandidates: ["127.0.0.1"],
+      discoveredLanAddresses: ["127.0.0.1"],
+      tailscaleAddress: nil
+    )
+    service.configureReconnectProfileForTesting(profile, token: "recovery-test-token")
+    defer {
+      service.disconnect()
+      service.clearReconnectProfileForTesting(profile)
+      database.close()
+      UserDefaults.standard.removeObject(forKey: pausedKey)
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
+    }
+
+    service.simulateAutomaticTransportFailureForTesting(
+      NSError(
+        domain: NSURLErrorDomain,
+        code: NSURLErrorNetworkConnectionLost,
+        userInfo: [NSLocalizedDescriptionKey: "Connection lost"]
+      )
+    )
+
+    XCTAssertEqual(service.connectionState, .connecting)
+    XCTAssertTrue(service.hasScheduledReconnectWorkForTesting())
+  }
+
   func testSyncMessageTooLongTransportFailureForcesErrorState() {
     let fatalError = NSError(
       domain: "ADE",
@@ -2482,17 +2532,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: fatalError, fallback: .connecting), .error)
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
-  }
-
-  func testSyncRequestTimeoutWithoutInboundTrafficPublishesReconnectingState() {
-    XCTAssertEqual(
-      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: nil, fallback: .error),
-      .connecting
-    )
-    XCTAssertEqual(
-      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: 42, fallback: .error),
-      .error
-    )
   }
 
   func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {
@@ -8961,6 +9000,17 @@ final class ADETests: XCTestCase {
     // switcher tap persists a mode).
     XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-a"), .chat)
     XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-b"), .cli)
+  }
+
+  func testQueuedCliOpenerIsConsumedWhileQueuedChatOpenerIsRestored() {
+    XCTAssertTrue(
+      workQueuedNewSessionConsumesOpeningDraft(.cli),
+      "A queued CLI start already contains initialInput and must not restore it for duplicate submission."
+    )
+    XCTAssertFalse(
+      workQueuedNewSessionConsumesOpeningDraft(.chat),
+      "A queued chat.create does not contain the separate opener, so the draft must remain."
+    )
   }
 
   func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
@@ -18540,6 +18590,24 @@ final class LinearPaneTests: XCTestCase {
     }
     let deleted = await spy.deletedLaneIds
     XCTAssertTrue(deleted.isEmpty, "Queued launches must keep the lane for reconnect drain")
+  }
+
+  func testRunLinearLaunchKeepsLaneWhenLiveChatLaunchIsAmbiguous() async {
+    let spy = LinearLaunchSpy()
+    let ambiguous = AmbiguousChatCreationError(underlyingError: SyncRequestTimeout.error())
+    let deps = makeDeps(spy: spy, chat: { throw ambiguous })
+
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected the ambiguous launch to surface.")
+    } catch is LinearAmbiguousAgentLaunchError {
+      // Expected: callers can explain the uncertainty without deleting lane1.
+    } catch {
+      XCTFail("Expected an ambiguous agent launch error, got \(error)")
+    }
+
+    let deleted = await spy.deletedLaneIds
+    XCTAssertTrue(deleted.isEmpty, "Ambiguous live launches must keep the lane for host reconciliation.")
   }
 
   func testRunLinearLaunchSurfacesQueuedLaneCreationBeforeAgentLaunch() async {

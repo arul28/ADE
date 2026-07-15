@@ -341,6 +341,10 @@ struct LinearLaunchScreen: View {
       // their initial input, so this handoff is complete from the sheet's view.
       ADEHaptics.medium()
       syncService.linearPanePresented = false
+    } catch let error as LinearAmbiguousAgentLaunchError {
+      ADEHaptics.error()
+      errorMessage = "ADE kept the new lane because the agent may already have started. \(error.localizedDescription)"
+      busy = false
     } catch is QueuedRemoteCommandError {
       if config.sessionType.needsAgentConfig {
         ADEHaptics.error()

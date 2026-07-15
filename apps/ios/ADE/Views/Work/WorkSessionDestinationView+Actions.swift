@@ -100,6 +100,7 @@ extension WorkSessionDestinationView {
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return false
       }
+      openingDeliveryWarning = nil
       errorMessage = nil
       return true
     } catch {
