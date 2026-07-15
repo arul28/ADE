@@ -46,6 +46,8 @@ import {
   type AccountAuthService,
 } from "./services/account/accountAuthService";
 import {
+  getSharedAccountAttestationConfig,
+  getSharedAccountDirectoryBaseUrl,
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
@@ -798,6 +800,9 @@ export function createMultiProjectRpcRequestHandler(
       if (action === "listMachines" || action === "pairMachine") {
         const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
           appVersion: options.serverVersion,
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+          }),
         });
         const actionArgs = isRecord(params.args) ? params.args : {};
         const result = action === "listMachines"

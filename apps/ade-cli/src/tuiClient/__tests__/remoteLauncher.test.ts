@@ -1,14 +1,39 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
 import {
+  buildSshArgs,
   buildRemoteRuntimeRpcCommand,
   listRemoteSessions,
+  openRemoteRpcSession,
   parseRemoteAdeCodeArgs,
   remoteRuntimeLayoutCandidates,
+  resolveRemoteTargetForLaunch,
   selectProject,
   takeAdeCodeRemoteArgs,
 } from "../remoteLauncher";
 
 describe("ade code remote launcher", () => {
+  const legacyAccountTarget = (): RemoteRuntimeTarget => ({
+    id: "legacy-account-studio",
+    name: "Arul's Mac Studio",
+    hostname: "100.75.20.63",
+    transport: "ssh",
+    pairedMachine: null,
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    routes: [
+      { hostname: "100.75.20.63", port: null, source: "tailscale", lastSucceededAt: null },
+      { hostname: "192.168.1.63", port: null, source: "bonjour", lastSucceededAt: null },
+    ],
+    lastSeenArch: "darwin-arm64",
+    runtimeBinaryVersion: "1.2.27",
+    lastConnectedAt: Date.now(),
+  });
+
   it("detects remote as the first standalone ade code positional", () => {
     expect(takeAdeCodeRemoteArgs(["remote", "session", "--target", "mac"])).toEqual([
       "session",
@@ -80,6 +105,228 @@ describe("ade code remote launcher", () => {
       ".ade",
       ".ade-beta",
     ]);
+  });
+
+  it("keeps the saved SSH alias for config credentials while overriding only the concrete route", () => {
+    const target = {
+      ...legacyAccountTarget(),
+      hostname: "arul-studio",
+      sshUser: "arul",
+      sshKeyPath: null,
+    };
+    const args = buildSshArgs(
+      target,
+      { hostname: "100.75.20.63", port: 22, source: "tailscale", lastSucceededAt: null },
+      "ade rpc --stdio",
+    );
+
+    expect(args).toContain("HostName=100.75.20.63");
+    expect(args).toContain("arul@arul-studio");
+    expect(args).not.toContain("arul@100.75.20.63");
+    expect(args).toContain("StrictHostKeyChecking=yes");
+  });
+
+  it("upgrades the exact desktop-connected account target before broken SSH can run", async () => {
+    const pairedTarget: RemoteRuntimeTarget = {
+      ...legacyAccountTarget(),
+      id: "paired-account-studio",
+      hostname: "relay.example",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "device-studio", machineKey: "machine-studio" },
+      routes: [],
+    };
+    const listMachines = vi.fn(async () => ({
+      state: "ok" as const,
+      message: null,
+      machines: [{
+        machineKey: "machine-studio",
+        deviceId: "device-studio",
+        name: "Arul's Mac Studio",
+        platform: "macOS",
+        deviceType: "desktop",
+        reachableEndpoints: [
+          { kind: "tailnet" as const, host: "100.75.20.63", port: 8787 },
+          { kind: "lan" as const, host: "192.168.1.63", port: 8787 },
+          { kind: "relay" as const, url: "wss://relay.example/connect/machine-studio" },
+        ],
+        lastSeenAt: Date.now(),
+        online: true,
+      }],
+    }));
+    const pairListedMachine = vi.fn(async () => ({
+      targetId: pairedTarget.id,
+      machineKey: "machine-studio",
+      deviceId: "device-studio",
+      name: pairedTarget.name,
+    }));
+    const remove = vi.fn(() => true);
+
+    await expect(resolveRemoteTargetForLaunch(legacyAccountTarget(), {
+      accountMachines: { listMachines, pairListedMachine },
+      registry: { get: (id) => id === pairedTarget.id ? pairedTarget : null, remove },
+    })).resolves.toEqual(pairedTarget);
+    expect(pairListedMachine).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledWith("legacy-account-studio");
+  });
+
+  it("fails a legacy offline account target promptly without an SSH downgrade", async () => {
+    const pairListedMachine = vi.fn();
+    await expect(resolveRemoteTargetForLaunch(legacyAccountTarget(), {
+      accountMachines: {
+        listMachines: async () => ({
+          state: "ok",
+          message: null,
+          machines: [{
+            machineKey: "machine-studio",
+            deviceId: "device-studio",
+            name: "Arul's Mac Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+            reachableEndpoints: [
+              { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+              { kind: "lan", host: "192.168.1.63", port: 8787 },
+            ],
+            lastSeenAt: Date.now() - 120_000,
+            online: false,
+          }],
+        }),
+        pairListedMachine,
+      },
+      registry: { get: () => null, remove: () => false },
+    })).rejects.toThrow(/offline.*paired-only.*will not downgrade to SSH/i);
+    expect(pairListedMachine).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit SSH-config target when only one account hostname overlaps", async () => {
+    const target = {
+      ...legacyAccountTarget(),
+      id: "manual-ssh-studio",
+      name: "Build host alias",
+      hostname: "studio-ssh-config",
+      routes: [{
+        hostname: "100.75.20.63",
+        port: null,
+        source: "manual" as const,
+        lastSucceededAt: null,
+      }],
+    };
+    const pairListedMachine = vi.fn();
+
+    await expect(resolveRemoteTargetForLaunch(target, {
+      accountMachines: {
+        listMachines: async () => ({
+          state: "ok",
+          message: null,
+          machines: [{
+            machineKey: "machine-studio",
+            deviceId: "device-studio",
+            name: "Arul's Mac Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+            reachableEndpoints: [{ kind: "tailnet", host: "100.75.20.63", port: 8787 }],
+            lastSeenAt: Date.now(),
+            online: true,
+          }],
+        }),
+        pairListedMachine,
+      },
+      registry: { get: () => null, remove: () => false },
+    })).resolves.toEqual(target);
+    expect(pairListedMachine).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an uncredentialed legacy account candidate cannot be verified", async () => {
+    await expect(resolveRemoteTargetForLaunch(legacyAccountTarget(), {
+      accountMachines: {
+        listMachines: async () => ({ state: "auth_expired", message: "expired", machines: [] }),
+        pairListedMachine: vi.fn(),
+      },
+      registry: { get: () => null, remove: () => false },
+    })).rejects.toThrow(/will not silently downgrade.*to SSH.*explicit SSH user\/key/i);
+  });
+
+  it("keeps a manual SSH target eligible when the account directory is unavailable", async () => {
+    const target = {
+      ...legacyAccountTarget(),
+      id: "manual-ssh-target",
+      routes: [{
+        hostname: "100.75.20.63",
+        port: null,
+        source: "manual" as const,
+        lastSucceededAt: null,
+      }],
+    };
+    await expect(resolveRemoteTargetForLaunch(target, {
+      accountMachines: {
+        listMachines: async () => ({ state: "unavailable", message: "offline", machines: [] }),
+        pairListedMachine: vi.fn(),
+      },
+      registry: { get: () => null, remove: () => false },
+    })).resolves.toEqual(target);
+  });
+
+  it("does not adopt an exact account host when the saved SSH route is manual", async () => {
+    const target = {
+      ...legacyAccountTarget(),
+      id: "manual-account-host",
+      routes: [{
+        hostname: "100.75.20.63",
+        port: null,
+        source: "manual" as const,
+        lastSucceededAt: null,
+      }],
+    };
+    const pairListedMachine = vi.fn();
+    await expect(resolveRemoteTargetForLaunch(target, {
+      accountMachines: {
+        listMachines: async () => ({
+          state: "ok",
+          message: null,
+          machines: [{
+            machineKey: "machine-studio",
+            deviceId: "device-studio",
+            name: "Arul's Mac Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+            reachableEndpoints: [{ kind: "tailnet", host: "100.75.20.63", port: 8787 }],
+            lastSeenAt: Date.now(),
+            online: true,
+          }],
+        }),
+        pairListedMachine,
+      },
+      registry: { get: () => null, remove: () => false },
+    })).resolves.toEqual(target);
+    expect(pairListedMachine).not.toHaveBeenCalled();
+  });
+
+  it("bounds an unreachable SSH target by one total deadline instead of polling every runtime forever", async () => {
+    const children: Array<ChildProcessWithoutNullStreams & { kill: ReturnType<typeof vi.fn> }> = [];
+    const spawnProcess = vi.fn(() => {
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams & { kill: ReturnType<typeof vi.fn> };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn(() => true);
+      children.push(child);
+      return child;
+    });
+    const startedAt = Date.now();
+
+    await expect(openRemoteRpcSession({
+      ...legacyAccountTarget(),
+      id: "offline-explicit-ssh",
+      name: "Offline workstation",
+      sshUser: "arul",
+    }, {
+      totalTimeoutMs: 80,
+      attemptTimeoutMs: 50,
+      spawnProcess,
+    })).rejects.toThrow(/bounded route\/runtime combinations.*deadline/i);
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(spawnProcess.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(children.every((child) => child.kill.mock.calls.length > 0)).toBe(true);
   });
 
   it("falls back to positional chat list args for older remote action adapters", async () => {

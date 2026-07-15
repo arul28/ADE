@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { BrowserAccountClient } from "./client";
+import {
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEVELOPMENT_ADE_CLERK_ISSUER,
+  DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+} from "../../../shared/accountDirectory";
+import { BrowserAccountClient, readBrowserAccountConfig } from "./client";
 
 class MemorySessionStorage {
   readonly values = new Map<string, string>();
@@ -47,6 +55,29 @@ async function completeSignIn(
 }
 
 describe("BrowserAccountClient", () => {
+  it("uses production defaults for a hosted build and development defaults locally", () => {
+    expect(readBrowserAccountConfig({ DEV: false })).toMatchObject({
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+      directoryBaseUrl: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+    expect(readBrowserAccountConfig({ DEV: true })).toMatchObject({
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      directoryBaseUrl: DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+  });
+
+  it("uses the hosted account directory when the web build has no override", () => {
+    expect(readBrowserAccountConfig({
+      VITE_ADE_CLERK_ISSUER: "https://clerk.example",
+      VITE_ADE_CLERK_OAUTH_CLIENT_ID: "client_ade",
+      VITE_ADE_ACCOUNT_DIRECTORY_URL: "   ",
+    })).toMatchObject({
+      directoryBaseUrl: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+  });
+
   it("keeps tokens in memory, scrubs the callback, and surfaces directory auth expiry", async () => {
     const storage = new MemorySessionStorage();
     const assigned: string[] = [];

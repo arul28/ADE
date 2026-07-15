@@ -293,6 +293,34 @@ jobs:
       - run: cd apps/tunnel-relay && npm ci
       - run: cd apps/tunnel-relay && npm test
 
+  # The account directory is an independently deployed Worker with its own
+  # lockfile. Keep auth/device-flow verification isolated from the shared app
+  # dependency cache, matching the tunnel relay's self-contained jobs.
+  typecheck-account-directory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/account-directory && npm ci
+      - run: cd apps/account-directory && npm run typecheck
+      - run: cd apps/account-directory && npm run build
+
+  test-account-directory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/account-directory && npm ci
+      - run: cd apps/account-directory && npm test
+
   build:
     needs: install
     runs-on: ubuntu-latest
@@ -407,12 +435,14 @@ jobs:
       - typecheck-webhook-relay
       - typecheck-push-relay
       - typecheck-tunnel-relay
+      - typecheck-account-directory
       - lint-desktop
       - test-desktop
       - test-ade-cli
       - test-webhook-relay
       - test-push-relay
       - test-tunnel-relay
+      - test-account-directory
       - build
       - build-runtime-binaries
       - validate-docs

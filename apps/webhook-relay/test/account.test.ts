@@ -250,6 +250,8 @@ class FakeAccountD1 {
 
 const ISSUER = "https://clerk.test";
 const OAUTH_CLIENT_ID = "client_ade";
+const SECONDARY_ISSUER = "https://clerk.production.test";
+const SECONDARY_OAUTH_CLIENT_ID = "client_ade_production";
 let jwksServer: Server;
 let jwksUrl = "";
 let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
@@ -286,11 +288,12 @@ async function mintToken(
   audience: string | null = OAUTH_CLIENT_ID,
   authorizedParty: string | null = audience,
   expires = true,
+  issuer = ISSUER,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   let token = new SignJWT(authorizedParty ? { azp: authorizedParty } : {})
     .setProtectedHeader({ alg: "RS256", kid: "account-test" })
-    .setIssuer(ISSUER)
+    .setIssuer(issuer)
     .setSubject(sub)
     .setIssuedAt(now);
   if (expires) token = token.setExpirationTime(now + 600);
@@ -421,6 +424,44 @@ describe("account integration re-keying", () => {
     await expect(verifyAccountToken(await mintToken("user_1", null, null), env)).rejects.toThrow(
       "Token audience is not allowed",
     );
+  });
+
+  it("accepts a fully pinned secondary Clerk instance without weakening either client binding", async () => {
+    const env = {
+      ...makeEnv(),
+      CLERK_SECONDARY_JWKS_URL: jwksUrl,
+      CLERK_SECONDARY_ISSUER: SECONDARY_ISSUER,
+      CLERK_SECONDARY_OAUTH_CLIENT_ID: SECONDARY_OAUTH_CLIENT_ID,
+    };
+    const secondaryToken = await mintToken(
+      "user_prod",
+      SECONDARY_OAUTH_CLIENT_ID,
+      SECONDARY_OAUTH_CLIENT_ID,
+      true,
+      SECONDARY_ISSUER,
+    );
+    const wrongSecondaryClient = await mintToken(
+      "user_prod",
+      "wrong-client",
+      "wrong-client",
+      true,
+      SECONDARY_ISSUER,
+    );
+
+    await expect(verifyAccountToken(await mintToken("user_dev"), env)).resolves.toBe("user_dev");
+    await expect(verifyAccountToken(secondaryToken, env)).resolves.toBe("user_prod");
+    await expect(verifyAccountToken(wrongSecondaryClient, env)).rejects.toThrow("Token audience is not allowed");
+    await expect(verifyAccountToken(
+      await mintToken("user_unknown", OAUTH_CLIENT_ID, OAUTH_CLIENT_ID, true, "https://unknown.test"),
+      env,
+    )).rejects.toThrow("Token issuer is not allowed");
+  });
+
+  it("fails closed when the secondary Clerk instance is only partially configured", async () => {
+    await expect(verifyAccountToken(await mintToken("user_1"), {
+      ...makeEnv(),
+      CLERK_SECONDARY_ISSUER: SECONDARY_ISSUER,
+    })).rejects.toThrow("Secondary Clerk authentication is only partially configured");
   });
 
   it("keeps NULL account mappings on the byte-identical legacy register, status, and poll paths", async () => {

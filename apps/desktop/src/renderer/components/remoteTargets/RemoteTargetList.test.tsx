@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdeAccountMachine } from "../../../shared/types";
+import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import { RemoteTargetList } from "./RemoteTargetList";
 
 const remoteRuntimeMock = {
@@ -41,6 +42,10 @@ const appMock = {
   writeClipboardText: vi.fn(),
 };
 
+const accountMock = {
+  pairMachine: vi.fn(),
+};
+
 function installAdeMock(): void {
   remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValue({ state: "trusted" });
   remoteRuntimeMock.getLocalPairingInfo.mockResolvedValue({
@@ -56,6 +61,7 @@ function installAdeMock(): void {
       remoteRuntime: remoteRuntimeMock,
       lanes: lanesMock,
       app: appMock,
+      account: accountMock,
     },
   });
 }
@@ -1084,8 +1090,7 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
   });
 
-  it("parses an account endpoint URL without reusing its service port", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+  it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [],
       diagnostics: [],
@@ -1094,6 +1099,8 @@ describe("RemoteTargetList", () => {
       id: "target-account",
       name: "Cloud Studio",
       hostname: "100.92.14.3",
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "dev_cloud", machineKey: "mk_cloud" },
       sshUser: null,
       port: null,
       sshKeyPath: null,
@@ -1102,7 +1109,15 @@ describe("RemoteTargetList", () => {
       runtimeBinaryVersion: null,
       lastConnectedAt: null,
     };
-    remoteRuntimeMock.saveTarget.mockResolvedValue(savedTarget);
+    remoteRuntimeMock.listTargets
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([savedTarget]);
+    accountMock.pairMachine.mockResolvedValue({
+      targetId: savedTarget.id,
+      machineKey: "mk_cloud",
+      deviceId: "dev_cloud",
+      name: "Cloud Studio",
+    });
     remoteRuntimeMock.connect.mockResolvedValue({
       target: savedTarget,
       arch: "darwin-arm64",
@@ -1111,7 +1126,6 @@ describe("RemoteTargetList", () => {
     });
     installAdeMock();
 
-    // The directory advertises the ADE service port (8787), not an SSH port.
     const accountMachines: AdeAccountMachine[] = [
       {
         machineKey: "mk_cloud",
@@ -1121,6 +1135,10 @@ describe("RemoteTargetList", () => {
         deviceType: "desktop",
         reachableEndpoints: [
           { kind: "tailnet", url: "http://100.92.14.3:8787" },
+          {
+            kind: "relay",
+            url: `${DEFAULT_ADE_TUNNEL_RELAY_URL.replace("https:", "wss:")}/connect/mk_cloud`,
+          },
         ],
         lastSeenAt: Date.now() - 30_000,
         online: true,
@@ -1140,14 +1158,11 @@ describe("RemoteTargetList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
-      expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(
-        expect.objectContaining({
-          // The endpoint URL must be reduced to its bare SSH hostname.
-          hostname: "100.92.14.3",
-          // The 8787 service port must NOT become the SSH port; leave it default.
-          port: null,
-        }),
-      ),
+      expect(accountMock.pairMachine).toHaveBeenCalledWith("mk_cloud"),
+    );
+    expect(remoteRuntimeMock.saveTarget).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-account"),
     );
   });
 });

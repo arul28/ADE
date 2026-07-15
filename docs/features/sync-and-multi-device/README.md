@@ -185,6 +185,17 @@ see your change.
 
 Runtime support files outside `services/sync/`:
 
+- `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
+  single machine-brain publisher for the account directory. It derives the
+  stable machine key from the cloud-relay store, publishes only currently
+  validated LAN/Tailscale/relay routes, coalesces overlapping work, and sends
+  the account bearer only to the trusted HTTPS directory origin. A 30-second
+  heartbeat keeps the Worker row inside its 90-second online window without
+  turning sync retries or status polling into product analytics.
+- `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
+  origin, response decoding, route allowlisting, machine selection, and paired
+  endpoint validation shared by desktop, the brain, ADE Code, and hosted web.
+
 - `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
   used by multi-project RPC and desktop/TUI event streams. Retains up to
   10,000 events / 16 MB total / 1 MB per event by default, emits live

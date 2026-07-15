@@ -15,6 +15,17 @@ export const MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export const DEFAULT_ADE_TUNNEL_RELAY_URL =
   "https://ade-tunnel-relay.arulsharma1028.workers.dev";
+export const DEFAULT_ADE_CLERK_ISSUER = "https://clerk.ade-app.dev";
+export const DEFAULT_ADE_CLERK_JWKS_URL =
+  `${DEFAULT_ADE_CLERK_ISSUER}/.well-known/jwks.json`;
+export const DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID = "Az7TbviBocyXjZk1";
+export const DEFAULT_ADE_ACCOUNT_DIRECTORY_URL =
+  "https://ade-account-directory-production.arulsharma1028.workers.dev";
+export const DEVELOPMENT_ADE_CLERK_ISSUER =
+  "https://coherent-foxhound-62.clerk.accounts.dev";
+export const DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID = "d6pUGxQXTqIMYl5w";
+export const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL =
+  "https://ade-account-directory.arulsharma1028.workers.dev";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -60,6 +71,34 @@ export function parseTrustedAccountDirectoryBaseUrl(
   if (url.username || url.password || url.search || url.hash) return null;
   const pathname = url.pathname.replace(/\/+$/, "");
   return `${url.origin}${pathname}`;
+}
+
+/**
+ * Resolve an optional machine-owner override while keeping ADE's hosted
+ * directory as the zero-config default. Blank values mean "not overridden";
+ * a non-blank invalid value still fails closed instead of silently redirecting
+ * the account bearer elsewhere.
+ */
+export function resolveTrustedAccountDirectoryBaseUrl(
+  raw: string | null | undefined,
+): string | null {
+  return parseTrustedAccountDirectoryBaseUrl(
+    raw?.trim() || DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  );
+}
+
+/**
+ * Development tokens are accepted only by ADE's isolated development Worker;
+ * every other issuer uses the production directory. The project may select an
+ * issuer, but it can never select an arbitrary bearer destination through this
+ * mapping.
+ */
+export function officialAccountDirectoryUrlForIssuer(
+  rawIssuer: string | null | undefined,
+): string {
+  return parseTrustedAccountDirectoryBaseUrl(rawIssuer) === DEVELOPMENT_ADE_CLERK_ISSUER
+    ? DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL
+    : DEFAULT_ADE_ACCOUNT_DIRECTORY_URL;
 }
 
 function parseEndpoint(value: unknown): AdeAccountMachineEndpoint | null {
@@ -126,6 +165,23 @@ export function parseAccountMachinesPayload(payload: unknown): AdeAccountMachine
   return machines;
 }
 
+/** Return the normalized host identity advertised by an account endpoint. */
+export function accountMachineEndpointHost(
+  endpoint: AdeAccountMachineEndpoint,
+): string | null {
+  const host = endpoint.host?.trim();
+  if (host) return host.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null;
+  const raw = endpoint.url?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null;
+  } catch {
+    return /^[^/\s]+$/.test(raw)
+      ? raw.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null
+      : null;
+  }
+}
+
 function parseTrustedAccountRelayBaseUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -184,6 +240,7 @@ export async function fetchAccountMachines(args: {
   accessToken: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<AdeAccountMachinesResult> {
   const baseUrl = parseTrustedAccountDirectoryBaseUrl(args.baseUrl);
   if (!baseUrl) {
@@ -197,8 +254,15 @@ export async function fetchAccountMachines(args: {
   if (!token) return { state: "signed_out", machines: [], message: null };
 
   const controller = new AbortController();
+  const onAbort = () => controller.abort(args.signal?.reason);
+  if (args.signal?.aborted) onAbort();
+  else args.signal?.addEventListener("abort", onAbort, { once: true });
   const timeoutMs = Math.max(250, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS));
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await (args.fetchImpl ?? fetch)(`${baseUrl}/account/machines`, {
       method: "GET",
@@ -229,15 +293,23 @@ export async function fetchAccountMachines(args: {
     const payload = await readBoundedJson(response);
     return { state: "ok", machines: parseAccountMachinesPayload(payload), message: null };
   } catch {
+    if (args.signal?.aborted) {
+      return {
+        state: "cancelled",
+        machines: [],
+        message: "Machine directory request was cancelled.",
+      };
+    }
     return {
       state: "unavailable",
       machines: [],
-      message: controller.signal.aborted
+      message: timedOut
         ? "Machine directory timed out."
         : "Couldn't reach the machine directory.",
     };
   } finally {
     clearTimeout(timer);
+    args.signal?.removeEventListener("abort", onAbort);
   }
 }
 

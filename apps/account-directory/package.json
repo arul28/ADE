@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
     "build": "wrangler deploy --dry-run --outdir dist",
+    "build:production": "wrangler deploy --dry-run --env production --outdir dist-production",
     "d1:migrate:local": "wrangler d1 migrations apply ade-account-directory --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-account-directory --remote",
+    "d1:migrate:production": "wrangler d1 migrations apply DB --remote --env production",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

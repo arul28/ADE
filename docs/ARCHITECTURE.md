@@ -45,7 +45,7 @@ flowchart TB
 
   IOS["ADE Mobile<br/>controller client"] <-->|"machine pairing + sync WebSocket<br/>catalog, changesets, commands"| Brain
 
-  DesktopRemote["Desktop window<br/>SSH-bound client"] <-->|"ade rpc --stdio"| RemoteRuntime["Remote runtime transport<br/>uploaded ade-* binary"]
+  DesktopRemote["Desktop / ADE Code<br/>paired or SSH client"] <-->|"paired RPC WebSocket<br/>or ade rpc --stdio"| RemoteRuntime["Remote ADE brain / runtime<br/>machine project registry"]
   RemoteRuntime --> RemoteProject["Remote project .ade state"]
 ```
 
@@ -75,8 +75,8 @@ flowchart TB
                 │   - `ade code` terminal Work client (Ink+React)│
                 └───────────────────────────────────────────────┘
                   ▲              ▲              ▲             ▲
-                  │ local        │ local        │ WebSocket   │ stdio over
-                  │ local RPC    │ local RPC    │             │ SSH
+                  │ local        │ local        │ WebSocket   │ paired WS
+                  │ local RPC    │ local RPC    │             │ or SSH stdio
                   │              │              │             │
         ┌──────────────────┐ ┌──────────────┐ ┌──────────┐ ┌──────────────────┐
         │ apps/desktop     │ │ ade code TUI │ │ apps/ios │ │ apps/desktop     │
@@ -98,7 +98,7 @@ flowchart TB
                                 └─────────────────────────┘
 ```
 
-Live runtime state is replicated between paired devices through cr-sqlite changesets carried over WebSocket; the **sync service runs inside the ADE brain**, not in the desktop app. ADE Mobile pairs with a machine — typically the user's primary desktop-class machine — and receives that machine's project catalog from the brain. The sync WebSocket is one brain-level listener on a stable port (default 8787, with preferred-port retry before any scan); when the hosted project switches, the new project's host service adopts the connected phones instead of dropping them. A second desktop on the same network is also a client of that brain, not a peer host. A desktop window can be re-pointed at a runtime on a remote machine over SSH; the binding is per-window, so the same Electron process can drive a local project in one window and an SSH-bound project in another. The remote path starts `ade rpc --stdio` on the remote and routes runtime actions through the same multi-project JSON-RPC surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
+Live runtime state is replicated between paired devices through cr-sqlite changesets carried over WebSocket; the **sync service runs inside the ADE brain**, not in the desktop app. ADE Mobile pairs with a machine — typically the user's primary desktop-class machine — and receives that machine's project catalog from the brain. The sync WebSocket is one brain-level listener on a stable port (default 8787, with preferred-port retry before any scan); when the hosted project switches, the new project's host service adopts the connected phones instead of dropping them. A second desktop on the same network is also a client of that brain, not a peer host. A desktop window or `ade code remote` can bind to a remote brain through the paired DPoP runtime channel (LAN → tailnet → relay) or, for an explicitly eligible target, through SSH `ade rpc --stdio`. The binding is per-window/client, and both transports route actions through the same multi-project JSON-RPC surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
 
 Source code crosses machines through plain git. ADE does not own a git server.
 
@@ -205,7 +205,7 @@ Build outputs (configured in `apps/desktop/tsup.config.ts`):
 Terminal-native **Work** chat client (Ink 7 + React 19) for agents and power users who live in a shell, built into `apps/ade-cli/src/tuiClient/`. Its UI dependencies live under `apps/ade-cli` and are intentionally independent of the desktop renderer's React stack. It is a peer of the desktop client, not a wrapper around it: it speaks the same multi-project JSON-RPC surface and binds to an ADE runtime the same way.
 
 - **Attached mode** (default): connects to `$ADE_HOME/sock/ade.sock`, or to an explicit endpoint passed on the parent `ade` invocation. Starts the brain if the endpoint is missing.
-- **Remote mode**: `ade code remote` reads saved desktop remote targets, picks a target/project/session, and uses the target's declared transport. Paired targets use the DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a validated route. Both expose a local one-connection socket through `remoteBridge.ts`, then run the normal TUI against that bridged endpoint. Account-created targets are paired-only: account authentication is accepted only for initial adoption over an exact allowlisted WSS relay, and later LAN/tailnet/relay connections use the stored paired secret plus pinned DPoP. Compatibility checks that only make sense for local processes (entrypoint build hash and project-root equality) are skipped.
+- **Remote mode**: `ade code remote` reads the desktop's saved remote-target registry, picks a target/project/session, and uses the target's declared transport. Paired targets use the DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a validated route. Both expose a local one-connection socket through `remoteBridge.ts`, then run the normal TUI against that bridged endpoint. Account-created targets are paired-only: account authentication is accepted only for initial adoption over an exact allowlisted WSS relay, and later LAN/tailnet/relay connections use the stored paired secret plus pinned DPoP. The launcher recognizes the exact legacy account-machine shape that older desktop builds saved as credentialless SSH, adopts it into the paired store, and fails closed if account verification or pairing is unavailable; an explicitly configured SSH user/key continues to mean SSH. For true SSH targets, the saved hostname remains the OpenSSH `Host` selector while `-o HostName=<route>` dials each concrete route, preserving alias-scoped credentials, agent/proxy settings, and strict host-key verification. Account resolution, paired dialing, and the SSH route × channel-home × binary probe matrix share one 45-second cancellable startup budget and return aggregated attempt diagnostics. Compatibility checks that only make sense for local processes (entrypoint build hash and project-root equality) are skipped.
 - **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a machine brain. Used when no brain endpoint or manual runtime endpoint is reachable.
 
 Shared DTOs and cross-client policies are imported from `apps/desktop/src/shared/*` (never the renderer barrel) so `npm run typecheck` in `apps/ade-cli` covers both typed commands and the TUI. This includes `externalSessionAffordances.ts`, which keeps ADE Code's provider-native Continue/Copy choices aligned with desktop while `externalSessionBrowser.ts` owns TUI-only navigation and the Open-existing action. Entry: `apps/ade-cli/src/tuiClient/cli.tsx` → `apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight dependencies and injects ESM shims for `__dirname` / `__filename`; both `apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators smoke-import it and run `runAdeCodeCli(["--help"])`. Provider/model/interface setup is kept in pure helpers (`modelState.ts`, `providerMetadata.ts`, `modelPickerController.ts`) so Chat-vs-CLI availability, Cursor SDK-vs-CLI model filtering, permission presets, Fast Mode, and setup rows stay testable outside the Ink root. Chat Info uses shared derivations for subagents, tasks, and scheduled work, so Claude wakeups/cron/background activity rendered in desktop also appears in ADE Code; `AgentChatSessionSummary.nextWakeAt` adds the runtime scheduler's earliest armed fire as an alarm countdown in the Schedule block. The TUI can hand off to a desktop window via the `app/navigate` JSON-RPC method when a desktop client is attached to the same runtime.
@@ -254,10 +254,11 @@ The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app
 
 ### 2.7 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
 
-Three independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
+Four independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
 
 - **`apps/push-relay/`** — fans ADE agent-state transitions out to iPhones as APNs alert pushes and Live Activity updates (Worker + a single D1 database; free-plan compatible, no Durable Objects). The brain is the only publisher: it claims an unguessable 32–64-hex `machineKey` with a relay secret (`POST /machines/:key/claim`, first-writer-wins) and HMAC-signs every later call (`x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`). It stores only device tokens and in-flight notification payloads — no chat/PR content. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
 - **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a phone and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket; a phone dials `/connect/:machineKey`; the DO pairs the phone with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the normal ADE hello / PIN / DPoP handshake is unchanged. Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`. The deployed relay is **on by default**; Settings > Sync and `ade sync relay disable` are explicit kill-switches whose choice survives upgrades. It is advertised as the lowest-priority `relay` address candidate.
+- **`apps/account-directory/`** — Clerk-authenticated machine directory and OAuth device-authorization bridge (Worker + D1). The machine brain publishes one health-filtered registration every 30 seconds through `accountMachinePublisherService.ts`; the Worker scopes rows by Clerk `sub` and treats a machine as online for 90 seconds. Desktop, ADE Code, hosted web, and iOS use the compiled HTTPS Worker origin by default. Headless login binds each short-lived device code to a daemon secret, uses Clerk OAuth + PKCE in any browser, and atomically burns the approved token pair on redemption.
 - **`apps/webhook-relay/`** — the pre-existing GitHub webhook relay (different trust model and lifecycle again). See its own docs.
 
 ---
@@ -1066,6 +1067,7 @@ ADE/
 │   ├── web/            # Marketing + download landing (Vite + React)
 │   ├── push-relay/     # Cloudflare Worker + D1: APNs push + Live Activity relay
 │   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
+│   ├── account-directory/ # Cloudflare Worker + D1: account machines + device login
 │   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
 ├── docs/
 │   ├── PRD.md
@@ -1100,23 +1102,23 @@ Per-app scripts:
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
-| `apps/push-relay`, `apps/tunnel-relay`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
+| `apps/push-relay`, `apps/tunnel-relay`, `apps/account-directory`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
 
 ### 14.2 CI (`.github/workflows/ci.yml`)
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` has its own lockfile and is not in the shared cache; its jobs `npm ci` inline.)
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
-   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay` — the three Cloudflare Workers.
+   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay`, `typecheck-account-directory` — the four Cloudflare Workers; account-directory also runs a Wrangler dry-run build.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
    - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
-   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay` — the three Cloudflare Workers.
+   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay`, `test-account-directory` — the four Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).

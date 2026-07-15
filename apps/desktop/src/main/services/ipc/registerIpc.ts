@@ -190,6 +190,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountMachinesResult,
+  AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -1797,6 +1798,7 @@ export function registerIpc({
     [IPC.transcriptionTranscribe]: new Set(["pcm"]),
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
+    [IPC.accountPairMachine]: new Set(["machineKey"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1931,6 +1933,15 @@ export function registerIpc({
                 : machine
             ))
           : record.machines,
+      };
+    }
+    if (channel === IPC.accountPairMachine) {
+      return {
+        ...record,
+        targetId: "[redacted]",
+        machineKey: "[redacted]",
+        deviceId: "[redacted]",
+        name: "[redacted]",
       };
     }
     return result;
@@ -8582,6 +8593,13 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  ipcMain.handle(
+    IPC.accountPairMachine,
+    async (_event, arg: { machineKey?: string }): Promise<AdeAccountMachinePairResult> => {
+      return await accountBridge.pairMachine(arg?.machineKey ?? "");
+    },
+  );
 
   const ensurePrMutationContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = getCtx();

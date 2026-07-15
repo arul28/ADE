@@ -30,6 +30,7 @@ import {
   openSyncEnvelopeConnection,
   waitForSyncEnvelope,
   type OpenSyncEnvelopeConnectionOptions,
+  type SyncEnvelopeConnection,
 } from "./syncRuntimeTransport";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
@@ -63,6 +64,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Sync connection cancelled.");
 }
 
 function coerceHostIdentity(value: unknown): SyncPairingHostIdentity | null {
@@ -376,6 +384,7 @@ export class DesktopPairedMachineStore {
     const connection = await openSyncEnvelopeConnection({
       endpoint,
       connectTimeoutMs: options.connectTimeoutMs,
+      signal: options.signal,
       createWebSocket: options.createWebSocket,
     });
     try {
@@ -385,6 +394,7 @@ export class DesktopPairedMachineStore {
         (envelope) => envelope.type === "pairing_result"
           && envelope.requestId === pairingRequestId,
         options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+        options.signal,
       );
       try {
         connection.send("pairing_request", {
@@ -452,6 +462,7 @@ export class DesktopPairedMachineStore {
         (envelope) => envelope.requestId === helloRequestId
           && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
         options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+        options.signal,
       );
       try {
         connection.send(
@@ -549,15 +560,20 @@ export class DesktopPairedMachineStore {
     };
     const failures: string[] = [];
     for (const endpoint of accountRelayEndpoints) {
-      const connection = await openSyncEnvelopeConnection({
-        endpoint,
-        connectTimeoutMs: options.connectTimeoutMs,
-        createWebSocket: options.createWebSocket,
-      }).catch((error) => {
+      throwIfAborted(options.signal);
+      let connection: SyncEnvelopeConnection;
+      try {
+        connection = await openSyncEnvelopeConnection({
+          endpoint,
+          connectTimeoutMs: options.connectTimeoutMs,
+          signal: options.signal,
+          createWebSocket: options.createWebSocket,
+        });
+      } catch (error) {
+        throwIfAborted(options.signal);
         failures.push(error instanceof Error ? error.message : String(error));
-        return null;
-      });
-      if (!connection) continue;
+        continue;
+      }
       try {
         const hello: SyncHelloPayload = {
           peer,
@@ -574,6 +590,7 @@ export class DesktopPairedMachineStore {
           (envelope) => envelope.requestId === requestId
             && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
           options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+          options.signal,
         );
         connection.send("hello", hello, requestId);
         const envelope = await response;
@@ -625,6 +642,7 @@ export class DesktopPairedMachineStore {
           updatedAt: nowIso(),
         });
       } catch (error) {
+        throwIfAborted(options.signal);
         failures.push(error instanceof Error ? error.message : String(error));
       } finally {
         connection.close(1000, "Account pairing finished.");

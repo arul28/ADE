@@ -27,20 +27,30 @@ npm run build
 
 `npm run build` is a Wrangler dry run and does not deploy.
 
-## Cloudflare setup (pending)
+## Cloudflare deployment
 
-Deployment is intentionally deferred. Before a first deploy:
+Development and production are isolated so development Clerk users and machine
+heartbeats never enter the production directory:
 
-1. Create the `ade-account-directory` D1 database and replace the local-only
-   `database_id` in `wrangler.jsonc` with its UUID.
+- Development: `https://ade-account-directory.arulsharma1028.workers.dev`
+- Production: `https://ade-account-directory-production.arulsharma1028.workers.dev`
+
+The `production` Wrangler environment binds a separate
+`ade-account-directory-production` D1 database. To reproduce or move either
+deployment:
+
+1. Create the matching D1 database and put its UUID in `wrangler.jsonc`.
 2. Set `CLERK_JWKS_URL`, `CLERK_ISSUER`, and
    `CLERK_OAUTH_CLIENT_ID=<your-clerk-oauth-client-id>` as Worker vars/secrets. Register
    `https://<worker-host>/device/callback` as an allowed redirect URI for the
    Clerk OAuth application. Set `WEB_CLIENT_ORIGIN` to the exact HTTPS origin
    of the hosted ADE web client; this is the only cross-origin caller allowed
    to send an account bearer to `GET /account/machines`.
-3. Apply both remote migrations and deploy the Worker.
-4. Set `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` for ADE brains that
-   should offer device login.
+3. Apply both remote migrations and deploy the Worker. Use
+   `npm run d1:migrate:production` and `npm run deploy:production` for the
+   production environment. Release builds use the production origin; local
+   development uses the development origin. Set the machine-level
+   `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
+   self-hosted override.
 
 `ONLINE_WINDOW_MS` defaults to 90 seconds and can be adjusted as a Worker var.

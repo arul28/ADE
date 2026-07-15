@@ -306,6 +306,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountMachinesResult,
+  AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -1978,6 +1979,7 @@ declare global {
         cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        pairMachine: (machineKey: string) => Promise<AdeAccountMachinePairResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

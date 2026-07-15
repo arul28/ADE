@@ -10,18 +10,23 @@ import {
   wsDataToText,
 } from "../sync/syncProtocol";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { openSyncRuntimeTransport } from "./syncRuntimeTransport";
+import { openSyncEnvelopeConnection, openSyncRuntimeTransport } from "./syncRuntimeTransport";
 
 class FakeWebSocket extends EventEmitter {
   readyState = 0;
   bufferedAmount = 0;
 
-  constructor(private readonly onSend: (text: string, ws: FakeWebSocket) => void) {
+  constructor(
+    private readonly onSend: (text: string, ws: FakeWebSocket) => void,
+    autoOpen = true,
+  ) {
     super();
-    queueMicrotask(() => {
-      this.readyState = 1;
-      this.emit("open");
-    });
+    if (autoOpen) {
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit("open");
+      });
+    }
   }
 
   send(data: string | Buffer): void {
@@ -70,6 +75,60 @@ function credentials(): DesktopPairedMachineCredentials {
 }
 
 describe("openSyncRuntimeTransport", () => {
+  it("does not construct a WebSocket for an already-cancelled attempt", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancel before connect"));
+    let constructed = false;
+
+    await expect(openSyncEnvelopeConnection({
+      endpoint: "ws://offline.test",
+      signal: controller.signal,
+      createWebSocket: () => {
+        constructed = true;
+        return new FakeWebSocket(() => {}) as unknown as WebSocket;
+      },
+    })).rejects.toThrow("cancel before connect");
+    expect(constructed).toBe(false);
+  });
+
+  it("cancels a paired WebSocket attempt that never opens", async () => {
+    const controller = new AbortController();
+    const socket = new FakeWebSocket(() => {}, false);
+    const opening = openSyncEnvelopeConnection({
+      endpoint: "ws://offline.test",
+      connectTimeoutMs: 30_000,
+      signal: controller.signal,
+      createWebSocket: () => socket as unknown as WebSocket,
+    });
+
+    controller.abort(new Error("cancel offline target"));
+
+    await expect(opening).rejects.toThrow("cancel offline target");
+    expect(socket.readyState).toBe(3);
+  });
+
+  it("cancels a paired authentication wait after the WebSocket opens", async () => {
+    const controller = new AbortController();
+    const socket = new FakeWebSocket(() => {});
+    const paired = credentials();
+    const startedAt = Date.now();
+    const opening = openSyncRuntimeTransport({
+      credentials: paired,
+      endpoint: "ws://auth-stall.test",
+      connectTimeoutMs: 30_000,
+      authTimeoutMs: 30_000,
+      signal: controller.signal,
+      createWebSocket: () => socket as unknown as WebSocket,
+    });
+
+    const timer = setTimeout(() => controller.abort(new Error("cancel stalled authentication")), 25);
+    await expect(opening).rejects.toThrow("cancel stalled authentication");
+    clearTimeout(timer);
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(socket.readyState).toBe(3);
+  });
+
   it("authenticates, opens RPC, and lets RuntimeRpcClient parse a response split across rpc_data frames", async () => {
     let observedHello: Record<string, unknown> | null = null;
     let observedChannelId: string | null = null;

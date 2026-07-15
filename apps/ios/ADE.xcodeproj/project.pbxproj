@@ -312,6 +312,7 @@
 		AC1000000000000000000008 /* ClipPairingHandoffTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ClipPairingHandoffTests.swift; path = ADETests/ClipPairingHandoffTests.swift; sourceTree = "<group>"; };
 		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
+		CC5000000000000000000002 /* ADE.Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.Release.entitlements; path = ADE/ADE.Release.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000020 /* WorkBrowserHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkBrowserHelpers.swift; path = ADE/Views/Work/WorkBrowserHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000022 /* WorkRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootScreen.swift; path = ADE/Views/Work/WorkRootScreen.swift; sourceTree = "<group>"; };
@@ -940,6 +941,7 @@
 				0379509A19E782882C2D84BB /* Views */,
 				8943C47805A871A4E4A4BF68 /* Assets.xcassets */,
 				CC5000000000000000000001 /* ADE.entitlements */,
+				CC5000000000000000000002 /* ADE.Release.entitlements */,
 			);
 			name = ADE;
 			sourceTree = "<group>";
@@ -1540,7 +1542,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
-				ADE_ACCOUNT_DIRECTORY_BASE_URL = "";
+				ADE_ACCOUNT_DIRECTORY_BASE_URL = "https://ade-account-directory.arulsharma1028.workers.dev";
 				CLERK_PUBLISHABLE_KEY = "pk_test_Y29oZXJlbnQtZm94aG91bmQtNjIuY2xlcmsuYWNjb3VudHMuZGV2JA";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
@@ -1621,11 +1623,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
-				ADE_ACCOUNT_DIRECTORY_BASE_URL = "";
-				CLERK_PUBLISHABLE_KEY = "pk_test_Y29oZXJlbnQtZm94aG91bmQtNjIuY2xlcmsuYWNjb3VudHMuZGV2JA";
+				ADE_ACCOUNT_DIRECTORY_BASE_URL = "https://ade-account-directory-production.arulsharma1028.workers.dev";
+				CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuYWRlLWFwcC5kZXYk";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ADE/ADE.Release.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VQ372F39G6;

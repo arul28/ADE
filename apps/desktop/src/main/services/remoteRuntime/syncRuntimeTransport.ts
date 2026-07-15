@@ -54,6 +54,7 @@ export type AuthenticatedSyncConnection = SyncEnvelopeConnection & {
 export type OpenSyncEnvelopeConnectionOptions = {
   endpoint: string;
   connectTimeoutMs?: number;
+  signal?: AbortSignal;
   createWebSocket?: (endpoint: string) => WebSocket;
 };
 
@@ -78,6 +79,12 @@ export type SyncRuntimeTransport = RuntimeRpcTransport & {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Sync connection cancelled.");
 }
 
 function normalizeTimeout(value: number | undefined, fallback: number): number {
@@ -235,12 +242,50 @@ export async function openSyncEnvelopeConnection(
 ): Promise<SyncEnvelopeConnection> {
   const endpoint = normalizeSyncEndpoint(options.endpoint);
   const timeoutMs = normalizeTimeout(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
+  if (options.signal?.aborted) throw abortError(options.signal);
   const ws = options.createWebSocket?.(endpoint) ?? new WebSocket(endpoint);
   const connection = createConnection(endpoint, ws);
 
+  if (options.signal?.aborted) {
+    connection.close(1000, "Sync connection cancelled.");
+    throw abortError(options.signal);
+  }
   if (ws.readyState === WebSocket.OPEN) return connection;
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    function cleanup(): void {
+      clearTimeout(timer);
+      ws.off("open", onOpen);
+      ws.off("error", onError);
+      ws.off("close", onClose);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
+    function onOpen(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }
+    function onError(error: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      connection.close(1000, "Sync connection failed.");
+      reject(new Error(`Failed to connect to sync endpoint: ${error.message}`));
+    }
+    function onClose(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Sync endpoint closed before the connection opened."));
+    }
+    function onAbort(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      connection.close(1000, "Sync connection cancelled.");
+      reject(options.signal ? abortError(options.signal) : new Error("Sync connection cancelled."));
+    }
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -249,34 +294,14 @@ export async function openSyncEnvelopeConnection(
       reject(new Error(`Timed out connecting to sync endpoint after ${timeoutMs}ms.`));
     }, timeoutMs);
     timer.unref?.();
-    const onOpen = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-    const onError = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      connection.close(1000, "Sync connection failed.");
-      reject(new Error(`Failed to connect to sync endpoint: ${error.message}`));
-    };
-    const onClose = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new Error("Sync endpoint closed before the connection opened."));
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      ws.off("open", onOpen);
-      ws.off("error", onError);
-      ws.off("close", onClose);
-    };
+    if (options.signal?.aborted) {
+      onAbort();
+      return;
+    }
     ws.once("open", onOpen);
     ws.once("error", onError);
     ws.once("close", onClose);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
   });
   return connection;
 }
@@ -350,10 +375,19 @@ export async function waitForSyncEnvelope(
   connection: SyncEnvelopeConnection,
   predicate: (envelope: ParsedSyncEnvelope) => boolean,
   timeoutMs = DEFAULT_AUTH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<ParsedSyncEnvelope> {
   const normalizedTimeout = normalizeTimeout(timeoutMs, DEFAULT_AUTH_TIMEOUT_MS);
   return await new Promise<ParsedSyncEnvelope>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Sync response wait cancelled."));
+      return;
+    }
     let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let removeEnvelope = () => {};
+    let removeError = () => {};
+    let removeClose = () => {};
     const finish = (action: () => void) => {
       if (settled) return;
       settled = true;
@@ -361,19 +395,24 @@ export async function waitForSyncEnvelope(
       removeEnvelope();
       removeError();
       removeClose();
+      signal?.removeEventListener("abort", onAbort);
       action();
     };
-    const timer = setTimeout(() => {
+    const onAbort = () => finish(() => reject(
+      signal?.reason instanceof Error ? signal.reason : new Error("Sync response wait cancelled."),
+    ));
+    timer = setTimeout(() => {
       finish(() => reject(new Error(`Timed out waiting for sync response after ${normalizedTimeout}ms.`)));
     }, normalizedTimeout);
     timer.unref?.();
-    const removeEnvelope = connection.onEnvelope((envelope) => {
+    removeEnvelope = connection.onEnvelope((envelope) => {
       if (predicate(envelope)) finish(() => resolve(envelope));
     });
-    const removeError = connection.onError((error) => finish(() => reject(error)));
-    const removeClose = connection.onClose(() => {
+    removeError = connection.onError((error) => finish(() => reject(error)));
+    removeClose = connection.onClose(() => {
       finish(() => reject(new Error("Sync connection closed before the expected response arrived.")));
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -398,6 +437,7 @@ export async function openPairedSyncConnection(
       (envelope) => envelope.requestId === requestId
         && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
       options.authTimeoutMs,
+      options.signal,
     );
     connection.send(
       "hello",

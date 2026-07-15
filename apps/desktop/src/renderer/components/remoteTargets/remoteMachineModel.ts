@@ -1,7 +1,6 @@
 import { extractError } from "../../lib/format";
 import type {
   AdeAccountMachine,
-  AdeAccountMachineEndpoint,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionRoute,
   RemoteRuntimeConnectionStatus,
@@ -12,6 +11,10 @@ import type {
   RemoteRuntimeTargetRouteSource,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
+import {
+  accountMachineConnectionState,
+  accountMachineEndpointHost,
+} from "../../../shared/accountDirectory";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
@@ -357,27 +360,6 @@ export type MachineSections = {
 };
 
 /**
- * The bare host/address for an account endpoint. Directory endpoints may carry
- * either a plain `host` or a full `url` (e.g. https://100.92.14.3:8787); the SSH
- * connect + dedupe paths need the hostname alone, never the whole URL string.
- */
-export function accountEndpointHost(
-  endpoint: AdeAccountMachineEndpoint,
-): string | null {
-  const host = endpoint.host?.trim();
-  if (host) return host.replace(/\.$/, "");
-  const raw = endpoint.url?.trim();
-  if (!raw) return null;
-  try {
-    // URL.hostname wraps IPv6 in brackets; strip them for a usable SSH host.
-    return new URL(raw).hostname.replace(/^\[|\]$/g, "") || null;
-  } catch {
-    // Not a URL — accept a bare host (no scheme/slash/space) as-is.
-    return /^[^/\s]+$/.test(raw) ? raw.replace(/\.$/, "") : null;
-  }
-}
-
-/**
  * Host identities advertised by an account machine's reachable endpoints, keyed
  * at the default SSH port. The advertised endpoint port is the ADE service port
  * (e.g. 8787), not an SSH port, so it is deliberately ignored when building the
@@ -390,53 +372,11 @@ export function accountMachineRouteIdentities(
 ): Set<string> {
   const identities = new Set<string>();
   for (const endpoint of machine.reachableEndpoints) {
-    const host = accountEndpointHost(endpoint);
+    const host = accountMachineEndpointHost(endpoint);
     const identity = routeIdentity(host, null);
     if (identity) identities.add(identity);
   }
   return identities;
-}
-
-/** True when an account machine advertises a directly-connectable (non-relay) endpoint. */
-export function accountMachineHasDirectRoute(machine: AdeAccountMachine): boolean {
-  return machine.reachableEndpoints.some(
-    (endpoint) => endpoint.kind !== "relay" && accountEndpointHost(endpoint) != null,
-  );
-}
-
-function endpointRank(kind: AdeAccountMachineEndpoint["kind"]): number {
-  return kind === "tailnet" ? 0 : kind === "lan" ? 1 : 2;
-}
-
-/**
- * SSH fallback routes for an account machine: every non-relay endpoint as a
- * host at the default SSH port (the advertised service port is not an SSH
- * port). Ranked tailnet-first then lan, deduped by host, so the saved target
- * keeps fallback candidates like a discovered machine does.
- */
-export function accountMachineSshRoutes(
-  machine: AdeAccountMachine,
-): RemoteRuntimeTargetRoute[] {
-  const ranked = [...machine.reachableEndpoints].sort(
-    (a, b) => endpointRank(a.kind) - endpointRank(b.kind),
-  );
-  const routes: RemoteRuntimeTargetRoute[] = [];
-  const seen = new Set<string>();
-  for (const endpoint of ranked) {
-    if (endpoint.kind === "relay") continue;
-    const host = accountEndpointHost(endpoint);
-    if (!host) continue;
-    const key = host.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    routes.push({
-      hostname: host,
-      port: null,
-      source: endpoint.kind === "tailnet" ? "tailscale" : "bonjour",
-      lastSucceededAt: null,
-    });
-  }
-  return routes;
 }
 
 function intersects(a: Set<string>, b: Set<string>): boolean {
@@ -593,9 +533,7 @@ export function assignMachineSections(args: {
       machine,
       matchedTargetId: null,
     };
-    // A relay-only online machine has no direct SSH route, so it must not sit in
-    // AVAILABLE as a dead (unconnectable) row.
-    if (machine.online && accountMachineHasDirectRoute(machine)) {
+    if (accountMachineConnectionState(machine) === "available") {
       sections.available.push(row);
     } else {
       sections.unavailable.push(row);
