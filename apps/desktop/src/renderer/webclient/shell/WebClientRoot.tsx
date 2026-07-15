@@ -229,12 +229,7 @@ export function WebClientRoot({
     if (connectingAccountMachineRef.current) return;
     connectingAccountMachineRef.current = machine.machineKey;
     setConnectingAccountMachineKey(machine.machineKey);
-    const paired = environments.find((environment) => environment.hostDeviceId === machine.deviceId);
     try {
-      if (paired) {
-        await connectTo(paired);
-        return;
-      }
       const accessToken = await accountClient.getAccessToken();
       await client.pairWithAccountMachine({
         machine,
@@ -255,7 +250,7 @@ export function WebClientRoot({
       connectingAccountMachineRef.current = null;
       setConnectingAccountMachineKey(null);
     }
-  }, [accountClient, afterConnect, client, connectTo, environments, refreshEnvironments]);
+  }, [accountClient, afterConnect, client, refreshEnvironments]);
 
   // ---- Boot sequence ------------------------------------------------------
   useEffect(() => {

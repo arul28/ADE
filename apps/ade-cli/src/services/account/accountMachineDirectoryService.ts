@@ -48,7 +48,8 @@ export class AccountMachineDirectoryService {
   ) {}
 
   async listMachines(): Promise<AdeAccountMachinesResult> {
-    if (!this.account.getStatus().signedIn) {
+    const status = this.account.getStatus();
+    if (!status.signedIn && status.source !== "env-token") {
       return { state: "signed_out", machines: [], message: null };
     }
     let token: string;

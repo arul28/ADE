@@ -42,6 +42,30 @@ describe("AccountMachineDirectoryService", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("refreshes a provisioned account token before listing machines", async () => {
+    const getAccessToken = vi.fn(async () => "refreshed-account-token");
+    const fetchImpl = directoryFetch([machine()]);
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+        source: "env-token",
+      }),
+      getAccessToken,
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    await expect(service.listMachines()).resolves.toMatchObject({
+      state: "ok",
+      machines: [{ machineKey: "mk-studio" }],
+    });
+    expect(getAccessToken).toHaveBeenCalledOnce();
+    expect(new Headers((fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.headers)
+      .get("authorization")).toBe("Bearer refreshed-account-token");
+  });
+
   it("keeps offline machines visible but rejects connecting to them", async () => {
     const offline = machine({ online: false, lastSeenAt: 1 });
     const service = new AccountMachineDirectoryService({

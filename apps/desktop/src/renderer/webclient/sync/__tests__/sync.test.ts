@@ -454,6 +454,14 @@ describe("browser sync connection and client", () => {
 
   it("refreshes DPoP per account relay and reconnects with the paired secret on current endpoints", async () => {
     const storage = new MemoryStorage();
+    await makeEnvironment(storage, {
+      secret: "stored-paired-secret",
+      relayUrl: "wss://stale-relay.example/connect/machine-key",
+      machineKeyUrl: "wss://stale-relay.example/connect/machine-key",
+      lastGoodEndpoint: "wss://stale-relay.example/connect/machine-key",
+      explicitWssEndpoints: ["wss://stale-relay.example/connect/machine-key"],
+      addressCandidates: [{ host: "10.0.0.1", kind: "lan" }],
+    });
     const accountToken = "account-access-token-never-persisted";
     const accountDpopNonces: string[] = [];
     const accountMachine: AdeAccountMachine = {
@@ -481,7 +489,7 @@ describe("browser sync connection and client", () => {
       };
       if (payload.auth.kind === "paired") {
         expect(payload.auth).toMatchObject({
-          secret: "returned-paired-secret",
+          secret: "stored-paired-secret",
           dpop: expect.any(Object),
         });
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
@@ -504,13 +512,7 @@ describe("browser sync connection and client", () => {
       socket.serverSend({
         type: "hello_ok",
         requestId: envelope.requestId,
-        payload: {
-          ...helloOk(),
-          accountPairing: {
-            deviceId: payload.peer.deviceId,
-            secret: "returned-paired-secret",
-          },
-        },
+        payload: helloOk(),
       });
     });
     const accountClient = new AdeSyncClient({
@@ -532,7 +534,8 @@ describe("browser sync connection and client", () => {
     ]);
     expect(accountDpopNonces).toHaveLength(2);
     expect(new Set(accountDpopNonces).size).toBe(2);
-    expect(environment.secret).toBe("returned-paired-secret");
+    expect(environment.secret).toBe("stored-paired-secret");
+    expect(environment.explicitWssEndpoints).not.toContain("wss://stale-relay.example/connect/machine-key");
     expect(environment.explicitWssEndpoints).not.toContain("wss://arbitrary-origin.example/sync");
     expect(environment.addressCandidates).toContainEqual({ host: "192.168.1.10", kind: "lan" });
     expect(environment.addressCandidates).not.toContainEqual(expect.objectContaining({ host: "attacker.example" }));
@@ -552,7 +555,7 @@ describe("browser sync connection and client", () => {
     expect(accountScript.sockets[2]?.sent[0]?.payload).toMatchObject({
       auth: {
         kind: "paired",
-        secret: "returned-paired-secret",
+        secret: "stored-paired-secret",
         dpop: expect.any(Object),
       },
     });
