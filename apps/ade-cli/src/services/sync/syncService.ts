@@ -75,12 +75,20 @@ import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import type { AccountAuthService } from "../account/accountAuthService";
+import {
+  getSharedAccountAttestationConfig,
+  getSharedAccountAuthService,
+  type AccountAttestationConfig,
+} from "../account/sharedAccountAuthService";
 
 type SyncServiceArgs = {
   db: AdeDb;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
+  accountAuthService?: Pick<AccountAuthService, "getStatus">;
+  getAccountAttestationConfig?: () => AccountAttestationConfig;
   projectId?: string | null;
   runtimeProjectId?: string | null;
   projectRoot: string;
@@ -711,6 +719,12 @@ export function createSyncService(args: SyncServiceArgs) {
       dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       pinStore,
+      accountAuthService: args.accountAuthService ?? getSharedAccountAuthService({
+        projectRoots: () => [args.projectRoot],
+        logger: args.logger,
+      }),
+      getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
+        getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
       runtimeNameStore,
       bootstrapTokenPath: tokenPath,
       pairingSecretsPath,

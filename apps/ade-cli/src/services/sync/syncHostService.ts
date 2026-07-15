@@ -84,6 +84,9 @@ import type {
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import type { AccountAuthService } from "../account/accountAuthService";
+import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
+import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -195,12 +198,18 @@ export function isRuntimeHostPairingRecord(
   return record?.runtimeHostGranted === true;
 }
 
+type SyncHostAuthKind = "bootstrap" | "paired" | "account" | null;
+
+function isRecordBackedSyncAuthKind(kind: SyncHostAuthKind): kind is "paired" | "account" {
+  return kind === "paired" || kind === "account";
+}
+
 export function isRuntimeOnlySyncPeer(args: {
-  authKind: "bootstrap" | "paired" | null;
+  authKind: SyncHostAuthKind;
   pairingRecord: SyncPairingRecord | null;
   metadata: SyncPeerMetadata | null;
 }): boolean {
-  return args.authKind === "paired"
+  return isRecordBackedSyncAuthKind(args.authKind)
     && isRuntimeHostPairingRecord(args.pairingRecord)
     && Array.isArray(args.metadata?.capabilities)
     && args.metadata.capabilities.includes(SYNC_RUNTIME_ONLY_CAPABILITY);
@@ -398,7 +407,7 @@ type PeerState = {
   metadata: SyncPeerMetadata | null;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
-  authKind: "bootstrap" | "paired" | null;
+  authKind: SyncHostAuthKind;
   pairedDeviceId: string | null;
   pairingRecord: SyncPairingRecord | null;
   connectedAt: string;
@@ -657,6 +666,8 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
+  accountAuthService?: Pick<AccountAuthService, "getStatus">;
+  getAccountAttestationConfig?: () => AccountAttestationConfig;
   runtimeNameStore?: SyncRuntimeNameStore;
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
@@ -1034,6 +1045,13 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     if (!toOptionalString(normalizedAuth.token)) return null;
   } else if (normalizedAuth.kind === "paired") {
     if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.secret)) return null;
+  } else if (normalizedAuth.kind === "account") {
+    if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.accountToken)) return null;
+    if (
+      normalizedAuth.dpop != null
+      && (typeof normalizedAuth.dpop !== "object" || Array.isArray(normalizedAuth.dpop))
+    ) return null;
+    if (normalizedAuth.runtimeHostGrant != null && !toOptionalString(normalizedAuth.runtimeHostGrant)) return null;
   } else {
     return null;
   }
@@ -2272,10 +2290,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws.removeAllListeners("error");
       const peer = registerPeer(ws, sanitizeRemoteAddress(snapshot.remoteAddress), snapshot.remotePort);
       if (snapshot.metadata && snapshot.authKind) {
-        const pairingRecord = snapshot.authKind === "paired" && snapshot.pairedDeviceId
+        const pairingRecord = isRecordBackedSyncAuthKind(snapshot.authKind) && snapshot.pairedDeviceId
           ? pairingStore.getPairingRecord(snapshot.pairedDeviceId)
           : null;
-        if (snapshot.authKind === "paired" && !pairingRecord) {
+        if (isRecordBackedSyncAuthKind(snapshot.authKind) && !pairingRecord) {
           // Pairing is not valid for this host (revoked or different secrets
           // store) — fail closed and force a fresh authenticated reconnect.
           clearPeerAuthTimeout(peer);
@@ -3952,7 +3970,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function isMobilePeer(peer: PeerState): boolean {
-    if (peer.authKind === "paired") {
+    if (isRecordBackedSyncAuthKind(peer.authKind)) {
       return isMobilePairingRecord(peer.pairingRecord);
     }
     return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
@@ -4533,7 +4551,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Return semantics: `true` means authentication FAILED -> the caller below
       // sends a `hello_error` (auth_failed) and closes the socket (4003).
       // `false` means the device is authenticated.
-      const authFailed = (() => {
+      const authFailed = await (async () => {
         if (hello.auth?.kind === "bootstrap") {
           // The bootstrap token is a shared, plaintext, never-rotating secret.
           // Once the sync host is bound to the LAN (the new 0.0.0.0 default),
@@ -4602,6 +4620,61 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           return false;
         }
+        if (hello.auth?.kind === "account") {
+          const accountAuth = hello.auth;
+          if (accountAuth.deviceId !== hello.peer.deviceId) return true;
+          try {
+            const ownerStatus = args.accountAuthService?.getStatus();
+            const ownerUserId = ownerStatus?.signedIn ? ownerStatus.userId?.trim() || null : null;
+            if (!ownerUserId) {
+              args.logger.warn("sync_host.account_owner_missing", {
+                deviceId: accountAuth.deviceId,
+              });
+              return true;
+            }
+            const config = args.getAccountAttestationConfig?.();
+            if (!config) return true;
+            const attestation = await verifyClerkAccountAttestation({
+              token: accountAuth.accountToken,
+              expectedUserId: ownerUserId,
+              config,
+            });
+            const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
+            // A known device is pinned to its existing key; only a genuinely new
+            // device id may TOFU-adopt the inline key. The account token is the
+            // challenge secret, binding that verified token to the device key.
+            const dpopFailure = evaluatePairedHelloDpop({
+              storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
+              deviceId: accountAuth.deviceId,
+              secret: accountAuth.accountToken,
+              proof: accountAuth.dpop ?? null,
+              requireDpop: true,
+              nonceCache: dpopNonceCache,
+            });
+            if (dpopFailure) {
+              args.logger.warn("sync_host.account_dpop_rejected", {
+                deviceId: accountAuth.deviceId,
+                reason: dpopFailure,
+              });
+              return true;
+            }
+            const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
+              dpopPublicKey: existingPairingRecord ? null : accountAuth.dpop?.publicKey ?? null,
+              runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+            });
+            if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+            authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
+            return authenticatedPairingRecord == null;
+          } catch (error) {
+            args.logger.warn("sync_host.account_auth_rejected", {
+              deviceId: accountAuth.deviceId,
+              reason: typeof (error as { code?: unknown } | null)?.code === "string"
+                ? (error as { code: string }).code
+                : "verification_failed",
+            });
+            return true;
+          }
+        }
         return true;
       })();
       if (authFailed) {
@@ -4632,8 +4705,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
       peer.authKind = auth.kind;
-      peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
-      peer.pairingRecord = auth.kind === "paired" ? authenticatedPairingRecord : null;
+      const recordBackedAuth = auth.kind === "paired" || auth.kind === "account";
+      peer.pairedDeviceId = recordBackedAuth ? auth.deviceId : null;
+      peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
       // Prefer the client's cursor for THIS project DB. The legacy single
       // dbVersion is only meaningful when the client last synced this same
       // DB; after a hosted-project change it points into a different DB's
@@ -4677,7 +4751,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
         runtimeChannelEnabled:
-          auth.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
+          isRecordBackedSyncAuthKind(auth.kind) && isRuntimeHostPairingRecord(authenticatedPairingRecord),
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
@@ -4690,11 +4764,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.ws,
         envelope.type,
         envelope.payload,
-        peer.authKind === "paired",
+        isRecordBackedSyncAuthKind(peer.authKind),
         // Gate the runtime RPC channel + port-forward to desktop runtime-host
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
-        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
+        isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
       return;
     }
@@ -5334,7 +5408,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pairingStore.revoke(deviceId);
       let revokedConnectedPeer = false;
       for (const peer of peers) {
-        if (!peer.authenticated || peer.authKind !== "paired" || peer.pairedDeviceId !== deviceId) continue;
+        if (
+          !peer.authenticated
+          || !isRecordBackedSyncAuthKind(peer.authKind)
+          || peer.pairedDeviceId !== deviceId
+        ) continue;
         revokedConnectedPeer = true;
         const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? deviceId;
         const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");

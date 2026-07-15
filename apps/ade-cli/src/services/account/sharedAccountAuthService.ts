@@ -8,6 +8,12 @@ import {
   type AccountOAuthConfig,
 } from "./accountAuthService";
 
+export type AccountAttestationConfig = {
+  issuer: string;
+  jwksUrl: string;
+  oauthClientId: string;
+};
+
 const sharedServices = new Map<string, AccountAuthService>();
 const configProjectRoots = new Map<string, Set<string>>();
 
@@ -77,6 +83,48 @@ function resolveOAuthConfig(args: {
     issuer: args.env.CLERK_ISSUER?.trim() || "",
     clientId: args.env.CLERK_OAUTH_CLIENT_ID?.trim() || "",
   };
+}
+
+function resolveAttestationConfig(args: {
+  env: NodeJS.ProcessEnv;
+  projectRoots: Iterable<string>;
+}): AccountAttestationConfig {
+  // Keep all Clerk verification settings on the same atomic-resolution path as
+  // account login. The first project that defines any CLERK_* value wins, with
+  // only missing values filled from the daemon environment; values from two
+  // different projects are never combined.
+  for (const projectRoot of args.projectRoots) {
+    const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER");
+    const jwksUrl = readProjectSecret(projectRoot, "CLERK_JWKS_URL");
+    const oauthClientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
+    if (issuer || jwksUrl || oauthClientId) {
+      return {
+        issuer: issuer ?? args.env.CLERK_ISSUER?.trim() ?? "",
+        jwksUrl: jwksUrl ?? args.env.CLERK_JWKS_URL?.trim() ?? "",
+        oauthClientId: oauthClientId ?? args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
+      };
+    }
+  }
+  return {
+    issuer: args.env.CLERK_ISSUER?.trim() || "",
+    jwksUrl: args.env.CLERK_JWKS_URL?.trim() || "",
+    oauthClientId: args.env.CLERK_OAUTH_CLIENT_ID?.trim() || "",
+  };
+}
+
+export function getSharedAccountAttestationConfig(args: {
+  secretsDir?: string;
+  projectRoots?: () => Iterable<string>;
+  env?: NodeJS.ProcessEnv;
+} = {}): AccountAttestationConfig {
+  const secretsDir = path.resolve(args.secretsDir ?? resolveMachineAdeLayout().secretsDir);
+  for (const projectRoot of args.projectRoots?.() ?? []) {
+    registerAccountConfigProjectRoot(projectRoot, secretsDir);
+  }
+  return resolveAttestationConfig({
+    env: args.env ?? process.env,
+    projectRoots: rootsFor(secretsDir),
+  });
 }
 
 export function getSharedAccountAuthService(args: {

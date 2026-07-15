@@ -499,7 +499,15 @@ export type SyncDpopProof = {
 
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
-  | { kind: "paired"; deviceId: string; secret: string; dpop?: SyncDpopProof | null };
+  | { kind: "paired"; deviceId: string; secret: string; dpop?: SyncDpopProof | null }
+  | {
+      kind: "account";
+      deviceId: string;
+      accountToken: string;
+      dpop?: SyncDpopProof | null;
+      /** Existing one-time desktop runtime authorization; account auth does not replace it. */
+      runtimeHostGrant?: string | null;
+    };
 
 export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;

@@ -61,7 +61,7 @@ export type SyncPeerHandoffSnapshot = {
   remoteAddress: string | null;
   remotePort: number | null;
   metadata: SyncPeerMetadata | null;
-  authKind: "bootstrap" | "paired" | null;
+  authKind: "bootstrap" | "paired" | "account" | null;
   pairedDeviceId: string | null;
   connectedAt: string;
   /**

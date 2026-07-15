@@ -923,7 +923,11 @@ export function createBrainProjectActionsSyncHandler(
               }
               return false;
             }
-            if (!auth || !safeStringEquals(bootstrapToken, auth.token)) return true;
+            // Account hellos are authenticated only by the project sync host,
+            // which owns the account session/config dependencies. The fallback
+            // brain handler must reject them rather than treating them as a
+            // bootstrap-shaped hello.
+            if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             // DPoP-upgraded devices must not enter through the shared
             // bootstrap token — that would bypass the enclave key binding.
             if (pairingStore.getPairingRecord(hello.peer.deviceId)?.dpopPublicKey) return true;
@@ -958,7 +962,9 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
-          peer.authKind = auth?.kind ?? null;
+          peer.authKind = auth?.kind === "bootstrap" || auth?.kind === "paired"
+            ? auth.kind
+            : null;
           clearAuthTimeout();
           peer.metadata = hello.peer;
           peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;

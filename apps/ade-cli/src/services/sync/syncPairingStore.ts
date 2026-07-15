@@ -3,6 +3,10 @@ import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { nowIso, safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import {
+  isVerifiedAccountAttestation,
+  type VerifiedAccountAttestation,
+} from "../account/accountAttestationVerifier";
 import type { SyncPinStore } from "./syncPinStore";
 
 export type SyncPairingRecord = {
@@ -27,6 +31,11 @@ type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
 type SyncPairingStoreArgs = {
   filePath: string;
   pinStore: SyncPinStore;
+};
+
+type NewPairingRecordOptions = {
+  dpopPublicKey?: string | null;
+  runtimeHostGrant?: string | null;
 };
 
 function hashSecret(secret: string): string {
@@ -57,7 +66,7 @@ function safeHashEquals(expectedHash: string, actualHash: string): boolean {
   return timingSafeEqual(expected, actual);
 }
 
-function pairingError(code: "pin_not_set" | "invalid_pin", message: string): Error {
+function pairingError(code: "pin_not_set" | "invalid_pin" | "account_not_verified", message: string): Error {
   const err = new Error(message) as Error & { code?: string };
   err.code = code;
   return err;
@@ -115,6 +124,40 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     return granted;
   };
 
+  const writeNewPairingRecord = (
+    peer: SyncPeerMetadata,
+    options?: NewPairingRecordOptions,
+  ): { deviceId: string; secret: string } => {
+    // The server grant is necessary but not sufficient: pairing/account links
+    // can be used by phone/browser/custom clients, which must never become full
+    // runtime hosts. Consume every presented grant to preserve its one-time
+    // semantics, then authorize only a peer that connected as a desktop.
+    const consumedRuntimeHostGrant = consumeRuntimeHostGrant(options?.runtimeHostGrant);
+    const runtimeHostGranted = consumedRuntimeHostGrant && peer.deviceType === "desktop";
+    const secret = randomBytes(24).toString("hex");
+    const records = readRecords();
+    const existing = records[peer.deviceId] ?? null;
+    const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
+    const dpopPublicKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey) ? offeredDpopKey : null;
+    records[peer.deviceId] = {
+      secretHash: hashSecret(secret),
+      createdAt: existing?.createdAt ?? nowIso(),
+      lastUsedAt: null,
+      peerName: peer.deviceName,
+      peerPlatform: peer.platform,
+      peerDeviceType: peer.deviceType,
+      runtimeHostGranted,
+      // A gated re-pair may introduce or rotate the key when its caller allows
+      // that. Omitting a key preserves the existing binding without downgrade.
+      dpopPublicKey: dpopPublicKey ?? existing?.dpopPublicKey ?? null,
+    };
+    writeRecords(records);
+    return {
+      deviceId: peer.deviceId,
+      secret,
+    };
+  };
+
   return {
     issueRuntimeHostGrant(ttlMs = 10 * 60_000): string {
       const token = randomBytes(32).toString("base64url");
@@ -130,44 +173,25 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       return token;
     },
 
-    pairPeer(peer: SyncPeerMetadata, pin: string, options?: {
-      dpopPublicKey?: string | null;
-      runtimeHostGrant?: string | null;
-    }): { deviceId: string; secret: string } {
+    pairPeer(peer: SyncPeerMetadata, pin: string, options?: NewPairingRecordOptions): { deviceId: string; secret: string } {
       if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
       if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
-      // The server grant is necessary but not sufficient: pairing links can be
-      // copied into phone/browser/custom clients, which must never become full
-      // runtime hosts. Consume every presented grant to preserve its one-time
-      // semantics, then authorize only a peer that paired as a desktop.
-      const consumedRuntimeHostGrant = consumeRuntimeHostGrant(options?.runtimeHostGrant);
-      const runtimeHostGranted = consumedRuntimeHostGrant && peer.deviceType === "desktop";
-      const secret = randomBytes(24).toString("hex");
-      const records = readRecords();
-      const existing = records[peer.deviceId] ?? null;
-      const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
-      const dpopPublicKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey) ? offeredDpopKey : null;
-      records[peer.deviceId] = {
-        secretHash: hashSecret(secret),
-        createdAt: existing?.createdAt ?? nowIso(),
-        lastUsedAt: null,
-        peerName: peer.deviceName,
-        peerPlatform: peer.platform,
-        peerDeviceType: peer.deviceType,
-        runtimeHostGranted,
-        // Re-pairing (PIN gated) may rotate or introduce the device key; a
-        // re-pair without a key keeps the existing one rather than downgrading.
-        dpopPublicKey: dpopPublicKey ?? existing?.dpopPublicKey ?? null,
-      };
-      writeRecords(records);
-      return {
-        deviceId: peer.deviceId,
-        secret,
-      };
+      return writeNewPairingRecord(peer, options);
+    },
+
+    pairPeerViaAccount(
+      peer: SyncPeerMetadata,
+      attestation: VerifiedAccountAttestation,
+      options?: NewPairingRecordOptions,
+    ): { deviceId: string; secret: string } {
+      if (!isVerifiedAccountAttestation(attestation)) {
+        throw pairingError("account_not_verified", "Account attestation was not verified.");
+      }
+      return writeNewPairingRecord(peer, options);
     },
 
     /**
