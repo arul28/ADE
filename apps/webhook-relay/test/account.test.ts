@@ -15,6 +15,7 @@ type RepositoryRow = {
   last_seen_at: string;
   removed_at: string | null;
   account_id: string | null;
+  unlinked_account_id: string | null;
 };
 
 type GitHubEventRow = {
@@ -35,6 +36,7 @@ type LinearOrganizationRow = {
   registered_at: string;
   updated_at: string;
   account_id: string | null;
+  unlinked_account_id: string | null;
 };
 
 type LinearEventRow = {
@@ -103,6 +105,28 @@ class FakeAccountD1 {
       const row = this.linearOrganizations.find((entry) => entry.org_id === values[0]);
       return row ? ({ account_id: row.account_id } as T) : null;
     }
+    if (sql.includes("from github_events")) {
+      const repositoryFullName = String(values[0]).toLowerCase();
+      const accountId = sql.includes("account_id = ?") ? String(values[1]) : null;
+      const eventId = String(values.at(-1));
+      const row = this.githubEvents.find((entry) => (
+        entry.repository_full_name.toLowerCase() === repositoryFullName
+        && entry.event_id === eventId
+        && (accountId == null || entry.account_id === accountId)
+      ));
+      return row ? ({ event_seq: row.event_seq, event_id: row.event_id } as T) : null;
+    }
+    if (sql.includes("from linear_events")) {
+      const organizationId = String(values[0]);
+      const accountId = sql.includes("account_id = ?") ? String(values[1]) : null;
+      const eventId = String(values.at(-1));
+      const row = this.linearEvents.find((entry) => (
+        entry.org_id === organizationId
+        && entry.event_id === eventId
+        && (accountId == null || entry.account_id === accountId)
+      ));
+      return row ? ({ event_seq: row.event_seq, event_id: row.event_id } as T) : null;
+    }
     return null;
   }
 
@@ -115,9 +139,13 @@ class FakeAccountD1 {
     }
     if (sql.includes("from github_events")) {
       const repositoryFullName = String(values[0]).toLowerCase();
+      const accountId = sql.includes("account_id = ?") ? String(values[1]) : null;
       const limit = Number(values.at(-1));
       return this.githubEvents
-        .filter((row) => row.repository_full_name.toLowerCase() === repositoryFullName)
+        .filter((row) => (
+          row.repository_full_name.toLowerCase() === repositoryFullName
+          && (accountId == null || row.account_id === accountId)
+        ))
         .sort((left, right) => right.event_seq - left.event_seq)
         .slice(0, limit) as T[];
     }
@@ -127,9 +155,10 @@ class FakeAccountD1 {
     }
     if (sql.includes("from linear_events")) {
       const organizationId = String(values[0]);
+      const accountId = sql.includes("account_id = ?") ? String(values[1]) : null;
       const limit = Number(values.at(-1));
       return this.linearEvents
-        .filter((row) => row.org_id === organizationId)
+        .filter((row) => row.org_id === organizationId && (accountId == null || row.account_id === accountId))
         .sort((left, right) => right.event_seq - left.event_seq)
         .slice(0, limit) as T[];
     }
@@ -143,7 +172,14 @@ class FakeAccountD1 {
       if (existing) {
         existing.webhook_secret = String(secret);
         existing.updated_at = String(updatedAt);
-        if (existing.account_id == null && accountId != null) existing.account_id = String(accountId);
+        if (
+          existing.account_id == null
+          && accountId != null
+          && existing.unlinked_account_id !== String(accountId)
+        ) {
+          existing.account_id = String(accountId);
+          existing.unlinked_account_id = null;
+        }
       } else {
         this.linearOrganizations.push({
           org_id: String(organizationId),
@@ -151,6 +187,7 @@ class FakeAccountD1 {
           registered_at: String(registeredAt),
           updated_at: String(updatedAt),
           account_id: accountId == null ? null : String(accountId),
+          unlinked_account_id: null,
         });
       }
       return;
@@ -158,7 +195,10 @@ class FakeAccountD1 {
     if (sql.includes("update github_app_repositories set account_id = ?")) {
       const [accountId, repositoryKey] = values;
       const row = this.repositories.find((entry) => entry.repository_key === repositoryKey);
-      if (row && row.account_id == null) row.account_id = String(accountId);
+      if (row && row.account_id == null && row.unlinked_account_id !== String(accountId)) {
+        row.account_id = String(accountId);
+        row.unlinked_account_id = null;
+      }
       return;
     }
     if (sql.includes("update github_events") && sql.includes("set account_id = ?")) {
@@ -178,6 +218,17 @@ class FakeAccountD1 {
       if (organization?.account_id !== mappedAccountId) return;
       for (const row of this.linearEvents) {
         if (row.account_id == null && row.org_id === organizationId) row.account_id = String(accountId);
+      }
+      return;
+    }
+    if (sql.includes("set unlinked_account_id = account_id, account_id = null")) {
+      const accountId = String(values[0]);
+      const rows = sql.includes("github_app_repositories") ? this.repositories : this.linearOrganizations;
+      for (const row of rows) {
+        if (row.account_id === accountId) {
+          row.unlinked_account_id = accountId;
+          row.account_id = null;
+        }
       }
       return;
     }
@@ -270,6 +321,7 @@ function seedRepository(db: FakeAccountD1, accountId: string | null): void {
     last_seen_at: "2026-07-15T00:00:00.000Z",
     removed_at: null,
     account_id: accountId,
+    unlinked_account_id: null,
   });
   db.githubEvents.push({
     event_seq: 1,
@@ -291,6 +343,7 @@ function seedLinear(db: FakeAccountD1, accountId: string | null): void {
     registered_at: "2026-07-15T00:00:00.000Z",
     updated_at: "2026-07-15T00:00:00.000Z",
     account_id: accountId,
+    unlinked_account_id: null,
   });
   db.linearEvents.push({
     event_seq: 1,
@@ -432,6 +485,19 @@ describe("account integration re-keying", () => {
     expect(env.DB.githubEvents[0]?.account_id).toBe("user_1");
     expect(env.DB.linearOrganizations[0]?.account_id).toBe("user_1");
     expect(env.DB.linearEvents[0]?.account_id).toBe("user_1");
+    env.DB.githubEvents.push({
+      ...env.DB.githubEvents[0]!,
+      event_seq: 2,
+      event_id: "github-delivery-other-account",
+      github_delivery: "github-delivery-other-account",
+      account_id: "user_2",
+    });
+    env.DB.linearEvents.push({
+      ...env.DB.linearEvents[0]!,
+      event_seq: 2,
+      event_id: "linear-delivery-other-account",
+      account_id: "user_2",
+    });
 
     const accountStatus = await handleRequest(request("/github/repos/acme/repo/status", { accountToken }), env);
     const accountGitHub = await handleRequest(request("/github/repos/acme/repo/events", { accountToken }), env);
@@ -447,6 +513,14 @@ describe("account integration re-keying", () => {
     expect(legacyGitHub.status).toBe(200);
     expect(accountLinear.status).toBe(200);
     expect(legacyLinear.status).toBe(200);
+    expect((await accountGitHub.json() as { events: Array<{ eventId: string }> }).events.map((event) => event.eventId))
+      .toEqual(["github-delivery-1"]);
+    expect((await legacyGitHub.json() as { events: Array<{ eventId: string }> }).events.map((event) => event.eventId))
+      .toEqual(["github-delivery-other-account", "github-delivery-1"]);
+    expect((await accountLinear.json() as { events: Array<{ eventId: string }> }).events.map((event) => event.eventId))
+      .toEqual(["linear-delivery-1"]);
+    expect((await legacyLinear.json() as { events: Array<{ eventId: string }> }).events.map((event) => event.eventId))
+      .toEqual(["linear-delivery-other-account", "linear-delivery-1"]);
 
     const otherGitHub = await handleRequest(request("/github/repos/acme/repo/events", {
       accountToken: otherAccountToken,
@@ -485,6 +559,25 @@ describe("account integration re-keying", () => {
     expect(env.DB.githubEvents[0]?.account_id).toBeNull();
     expect(env.DB.linearOrganizations[0]?.account_id).toBeNull();
     expect(env.DB.linearEvents[0]?.account_id).toBeNull();
+    expect(env.DB.repositories[0]?.unlinked_account_id).toBe("user_1");
+    expect(env.DB.linearOrganizations[0]?.unlinked_account_id).toBe("user_1");
+
+    const legacyStatusAfterRevoke = await handleRequest(request("/github/repos/acme/repo/status", {
+      authorization: "Bearer ghp_repo_token",
+      accountToken,
+    }), env);
+    const legacyRegistrationAfterRevoke = await handleRequest(request("/linear/orgs/register", {
+      method: "POST",
+      authorization: "lin_admin",
+      accountToken,
+      body: { secret: "linear-secret-after-revoke" },
+    }), env);
+    expect(legacyStatusAfterRevoke.status).toBe(200);
+    expect(legacyRegistrationAfterRevoke.status).toBe(200);
+    expect(env.DB.repositories[0]?.account_id).toBeNull();
+    expect(env.DB.githubEvents[0]?.account_id).toBeNull();
+    expect(env.DB.linearOrganizations[0]?.account_id).toBeNull();
+    expect(env.DB.linearEvents[0]?.account_id).toBeNull();
 
     const revokedGitHub = await handleRequest(request("/github/repos/acme/repo/events", { accountToken }), env);
     const revokedLinear = await handleRequest(request("/linear/orgs/org-1/events", { accountToken }), env);
@@ -496,6 +589,9 @@ describe("account integration re-keying", () => {
     expect((await handleRequest(request("/linear/orgs/org-1/events", {
       authorization: "lin_admin",
     }), env)).status).toBe(200);
+    expect(await (await handleRequest(request("/account/integrations", {
+      authorization: `Bearer ${accountToken}`,
+    }), env)).json()).toEqual({ repositories: [], linearOrganizations: [] });
   });
 
   it("preserves existing integration ownership for another legacy-authorized account", async () => {

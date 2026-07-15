@@ -92,8 +92,9 @@ organization already associated with that account; callers without this header
 continue through the legacy authorization paths unchanged. `GET /account/integrations`
 lists only the caller's associated repositories and
 Linear organizations. `DELETE /account/integrations` clears those account
-associations without deleting provider mappings, events, signing secrets, or
-legacy access.
+associations and records an account-specific unlink tombstone, so subsequent
+dual-credential requests cannot silently restore them. It does not delete
+provider mappings, events, signing secrets, or legacy access.
 
 Legacy Linear support requires no additional Wrangler secrets. Each ADE client
 generates its own webhook signing secret and registers it into the
