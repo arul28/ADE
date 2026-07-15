@@ -10,6 +10,7 @@ import {
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
+  scopeAccountStatusForRole,
   type AdeActionDomain,
 } from "./registry";
 
@@ -1642,7 +1643,32 @@ describe("runtime account actions", () => {
     expect(isCtoOnlyAdeAction("account", "signOut")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "getToken")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "createToken")).toBe(true);
-    expect(isCtoOnlyAdeAction("account", "status")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "status")).toBe(false);
+    const fullStatus = {
+      signedIn: true,
+      userId: "user_123",
+      email: "person@example.com",
+      name: "Person",
+      expiresAt: "2026-07-15T10:00:00.000Z",
+      source: "env-token",
+      futureIdentityField: "must-not-leak",
+    };
+    expect(scopeAccountStatusForRole(fullStatus, "agent")).toEqual({
+      signedIn: true,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: "2026-07-15T10:00:00.000Z",
+      source: "env-token",
+    });
+    expect(scopeAccountStatusForRole(fullStatus, "cto")).toBe(fullStatus);
+    expect(scopeAccountStatusForRole("unexpected upstream value", "agent")).toEqual({
+      signedIn: false,
+      userId: null,
+      email: null,
+      name: null,
+      expiresAt: null,
+    });
   });
 });
 

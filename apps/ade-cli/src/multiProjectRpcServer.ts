@@ -37,6 +37,7 @@ import { createHeadlessGitHubService } from "./headlessLinearServices";
 import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
+  scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
@@ -753,7 +754,8 @@ export function createMultiProjectRpcRequestHandler(
       // adeRpcServer. The caller's requested role (from ade/initialize identity)
       // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
       // honestly asserts a non-cto role cannot reach these actions. `status`
-      // stays open to any role.
+      // stays open to any role, with identity fields removed below for non-CTO
+      // callers.
       const identityRecord =
         isRecord(initializedParams) && isRecord(initializedParams.identity)
           ? (initializedParams.identity as Record<string, unknown>)
@@ -788,11 +790,14 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
-      return await callAccountAction({
+      const response = await callAccountAction({
         service: accountAuthService,
         action,
         actionArgs: isRecord(params.args) ? params.args : {},
       });
+      return action === "status"
+        ? { ...response, result: scopeAccountStatusForRole(response.result, callerRole) }
+        : response;
     }
 
     if (method === "personalChats.call") {

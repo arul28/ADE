@@ -141,7 +141,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "pollLogin",
     "startDeviceLogin",
     "pollDeviceLogin",
-    "status",
     "cancelLogin",
     "signOut",
     "getToken",
@@ -190,6 +189,25 @@ export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boo
 export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, minRole: AdeActionRole): boolean {
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
+}
+
+export function scopeAccountStatusForRole(
+  status: unknown,
+  role: AdeActionRole | undefined | null,
+): unknown {
+  if (callerHasRoleAtLeast(role, "cto")) return status;
+  const record = status && typeof status === "object" && !Array.isArray(status)
+    ? status as Record<string, unknown>
+    : {};
+  const source = record.source;
+  return {
+    signedIn: record.signedIn === true,
+    userId: null,
+    email: null,
+    name: null,
+    expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
+    ...(source === "loopback" || source === "device" || source === "env-token" ? { source } : {}),
+  };
 }
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {

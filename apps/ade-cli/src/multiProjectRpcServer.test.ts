@@ -177,6 +177,14 @@ describe("multi-project RPC server", () => {
   it("allows the open account.status action for a non-cto caller", async () => {
     const { registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();
+    (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      signedIn: true,
+      userId: "user_123",
+      email: "person@example.com",
+      name: "Person",
+      expiresAt: "2026-07-15T10:00:00.000Z",
+      source: "env-token",
+    });
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "agent";
     try {
@@ -197,7 +205,19 @@ describe("multi-project RPC server", () => {
         method: "account.call",
         params: { action: "status" },
       });
-      expect(result).toMatchObject({ domain: "account", action: "status" });
+      expect(result).toEqual({
+        domain: "account",
+        action: "status",
+        result: {
+          signedIn: true,
+          userId: null,
+          email: null,
+          name: null,
+          expiresAt: "2026-07-15T10:00:00.000Z",
+          source: "env-token",
+        },
+        statusHints: {},
+      });
       expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
       handler.dispose();
     } finally {
