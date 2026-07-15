@@ -84,11 +84,15 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   }
 
   /// A best-effort `host` / `port` pair for one-tap connect, parsed from the
-  /// preferred endpoint (a direct `host`+`port`, or the host component of a
-  /// relay/websocket URL). `nil` when the machine advertises no usable direct
-  /// route (e.g. relay-only), in which case the UI routes to the pairing flow.
+  /// preferred **direct** route only — a LAN or Tailscale endpoint's
+  /// `host`+`port` (or the host component of a direct websocket URL). A relay
+  /// route is a cloud websocket, not a dialable host, so it never yields a
+  /// direct target: a relay-only machine returns `nil` and the UI falls back to
+  /// the pairing/discovery flow (see `ConnectionSettingsView.connectToAccountMachine`).
   var directConnectTarget: (host: String, port: Int)? {
-    guard let endpoint = preferredEndpoint else { return nil }
+    guard let endpoint = reachableEndpoints.first(where: { $0.kind == .lan })
+      ?? reachableEndpoints.first(where: { $0.kind == .tailnet })
+    else { return nil }
     if let host = endpoint.host?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
       return (host, endpoint.port ?? SyncDirectHostPorts.defaultPort)
     }
