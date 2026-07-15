@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 import {
   computeBackoffMs,
   createSyncTunnelClientService,
@@ -9,14 +10,14 @@ import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
 // syncCloudRelayStore itself (enablement default/migration, identity mint, url
 // derivation, signature builders) is covered in syncCloudRelayStore.test.ts.
 
-function fakeStore(enabled: boolean): SyncCloudRelayStore {
+function fakeStore(enabled: boolean, relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
   const identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
   return {
     getConfig: () => ({ enabled, ...identity }),
     isEnabled: () => enabled,
     setEnabled: () => ({ enabled, ...identity }),
     getMachineIdentity: () => identity,
-    getRelayUrl: () => "https://relay.example.com",
+    getRelayUrl: () => relayUrl,
     setRelayUrl: () => ({ enabled, ...identity }),
     getRelayWssUrl: () => `wss://relay.example.com/connect/${identity.machineKey}`,
   } as unknown as SyncCloudRelayStore;
@@ -71,5 +72,55 @@ describe("createSyncTunnelClientService", () => {
     expect(status.machineKey).toBe("a".repeat(32));
     expect(status.relayUrl).toBe("https://relay.example.com");
     await service.dispose();
+  });
+
+  it("refuses a relay pipe before forwarding when loopback is not ADE", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const connections: string[] = [];
+    relay.on("connection", (socket, request) => {
+      connections.push(request.url ?? "");
+      if (connections.length === 1) {
+        socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      loopbackProbe: async (port) => ({
+        ok: false,
+        port,
+        statusCode: 404,
+        statusMessage: "Not Found",
+        checkedAt: new Date().toISOString(),
+        reason: "foreign listener returned 404",
+      }),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().lastError).toContain("Relay bridge refused");
+      });
+      expect(connections).toHaveLength(1);
+      expect(connections[0]).toContain(`/host/${"a".repeat(32)}`);
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        activeTunnels: 0,
+        relayBridgeValidated: false,
+      });
+      expect(service.getStatus().lastFailureAt).not.toBeNull();
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
   });
 });

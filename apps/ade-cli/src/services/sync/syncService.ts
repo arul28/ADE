@@ -9,6 +9,7 @@ import type {
   SyncGetStatusArgs,
   SyncPairingConnectInfo,
   PersonalChatScopeContract,
+  SyncRouteHealth,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
@@ -81,6 +82,12 @@ import {
   getSharedAccountAuthService,
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
+import type { SyncTunnelClientService } from "./syncTunnelClientService";
+import {
+  isLoopbackShadowedError,
+  type SyncLoopbackProbeResult,
+  type SyncLoopbackValidationStatus,
+} from "./syncLoopbackProbe";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -159,6 +166,7 @@ type SyncServiceArgs = {
    * absent a store is created under the pairing state dir.
    */
   cloudRelayStore?: SyncCloudRelayStore;
+  syncTunnelClientService?: Pick<SyncTunnelClientService, "getStatus"> | null;
   /** Fired when the ADE relay kill-switch flips (start/stop tunnel). */
   onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
@@ -179,6 +187,8 @@ type SyncServiceArgs = {
    * `deeplinks.open` sync command reports unavailable.
    */
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
+  /** Test seam for self-owned host startup; production uses the HTTP 426 probe. */
+  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -364,6 +374,7 @@ function isViewerDraftTransportError(error: unknown): boolean {
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
+  if (isLoopbackShadowedError(error)) return true;
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
 }
@@ -470,6 +481,10 @@ export function createSyncService(args: SyncServiceArgs) {
 
   let hostService: SyncHostService | null = null;
   let hostSingletonLease: SyncHostSingletonLease | null = null;
+  let listenerValidationHistory: Pick<SyncLoopbackValidationStatus, "lastFailureAt" | "lastSuccessAt"> = {
+    lastFailureAt: null,
+    lastSuccessAt: null,
+  };
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
@@ -743,11 +758,17 @@ export function createSyncService(args: SyncServiceArgs) {
       requireDpop: () => securityStore.getRequireDpop(),
       getCloudRelayWssUrl: () =>
         cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+      loopbackProbe: args.loopbackProbe,
       onStateChanged: () => {
         void refreshRoleState();
       },
     });
     const finishHostStartup = (started: SyncHostService, resolvedPort: number): void => {
+      const validation = started.getLoopbackValidationStatus();
+      listenerValidationHistory = {
+        lastFailureAt: validation.lastFailureAt ?? listenerValidationHistory.lastFailureAt,
+        lastSuccessAt: validation.lastSuccessAt ?? listenerValidationHistory.lastSuccessAt,
+      };
       hostService = started;
       hostSingletonLease?.updatePort(resolvedPort);
       hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
@@ -789,7 +810,9 @@ export function createSyncService(args: SyncServiceArgs) {
           : [candidatePort],
       );
       let previousAttemptedPort: number | null = null;
+      const shadowedPorts = new Set<number>();
       for (const attemptedPort of attemptPlan) {
+        if (shadowedPorts.has(attemptedPort)) continue;
         if (previousAttemptedPort === attemptedPort) {
           await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
         }
@@ -801,10 +824,20 @@ export function createSyncService(args: SyncServiceArgs) {
           return;
         } catch (error) {
           lastError = error;
+          if (isLoopbackShadowedError(error)) {
+            shadowedPorts.add(attemptedPort);
+            listenerValidationHistory = {
+              ...listenerValidationHistory,
+              lastFailureAt: error.failedAt,
+            };
+          }
           await candidateHostService.dispose().catch(() => {});
-          const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
+          const retryable = isRetryableHostBindError(error)
+            && (attemptedPort !== 0 || isLoopbackShadowedError(error));
           args.logger.warn(
-            retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
+            isLoopbackShadowedError(error)
+              ? "sync.host_start_loopback_shadowed"
+              : retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
             {
               preferredPort,
               attemptedPort,
@@ -1166,6 +1199,90 @@ export function createSyncService(args: SyncServiceArgs) {
         ...peer,
         isHost: Boolean(peer.isHost ?? peer.isBrain),
       }));
+      const tailnetDiscovery = canHostPhonePairing && hostService
+        ? hostService.getTailnetDiscoveryStatus()
+        : createInactiveTailnetDiscoveryStatus(
+            canHostPhonePairing
+              ? "Tailnet discovery is waiting for the ADE runtime to start."
+              : "Tailnet discovery is only published by the host ADE runtime.",
+          );
+      const listenerPort = hostService?.getPort() ?? args.sharedSyncListener?.getPort() ?? null;
+      const rawListenerValidation = hostService?.getLoopbackValidationStatus()
+        ?? args.sharedSyncListener?.getLoopbackValidationStatus()
+        ?? {
+          port: null,
+          loopbackAdeValidated: false,
+          lastFailureAt: listenerValidationHistory.lastFailureAt,
+          reason: "The ADE sync listener has not started.",
+          lastSuccessAt: listenerValidationHistory.lastSuccessAt,
+        };
+      const listenerBound = listenerPort != null;
+      const loopbackAdeValidated = listenerBound
+        && rawListenerValidation.port === listenerPort
+        && rawListenerValidation.loopbackAdeValidated;
+      const listenerReason = !listenerBound
+        ? "The ADE sync listener is not bound."
+        : loopbackAdeValidated
+          ? null
+          : rawListenerValidation.reason
+            ?? `127.0.0.1:${listenerPort} did not answer as ADE.`;
+      const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
+      const tailscalePublished = tailnetDiscovery.state === "published";
+      const tailscaleEnabled = canHostPhonePairing
+        && tailnetDiscovery.state !== "disabled"
+        && tailnetDiscovery.state !== "unavailable";
+      const tailscaleReachable = tailscalePublished && loopbackAdeValidated;
+      const tailscaleReason = !tailscaleEnabled
+        ? tailnetDiscovery.error
+        : !loopbackAdeValidated
+          ? `Tailscale route is unusable because ${listenerReason ?? "the loopback ADE check failed"}`
+          : tailscalePublished
+            ? null
+            : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
+      const relayEnabled = canHostPhonePairing && cloudRelayStore.isEnabled();
+      const relayControlConnected = tunnelStatus?.connected === true;
+      const relayBridgeValidated = tunnelStatus?.relayBridgeValidated === true;
+      const relayReason = !relayEnabled
+        ? null
+        : !loopbackAdeValidated
+          ? `Relay route is unusable because ${listenerReason ?? "the loopback ADE check failed"}`
+          : !tunnelStatus
+            ? "Relay tunnel status is unavailable in this ADE process."
+            : !relayControlConnected
+              ? tunnelStatus.lastError ?? "Relay control is not connected."
+              : tunnelStatus.lastError;
+      const routeHealth: SyncRouteHealth = {
+        listener: {
+          listenerBound,
+          loopbackAdeValidated,
+          port: listenerPort,
+          lastFailureAt: rawListenerValidation.lastFailureAt ?? listenerValidationHistory.lastFailureAt,
+          reason: listenerReason,
+          lastSuccessAt: rawListenerValidation.lastSuccessAt ?? listenerValidationHistory.lastSuccessAt,
+        },
+        tailscale: {
+          enabled: tailscaleEnabled,
+          tailscalePublished,
+          tailscaleReachable,
+          lastFailureAt: tailscaleEnabled && !tailscaleReachable
+            ? (tailnetDiscovery.state === "failed"
+                ? tailnetDiscovery.updatedAt
+                : rawListenerValidation.lastFailureAt)
+            : null,
+          reason: tailscaleReason,
+          lastSuccessAt: tailscaleReachable ? tailnetDiscovery.updatedAt : null,
+        },
+        relay: {
+          enabled: relayEnabled,
+          relayControlConnected,
+          relayBridgeValidated,
+          lastFailureAt: relayEnabled && relayReason
+            ? (tunnelStatus?.lastFailureAt ?? rawListenerValidation.lastFailureAt)
+            : null,
+          reason: relayReason,
+          lastSuccessAt: relayReason == null ? (tunnelStatus?.lastSuccessAt ?? null) : null,
+        },
+      };
       return {
         mode,
         role,
@@ -1188,13 +1305,8 @@ export function createSyncService(args: SyncServiceArgs) {
               })
             : null,
         connectedPeers,
-        tailnetDiscovery: canHostPhonePairing && hostService
-          ? hostService.getTailnetDiscoveryStatus()
-          : createInactiveTailnetDiscoveryStatus(
-              canHostPhonePairing
-                ? "Tailnet discovery is waiting for the ADE runtime to start."
-                : "Tailnet discovery is only published by the host ADE runtime.",
-            ),
+        tailnetDiscovery,
+        routeHealth,
         client,
         transferReadiness: options?.includeTransferReadiness === false
           ? (transferReadinessCache?.value ?? buildSkippedTransferReadiness())
@@ -1350,11 +1462,18 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getCloudRelayStatus(): SyncCloudRelayStatus {
       const config = cloudRelayStore.getConfig();
+      const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
       return {
         enabled: config.enabled,
         relayWssUrl: cloudRelayStore.getRelayWssUrl(),
         machineKey: config.machineKey,
         relayUrl: cloudRelayStore.getRelayUrl(),
+        connected: tunnelStatus?.connected ?? false,
+        activeTunnels: tunnelStatus?.activeTunnels ?? 0,
+        relayBridgeValidated: tunnelStatus?.relayBridgeValidated ?? false,
+        lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
+        lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
+        lastError: tunnelStatus?.lastError ?? null,
       };
     },
 

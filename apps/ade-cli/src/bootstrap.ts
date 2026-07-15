@@ -1588,6 +1588,7 @@ export async function createAdeRuntime(args: {
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
+      syncTunnelClientService,
       onCloudRelayEnabledChanged: (enabled) => {
         // Same gate as startup: only the sync-hosting runtime may register
         // the relay tunnel (see canHostRelayTunnel above).

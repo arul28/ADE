@@ -219,6 +219,33 @@ export type SyncTailnetDiscoveryStatus = {
   stderr: string | null;
 };
 
+export type SyncRouteHealth = {
+  listener: {
+    listenerBound: boolean;
+    loopbackAdeValidated: boolean;
+    port: number | null;
+    lastFailureAt: string | null;
+    reason: string | null;
+    lastSuccessAt: string | null;
+  };
+  tailscale: {
+    enabled: boolean;
+    tailscalePublished: boolean;
+    tailscaleReachable: boolean;
+    lastFailureAt: string | null;
+    reason: string | null;
+    lastSuccessAt: string | null;
+  };
+  relay: {
+    enabled: boolean;
+    relayControlConnected: boolean;
+    relayBridgeValidated: boolean;
+    lastFailureAt: string | null;
+    reason: string | null;
+    lastSuccessAt: string | null;
+  };
+};
+
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
@@ -238,6 +265,7 @@ export type SyncRoleSnapshot = {
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   tailnetDiscovery: SyncTailnetDiscoveryStatus;
+  routeHealth: SyncRouteHealth;
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
   survivableStateText: string;
@@ -594,6 +622,12 @@ export type SyncCloudRelayStatus = {
   machineKey: string;
   /** http(s) base URL of the relay worker. */
   relayUrl: string;
+  connected: boolean;
+  activeTunnels: number;
+  relayBridgeValidated: boolean;
+  lastFailureAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
 };
 
 /**

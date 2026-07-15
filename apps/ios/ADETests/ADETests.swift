@@ -4117,6 +4117,79 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncReconnectHelloTimeoutAdvancesToNextCandidateWithoutConnectingFailedSocket() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let attempts = [
+      SyncConnectionEndpointAttempt(address: "192.168.1.10", port: 8787),
+      SyncConnectionEndpointAttempt(address: "192.168.1.11", port: 8787),
+    ]
+    var attemptedAddresses: [String] = []
+    var failedCandidateStates: [RemoteConnectionState] = []
+
+    let winner = try await syncFirstSuccessfulConnectionEndpoint(attempts) { attempt in
+      attemptedAddresses.append(attempt.address)
+      service.simulateSocketOpenWithoutHelloForTesting(host: attempt.address)
+      if attempt == attempts[0] {
+        failedCandidateStates.append(service.connectionState)
+        return .failure(NSError(
+          domain: "ADE",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the machine."]
+        ))
+      }
+      do {
+        try service.applyHelloPayloadForTesting([
+          "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+          "features": [:],
+        ])
+        return .success(())
+      } catch {
+        return .failure(error)
+      }
+    }
+
+    XCTAssertEqual(attemptedAddresses, ["192.168.1.10", "192.168.1.11"])
+    XCTAssertEqual(winner, attempts[1])
+    XCTAssertEqual(failedCandidateStates, [.connecting])
+    XCTAssertEqual(service.connectionState, .connected)
+  }
+
+  @MainActor
+  func testSyncReconnectHelloErrorAdvancesToNextCandidateWithoutConnectingRejectedSocket() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let attempts = [
+      SyncConnectionEndpointAttempt(address: "100.64.0.10", port: 8787),
+      SyncConnectionEndpointAttempt(address: "100.64.0.11", port: 8787),
+    ]
+    var attemptedAddresses: [String] = []
+    var failedCandidateStates: [RemoteConnectionState] = []
+
+    let winner = try await syncFirstSuccessfulConnectionEndpoint(attempts) { attempt in
+      attemptedAddresses.append(attempt.address)
+      service.simulateSocketOpenWithoutHelloForTesting(host: attempt.address)
+      if attempt == attempts[0] {
+        let error = service.simulateHelloErrorForTesting()
+        failedCandidateStates.append(service.connectionState)
+        return .failure(error)
+      }
+      do {
+        try service.applyHelloPayloadForTesting([
+          "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+          "features": [:],
+        ])
+        return .success(())
+      } catch {
+        return .failure(error)
+      }
+    }
+
+    XCTAssertEqual(attemptedAddresses, ["100.64.0.10", "100.64.0.11"])
+    XCTAssertEqual(winner, attempts[1])
+    XCTAssertEqual(failedCandidateStates, [.error])
+    XCTAssertEqual(service.connectionState, .connected)
+  }
+
+  @MainActor
   func testSyncServiceHelloStampsWinningRouteSuccessState() throws {
     let profileKey = "ade.sync.hostProfile"
     let profilesKey = "ade.sync.hostProfiles"

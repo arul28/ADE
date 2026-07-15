@@ -1768,6 +1768,36 @@ describe("createSyncHostService LAN discovery", () => {
     vi.restoreAllMocks();
   });
 
+  it("rejects a self-owned listener before discovery when loopback is not ADE", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe: async (port: number) => ({
+        ok: false,
+        port,
+        statusCode: 404,
+        statusMessage: "Not Found",
+        checkedAt: new Date().toISOString(),
+        reason: "foreign loopback listener",
+      }),
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow("foreign loopback listener");
+      expect(host.getLoopbackValidationStatus()).toMatchObject({
+        loopbackAdeValidated: false,
+        reason: "foreign loopback listener",
+      });
+      expect(host.getTailnetDiscoveryStatus().updatedAt).toBeNull();
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("closes inbound sockets that never authenticate", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const host = createSyncHostService({

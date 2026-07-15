@@ -1,6 +1,13 @@
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import {
+  assertAdeLoopbackListener,
+  isLoopbackShadowedError,
+  probeAdeLoopbackListener,
+  type SyncLoopbackProbeResult,
+  type SyncLoopbackValidationStatus,
+} from "./syncLoopbackProbe";
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
@@ -103,6 +110,7 @@ export type SharedSyncListener = {
   ensureListening(portCandidates: number[]): Promise<number>;
   getPort(): number | null;
   isListening(): boolean;
+  getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
   /**
    * Install the connection handler for NEW sockets. Returns a detach function
    * that only clears the handler if it has not been superseded by a newer
@@ -133,8 +141,26 @@ type ParkedEntry = {
 };
 
 function isRetryableListenerBindError(error: unknown): boolean {
+  if (isLoopbackShadowedError(error)) return true;
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
+}
+
+async function closeCandidateServer(candidateServer: WebSocketServer): Promise<void> {
+  for (const client of candidateServer.clients) {
+    try {
+      client.terminate();
+    } catch {
+      // ignore cleanup failures on a rejected candidate
+    }
+  }
+  await new Promise<void>((resolve) => {
+    try {
+      candidateServer.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
 }
 
 function rawDataBytes(data: RawData): number {
@@ -152,11 +178,13 @@ export function createSharedSyncListener(options: {
   bindHost?: string;
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
+  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
 } = {}): SharedSyncListener {
   const logger = options.logger ?? {};
   const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
+  const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
 
   let server: WebSocketServer | null = null;
   let listeningPromise: Promise<number> | null = null;
@@ -164,6 +192,13 @@ export function createSharedSyncListener(options: {
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
+  let loopbackValidationStatus: SyncLoopbackValidationStatus = {
+    port: null,
+    loopbackAdeValidated: false,
+    lastFailureAt: null,
+    reason: "The shared sync listener has not been validated yet.",
+    lastSuccessAt: null,
+  };
   const parked = new Map<WebSocket, ParkedEntry>();
 
   const unpark = (entry: ParkedEntry): void => {
@@ -276,8 +311,10 @@ export function createSharedSyncListener(options: {
     );
     let lastError: unknown = null;
     let previousAttemptedPort: number | null = null;
+    const shadowedPorts = new Set<number>();
     for (const attemptedPort of attemptPlan) {
       if (closed) throw new Error("The shared sync listener has been closed.");
+      if (shadowedPorts.has(attemptedPort)) continue;
       if (previousAttemptedPort === attemptedPort) {
         await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
       }
@@ -287,22 +324,72 @@ export function createSharedSyncListener(options: {
         port: attemptedPort,
         maxPayload: maxPayloadBytes,
       });
+      // Install the handler before the validation RTT so a LAN peer that
+      // arrives in that narrow window is parked/owned instead of orphaned.
+      candidateServer.on("connection", (ws, request) => {
+        const connection: SharedSyncListenerConnection = {
+          ws,
+          remoteAddress: request.socket.remoteAddress ?? null,
+          remotePort: request.socket.remotePort ?? null,
+        };
+        const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
+        const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
+        if (activeHandler) {
+          activeHandler(connection);
+          return;
+        }
+        park({
+          ws,
+          remoteAddress: connection.remoteAddress,
+          remotePort: connection.remotePort,
+          metadata: null,
+          authKind: null,
+          pairedDeviceId: null,
+          connectedAt: new Date().toISOString(),
+        });
+      });
       try {
         const resolvedPort = await new Promise<number>((resolve, reject) => {
-          const onListening = () => {
-            cleanup();
+          const onListening = async () => {
             const address = candidateServer.address();
-            resolve(typeof address === "object" && address ? address.port : attemptedPort);
+            const port = typeof address === "object" && address ? address.port : attemptedPort;
+            try {
+              const result = await assertAdeLoopbackListener(port, loopbackProbe);
+              cleanup();
+              loopbackValidationStatus = {
+                port,
+                loopbackAdeValidated: true,
+                lastFailureAt: loopbackValidationStatus.lastFailureAt,
+                reason: null,
+                lastSuccessAt: result.checkedAt,
+              };
+              resolve(port);
+            } catch (error) {
+              cleanup();
+              if (isLoopbackShadowedError(error)) {
+                loopbackValidationStatus = {
+                  port,
+                  loopbackAdeValidated: false,
+                  lastFailureAt: error.failedAt,
+                  reason: error.message,
+                  lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
+                };
+              }
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
           };
           const onError = (error: unknown) => {
             cleanup();
             reject(error instanceof Error ? error : new Error(String(error)));
           };
+          const handleListening = () => {
+            void onListening();
+          };
           const cleanup = () => {
-            candidateServer.off("listening", onListening);
+            candidateServer.off("listening", handleListening);
             candidateServer.off("error", onError);
           };
-          candidateServer.on("listening", onListening);
+          candidateServer.on("listening", handleListening);
           candidateServer.on("error", onError);
         });
         server = candidateServer;
@@ -313,42 +400,17 @@ export function createSharedSyncListener(options: {
             port: resolvedPort,
           });
         });
-        server.on("connection", (ws, request) => {
-          const connection: SharedSyncListenerConnection = {
-            ws,
-            remoteAddress: request.socket.remoteAddress ?? null,
-            remotePort: request.socket.remotePort ?? null,
-          };
-          const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
-          const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
-          if (activeHandler) {
-            activeHandler(connection);
-            return;
-          }
-          // No host service owns the listener right now (mid project switch
-          // or before the first host starts). Park the socket and buffer its
-          // frames; the next host adopts it via takePeers().
-          park({
-            ws,
-            remoteAddress: connection.remoteAddress,
-            remotePort: connection.remotePort,
-            metadata: null,
-            authKind: null,
-            pairedDeviceId: null,
-            connectedAt: new Date().toISOString(),
-          });
-        });
         return resolvedPort;
       } catch (error) {
         lastError = error;
-        try {
-          candidateServer.close();
-        } catch {
-          // ignore cleanup failures
-        }
-        const retryable = isRetryableListenerBindError(error) && attemptedPort !== 0;
+        await closeCandidateServer(candidateServer);
+        if (isLoopbackShadowedError(error)) shadowedPorts.add(attemptedPort);
+        const retryable = isRetryableListenerBindError(error)
+          && (attemptedPort !== 0 || isLoopbackShadowedError(error));
         logger.warn?.(
-          retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
+          isLoopbackShadowedError(error)
+            ? "sync_listener.loopback_shadowed"
+            : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
           {
             attemptedPort,
             error: error instanceof Error ? error.message : String(error),
@@ -383,6 +445,10 @@ export function createSharedSyncListener(options: {
 
     isListening(): boolean {
       return server?.address() != null;
+    },
+
+    getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
+      return { ...loopbackValidationStatus };
     },
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {

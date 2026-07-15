@@ -469,6 +469,31 @@ struct SyncConnectionEndpointAttempt: Equatable, Hashable {
   var port: Int
 }
 
+@MainActor
+func syncFirstSuccessfulConnectionEndpoint(
+  _ attempts: [SyncConnectionEndpointAttempt],
+  attempt: (SyncConnectionEndpointAttempt) async -> Result<Void, Error>,
+  shouldContinueAfterFailure: (Error) -> Bool = { _ in true }
+) async throws -> SyncConnectionEndpointAttempt {
+  var lastFailure: Error?
+  for endpoint in attempts {
+    switch await attempt(endpoint) {
+    case .success:
+      return endpoint
+    case .failure(let error):
+      lastFailure = error
+      if !shouldContinueAfterFailure(error) {
+        throw error
+      }
+    }
+  }
+  throw lastFailure ?? NSError(
+    domain: "ADE",
+    code: 19,
+    userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE machine."]
+  )
+}
+
 private struct SyncRankedEndpointAttempt {
   var attempt: SyncConnectionEndpointAttempt
   var routeKey: String
@@ -8792,7 +8817,6 @@ final class SyncService: ObservableObject {
     preferLiveCandidatesOnly: Bool,
     publishConnecting: Bool
   ) async throws -> (host: String, port: Int) {
-    var lastFailure: Error?
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -8851,54 +8875,57 @@ final class SyncService: ObservableObject {
     )
 
     markConnectAttemptStarted(connectAttemptGeneration)
-    for attempt in orderedEndpointAttempts {
-      guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-        throw CancellationError()
-      }
-      let kind = addressCandidateKind(attempt.address, profile: profile, explicitTailscaleAddress: nil)
-      syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(attempt.address, privacy: .public) port=\(attempt.port) kind=\(kind, privacy: .public)")
-      do {
-        try await openSocket(
-          host: attempt.address,
-          port: attempt.port,
-          connectAttemptGeneration: connectAttemptGeneration,
-          publishConnecting: publishConnecting
-        )
-        try await hello(
-          host: attempt.address,
-          port: attempt.port,
-          token: token,
-          authKind: profile.authKind,
-          pairedDeviceId: profile.pairedDeviceId,
-          expectedHostIdentity: profile.hostIdentity,
-          connectAttemptGeneration: connectAttemptGeneration
-        )
-        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-          throw CancellationError()
+    let connectedEndpoint = try await syncFirstSuccessfulConnectionEndpoint(
+      orderedEndpointAttempts,
+      attempt: { attempt in
+        guard self.isCurrentConnectAttempt(connectAttemptGeneration) else {
+          return .failure(CancellationError())
         }
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
-        return (host: attempt.address, port: attempt.port)
-      } catch {
-        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(
-          error,
-          attemptedAddress: attempt.address,
-          expectedHostIdentity: profile.hostIdentity
-        )
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
-        lastFailure = reconnectError
-        if shouldInvalidateSavedPairing(for: reconnectError) {
-          forgetHost()
-          throw reconnectError
+        let kind = self.addressCandidateKind(attempt.address, profile: profile, explicitTailscaleAddress: nil)
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(attempt.address, privacy: .public) port=\(attempt.port) kind=\(kind, privacy: .public)")
+        do {
+          try await self.openSocket(
+            host: attempt.address,
+            port: attempt.port,
+            connectAttemptGeneration: connectAttemptGeneration,
+            publishConnecting: publishConnecting
+          )
+          try await self.hello(
+            host: attempt.address,
+            port: attempt.port,
+            token: token,
+            authKind: profile.authKind,
+            pairedDeviceId: profile.pairedDeviceId,
+            expectedHostIdentity: profile.hostIdentity,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+          guard self.isCurrentConnectAttempt(connectAttemptGeneration) else {
+            throw CancellationError()
+          }
+          syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
+          return .success(())
+        } catch {
+          let reconnectError = self.errorByMarkingAmbiguousRouteAuthFailure(
+            error,
+            attemptedAddress: attempt.address,
+            expectedHostIdentity: profile.hostIdentity
+          )
+          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
+          if self.shouldInvalidateSavedPairing(for: reconnectError) {
+            self.forgetHost()
+          } else {
+            // A TCP/WebSocket open is not a successful candidate until hello
+            // completes. Tear it down and keep walking after timeout/error.
+            self.teardownSocket()
+          }
+          return .failure(reconnectError)
         }
-        // Tear down this attempt's socket and keep iterating through the
-        // remaining ports and addresses. Only surface an error if every
-        // candidate fails.
-        teardownSocket()
-        continue
+      },
+      shouldContinueAfterFailure: { error in
+        !self.shouldInvalidateSavedPairing(for: error)
       }
-    }
-
-    throw lastFailure ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE machine."])
+    )
+    return (host: connectedEndpoint.address, port: connectedEndpoint.port)
   }
 
   private func handleReconnectFailure(
@@ -9477,6 +9504,18 @@ final class SyncService: ObservableObject {
 
   func simulateSocketOpenWithoutHelloForTesting(host: String = "127.0.0.1") {
     publishSocketConnecting(to: host)
+  }
+
+  func simulateHelloErrorForTesting(message: String = "Authentication failed.") -> NSError {
+    connectionState = .error
+    return NSError(
+      domain: "ADE",
+      code: 5,
+      userInfo: [
+        NSLocalizedDescriptionKey: message,
+        "ADEErrorCode": "auth_failed",
+      ]
+    )
   }
 
   func automaticReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {

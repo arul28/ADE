@@ -3315,6 +3315,81 @@ describe("ADE CLI", () => {
     expect(output).toContain("Git repository detected");
   });
 
+  it("adds sync route health to doctor and names a loopback listener mismatch", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-sync-"));
+    fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+    try {
+      const plan = expectExecutePlan(buildCliPlan(["doctor"]));
+      expect(plan.steps).toContainEqual({
+        key: "syncStatus",
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: false },
+        optional: true,
+      });
+      const summary = summarizeExecution({
+        plan,
+        connection: {
+          mode: "runtime-socket",
+          projectRoot,
+          workspaceRoot: projectRoot,
+          socketPath: path.join(projectRoot, ".ade", "ade.sock"),
+        },
+        values: {
+          rpcActions: { actions: [{}] },
+          actions: { actions: [{}] },
+          syncStatus: {
+            pairingConnectInfo: { port: 8787 },
+            routeHealth: {
+              listener: {
+                listenerBound: true,
+                loopbackAdeValidated: false,
+                reason: "Expected ADE 426 Upgrade Required; received 404 Not Found.",
+              },
+              tailscale: {
+                enabled: true,
+                tailscaleReachable: false,
+                reason: "Tailscale route points at the listener mismatch.",
+              },
+              relay: {
+                enabled: true,
+                relayControlConnected: true,
+                relayBridgeValidated: false,
+                reason: "Relay bridge refused the listener mismatch.",
+              },
+            },
+          },
+        },
+      } as any) as Record<string, any>;
+
+      expect(summary.sync).toMatchObject({
+        enabled: true,
+        usable: false,
+        status: "warning",
+      });
+      expect(summary.sync.failingRoutes).toEqual([
+        expect.stringContaining("listener"),
+        expect.stringContaining("tailscale"),
+        expect.stringContaining("relay"),
+      ]);
+      expect(summary.sync.message).toContain("404 Not Found");
+      const output = formatOutput(summary, {
+        projectRoot,
+        workspaceRoot: projectRoot,
+        role: "agent",
+        headless: false,
+        requireSocket: false,
+        socketPath: null,
+        pretty: true,
+        text: true,
+        timeoutMs: 1000,
+      }, "doctor");
+      expect(output).toContain("Sync route failure");
+      expect(output).toContain("listener");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("detects project-local Linear credentials in doctor readiness", () => {
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;
     const previousLinearApiKey = process.env.LINEAR_API_KEY;

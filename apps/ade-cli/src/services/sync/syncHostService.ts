@@ -144,6 +144,13 @@ import {
   type SharedSyncListener,
   type SyncPeerHandoffSnapshot,
 } from "./sharedSyncListener";
+import {
+  assertAdeLoopbackListener,
+  isLoopbackShadowedError,
+  probeAdeLoopbackListener,
+  type SyncLoopbackProbeResult,
+  type SyncLoopbackValidationStatus,
+} from "./syncLoopbackProbe";
 export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
 // db_version window per pump poll. Large enough to cross sparse version
@@ -710,6 +717,8 @@ type SyncHostServiceArgs = {
    * re-scanning a QR.
    */
   getCloudRelayWssUrl?: () => string | null;
+  /** Test seam; production always uses the HTTP 426 loopback probe. */
+  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
 };
 
 function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string | null {
@@ -1967,6 +1976,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   let disposed = false;
   let startupError: Error | null = null;
+  const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
+  let loopbackValidationStatus: SyncLoopbackValidationStatus = sharedListener
+    ? sharedListener.getLoopbackValidationStatus()
+    : {
+        port: null,
+        loopbackAdeValidated: false,
+        lastFailureAt: null,
+        reason: "The sync host listener has not been validated yet.",
+        lastSuccessAt: null,
+      };
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let nativeBonjourProcess: ChildProcess | null = null;
@@ -2839,6 +2858,47 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         code,
       });
     }
+  };
+
+  const validateListeningPort = async (port: number): Promise<void> => {
+    if (
+      loopbackValidationStatus.port === port
+      && loopbackValidationStatus.loopbackAdeValidated
+    ) return;
+    try {
+      const result = await assertAdeLoopbackListener(port, loopbackProbe);
+      loopbackValidationStatus = {
+        port,
+        loopbackAdeValidated: true,
+        lastFailureAt: loopbackValidationStatus.lastFailureAt,
+        reason: null,
+        lastSuccessAt: result.checkedAt,
+      };
+    } catch (error) {
+      if (isLoopbackShadowedError(error)) {
+        loopbackValidationStatus = {
+          port,
+          loopbackAdeValidated: false,
+          lastFailureAt: error.failedAt,
+          reason: error.message,
+          lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
+        };
+      }
+      throw error;
+    }
+  };
+
+  const publishValidatedDiscovery = async (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    const lanPortChanged = bonjourPort != null && bonjourPort !== port;
+    const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
+    if (lanPortChanged) unpublishLanDiscovery();
+    if (tailnetPortChanged) await unpublishTailnetDiscovery();
+    if (disposed) return;
+    publishLanDiscovery(port, { force: options?.forceLan });
+    publishTailnetDiscovery(port, { force: options?.forceTailnet });
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -5312,8 +5372,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // ensureListening is idempotent and returns the existing port.
         const port = sharedListener!.getPort()
           ?? await sharedListener!.ensureListening([args.port ?? DEFAULT_SYNC_HOST_PORT]);
-        publishLanDiscovery(port);
-        publishTailnetDiscovery(port);
+        loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
+        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
+          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
+        }
+        await publishValidatedDiscovery(port);
         return port;
       }
       if (startupError) {
@@ -5322,8 +5385,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (server.address()) {
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
-        publishLanDiscovery(port);
-        publishTailnetDiscovery(port);
+        await validateListeningPort(port);
+        await publishValidatedDiscovery(port);
         return port;
       }
       await new Promise<void>((resolve, reject) => {
@@ -5355,8 +5418,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
-      publishLanDiscovery(port);
-      publishTailnetDiscovery(port);
+      await validateListeningPort(port);
+      await publishValidatedDiscovery(port);
       return port;
     },
 
@@ -5375,8 +5438,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
       const port = getListeningPort();
       if (port != null) {
-        publishLanDiscovery(port, { force: options?.forceLan });
-        publishTailnetDiscovery(port, { force: options?.forceTailnet });
+        void publishValidatedDiscovery(port, options).catch((error) => {
+          args.logger.warn("sync_host.discovery_refresh_failed", {
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
     },
 
@@ -5451,6 +5518,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
       return { ...tailnetDiscoveryStatus };
+    },
+
+    getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
+      return { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
