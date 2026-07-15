@@ -9,6 +9,7 @@ export interface Env {
   CLERK_JWKS_URL: string;
   CLERK_ISSUER: string;
   CLERK_OAUTH_CLIENT_ID: string;
+  WEB_CLIENT_ORIGIN?: string;
   ONLINE_WINDOW_MS?: string;
 }
 
@@ -326,10 +327,31 @@ async function handleDelete(
   return json({ ok: true, machineKey });
 }
 
-export async function handleRequest(
+function trustedWebClientOrigin(env: Env): string | null {
+  const raw = env.WEB_CLIENT_ORIGIN?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
+    if (url.origin !== raw || url.username || url.password || url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function withCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.set("vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function handleRequestCore(
   request: Request,
   env: Env,
-  options: DeviceAuthorizationRequestOptions = {},
+  options: DeviceAuthorizationRequestOptions,
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
@@ -347,4 +369,49 @@ export async function handleRequest(
   if (route.kind === "register") return await handleRegister(request, env, userId);
   if (route.kind === "list") return await handleList(request, env, userId);
   return await handleDelete(request, env, userId, route.machineKey);
+}
+
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  options: DeviceAuthorizationRequestOptions = {},
+): Promise<Response> {
+  const url = new URL(request.url);
+  const requestOrigin = request.headers.get("origin");
+  const allowedOrigin = trustedWebClientOrigin(env);
+  const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin
+    ? allowedOrigin
+    : null;
+  if (request.method === "OPTIONS") {
+    const route = routeAccount(url.pathname);
+    if (!route || route.kind !== "list") return text("not found", 404);
+    if (!corsOrigin) return text("origin not allowed", 403);
+    if (request.headers.get("access-control-request-method")?.toUpperCase() !== "GET") {
+      return text("method not allowed", 405);
+    }
+    const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
+      .split(",")
+      .map((header) => header.trim().toLowerCase())
+      .filter(Boolean);
+    if (requestedHeaders.some((header) => header !== "authorization")) {
+      return text("headers not allowed", 403);
+    }
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": corsOrigin,
+        "access-control-allow-headers": "authorization",
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-max-age": "600",
+        vary: "Origin",
+      },
+    });
+  }
+  // Daemon/native callers omit Origin. Browser callers must match the one
+  // configured hosted client exactly; reject hostile origins before auth or D1.
+  if (requestOrigin && routeAccount(url.pathname) && !corsOrigin) {
+    return text("origin not allowed", 403);
+  }
+  const response = await handleRequestCore(request, env, options);
+  return corsOrigin ? withCors(response, corsOrigin) : response;
 }

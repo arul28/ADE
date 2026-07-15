@@ -1350,7 +1350,27 @@ describe("sync host account authentication", () => {
     }));
   }
 
-  it("adopts a new account device only from an authenticated relay socket parked across host handoff", async () => {
+  function sendPairedHello(args: {
+    ws: WebSocket;
+    peer: SyncPeerMetadata;
+    secret: string;
+    dpop: ReturnType<typeof signPairedDpop>;
+  }): void {
+    args.ws.send(encodeSyncEnvelope({
+      type: "hello",
+      payload: {
+        peer: args.peer,
+        auth: {
+          kind: "paired",
+          deviceId: args.peer.deviceId,
+          secret: args.secret,
+          dpop: args.dpop,
+        },
+      },
+    }));
+  }
+
+  it("adopts through an authenticated relay handoff and returns credentials for ordinary paired DPoP", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
     const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
@@ -1361,6 +1381,7 @@ describe("sync host account authentication", () => {
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     let host: ReturnType<typeof createSyncHostService> | null = null;
     let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    let pairedClient: Awaited<ReturnType<typeof openAccountClient>> | null = null;
     try {
       const port = await listener.ensureListening([0]);
       client = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -1410,7 +1431,13 @@ describe("sync host account authentication", () => {
       );
       expect(hello.payload).toMatchObject({
         features: { rpcChannel: true, portForward: true },
+        accountPairing: {
+          deviceId: peer.deviceId,
+          secret: expect.stringMatching(/^[0-9a-f]{48}$/),
+        },
       });
+      const returnedSecret = (hello.payload as { accountPairing: { secret: string } }).accountPairing.secret;
+      expect(pairingStore.authenticate(peer.deviceId, returnedSecret)).toBe(true);
       expect(pinStore.hasPin()).toBe(false);
       expect(pairingStore.getPairingRecord(peer.deviceId)).toMatchObject({
         dpopPublicKey: dpopKey.publicKeyX963,
@@ -1423,7 +1450,26 @@ describe("sync host account authentication", () => {
         pairingRecord: pairingStore.getPairingRecord(peer.deviceId),
         metadata: peer,
       })).toBe(true);
+
+      const pairedConnection = await openAccountClient(port);
+      pairedClient = pairedConnection;
+      sendPairedHello({
+        ws: pairedConnection.ws,
+        peer,
+        secret: returnedSecret,
+        dpop: signPairedDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: returnedSecret,
+        }),
+      });
+      await waitForValue(
+        () => pairedConnection.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "paired hello after account adoption",
+      );
     } finally {
+      pairedClient?.ws.close();
       client?.ws.close();
       await host?.dispose();
       await listener.close();
@@ -1500,7 +1546,7 @@ describe("sync host account authentication", () => {
     }
   });
 
-  it("rejects direct account auth for an existing device but accepts direct paired auth with its stored DPoP key", async () => {
+  it("rejects direct account auth, preserves the existing secret on relay re-auth, and accepts direct paired DPoP", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
     const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
@@ -1594,11 +1640,13 @@ describe("sync host account authentication", () => {
           accountToken,
         }),
       });
-      await waitForValue(
+      const accountHello = await waitForValue(
         () => relayAccountClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
         "relay stored-key account hello_ok",
       );
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
+      expect((accountHello.payload as { accountPairing?: unknown }).accountPairing).toBeUndefined();
+      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(true);
 
       const directPairedClient = await openAccountClient(port);
       clients.push(directPairedClient);

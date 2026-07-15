@@ -227,6 +227,13 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 - Headless CLI fallback uses `EncryptedFileCredentialStore`, which keeps `credentials.json.enc` encrypted with AES-256-GCM and serializes read-modify-write access with `credentials.json.enc.lock`.
 - Secret directories are created with mode `0700`; credential blobs, lock files, and legacy machine keys are written with mode `0600`.
 
+`ade login`, `ade logout`, and `ade auth status` operate on the daemon-owned ADE
+account session in that store. `ade machines list` reads the authenticated
+account directory; signed-out users get a local-first message and existing
+local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
+and device IDs are stable selectors. A display name is accepted only when it is
+unambiguous; otherwise the command prints the matching stable machine keys.
+
 ## `ade code`
 
 `ade code` launches the terminal-native ADE Work chat (Ink + React, in `src/tuiClient/`). Default behavior:
@@ -236,18 +243,26 @@ ade code                           # attach to the machine brain, auto-spawn it 
 ade code --embedded                # force the in-process embedded runtime
 ade code --print-state             # smoke-test the connection and exit
 ade code remote --target mac --project ADE
-                                   # attach to a saved desktop remote machine
+                                   # attach to a saved paired or SSH remote machine
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
+ade login                          # sign in to the optional shared machine account
+ade machines list --text          # list account machines, including offline state
+ade machines connect <machine-key> --project ADE
+                                   # pair if needed, then open ADE Code on that machine
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
 ade --project-root /repo code      # bind to a specific project root
 ```
 
 `ade code remote` reads the same saved remote-machine registry as desktop ADE,
-starts `ade rpc --stdio` over SSH, and bridges it back into the normal TUI with
-`--remote`, `--remote-label`, `--require-socket`, remote project roots, and an
-optional `--session` hint. Use `--list-targets`, `--list-projects`, and
-`--list-sessions` for non-interactive discovery.
+then uses the target's declared transport. Paired targets connect through the
+DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a
+validated SSH route. Account-created targets are paired-only and fail closed
+instead of falling back to SSH or a plaintext address. The launcher bridges the
+selected transport back into the normal TUI with `--remote`, `--remote-label`,
+`--require-socket`, remote project roots, and an optional `--session` hint. Use
+`--list-targets`, `--list-projects`, and `--list-sessions` for non-interactive
+discovery.
 
 **Browser mirror (dev):** from the repo root, `npm run dev:code:web` runs **one** `ade code` in a **single PTY** and mirrors that TTY to the browser (xterm). Use Cursor’s browser tools against that page like any other local URL. This is not the same as running `ade code` in a terminal app **and** in the browser at once—that would be two separate processes.
 
@@ -273,6 +288,10 @@ ade login                                 # loopback OAuth, or device flow on SS
 ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
+ade logout
+ade machines list --text
+ade machines connect <machine-key> --project ADE
+ade machines hop <device-id> --session chat-1
 ade doctor --json
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane

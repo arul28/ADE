@@ -965,6 +965,8 @@ export function buildSyncHostHelloOkPayload(args: {
    * feature advertised as available.
    */
   runtimeChannelEnabled?: boolean;
+  /** Fresh secret returned only for first-time verified account adoption. */
+  accountPairing?: { deviceId: string; secret: string } | null;
 }): PairedRuntimeHelloOkPayload {
   const runtimeChannelEnabled = args.runtimeChannelEnabled === true;
   const actions = [
@@ -990,6 +992,7 @@ export function buildSyncHostHelloOkPayload(args: {
     // clear signal on that path. Omit only when the caller didn't supply
     // the argument at all.
     ...(args.cloudRelayWssUrl !== undefined ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
+    ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,
@@ -4655,6 +4658,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
+      let accountPairing: { deviceId: string; secret: string } | null = null;
       // Return semantics: `true` means authentication FAILED -> the caller below
       // sends a `hello_error` (auth_failed) and closes the socket (4003).
       // `false` means the device is authenticated.
@@ -4757,6 +4761,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               expectedUserId: ownerUserId,
               config,
             });
+            if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
+              args.logger.warn("sync_host.account_existing_keyless_rejected", {
+                deviceId: accountAuth.deviceId,
+              });
+              return true;
+            }
             // A known device is pinned to its existing key; only a genuinely new
             // device id arriving through the authenticated relay bridge may
             // TOFU-adopt the inline key. The account token is the challenge
@@ -4777,10 +4787,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
             if (existingPairingRecord) {
-              // Account re-auth confirms the owner and possession of the
-              // already-pinned device key. Preserve the paired secret that
-              // direct LAN/tailnet reconnects depend on; only first adoption
-              // is allowed to mint a new pairing record.
+              // Account re-authentication proves the same Clerk owner and the
+              // already-pinned device key. Reuse the record verbatim: rotating
+              // here would silently invalidate the paired secret held by the
+              // browser/desktop. Only first-time account adoption below mints
+              // credentials and includes accountPairing in hello_ok.
               authenticatedPairingRecord = existingPairingRecord;
               return false;
             }
@@ -4789,6 +4800,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
             });
             if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+            accountPairing = paired;
             authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
             return authenticatedPairingRecord == null;
           } catch (error) {
@@ -4878,6 +4890,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // command allowlist).
         runtimeChannelEnabled:
           isRecordBackedSyncAuthKind(auth.kind) && isRuntimeHostPairingRecord(authenticatedPairingRecord),
+        accountPairing,
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();

@@ -533,7 +533,7 @@ export type SyncHelloAuth =
       deviceId: string;
       accountToken: string;
       dpop?: SyncDpopProof | null;
-      /** Existing one-time desktop runtime authorization; account auth does not replace it. */
+      /** Optional legacy one-time desktop runtime authorization. */
       runtimeHostGrant?: string | null;
     };
 
@@ -558,6 +558,15 @@ export type SyncHelloOkPayload = {
    * off-LAN route over the live connection and persist it for reconnects.
    */
   cloudRelayWssUrl?: string | null;
+  /**
+   * Fresh paired credential minted only when a verified account hello adopts a
+   * genuinely new device. Existing devices keep their stored pairing record,
+   * and the host omits this field so reconnects cannot rotate their secret.
+   */
+  accountPairing?: {
+    deviceId: string;
+    secret: string;
+  };
 };
 
 export type SyncHelloErrorPayload = {

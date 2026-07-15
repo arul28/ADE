@@ -20,9 +20,20 @@ import type {
   SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
-import { exportPublicKeyX963Base64, generateDpopKeyPair } from "./dpop";
+import type { AdeAccountMachine } from "../../../shared/types/account";
+import {
+  accountMachinePairedSyncEndpoints,
+  accountMachineSecureSyncEndpoints,
+} from "../../../shared/accountDirectory";
+import { isTailnetHostname } from "../../../shared/tailnet";
+import { exportPublicKeyX963Base64, generateDpopKeyPair, signDpopProof } from "./dpop";
 import { deriveBrowserSyncEndpoints } from "./endpoints";
-import { platformFromNavigator, SyncConnection, type SyncConnectionStatus, type WebSocketFactory } from "./connection";
+import {
+  platformFromNavigator,
+  SyncConnection,
+  type SyncConnectionStatus,
+  type WebSocketFactory,
+} from "./connection";
 import {
   IndexedDbStorage,
   WebClientEnvStore,
@@ -241,6 +252,135 @@ export class AdeSyncClient {
     paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects) ?? paired.environment.activeProjectId ?? null;
     paired.environment.lastConnectedAt = nowIso();
     paired.environment.lastGoodEndpoint = paired.endpoint;
+    await this.envStore.saveEnvironment(paired.environment);
+    await this.envStore.setSelectedEnvId(paired.environment.envId);
+    this.selectedEnvId = paired.environment.envId;
+    this.activeProjectId = paired.environment.activeProjectId ?? null;
+    this.emitStatus();
+    return paired.environment;
+  }
+
+  async pairWithAccountMachine(args: {
+    machine: AdeAccountMachine;
+    accessToken: string;
+    deviceName: string;
+    relayBaseUrls?: readonly string[];
+  }): Promise<WebClientEnvironmentRecord> {
+    const accessToken = args.accessToken.trim();
+    const deviceName = args.deviceName.trim();
+    const expectedHostDeviceId = args.machine.deviceId?.trim() ?? "";
+    if (!args.machine.online) throw new AdeSyncError("That account machine is offline.", "machine_offline");
+    if (!accessToken) throw new AdeSyncError("ADE account sign-in is required.", "account_signed_out");
+    if (!expectedHostDeviceId) throw new AdeSyncError("That machine is missing a stable device id.", "invalid_machine");
+    if (!deviceName) throw new AdeSyncError("Browser device name is required.", "invalid_device_name");
+
+    // Clerk bearer credentials are allowed only on an exact WSS relay URL
+    // supplied by the verified account directory. Direct/LAN routes are saved
+    // below only after the host returns an ordinary paired secret.
+    const accountRelayEndpoints = accountMachineSecureSyncEndpoints(
+      args.machine,
+      args.relayBaseUrls,
+    );
+    if (accountRelayEndpoints.length === 0) {
+      throw new AdeSyncError(
+        "That machine has no directory-verified secure relay route.",
+        "secure_relay_unavailable",
+      );
+    }
+    const existing = await this.envStore.findByHostDeviceId(expectedHostDeviceId);
+    const dpopKeys = existing?.dpopKeys ?? await generateDpopKeyPair();
+    const dpopPublicKeyX963 = existing?.dpopPublicKeyX963
+      ?? await exportPublicKeyX963Base64(dpopKeys.publicKey);
+    const localDeviceId = existing?.localDeviceId ?? uuid();
+    const siteId = existing?.siteId ?? randomHex(16);
+    const peer = {
+      deviceId: localDeviceId,
+      deviceName,
+      platform: platformFromNavigator(),
+      deviceType: "browser" as const,
+      siteId,
+      dbVersion: 0,
+      capabilities: [],
+    };
+    const dpop = await signDpopProof({
+      privateKey: dpopKeys.privateKey,
+      publicKeyX963Base64: dpopPublicKeyX963,
+      deviceId: localDeviceId,
+      secret: accessToken,
+    });
+    const pairedRoutes = accountMachinePairedSyncEndpoints(
+      args.machine,
+      args.relayBaseUrls,
+    );
+    const validatedDirectUrls = pairedRoutes.flatMap((candidate) => {
+      try {
+        const url = new URL(candidate);
+        return url.protocol === "ws:" ? [url] : [];
+      } catch {
+        return [];
+      }
+    });
+    const directPort = validatedDirectUrls[0]
+      ? Number.parseInt(validatedDirectUrls[0].port || "80", 10)
+      : 0;
+    const addressCandidates = validatedDirectUrls
+      .filter((url) => Number.parseInt(url.port || "80", 10) === directPort)
+      .map((url) => ({
+        host: url.hostname.replace(/^\[|\]$/g, ""),
+        kind: isTailnetHostname(url.hostname) ? "tailscale" as const : "lan" as const,
+      }));
+    const paired = await this.connection.pairWithAccount({
+      endpoints: accountRelayEndpoints.map((url) => ({
+        url,
+        kind: "relay" as const,
+        dialable: true,
+      })),
+      peer,
+      accountToken: accessToken,
+      dpop,
+      expectedHostDeviceId,
+      existingPairing: existing
+        ? { deviceId: existing.pairedDeviceId, secret: existing.secret }
+        : null,
+      buildEnvironment: (helloOk, endpoint, pairing) => {
+        const explicitWssEndpoints = [...new Set([
+          ...pairedRoutes.filter((candidate) => candidate.startsWith("wss://")),
+          endpoint,
+          ...(helloOk.cloudRelayWssUrl?.startsWith("wss://") ? [helloOk.cloudRelayWssUrl] : []),
+        ])];
+        return {
+          envId: existing?.envId ?? uuid(),
+          machineName: args.machine.name ?? helloOk.brain.deviceName,
+          hostDeviceId: expectedHostDeviceId,
+          relayUrl: helloOk.cloudRelayWssUrl ?? endpoint,
+          machineKeyUrl: endpoint,
+          addressCandidates,
+          explicitWssEndpoints,
+          port: directPort,
+          pairedDeviceId: pairing.deviceId,
+          secret: pairing.secret,
+          dpopKeys,
+          dpopPublicKeyX963,
+          siteId,
+          localDeviceId,
+          localDeviceName: deviceName,
+          createdAt: existing?.createdAt ?? nowIso(),
+          lastConnectedAt: nowIso(),
+          lastGoodEndpoint: endpoint,
+          activeProjectId: existing?.activeProjectId ?? null,
+          hostIdentity: {
+            deviceId: helloOk.brain.deviceId,
+            siteId: helloOk.brain.siteId,
+            name: helloOk.brain.deviceName,
+            platform: helloOk.brain.platform,
+            deviceType: helloOk.brain.deviceType,
+          },
+        };
+      },
+    });
+    paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects)
+      ?? paired.environment.activeProjectId
+      ?? null;
     await this.envStore.saveEnvironment(paired.environment);
     await this.envStore.setSelectedEnvId(paired.environment.envId);
     this.selectedEnvId = paired.environment.envId;

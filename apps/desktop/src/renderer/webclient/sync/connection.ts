@@ -2,6 +2,7 @@ import type {
   SyncBrainStatusPayload,
   SyncChangesetBatchPayload,
   SyncEnvelope,
+  SyncDpopProof,
   SyncHeartbeatPayload,
   SyncHelloOkPayload,
   SyncHelloPayload,
@@ -12,6 +13,7 @@ import type {
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
+import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
 import type { BrowserDialCandidate } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof } from "./dpop";
@@ -81,6 +83,20 @@ export type PairAndConnectArgs = {
   pin: string;
   dpopPublicKey: string;
   buildEnvironment: (result: SyncPairingResultPayload, endpoint: string) => WebClientEnvironmentRecord;
+};
+
+export type AccountPairAndConnectArgs = {
+  endpoints: BrowserDialCandidate[];
+  peer: SyncPeerMetadata;
+  accountToken: string;
+  dpop: SyncDpopProof;
+  expectedHostDeviceId: string;
+  existingPairing: { deviceId: string; secret: string } | null;
+  buildEnvironment: (
+    helloOk: SyncHelloOkPayload,
+    endpoint: string,
+    pairing: { deviceId: string; secret: string },
+  ) => WebClientEnvironmentRecord;
 };
 
 type ListenerMap = {
@@ -209,6 +225,23 @@ export class SyncConnection {
     throw lastError ?? new Error("Failed to pair with ADE machine.");
   }
 
+  async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+    this.disconnect({ reconnect: false, code: 1000, reason: "Account pairing" });
+    this.consecutiveAuthFailures = 0;
+    const dialable = args.endpoints.filter((candidate) => candidate.dialable);
+    if (dialable.length === 0) throw new Error("That machine has no secure account connection route.");
+    let lastError: Error | null = null;
+    for (const candidate of dialable) {
+      try {
+        return await this.pairWithAccountOnEndpoint(candidate.url, args);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        this.cleanupSocket();
+      }
+    }
+    throw lastError ?? new Error("Failed to connect to the ADE account machine.");
+  }
+
   send(input: EncodeEnvelopeInput): void {
     if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Sync socket is not connected.");
@@ -312,6 +345,12 @@ export class SyncConnection {
         void this.handleMessage(asMessageEvent(event.data), {
           onHelloOk: (payload) => {
             if (settled) return;
+            if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
+              settled = true;
+              clearTimeout(timeout);
+              reject(new Error("Connected machine identity did not match the stored pairing."));
+              return;
+            }
             settled = true;
             clearTimeout(timeout);
             this.finishConnected(environment, endpoint, payload);
@@ -413,6 +452,99 @@ export class SyncConnection {
           settled = true;
           clearTimeout(timeout);
           reject(new Error("Connection closed before pairing completed."));
+          return;
+        }
+        this.handleClose(event);
+      };
+    });
+  }
+
+  private async pairWithAccountOnEndpoint(
+    endpoint: string,
+    args: AccountPairAndConnectArgs,
+  ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+    const socket = this.socketFactory(endpoint);
+    this.ws = socket;
+    this.shouldReconnect = false;
+    this.setStatus({ state: "connecting", endpoint, error: null });
+    let settled = false;
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("Timed out connecting to the account machine."));
+        try {
+          socket.close(4000, "Account pairing timeout");
+        } catch {
+          // Ignore close failures after timeout.
+        }
+      }, this.connectTimeoutMs * 2);
+
+      socket.onopen = () => {
+        const payload: SyncHelloPayload = {
+          peer: args.peer,
+          auth: {
+            kind: "account",
+            deviceId: args.peer.deviceId,
+            accountToken: args.accountToken,
+            dpop: args.dpop,
+          },
+        };
+        socket.send(encodeEnvelopeText({ type: "hello", requestId: "account-hello", payload }));
+      };
+      socket.onmessage = (event) => {
+        void this.handleMessage(asMessageEvent(event.data), {
+          onHelloOk: (payload) => {
+            if (settled) return;
+            const hostDeviceId = payload.brain?.deviceId?.trim();
+            const pairing = resolveAccountHelloPairing({
+              accountPairing: payload.accountPairing,
+              existingPairing: args.existingPairing,
+              expectedDeviceId: args.peer.deviceId,
+            });
+            if (
+              hostDeviceId !== args.expectedHostDeviceId
+              || !pairing
+            ) {
+              settled = true;
+              clearTimeout(timeout);
+              reject(new Error("Account machine identity did not match the verified directory record."));
+              return;
+            }
+            let environment: WebClientEnvironmentRecord;
+            try {
+              environment = args.buildEnvironment(payload, endpoint, pairing);
+            } catch (error) {
+              settled = true;
+              clearTimeout(timeout);
+              reject(error);
+              return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            this.shouldReconnect = true;
+            this.finishConnected(environment, endpoint, payload);
+            resolve({ environment, helloOk: payload, endpoint });
+          },
+          onHelloError: (payload) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            reject(new Error(payload.message || "Account authentication was rejected."));
+          },
+        });
+      };
+      socket.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        reject(new Error("The secure machine connection failed."));
+      };
+      socket.onclose = (event) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error("Connection closed before account authentication completed."));
           return;
         }
         this.handleClose(event);

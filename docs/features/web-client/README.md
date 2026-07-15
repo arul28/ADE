@@ -30,8 +30,14 @@ Build and static host:
 
 Browser sync client:
 
+- `apps/desktop/src/renderer/webclient/account/client.ts` - optional Clerk
+  OAuth authorization-code + PKCE session for the static client. Access and
+  refresh tokens remain in module memory, the callback is scrubbed from the
+  address bar before directory loading, and account requests use exact trusted
+  origins with omitted browser credentials and referrers.
 - `apps/desktop/src/renderer/webclient/sync/client.ts` - high-level browser
-  sync client. Pairs with PIN, stores environments, sends remote commands,
+  sync client. Pairs with PIN or adopts a machine through the verified account
+  relay, stores only the resulting paired credentials, sends remote commands,
   requests files, subscribes to chat and terminal streams, switches projects,
   and treats `changeset_batch` as invalidation input.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
@@ -338,6 +344,43 @@ The web client never talks to an ADE application server for project data. A
 Cloudflare Pages request serves static assets; after that all application state
 flows through the selected sync WebSocket transport to the machine runtime.
 
+## Optional account machine directory
+
+Pairing remains the no-account fallback. A configured deployment also offers
+ADE account sign-in in the machine picker, then loads the user's machines from
+the existing Clerk-verified account-directory Worker. Offline machines remain
+listed with their last-seen state and cannot be selected.
+
+The static client uses these build-time variables:
+
+```text
+VITE_ADE_CLERK_ISSUER=https://<clerk-instance-or-approved-proxy>
+VITE_ADE_CLERK_OAUTH_CLIENT_ID=<public-oauth-client-id>
+VITE_ADE_ACCOUNT_DIRECTORY_URL=https://<account-directory-worker>
+VITE_ADE_ACCOUNT_RELAY_URLS=https://<approved-relay-base>[,https://<another-base>]
+```
+
+`VITE_ADE_ACCOUNT_RELAY_URLS` is optional when using ADE's default production
+tunnel relay; set it for additional approved relay deployments.
+
+The Clerk OAuth application must allow the exact hosted callback
+`https://app.ade-app.dev/account/callback` (plus an explicit loopback callback
+for local development when needed). The Worker must set `WEB_CLIENT_ORIGIN` to
+the exact hosted origin. No wildcard origin is accepted for a request carrying
+an account bearer.
+
+The account bearer is sent only to the configured Clerk token endpoint, the
+exact trusted account-directory origin, and a clean directory-advertised
+`wss://` endpoint matching an allowlisted relay base plus the exact
+`/connect/<machineKey>` path. It is never placed in a query,
+fragment, log, analytics payload, IndexedDB, local storage, or session storage.
+After a new account adoption, the browser persists the returned paired secret
+and pinned DPoP key and reconnects through the ordinary paired flow; LAN,
+tailnet, and direct `ws://` routes are eligible only at that point. Existing
+devices keep their pairing record and account reauthentication never rotates
+their paired secret. If no verified WSS relay exists, account connection fails
+closed and the explicit PIN flow remains available.
+
 ## Data strategy: no local DB
 
 The browser intentionally does not maintain a local replica of `.ade/ade.db`.
@@ -429,6 +472,9 @@ That does not apply to the hosted Pages deployment.
 Ops checks after deploy:
 
 - `https://ade-web-client.pages.dev/` serves the SPA.
+- Account sign-in returns to `/account/callback`, removes the callback query,
+  and shows the signed-in machine directory without writing tokens to browser
+  storage.
 - `https://ade-web-client.pages.dev/open?type=lane&id=<uuid>` falls back to
   `index.html` and the shell parses the target.
 - `https://ade-web-client.pages.dev/pair#<payload>` loads `PairFlow` without

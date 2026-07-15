@@ -7,6 +7,7 @@ import type { WebSocket } from "ws";
 import type { SyncDpopVerification } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import { verifySyncDpopProof } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import type { SyncDpopProof } from "../../../shared/types/sync";
+import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "../sync/syncProtocol";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
@@ -229,5 +230,110 @@ describe("DesktopPairedMachineStore", () => {
       endpoint: "ws://studio.local:8787/",
       lastSucceededAt: null,
     }]);
+  });
+
+  it("uses account auth only on a verified WSS relay and preserves an existing paired secret", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-pairing-"));
+    process.env.ADE_HOME = adeHome;
+    const openedEndpoints: string[] = [];
+    const accountDpopVerdicts: SyncDpopVerification[] = [];
+    let accountHelloCount = 0;
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-account-1",
+      deviceId: "host-account-1",
+      name: "Account Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "ws://relay.example/connect/plaintext" },
+        { kind: "relay", url: "wss://relay.example/connect/machine-account-1?token=hostile" },
+        { kind: "lan", url: "wss://arbitrary.example/account" },
+        { kind: "lan", host: "studio.local", port: 8787 },
+        { kind: "relay", url: "wss://relay.example/connect/machine-account-1" },
+      ],
+    };
+    const createWebSocket = (endpoint: string) => {
+      openedEndpoints.push(endpoint);
+      return new FakeWebSocket((text, ws) => {
+        const envelope = parseSyncEnvelope(wsDataToText(text));
+        if (envelope.type !== "hello") return;
+        accountHelloCount += 1;
+        const payload = envelope.payload as {
+          peer: unknown;
+          auth: {
+            kind: string;
+            deviceId: string;
+            accountToken: string;
+            dpop: SyncDpopProof;
+          };
+        };
+        expect(payload.auth.kind).toBe("account");
+        expect(payload.auth.accountToken).toBe("clerk-access-token");
+        accountDpopVerdicts.push(verifySyncDpopProof({
+          publicKeyX963Base64: payload.auth.dpop.publicKey ?? "",
+          deviceId: payload.auth.deviceId,
+          secret: payload.auth.accountToken,
+          proof: payload.auth.dpop,
+        }));
+        ws.receive(encodeSyncEnvelope({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            peer: payload.peer,
+            brain: {
+              deviceId: "host-account-1",
+              deviceName: "Account Studio",
+              platform: "macOS",
+              deviceType: "desktop",
+              siteId: "host-account-site-1",
+              dbVersion: 0,
+            },
+            serverDbVersion: 0,
+            heartbeatIntervalMs: 5_000,
+            pollIntervalMs: 1_500,
+            cloudRelayWssUrl: "wss://relay.example/connect/machine-account-1",
+            features: { rpcChannel: true, portForward: true },
+            ...(accountHelloCount === 1
+              ? {
+                  accountPairing: {
+                    deviceId: payload.auth.deviceId,
+                    secret: "account-issued-paired-secret",
+                  },
+                }
+              : {}),
+          },
+        }));
+      }) as unknown as WebSocket;
+    };
+
+    const store = new DesktopPairedMachineStore();
+    const adopted = await store.pairWithAccountMachine(
+      machine,
+      "clerk-access-token",
+      "Web account client",
+      { pairingTimeoutMs: 2_000, createWebSocket, relayBaseUrls: ["https://relay.example"] },
+    );
+    const reauthenticated = await store.pairWithAccountMachine(
+      machine,
+      "clerk-access-token",
+      "Web account client",
+      { pairingTimeoutMs: 2_000, createWebSocket, relayBaseUrls: ["https://relay.example"] },
+    );
+
+    expect(openedEndpoints).toEqual([
+      "wss://relay.example/connect/machine-account-1",
+      "wss://relay.example/connect/machine-account-1",
+    ]);
+    expect(accountDpopVerdicts).toEqual([{ ok: true }, { ok: true }]);
+    expect(adopted.secret).toBe("account-issued-paired-secret");
+    expect(reauthenticated.secret).toBe("account-issued-paired-secret");
+    expect(reauthenticated.deviceId).toBe(adopted.deviceId);
+    expect(reauthenticated.dpopPublicKey).toBe(adopted.dpopPublicKey);
+    expect(reauthenticated.endpoints).toContain("ws://studio.local:8787/");
+    expect(reauthenticated.endpoints).not.toContain("wss://arbitrary.example/account");
+    expect(reauthenticated.endpoints).not.toContain("ws://relay.example/connect/plaintext");
+    expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
   });
 });

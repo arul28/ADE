@@ -36,7 +36,9 @@ Deployment is intentionally deferred. Before a first deploy:
 2. Set `CLERK_JWKS_URL`, `CLERK_ISSUER`, and
    `CLERK_OAUTH_CLIENT_ID=<your-clerk-oauth-client-id>` as Worker vars/secrets. Register
    `https://<worker-host>/device/callback` as an allowed redirect URI for the
-   Clerk OAuth application.
+   Clerk OAuth application. Set `WEB_CLIENT_ORIGIN` to the exact HTTPS origin
+   of the hosted ADE web client; this is the only cross-origin caller allowed
+   to send an account bearer to `GET /account/machines`.
 3. Apply both remote migrations and deploy the Worker.
 4. Set `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` for ADE brains that
    should offer device login.

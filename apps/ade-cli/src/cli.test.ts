@@ -175,6 +175,66 @@ describe("ADE CLI", () => {
         injectProjectRootIntoArgs: true,
       }],
     });
+    const machines = expectExecutePlan(buildCliPlan(["machines", "list"]));
+    expect(machines).toMatchObject({
+      label: "account machines list",
+      formatter: "account-machines",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [{
+        method: "account.call",
+        params: { action: "listMachines", args: {} },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(machines)).toBe(false);
+    expect(buildCliPlan([
+      "machines",
+      "connect",
+      "mk_studio",
+      "--project",
+      "ADE",
+    ])).toEqual({
+      kind: "account-machine-connect",
+      machine: "mk_studio",
+      remoteArgs: ["--project", "ADE"],
+    });
+    expect(buildCliPlan([
+      "machine",
+      "hop",
+      "--machine",
+      "device_studio",
+      "--session",
+      "Fix auth",
+    ])).toEqual({
+      kind: "account-machine-connect",
+      machine: "device_studio",
+      remoteArgs: ["--session", "Fix auth"],
+    });
+    expect(() => buildCliPlan(["machines", "connect", "--project", "ADE"]))
+      .toThrow(/requires a stable machine key/i);
+    expect(formatOutput(
+      { state: "signed_out", machines: [], message: null },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    )).toContain("run `ade login`");
+    expect(formatOutput(
+      {
+        state: "ok",
+        message: null,
+        machines: [{
+          machineKey: "lan-only",
+          deviceId: "device-lan",
+          name: "LAN only",
+          platform: "macOS",
+          deviceType: "desktop",
+          reachableEndpoints: [{ kind: "lan", host: "192.168.1.8", port: 8787 }],
+          lastSeenAt: 1,
+          online: true,
+        }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    )).toContain("unreachable");
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
       method: "account.call",

@@ -20,13 +20,13 @@ import type {
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProjectSecretService } from "../secrets/projectSecretService";
 import type {
-  AdeAccountMachine,
-  AdeAccountMachineEndpoint,
   AdeAccountMachinesResult,
   AdeAccountStatus,
 } from "../../../shared/types";
-
-const MACHINES_FETCH_TIMEOUT_MS = 8_000;
+import {
+  fetchAccountMachines,
+  parseTrustedAccountDirectoryBaseUrl,
+} from "../../../shared/accountDirectory";
 
 type AccountBridgeOptions = {
   /** Resolves the active project root so CLERK_* project secrets win config. */
@@ -57,12 +57,6 @@ function isLoginConfigured(projectRoot: string | null): boolean {
   return Boolean(issuer && clientId);
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  // URL.hostname wraps IPv6 in brackets (e.g. "[::1]"); strip them before match.
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1";
-}
-
 /**
  * Trust boundary for the machine account bearer. `listMachines` attaches the
  * machine's account token to `${baseUrl}/account/machines`, so `baseUrl` must be
@@ -75,23 +69,7 @@ function isLoopbackHost(hostname: string): boolean {
 export function parseTrustedDirectoryBaseUrl(
   raw: string | null | undefined,
 ): string | null {
-  const trimmed = raw?.trim();
-  if (!trimmed) return null;
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (
-    url.protocol === "https:" ||
-    (url.protocol === "http:" && isLoopbackHost(url.hostname))
-  ) {
-    if (url.username || url.password || url.search || url.hash) return null;
-    const pathname = url.pathname.replace(/\/+$/, "");
-    return `${url.origin}${pathname}`;
-  }
-  return null;
+  return parseTrustedAccountDirectoryBaseUrl(raw);
 }
 
 /**
@@ -124,39 +102,6 @@ function toAccountStatus(
     provider: null,
     imageUrl: null,
     configured,
-  };
-}
-
-function mapMachine(raw: unknown): AdeAccountMachine | null {
-  if (!raw || typeof raw !== "object") return null;
-  const value = raw as Record<string, unknown>;
-  const machineKey = typeof value.machineKey === "string" ? value.machineKey : null;
-  if (!machineKey) return null;
-  const endpoints = Array.isArray(value.reachableEndpoints)
-    ? value.reachableEndpoints
-        .map((entry): AdeAccountMachineEndpoint | null => {
-          if (!entry || typeof entry !== "object") return null;
-          const e = entry as Record<string, unknown>;
-          const kind = e.kind;
-          if (kind !== "lan" && kind !== "tailnet" && kind !== "relay") return null;
-          return {
-            kind,
-            url: typeof e.url === "string" ? e.url : undefined,
-            host: typeof e.host === "string" ? e.host : undefined,
-            port: typeof e.port === "number" ? e.port : undefined,
-          };
-        })
-        .filter((entry): entry is AdeAccountMachineEndpoint => entry != null)
-    : [];
-  return {
-    machineKey,
-    deviceId: typeof value.deviceId === "string" ? value.deviceId : null,
-    name: typeof value.name === "string" ? value.name : null,
-    platform: typeof value.platform === "string" ? value.platform : null,
-    deviceType: typeof value.deviceType === "string" ? value.deviceType : null,
-    reachableEndpoints: endpoints,
-    lastSeenAt: typeof value.lastSeenAt === "number" ? value.lastSeenAt : null,
-    online: value.online === true,
   };
 }
 
@@ -219,48 +164,23 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         token = await svc.getAccessToken();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        // A missing/expired session reads as signed-out to the UI.
+        // Preserve the concrete expired state so the UI can offer re-auth
+        // without confusing it with a user who intentionally signed out.
         if (/not signed in|session expired/i.test(message)) {
-          return { state: "signed_out", machines: [], message: null };
+          return {
+            state: "auth_expired",
+            machines: [],
+            message: "Your ADE account session expired. Sign in again.",
+          };
         }
         return { state: "unavailable", machines: [], message };
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), MACHINES_FETCH_TIMEOUT_MS);
-      try {
-        const response = await fetch(`${baseUrl}/account/machines`, {
-          method: "GET",
-          headers: { accept: "application/json", authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          return {
-            state: "unavailable",
-            machines: [],
-            message: `Machine directory returned ${response.status}.`,
-          };
-        }
-        const payload = (await response.json().catch(() => null)) as
-          | { machines?: unknown[] }
-          | null;
-        const machines = Array.isArray(payload?.machines)
-          ? payload!.machines
-              .map(mapMachine)
-              .filter((entry): entry is AdeAccountMachine => entry != null)
-          : [];
-        return { state: "ok", machines, message: null };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        options.logger?.warn("account.machines_fetch_failed", { error: message });
-        return {
-          state: "unavailable",
-          machines: [],
-          message: controller.signal.aborted ? "Machine directory timed out." : message,
-        };
-      } finally {
-        clearTimeout(timer);
+      const result = await fetchAccountMachines({ baseUrl, accessToken: token });
+      if (result.state === "unavailable") {
+        options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
+      return result;
     },
   };
 }

@@ -236,5 +236,18 @@ describe("pairPeerViaAccount", () => {
       runtimeHostGranted: true,
       peerDeviceType: "desktop",
     });
+
+    const directAccountDesktop = store.pairPeerViaAccount({
+      ...phonePeer,
+      deviceId: "account-desktop-no-grant",
+      deviceName: "Account desktop without legacy grant",
+      platform: "linux",
+      deviceType: "desktop",
+    }, attestation, { dpopPublicKey: publicKey });
+    expect(store.getPairingRecord(directAccountDesktop.deviceId)).toMatchObject({
+      dpopPublicKey: publicKey,
+      runtimeHostGranted: true,
+      peerDeviceType: "desktop",
+    });
   });
 });

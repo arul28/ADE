@@ -22,11 +22,13 @@ function HeaderComponent({
   lane,
   chatTitle,
   remoteLabel,
+  accountLabel,
 }: {
   projectName: string;
   lane: LaneSummary | null;
   chatTitle?: string | null;
   remoteLabel?: string | null;
+  accountLabel?: string | null;
 }) {
   const laneColor = theme.lane(lane);
   const normalizedProject = projectName.trim().toLowerCase();
@@ -43,6 +45,7 @@ function HeaderComponent({
   const showProject = Boolean(normalizedProject && normalizedProject !== "ade" && !projectRepeatsBranch);
   const chatLabel = chatTitle?.trim() || null;
   const remote = remoteLabel?.trim() || null;
+  const account = accountLabel?.trim() || null;
   return (
     <Box
       paddingX={1}
@@ -55,42 +58,48 @@ function HeaderComponent({
       flexDirection="row"
       justifyContent="space-between"
     >
-      <Text wrap="truncate-end">
-        <Text color={theme.color.accent} inverse bold>{" ADE "}</Text>
-        {showProject ? (
-          <>
-            <Text color={theme.color.t4}>{"  │  "}</Text>
-            <Text color={theme.color.fg}>{projectName}</Text>
-          </>
-        ) : null}
-        {lane ? (
-          <>
-            <Text color={theme.color.t4}>{"  │  "}</Text>
-            <Text color={theme.color.t4}>lane </Text>
-            <Text color={laneColor} bold>{laneIconGlyph(lane.icon)}</Text>
-            <Text> </Text>
-            <Text color={laneColor}>{formatLaneLabel(lane)}</Text>
-          </>
-        ) : null}
-        {lane?.branchRef ? (
-          <>
-            <Text>{"    "}</Text>
-            <Text color={theme.color.t4}>branch </Text>
-            <Text color={theme.color.t3}>{lane.branchRef}</Text>
-          </>
-        ) : null}
-        {chatLabel ? (
-          <>
-            <Text>{"    "}</Text>
-            <Text color={theme.color.t4}>chat </Text>
-            <Text color={theme.color.fg}>{chatLabel}</Text>
-          </>
-        ) : null}
-      </Text>
-      {remote ? (
-        <Text color={theme.color.t4} wrap="truncate-end">
-          connected to <Text color={theme.color.accent}>{remote}</Text>
+      <Box flexShrink={1}>
+        <Text wrap="truncate-end">
+          <Text color={theme.color.accent} inverse bold>{" ADE "}</Text>
+          {showProject ? (
+            <>
+              <Text color={theme.color.t4}>{"  │  "}</Text>
+              <Text color={theme.color.fg}>{projectName}</Text>
+            </>
+          ) : null}
+          {lane ? (
+            <>
+              <Text color={theme.color.t4}>{"  │  "}</Text>
+              <Text color={theme.color.t4}>lane </Text>
+              <Text color={laneColor} bold>{laneIconGlyph(lane.icon)}</Text>
+              <Text> </Text>
+              <Text color={laneColor}>{formatLaneLabel(lane)}</Text>
+            </>
+          ) : null}
+          {lane?.branchRef ? (
+            <>
+              <Text>{"    "}</Text>
+              <Text color={theme.color.t4}>branch </Text>
+              <Text color={theme.color.t3}>{lane.branchRef}</Text>
+            </>
+          ) : null}
+          {chatLabel ? (
+            <>
+              <Text>{"    "}</Text>
+              <Text color={theme.color.t4}>chat </Text>
+              <Text color={theme.color.fg}>{chatLabel}</Text>
+            </>
+          ) : null}
         </Text>
+      </Box>
+      {remote || account ? (
+        <Box flexShrink={0} marginLeft={2}>
+          <Text color={theme.color.t4} wrap="truncate-end">
+            {remote ? <>connected to <Text color={theme.color.accent}>{remote}</Text></> : null}
+            {remote && account ? <Text>{"  │  "}</Text> : null}
+            {account ? <Text>{account}</Text> : null}
+          </Text>
+        </Box>
       ) : null}
     </Box>
   );

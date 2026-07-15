@@ -3,6 +3,14 @@ import path from "node:path";
 import readline from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { RemoteTargetRegistry, normalizeRemoteTargetRoutes } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
+import { DesktopPairedMachineStore } from "../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
+import {
+  PairedRuntimeCompatibilityError,
+  PairedRuntimeTransportUnavailableError,
+} from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
+import { buildPairedEndpointCandidates } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
+import { openSyncRuntimeTransport, type SyncRuntimeTransport } from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
+import { RuntimeRpcClient } from "../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
 import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
@@ -14,11 +22,23 @@ import {
   ProcessJsonRpcClient,
   spawnRemoteRpcProcess,
   startRemoteBridge,
+  startSyncRemoteBridge,
   type RemoteBridge,
   type RemoteRpcAttempt,
   type RemoteRpcSession,
   type RemoteRuntimeLayout,
 } from "./remoteBridge";
+
+type RemoteRpcClientLike = {
+  request<T = unknown>(method: string, params?: unknown): Promise<T>;
+  close(): void;
+};
+
+type OpenedRemoteSession = {
+  client: RemoteRpcClientLike;
+  mode: "ssh" | "paired";
+  attempt?: RemoteRpcAttempt;
+};
 
 type InitializeResponse = {
   runtimeInfo?: {
@@ -496,7 +516,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   });
 }
 
-async function initializeRemoteRpc(client: ProcessJsonRpcClient): Promise<void> {
+async function initializeRemoteRpc(client: RemoteRpcClientLike): Promise<InitializeResponse> {
   const initialize = await client.request<InitializeResponse>("ade/initialize", {
     protocolVersion: "2025-06-18",
     clientName: "ade-code-remote",
@@ -527,6 +547,7 @@ async function initializeRemoteRpc(client: ProcessJsonRpcClient): Promise<void> 
     );
   }
   await client.request("ade/initialized");
+  return initialize;
 }
 
 async function openRemoteRpcSession(target: RemoteRuntimeTarget): Promise<RemoteRpcSession> {
@@ -549,6 +570,101 @@ async function openRemoteRpcSession(target: RemoteRuntimeTarget): Promise<Remote
     `Could not connect to remote ADE on ${target.name}. ` +
       `Tried ${errors.length} route/runtime combinations. ${errors.slice(0, 4).join(" | ")}`,
   );
+}
+
+async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<OpenedRemoteSession> {
+  const registry = new RemoteTargetRegistry();
+  const pairedStore = new DesktopPairedMachineStore();
+  const credentials = target.pairedMachine
+    ? pairedStore.getForReference(target.pairedMachine)
+    : null;
+  if (!credentials) {
+    throw new PairedRuntimeTransportUnavailableError(
+      "Paired credentials for this account machine were not found.",
+    );
+  }
+  const candidates = buildPairedEndpointCandidates({
+    endpoints: credentials.endpoints,
+    relayUrl: credentials.relayUrl,
+    endpointStates: credentials.endpointStates,
+  });
+  const failures: string[] = [];
+  for (const candidate of candidates) {
+    let transport: SyncRuntimeTransport;
+    try {
+      transport = await openSyncRuntimeTransport({
+        credentials,
+        endpoint: candidate.endpoint,
+        appVersion: localCliVersion(),
+      });
+    } catch (error) {
+      failures.push(`${candidate.endpoint}: ${errorMessage(error)}`);
+      continue;
+    }
+    const runtimeClient = new RuntimeRpcClient(transport);
+    const client: RemoteRpcClientLike = {
+      request: async <T,>(method: string, params?: unknown): Promise<T> =>
+        await runtimeClient.call(
+          method,
+          isRecord(params) ? params : undefined,
+        ) as T,
+      close: () => runtimeClient.close(),
+    };
+    try {
+      const initialized = await initializeRemoteRpc(client);
+      const connectedAt = Date.now();
+      pairedStore.markEndpointSucceeded(
+        credentials.hostIdentity.deviceId,
+        candidate.endpoint,
+        connectedAt,
+      );
+      registry.update(target.id, {
+        runtimeBinaryVersion: initialized.runtimeInfo?.version?.trim() || target.runtimeBinaryVersion,
+        lastConnectedAt: connectedAt,
+      });
+      return { mode: "paired", client };
+    } catch (error) {
+      client.close();
+      const message = errorMessage(error);
+      if (/connection|websocket|sync|rpc channel|timed out|ECONN|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
+        failures.push(`${candidate.endpoint}: ${message}`);
+        continue;
+      }
+      throw new PairedRuntimeCompatibilityError(
+        `The paired ADE runtime could not initialize compatibly: ${message}`,
+        error,
+      );
+    }
+  }
+  throw new PairedRuntimeTransportUnavailableError(
+    `Could not open the paired ADE runtime. ${failures.slice(0, 4).join(" | ")}`,
+  );
+}
+
+async function openPairedTransport(target: RemoteRuntimeTarget): Promise<SyncRuntimeTransport> {
+  const pairedStore = new DesktopPairedMachineStore();
+  const credentials = target.pairedMachine
+    ? pairedStore.getForReference(target.pairedMachine)
+    : null;
+  if (!credentials) throw new Error("Paired credentials for this account machine were not found.");
+  const candidates = buildPairedEndpointCandidates({
+    endpoints: credentials.endpoints,
+    relayUrl: credentials.relayUrl,
+    endpointStates: credentials.endpointStates,
+  });
+  const failures: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      return await openSyncRuntimeTransport({
+        credentials,
+        endpoint: candidate.endpoint,
+        appVersion: localCliVersion(),
+      });
+    } catch (error) {
+      failures.push(errorMessage(error));
+    }
+  }
+  throw new Error(`Could not open the paired runtime connection. ${failures.slice(0, 3).join("; ")}`);
 }
 
 function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
@@ -577,7 +693,7 @@ function sortProjects(projects: RemoteRuntimeProjectRecord[]): RemoteRuntimeProj
   });
 }
 
-async function listProjects(client: ProcessJsonRpcClient): Promise<RemoteRuntimeProjectRecord[]> {
+async function listProjects(client: RemoteRpcClientLike): Promise<RemoteRuntimeProjectRecord[]> {
   const raw = await withTimeout(
     client.request("projects.list", {}),
     REMOTE_RPC_TIMEOUT_MS,
@@ -586,7 +702,7 @@ async function listProjects(client: ProcessJsonRpcClient): Promise<RemoteRuntime
   return sortProjects(coerceProjects(raw));
 }
 
-async function ensureProject(client: ProcessJsonRpcClient, query: string): Promise<RemoteRuntimeProjectRecord> {
+async function ensureProject(client: RemoteRpcClientLike, query: string): Promise<RemoteRuntimeProjectRecord> {
   const raw = await withTimeout(
     client.request("projects.add", { rootPath: query }),
     REMOTE_RPC_TIMEOUT_MS,
@@ -598,7 +714,7 @@ async function ensureProject(client: ProcessJsonRpcClient, query: string): Promi
 }
 
 async function callProjectAction<T>(
-  client: ProcessJsonRpcClient,
+  client: RemoteRpcClientLike,
   projectId: string,
   domain: string,
   action: string,
@@ -621,7 +737,7 @@ async function callProjectAction<T>(
 }
 
 async function callProjectActionArgsList<T>(
-  client: ProcessJsonRpcClient,
+  client: RemoteRpcClientLike,
   projectId: string,
   domain: string,
   action: string,
@@ -761,7 +877,7 @@ function chatToChoice(session: AgentChatSessionSummary): RemoteSessionChoice {
   };
 }
 
-async function listRemoteChatSessions(client: ProcessJsonRpcClient, projectId: string): Promise<AgentChatSessionSummary[]> {
+async function listRemoteChatSessions(client: RemoteRpcClientLike, projectId: string): Promise<AgentChatSessionSummary[]> {
   const args = {
     includeArchived: false,
     includeAutomation: true,
@@ -779,7 +895,7 @@ async function listRemoteChatSessions(client: ProcessJsonRpcClient, projectId: s
   }
 }
 
-export async function listRemoteSessions(client: ProcessJsonRpcClient, projectId: string): Promise<RemoteSessionChoice[]> {
+export async function listRemoteSessions(client: RemoteRpcClientLike, projectId: string): Promise<RemoteSessionChoice[]> {
   const chats = await listRemoteChatSessions(client, projectId).catch((error) => {
     if (canPrompt()) {
       const message = error instanceof Error ? error.message : String(error);
@@ -836,7 +952,7 @@ async function selectScope(options: RemoteCliOptions): Promise<RemoteLaunchScope
 }
 
 export async function selectProject(
-  client: ProcessJsonRpcClient,
+  client: RemoteRpcClientLike,
   projects: RemoteRuntimeProjectRecord[],
   query: string | null,
 ): Promise<RemoteRuntimeProjectRecord> {
@@ -945,7 +1061,27 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
   }
 
   const target = await selectTarget(targets, options.targetQuery);
-  const remote = await openRemoteRpcSession(target);
+  let remote: OpenedRemoteSession;
+  if (target.transport === "paired") {
+    try {
+      remote = await openPairedRemoteSession(target);
+    } catch (pairedError) {
+      // Preserve the explicit SSH fallback for paired targets that also have
+      // vetted SSH routes. Account relay-only targets fail clearly here.
+      if (
+        !target.routes?.length
+        || !(
+          pairedError instanceof PairedRuntimeTransportUnavailableError
+          || pairedError instanceof PairedRuntimeCompatibilityError
+        )
+      ) {
+        throw pairedError;
+      }
+      remote = { ...(await openRemoteRpcSession(target)), mode: "ssh" };
+    }
+  } else {
+    remote = { ...(await openRemoteRpcSession(target)), mode: "ssh" };
+  }
   let bridge: RemoteBridge | null = null;
   try {
     const projects = await listProjects(remote.client);
@@ -967,11 +1103,13 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
     }
 
     remote.client.close();
-    bridge = await startRemoteBridge({
-      target,
-      initialAttempt: remote.attempt,
-      openRemoteRpcSession,
-    });
+    bridge = remote.mode === "paired"
+      ? await startSyncRemoteBridge({ target, openTransport: openPairedTransport })
+      : await startRemoteBridge({
+          target,
+          initialAttempt: remote.attempt,
+          openRemoteRpcSession,
+        });
     process.stderr.write(
       `Connecting ADE Code to ${target.name} · ${project.displayName}${session ? ` · ${session.title}` : ""}\n`,
     );
