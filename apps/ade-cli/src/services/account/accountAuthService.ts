@@ -119,6 +119,7 @@ type PendingLoginSession = {
 
 type PendingDeviceLoginSession = {
   sessionId: string;
+  bridgeUrl: string;
   deviceCode: string;
   deviceSecret: string;
   expiresAtMs: number;
@@ -838,6 +839,7 @@ export function createAccountAuthService(args: {
     const expiresAtMs = now() + Math.trunc(expiresInSec * 1000);
     pendingDeviceSessions.set(sessionId, {
       sessionId,
+      bridgeUrl,
       deviceCode,
       deviceSecret,
       expiresAtMs,
@@ -877,8 +879,7 @@ export function createAccountAuthService(args: {
     }
 
     const epochAtPoll = authEpoch;
-    const bridgeUrl = await resolveDeviceBridgeUrl();
-    const response = await fetchImpl(`${bridgeUrl}/device/token`, {
+    const response = await fetchImpl(`${session.bridgeUrl}/device/token`, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({

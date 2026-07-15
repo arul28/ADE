@@ -17859,7 +17859,9 @@ async function runAccountLogin(
       return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
     };
 
-    const runDeviceFlow = async (): Promise<{ output: string; exitCode: number }> => {
+    const runDeviceFlow = async (
+      onStarted?: () => Promise<void>,
+    ): Promise<{ output: string; exitCode: number }> => {
       const start = await runAccountAction("startDeviceLogin", { projectRoot });
       const sessionId = asString(start.sessionId);
       const userCode = asString(start.userCode);
@@ -17869,6 +17871,7 @@ async function runAccountLogin(
       if (!sessionId || !userCode || !verificationUri) {
         throw new CliExecutionError("ADE account device login did not start.", { start });
       }
+      await onStarted?.();
       pendingSessionId = sessionId;
       let intervalSec = typeof start.intervalSec === "number" && start.intervalSec > 0
         ? start.intervalSec
@@ -17914,11 +17917,24 @@ async function runAccountLogin(
     const openResult = openUrlViaOs(authorizeUrl);
     if (detectAccountLoginMode({ browserOpenFailed: openResult.failed }) === "device") {
       process.stderr.write(
-        `Could not open the browser automatically: ${openResult.message}\nFalling back to device sign-in.\n`,
+        `Could not open the browser automatically: ${openResult.message}\nTrying device sign-in.\n`,
       );
-      await runAccountAction("cancelLogin", { sessionId });
-      pendingSessionId = null;
-      return await runDeviceFlow();
+      let deviceFlowStarted = false;
+      try {
+        return await runDeviceFlow(async () => {
+          deviceFlowStarted = true;
+          try {
+            await runAccountAction("cancelLogin", { sessionId });
+          } catch {
+            // The loopback session expires on its own; a ready device flow can continue.
+          }
+        });
+      } catch (error) {
+        if (deviceFlowStarted) throw error;
+        process.stderr.write(
+          "Device sign-in is unavailable; continuing with manual browser sign-in.\n",
+        );
+      }
     }
     process.stderr.write(
       `\nSign in to ADE in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,

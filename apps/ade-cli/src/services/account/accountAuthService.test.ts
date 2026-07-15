@@ -406,6 +406,54 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
+  it("pins concurrent device sessions to the bridge that created each code", async () => {
+    let activeBridge = "https://directory-a.example.test";
+    const getDeviceBridgeUrl = vi.fn(() => activeBridge);
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce("device-session-a")
+      .mockReturnValueOnce("device-session-b");
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input);
+      const bridge = url.hostname.startsWith("directory-a") ? "a" : "b";
+      if (url.pathname === "/device/code") {
+        return jsonResponse({
+          device_code: `device-code-${bridge}`,
+          user_code: bridge === "a" ? "AAAA-AAAA" : "BBBB-BBBB",
+          verification_uri: `${url.origin}/device`,
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      expect(url.pathname).toBe("/device/token");
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        device_code: `device-code-${bridge}`,
+      });
+      return jsonResponse({ error: "authorization_pending", interval: 5 }, 400);
+    });
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl,
+      randomUUID,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const first = await service.startDeviceLogin();
+    activeBridge = "https://directory-b.example.test";
+    const second = await service.startDeviceLogin();
+
+    await expect(service.pollDeviceLogin(first.sessionId)).resolves.toMatchObject({ status: "pending" });
+    await expect(service.pollDeviceLogin(second.sessionId)).resolves.toMatchObject({ status: "pending" });
+    expect(fetchImpl.mock.calls.map(([input]) => input)).toEqual([
+      "https://directory-a.example.test/device/code",
+      "https://directory-b.example.test/device/code",
+      "https://directory-a.example.test/device/token",
+      "https://directory-b.example.test/device/token",
+    ]);
+    expect(getDeviceBridgeUrl).toHaveBeenCalledTimes(2);
+  });
+
   it("cancels daemon-held device redemption state without changing an existing session", async () => {
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));

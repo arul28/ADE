@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applySyncWebPairingFlags,
   buildAdeCodeArgs,
@@ -2867,6 +2867,113 @@ describe("ADE CLI", () => {
       });
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
     } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("keeps loopback login active when browser and device startup both fail", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-login-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const authorizeUrl = "https://accounts.example/authorize";
+    const requests: Array<{ method: string; params?: any }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "startLogin") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                sessionId: "loopback-1",
+                authorizeUrl,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+              statusHints: {},
+            };
+          }
+          if (action === "startDeviceLogin") {
+            throw new Error("ADE account device login is not configured.");
+          }
+          if (action === "pollLogin") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                status: "signed_in",
+                authStatus: {
+                  signedIn: true,
+                  email: "person@example.com",
+                  source: "loopback",
+                },
+              },
+              statusHints: {},
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const envKeys = [
+      "ADE_ACCOUNT_TOKEN",
+      "DISPLAY",
+      "PATH",
+      "SSH_CLIENT",
+      "SSH_CONNECTION",
+      "SSH_TTY",
+      "WAYLAND_DISPLAY",
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      process.env.DISPLAY = ":0";
+      process.env.PATH = "";
+      delete process.env.SSH_CLIENT;
+      delete process.env.SSH_CONNECTION;
+      delete process.env.SSH_TTY;
+      delete process.env.WAYLAND_DISPLAY;
+
+      const result = await runCli([
+        "--socket",
+        socketPath,
+        "login",
+        "--max-wait",
+        "2",
+        "--text",
+      ]);
+
+      expect(result).toEqual({
+        output: "Signed in as person@example.com (loopback)\n",
+        exitCode: 0,
+      });
+      const accountActions = requests
+        .filter((request) => request.method === "account.call")
+        .map((request) => request.params?.action);
+      expect(accountActions).toEqual(["startLogin", "startDeviceLogin", "pollLogin"]);
+      expect(stderrWrite.mock.calls.flat().join("")).toContain(authorizeUrl);
+    } finally {
+      stderrWrite.mockRestore();
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       stop?.();
       fs.rmSync(root, { recursive: true, force: true });
     }
