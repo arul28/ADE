@@ -480,8 +480,9 @@ export async function startSyncRemoteBridge(args: {
       });
       opened.onError?.((error) => teardown(error.message));
       opened.onClose?.(() => teardown("remote runtime connection closed"));
+      socket.setEncoding("utf8");
       socket.on("data", (chunk) => {
-        try { opened.write(chunk.toString("utf8")); } catch (error) {
+        try { opened.write(String(chunk)); } catch (error) {
           teardown(error instanceof Error ? error.message : String(error));
         }
       });

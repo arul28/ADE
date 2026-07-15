@@ -5,6 +5,36 @@ import type { RuntimeRpcTransport } from "../../../../desktop/src/main/services/
 import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
 import { startSyncRemoteBridge } from "../remoteBridge";
 
+function readLine(socket: net.Socket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let buffered = "";
+    socket.setEncoding("utf8");
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (chunk: Buffer | string) => {
+      buffered += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const newline = buffered.indexOf("\n");
+      if (newline < 0) return;
+      cleanup();
+      resolve(buffered.slice(0, newline + 1));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("Bridge socket closed before a complete JSON-RPC frame arrived."));
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+
 const target: RemoteRuntimeTarget = {
   id: "account-target",
   name: "Account Studio",
@@ -23,9 +53,19 @@ const target: RemoteRuntimeTarget = {
 describe("startSyncRemoteBridge", () => {
   it("pipes ADE Code JSON-RPC through the paired transport without an SSH route", async () => {
     let onData: ((chunk: Buffer) => void) | null = null;
+    const request = '{"jsonrpc":"2.0","id":1,"method":"p€ng"}\n';
+    const response = '{"jsonrpc":"2.0","id":1,"result":"p€ng"}\n';
+    let forwarded = "";
+    let responded = false;
     const write = vi.fn((chunk: string) => {
-      expect(chunk).toBe('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
-      onData?.(Buffer.from('{"jsonrpc":"2.0","id":1,"result":"pong"}\n', "utf8"));
+      forwarded += chunk;
+      if (!forwarded.includes("\n") || responded) return;
+      responded = true;
+      expect(forwarded).toBe(request);
+      const encoded = Buffer.from(response, "utf8");
+      const splitAt = encoded.indexOf(Buffer.from("€", "utf8")) + 1;
+      onData?.(encoded.subarray(0, splitAt));
+      onData?.(encoded.subarray(splitAt));
     });
     const closeTransport = vi.fn();
     const transport: RuntimeRpcTransport = {
@@ -45,10 +85,13 @@ describe("startSyncRemoteBridge", () => {
 
     try {
       await once(socket, "connect");
-      socket.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
-      const [response] = await once(socket, "data") as [Buffer];
-      expect(response.toString("utf8")).toBe('{"jsonrpc":"2.0","id":1,"result":"pong"}\n');
-      expect(write).toHaveBeenCalledOnce();
+      const encoded = Buffer.from(request, "utf8");
+      const splitAt = encoded.indexOf(Buffer.from("€", "utf8")) + 1;
+      const responseLine = readLine(socket);
+      socket.write(encoded.subarray(0, splitAt));
+      socket.write(encoded.subarray(splitAt));
+      await expect(responseLine).resolves.toBe(response);
+      expect(forwarded).toBe(request);
     } finally {
       socket.destroy();
       await bridge.close();

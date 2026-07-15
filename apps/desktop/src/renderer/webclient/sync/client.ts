@@ -302,12 +302,6 @@ export class AdeSyncClient {
       dbVersion: 0,
       capabilities: [],
     };
-    const dpop = await signDpopProof({
-      privateKey: dpopKeys.privateKey,
-      publicKeyX963Base64: dpopPublicKeyX963,
-      deviceId: localDeviceId,
-      secret: accessToken,
-    });
     const pairedRoutes = accountMachinePairedSyncEndpoints(
       args.machine,
       args.relayBaseUrls,
@@ -337,7 +331,12 @@ export class AdeSyncClient {
       })),
       peer,
       accountToken: accessToken,
-      dpop,
+      createDpop: async () => await signDpopProof({
+        privateKey: dpopKeys.privateKey,
+        publicKeyX963Base64: dpopPublicKeyX963,
+        deviceId: localDeviceId,
+        secret: accessToken,
+      }),
       expectedHostDeviceId,
       existingPairing: existing
         ? { deviceId: existing.pairedDeviceId, secret: existing.secret }

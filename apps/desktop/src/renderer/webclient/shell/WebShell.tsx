@@ -90,12 +90,14 @@ function useDismiss(open: boolean, close: () => void) {
 
 const AccountMachineMenu = React.memo(function AccountMachineMenu({
   account,
+  connectingMachineKey,
   onSelect,
   onSignIn,
   onSignOut,
   onRetry,
 }: {
   account: BrowserAccountSnapshot;
+  connectingMachineKey: string | null;
   onSelect: (machine: AdeAccountMachine) => void;
   onSignIn: () => void;
   onSignOut: () => void;
@@ -131,18 +133,19 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
           ) : account.machines.map((machine) => {
             const connectionState = accountMachineConnectionState(machine, account.relayBaseUrls);
             const available = connectionState === "available";
+            const connecting = connectingMachineKey === machine.machineKey;
             return (
               <button
                 key={machine.machineKey}
                 type="button"
-                disabled={!available}
+                disabled={!available || connecting}
                 onClick={() => onSelect(machine)}
                 title={connectionState === "offline" ? "Offline" : !available ? "No secure relay route" : machine.machineKey}
                 style={{
                   ...menuItemStyle,
                   height: 36,
                   opacity: available ? 1 : 0.5,
-                  cursor: available ? "pointer" : "not-allowed",
+                  cursor: available && !connecting ? "pointer" : "not-allowed",
                 }}
               >
                 <span style={{ display: "grid", minWidth: 0 }}>
@@ -154,7 +157,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
                   </span>
                 </span>
                 <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
-                  {connectionState}
+                  {connecting ? "connecting" : connectionState}
                 </span>
               </button>
             );
@@ -185,6 +188,7 @@ export function WebShell({
   catalog,
   activeProjectId,
   account,
+  connectingAccountMachineKey,
   onSwitchEnv,
   onSwitchAccountMachine,
   onPairNew,
@@ -202,6 +206,7 @@ export function WebShell({
   catalog: SyncMobileProjectSummary[];
   activeProjectId: string | null;
   account: BrowserAccountSnapshot;
+  connectingAccountMachineKey: string | null;
   onSwitchEnv: (environment: WebClientEnvironmentRecord) => void;
   onSwitchAccountMachine: (machine: AdeAccountMachine) => void;
   onPairNew: () => void;
@@ -348,6 +353,7 @@ export function WebShell({
               })}
               <AccountMachineMenu
                 account={account}
+                connectingMachineKey={connectingAccountMachineKey}
                 onSelect={selectAccountMachine}
                 onSignIn={signInToAccount}
                 onSignOut={onAccountSignOut}

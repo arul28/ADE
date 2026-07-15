@@ -4,6 +4,7 @@ import {
   accountMachinePairedSyncEndpoints,
   accountMachineSecureSyncEndpoints,
   fetchAccountMachines,
+  MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES,
   parseAccountMachinesPayload,
   resolveAccountHelloPairing,
   selectAccountMachine,
@@ -115,6 +116,13 @@ describe("shared account directory trust boundary", () => {
     expect(selectAccountMachine(machines, "dev-b").machineKey).toBe("mk-b");
     expect(() => selectAccountMachine(machines, "Studio"))
       .toThrow(/ambiguous.*mk-a.*mk-b/i);
+
+    const collidingStableIds = [
+      machine({ machineKey: "shared", deviceId: "dev-a", name: "First" }),
+      machine({ machineKey: "mk-b", deviceId: "shared", name: "shared" }),
+    ];
+    expect(() => selectAccountMachine(collidingStableIds, "shared"))
+      .toThrow(/identifier.*ambiguous.*shared.*mk-b/i);
   });
 
   it("never mixes a partial account pairing response with stored credentials", () => {
@@ -162,5 +170,24 @@ describe("shared account directory trust boundary", () => {
       redirect: "error",
     });
     expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe("Bearer top-secret-bearer");
+  });
+
+  it("rejects a streamed directory response before it can grow without bound", async () => {
+    const chunkBytes = 1024 * 1024;
+    let emittedBytes = 0;
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "top-secret-bearer",
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          emittedBytes += chunkBytes;
+          controller.enqueue(new Uint8Array(chunkBytes));
+          if (emittedBytes > MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES) controller.close();
+        },
+      }), { status: 200 }),
+    });
+
+    expect(result).toMatchObject({ state: "unavailable", machines: [] });
+    expect(emittedBytes).toBeLessThanOrEqual(MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES + chunkBytes);
   });
 });

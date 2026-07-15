@@ -452,9 +452,10 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("sends the account bearer only to a verified WSS relay, then reconnects with the returned paired secret", async () => {
+  it("refreshes DPoP per account relay and reconnects with the paired secret on current endpoints", async () => {
     const storage = new MemoryStorage();
     const accountToken = "account-access-token-never-persisted";
+    const accountDpopNonces: string[] = [];
     const accountMachine: AdeAccountMachine = {
       machineKey: "machine-key",
       deviceId: hostPeer.deviceId,
@@ -466,7 +467,8 @@ describe("browser sync connection and client", () => {
         { kind: "lan", url: "wss://arbitrary-origin.example/sync" },
         { kind: "lan", host: "attacker.example", port: 8787 },
         { kind: "lan", host: "192.168.1.10", port: 8787 },
-        { kind: "relay", url: "wss://relay.example/connect/machine-key" },
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-key" },
+        { kind: "relay", url: "wss://relay-two.example/connect/machine-key" },
       ],
       lastSeenAt: Date.now(),
       online: true,
@@ -475,13 +477,30 @@ describe("browser sync connection and client", () => {
       if (envelope.type !== "hello") return;
       const payload = envelope.payload as {
         peer: SyncPeerMetadata;
-        auth: { kind: string; accountToken?: string; dpop?: unknown };
+        auth: { kind: string; accountToken?: string; dpop?: { nonce?: string }; secret?: string };
       };
+      if (payload.auth.kind === "paired") {
+        expect(payload.auth).toMatchObject({
+          secret: "returned-paired-secret",
+          dpop: expect.any(Object),
+        });
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+        return;
+      }
       expect(payload.auth).toMatchObject({
         kind: "account",
         accountToken,
         dpop: expect.any(Object),
       });
+      accountDpopNonces.push(payload.auth.dpop?.nonce ?? "");
+      if (socket.url.includes("relay-one")) {
+        socket.serverSend({
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: { code: "auth_failed", message: "Retry the next relay." },
+        });
+        return;
+      }
       socket.serverSend({
         type: "hello_ok",
         requestId: envelope.requestId,
@@ -504,35 +523,41 @@ describe("browser sync connection and client", () => {
       machine: accountMachine,
       accessToken: accountToken,
       deviceName: "ADE Browser",
-      relayBaseUrls: ["https://relay.example"],
+      relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
     });
 
     expect(accountScript.sockets.map((socket) => socket.url)).toEqual([
-      "wss://relay.example/connect/machine-key",
+      "wss://relay-one.example/connect/machine-key",
+      "wss://relay-two.example/connect/machine-key",
     ]);
+    expect(accountDpopNonces).toHaveLength(2);
+    expect(new Set(accountDpopNonces).size).toBe(2);
     expect(environment.secret).toBe("returned-paired-secret");
     expect(environment.explicitWssEndpoints).not.toContain("wss://arbitrary-origin.example/sync");
     expect(environment.addressCandidates).toContainEqual({ host: "192.168.1.10", kind: "lan" });
     expect(environment.addressCandidates).not.toContainEqual(expect.objectContaining({ host: "attacker.example" }));
     expect(environment.port).toBe(8787);
     expect(JSON.stringify(await accountClient.listEnvironments())).not.toContain(accountToken);
-    accountClient.dispose();
 
-    const pairedScript = createSocketFactory((socket, envelope) => {
-      if (envelope.type !== "hello") return;
-      expect(envelope.payload).toMatchObject({
-        auth: {
-          kind: "paired",
-          secret: "returned-paired-secret",
-          dpop: expect.any(Object),
-        },
-      });
-      socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    accountScript.sockets[1]?.close(1006, "Connection dropped");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    for (let attempt = 0; attempt < 20 && !accountScript.sockets[2]?.sent[0]; attempt += 1) {
+      await flush();
+    }
+    expect(accountScript.sockets[2]?.url).toBe("wss://relay-two.example/connect/machine-key");
+    expect(accountScript.sockets[2]?.sent[0]?.payload).toMatchObject({
+      auth: {
+        kind: "paired",
+        secret: "returned-paired-secret",
+        dpop: expect.any(Object),
+      },
     });
-    const pairedClient = new AdeSyncClient({ storage, socketFactory: pairedScript.factory, document: null });
-    await pairedClient.connect(environment.envId);
-    expect(pairedScript.sockets[0]?.url).toBe("wss://relay.example/connect/machine-key");
-    pairedClient.dispose();
+    expect(accountClient.getStatus().state).toBe("connected");
+    accountClient.dispose();
   });
 
   it("rejects an ordinary paired hello from a different host identity", async () => {

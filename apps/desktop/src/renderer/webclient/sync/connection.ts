@@ -14,7 +14,7 @@ import type {
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
-import type { BrowserDialCandidate } from "./endpoints";
+import { deriveBrowserSyncEndpoints, type BrowserDialCandidate } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof } from "./dpop";
 import {
@@ -89,7 +89,7 @@ export type AccountPairAndConnectArgs = {
   endpoints: BrowserDialCandidate[];
   peer: SyncPeerMetadata;
   accountToken: string;
-  dpop: SyncDpopProof;
+  createDpop: () => Promise<SyncDpopProof>;
   expectedHostDeviceId: string;
   existingPairing: { deviceId: string; secret: string } | null;
   buildEnvironment: (
@@ -210,6 +210,7 @@ export class SyncConnection {
 
   async pairAndConnect(args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Pairing" });
+    this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
     if (dialable.length === 0) throw new Error("No dialable sync endpoint is available.");
@@ -227,13 +228,15 @@ export class SyncConnection {
 
   async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Account pairing" });
+    this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
     if (dialable.length === 0) throw new Error("That machine has no secure account connection route.");
     let lastError: Error | null = null;
     for (const candidate of dialable) {
       try {
-        return await this.pairWithAccountOnEndpoint(candidate.url, args);
+        const dpop = await args.createDpop();
+        return await this.pairWithAccountOnEndpoint(candidate.url, args, dpop);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         this.cleanupSocket();
@@ -462,6 +465,7 @@ export class SyncConnection {
   private async pairWithAccountOnEndpoint(
     endpoint: string,
     args: AccountPairAndConnectArgs,
+    dpop: SyncDpopProof,
   ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     const socket = this.socketFactory(endpoint);
     this.ws = socket;
@@ -487,7 +491,7 @@ export class SyncConnection {
             kind: "account",
             deviceId: args.peer.deviceId,
             accountToken: args.accountToken,
-            dpop: args.dpop,
+            dpop,
           },
         };
         socket.send(encodeEnvelopeText({ type: "hello", requestId: "account-hello", payload }));
@@ -522,8 +526,8 @@ export class SyncConnection {
             }
             settled = true;
             clearTimeout(timeout);
-            this.shouldReconnect = true;
             this.finishConnected(environment, endpoint, payload);
+            this.shouldReconnect = true;
             resolve({ environment, helloOk: payload, endpoint });
           },
           onHelloError: (payload) => {
@@ -644,6 +648,7 @@ export class SyncConnection {
 
   private finishConnected(environment: WebClientEnvironmentRecord, endpoint: string, helloOk: SyncHelloOkPayload): void {
     this.environment = environment;
+    this.endpoints = deriveBrowserSyncEndpoints({ environment });
     this.latestHello = helloOk;
     this.backoffMs = BACKOFF_MIN_MS;
     this.consecutiveAuthFailures = 0;

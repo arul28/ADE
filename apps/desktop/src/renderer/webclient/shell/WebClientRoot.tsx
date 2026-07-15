@@ -120,6 +120,7 @@ export function WebClientRoot({
   const bootedRef = useRef(false);
   const fatalRebootRef = useRef(false);
   const phaseIsReadyRef = useRef(false);
+  const connectingAccountMachineRef = useRef<string | null>(null);
   phaseIsReadyRef.current = phase.kind === "ready";
 
   const refreshEnvironments = useCallback(async () => {
@@ -225,13 +226,15 @@ export function WebClientRoot({
   }, [client, afterConnect]);
 
   const connectToAccountMachine = useCallback(async (machine: AdeAccountMachine) => {
-    const paired = environments.find((environment) => environment.hostDeviceId === machine.deviceId);
-    if (paired) {
-      await connectTo(paired);
-      return;
-    }
+    if (connectingAccountMachineRef.current) return;
+    connectingAccountMachineRef.current = machine.machineKey;
     setConnectingAccountMachineKey(machine.machineKey);
+    const paired = environments.find((environment) => environment.hostDeviceId === machine.deviceId);
     try {
+      if (paired) {
+        await connectTo(paired);
+        return;
+      }
       const accessToken = await accountClient.getAccessToken();
       await client.pairWithAccountMachine({
         machine,
@@ -249,6 +252,7 @@ export function WebClientRoot({
         canRetry: true,
       });
     } finally {
+      connectingAccountMachineRef.current = null;
       setConnectingAccountMachineKey(null);
     }
   }, [accountClient, afterConnect, client, connectTo, environments, refreshEnvironments]);
@@ -464,6 +468,7 @@ export function WebClientRoot({
           catalog={catalog}
           activeProjectId={status.activeProjectId}
           account={account}
+          connectingAccountMachineKey={connectingAccountMachineKey}
           onSwitchEnv={onSwitchEnv}
           onSwitchAccountMachine={(machine) => void connectToAccountMachine(machine)}
           onPairNew={onPairNew}

@@ -11,6 +11,7 @@ const MAX_MACHINES = 500;
 const MAX_ENDPOINTS_PER_MACHINE = 16;
 const MAX_ID_CHARS = 512;
 const MAX_LABEL_CHARS = 256;
+export const MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export const DEFAULT_ADE_TUNNEL_RELAY_URL =
   "https://ade-tunnel-relay.arulsharma1028.workers.dev";
@@ -149,6 +150,35 @@ export function trustedAccountRelayBaseUrls(
   }))];
 }
 
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES) {
+    throw new Error("Machine directory response exceeded the size limit.");
+  }
+  if (!response.body) throw new Error("Machine directory response was empty.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("Machine directory response exceeded the size limit.");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(text) as unknown;
+}
+
 export async function fetchAccountMachines(args: {
   baseUrl: string | null | undefined;
   accessToken: string;
@@ -196,7 +226,7 @@ export async function fetchAccountMachines(args: {
         message: `Machine directory returned ${response.status}.`,
       };
     }
-    const payload = await response.json().catch(() => null);
+    const payload = await readBoundedJson(response);
     return { state: "ok", machines: parseAccountMachinesPayload(payload), message: null };
   } catch {
     return {
@@ -363,6 +393,12 @@ export function selectAccountMachine(
   );
   const stableMatch = byStableId[0];
   if (stableMatch && byStableId.length === 1) return stableMatch;
+  if (byStableId.length > 1) {
+    const choices = byStableId.map(
+      (machine) => `${machine.name ?? "Unnamed machine"} (${machine.machineKey})`,
+    );
+    throw new Error(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+  }
 
   const byName = machines.filter((machine) => machine.name?.trim().toLowerCase() === needle);
   const nameMatch = byName[0];

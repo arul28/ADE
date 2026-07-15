@@ -53,6 +53,12 @@ type TokenPayload = {
   expiresInSec: number;
 };
 
+class TokenExchangeError extends Error {
+  constructor(message: string, readonly invalidatesSession: boolean) {
+    super(message);
+  }
+}
+
 type BrowserLocation = Pick<Location, "origin" | "pathname" | "search" | "assign">;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,6 +137,7 @@ function parseTokenPayload(value: unknown, priorRefreshToken: string | null): To
 
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
+  private refreshPromise: Promise<string> | null = null;
   private snapshot: BrowserAccountSnapshot;
 
   constructor(private readonly options: {
@@ -255,6 +262,7 @@ export class BrowserAccountClient {
 
   signOut(): BrowserAccountSnapshot {
     this.session = null;
+    this.refreshPromise = null;
     this.clearPendingOAuth();
     this.snapshot = {
       state: this.config ? "signed_out" : "unconfigured",
@@ -297,19 +305,42 @@ export class BrowserAccountClient {
       this.expireSession();
       throw new Error("ADE account session expired.");
     }
+    if (this.refreshPromise) return await this.refreshPromise;
+    const refreshPromise = this.refreshSession(config, session).finally(() => {
+      if (this.refreshPromise === refreshPromise) this.refreshPromise = null;
+    });
+    this.refreshPromise = refreshPromise;
+    return await refreshPromise;
+  }
+
+  private async refreshSession(
+    config: BrowserAccountConfig,
+    session: BrowserAccountSession,
+  ): Promise<string> {
     try {
       const token = await this.postToken(config, {
         grant_type: "refresh_token",
         client_id: config.clientId,
-        refresh_token: session.refreshToken,
+        refresh_token: session.refreshToken!,
       }, session.refreshToken);
+      if (this.session !== session) {
+        if (this.session) return this.session.accessToken;
+        throw new Error("ADE account sign-in is required.");
+      }
       this.setSession(token);
       const refreshed = this.session;
       if (!refreshed) throw new Error("ADE account session expired.");
       return refreshed.accessToken;
-    } catch {
-      this.expireSession();
-      throw new Error("ADE account session expired.");
+    } catch (error) {
+      if (
+        error instanceof TokenExchangeError
+        && error.invalidatesSession
+        && this.session === session
+      ) {
+        this.expireSession();
+        throw new Error("ADE account session expired.");
+      }
+      throw error;
     }
   }
 
@@ -330,8 +361,18 @@ export class BrowserAccountClient {
       cache: "no-store",
       redirect: "error",
     });
-    const token = parseTokenPayload(await response.json().catch(() => null), priorRefreshToken);
-    if (!response.ok || !token) throw new Error("Token exchange failed.");
+    const payload = await response.json().catch(() => null);
+    const token = parseTokenPayload(payload, priorRefreshToken);
+    if (!response.ok || !token) {
+      const errorCode = isRecord(payload) ? stringValue(payload.error) : null;
+      throw new TokenExchangeError(
+        "Token exchange failed.",
+        response.status === 401
+          || response.status === 403
+          || errorCode === "invalid_grant"
+          || errorCode === "invalid_token",
+      );
+    }
     return token;
   }
 
@@ -371,6 +412,7 @@ export class BrowserAccountClient {
 
   private expireSession(): void {
     this.session = null;
+    this.refreshPromise = null;
     this.snapshot = {
       ...this.snapshot,
       state: "auth_expired",

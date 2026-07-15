@@ -613,15 +613,23 @@ async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<Ope
     try {
       const initialized = await initializeRemoteRpc(client);
       const connectedAt = Date.now();
-      pairedStore.markEndpointSucceeded(
-        credentials.hostIdentity.deviceId,
-        candidate.endpoint,
-        connectedAt,
-      );
-      registry.update(target.id, {
-        runtimeBinaryVersion: initialized.runtimeInfo?.version?.trim() || target.runtimeBinaryVersion,
-        lastConnectedAt: connectedAt,
-      });
+      try {
+        pairedStore.markEndpointSucceeded(
+          credentials.hostIdentity.deviceId,
+          candidate.endpoint,
+          connectedAt,
+        );
+      } catch (error) {
+        process.stderr.write(`Warning: could not save paired endpoint metadata: ${errorMessage(error)}\n`);
+      }
+      try {
+        registry.update(target.id, {
+          runtimeBinaryVersion: initialized.runtimeInfo?.version?.trim() || target.runtimeBinaryVersion,
+          lastConnectedAt: connectedAt,
+        });
+      } catch (error) {
+        process.stderr.write(`Warning: could not save paired target metadata: ${errorMessage(error)}\n`);
+      }
       return { mode: "paired", client };
     } catch (error) {
       client.close();
