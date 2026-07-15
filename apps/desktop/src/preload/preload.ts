@@ -222,6 +222,10 @@ import type {
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
+  AdeAccountStatus,
+  AdeAccountLoginStart,
+  AdeAccountLoginPoll,
+  AdeAccountMachinesResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -7576,6 +7580,22 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
       };
     },
+  },
+  // Machine-owned ADE account (Clerk identity). Token-free surface only — the
+  // raw bearer stays in the main process and is never exposed here.
+  account: {
+    status: (): Promise<AdeAccountStatus> =>
+      ipcRenderer.invoke(IPC.accountStatus),
+    startLogin: (): Promise<AdeAccountLoginStart> =>
+      ipcRenderer.invoke(IPC.accountStartLogin),
+    pollLogin: (args: { sessionId: string }): Promise<AdeAccountLoginPoll> =>
+      ipcRenderer.invoke(IPC.accountPollLogin, args),
+    cancelLogin: (args: { sessionId: string }): Promise<AdeAccountStatus> =>
+      ipcRenderer.invoke(IPC.accountCancelLogin, args),
+    signOut: (): Promise<AdeAccountStatus> =>
+      ipcRenderer.invoke(IPC.accountSignOut),
+    listMachines: (): Promise<AdeAccountMachinesResult> =>
+      ipcRenderer.invoke(IPC.accountListMachines),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

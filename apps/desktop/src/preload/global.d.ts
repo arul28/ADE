@@ -302,6 +302,10 @@ import type {
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
+  AdeAccountStatus,
+  AdeAccountLoginStart,
+  AdeAccountLoginPoll,
+  AdeAccountMachinesResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -1966,6 +1970,14 @@ declare global {
           input: PublishProjectInput,
         ) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
+      };
+      account: {
+        status: () => Promise<AdeAccountStatus>;
+        startLogin: () => Promise<AdeAccountLoginStart>;
+        pollLogin: (args: { sessionId: string }) => Promise<AdeAccountLoginPoll>;
+        cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
+        signOut: () => Promise<AdeAccountStatus>;
+        listMachines: () => Promise<AdeAccountMachinesResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

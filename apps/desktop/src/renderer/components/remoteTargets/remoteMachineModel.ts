@@ -1,5 +1,6 @@
 import { extractError } from "../../lib/format";
 import type {
+  AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionRoute,
   RemoteRuntimeConnectionStatus,
@@ -333,13 +334,66 @@ export type DiscoveredMachineRow = {
   unavailableReason: string | null;
 };
 
-export type MachineRow = SavedMachineRow | DiscoveredMachineRow;
+/**
+ * A machine known only through the account directory (#814 Worker) — not saved
+ * or discovered locally. Online rows can be adopted+connected via their best
+ * reachable endpoint; offline rows grey out with a last-seen + "why offline?".
+ */
+export type AccountMachineRow = {
+  kind: "account";
+  id: string;
+  machine: AdeAccountMachine;
+  /** The saved target this account machine maps to, if any (enables the doctor). */
+  matchedTargetId: string | null;
+};
+
+export type MachineRow = SavedMachineRow | DiscoveredMachineRow | AccountMachineRow;
 
 export type MachineSections = {
   connected: MachineRow[];
   available: MachineRow[];
   unavailable: MachineRow[];
 };
+
+/** Host:port identities advertised by an account machine's reachable endpoints. */
+export function accountMachineRouteIdentities(
+  machine: AdeAccountMachine,
+): Set<string> {
+  const identities = new Set<string>();
+  for (const endpoint of machine.reachableEndpoints) {
+    const host = endpoint.host ?? endpoint.url ?? null;
+    const identity = routeIdentity(host, endpoint.port ?? null);
+    if (identity) identities.add(identity);
+  }
+  return identities;
+}
+
+function intersects(a: Set<string>, b: Set<string>): boolean {
+  for (const value of a) {
+    if (b.has(value)) return true;
+  }
+  return false;
+}
+
+/** True when an account machine is the same host as a saved target. */
+export function accountMachineMatchesTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  const machineIds = accountMachineRouteIdentities(machine);
+  if (machineIds.size === 0) return false;
+  return intersects(machineIds, targetRouteIdentities(target));
+}
+
+/** True when an account machine is the same host as a locally-discovered machine. */
+export function accountMachineMatchesDiscovered(
+  machine: AdeAccountMachine,
+  discovered: RemoteRuntimeDiscoveredMachine,
+): boolean {
+  const machineIds = accountMachineRouteIdentities(machine);
+  if (machineIds.size === 0) return false;
+  return intersects(machineIds, discoveredMachineRouteIdentities(discovered));
+}
 
 /**
  * Splits saved targets and discovered machines into the CONNECTED / AVAILABLE /
@@ -353,8 +407,16 @@ export function assignMachineSections(args: {
   statusById: Map<string, RemoteRuntimeConnectionStatus>;
   connectedFallbackId: string | null;
   discoveredMachines: RemoteRuntimeDiscoveredMachine[];
+  /** Machines from the account directory, merged with saved/discovered. */
+  accountMachines?: AdeAccountMachine[];
 }): MachineSections {
-  const { targets, statusById, connectedFallbackId, discoveredMachines } = args;
+  const {
+    targets,
+    statusById,
+    connectedFallbackId,
+    discoveredMachines,
+    accountMachines = [],
+  } = args;
   const sections: MachineSections = {
     connected: [],
     available: [],
@@ -432,6 +494,39 @@ export function assignMachineSections(args: {
       machine,
       unavailableReason: null,
     });
+  }
+
+  // Account-directory machines are merged in as a third source. Any that already
+  // map to a saved target or a discovered machine are represented by that local
+  // row (no duplicate); the rest surface as their own rows — online in
+  // AVAILABLE, offline greyed in UNAVAILABLE.
+  for (const machine of accountMachines) {
+    const matchedTarget = targets.find((target) =>
+      accountMachineMatchesTarget(machine, target),
+    );
+    if (matchedTarget) {
+      // A saved target already owns this host; only annotate offline account
+      // machines whose target isn't otherwise flagged (rare) — otherwise skip.
+      continue;
+    }
+    if (
+      discoveredMachines.some((discovered) =>
+        accountMachineMatchesDiscovered(machine, discovered),
+      )
+    ) {
+      continue;
+    }
+    const row: AccountMachineRow = {
+      kind: "account",
+      id: `account:${machine.machineKey}`,
+      machine,
+      matchedTargetId: null,
+    };
+    if (machine.online) {
+      sections.available.push(row);
+    } else {
+      sections.unavailable.push(row);
+    }
   }
 
   return sections;

@@ -14,12 +14,18 @@ import {
   ChatCircleDots,
   GearSix,
 } from "@phosphor-icons/react";
+import { UserCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
-import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
+import {
+  accountAvatarImage,
+  accountInitials,
+  providerTint,
+  useAccountStatus,
+} from "../../lib/account";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { docs } from "../../onboarding/docsLinks";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
@@ -96,16 +102,13 @@ function primaryTabPath(pathname: string): string {
   return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
 }
 
-function githubProfileUrl(login: string): string {
-  return `https://github.com/${encodeURIComponent(login)}`;
-}
-
 export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
+  const { status: accountStatus } = useAccountStatus();
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
   const hasActiveProject = Boolean(activeProjectRoot);
@@ -113,10 +116,20 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const { ref: sidebarMenuRef, position: sidebarMenuPosition } = useClampedFixedPosition(contextMenu);
   const [avatarBroken, setAvatarBroken] = useState(false);
   const githubLogin = githubStatus?.userLogin || null;
+  const githubConnected = Boolean(githubStatus?.connected);
+  const avatarImage = accountAvatarImage(accountStatus, githubLogin);
+  const accountRingTint = providerTint(accountStatus, githubConnected);
+  const accountLabel =
+    accountStatus.name?.trim() ||
+    accountStatus.email?.trim() ||
+    githubLogin ||
+    (accountStatus.signedIn ? "Account" : "Sign in");
+  const accountRouteActive =
+    location.pathname === "/account" || location.pathname.startsWith("/account/");
 
   useEffect(() => {
     setAvatarBroken(false);
-  }, [githubLogin]);
+  }, [githubLogin, avatarImage]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -319,27 +332,54 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           </NavLink>
         </SmartTooltip>
 
-        {/* GitHub profile avatar — only shows when token is stored, a login is known, and the image loads */}
-        {githubLogin && !avatarBroken ? (
-          <button
-            type="button"
-            className="ade-shell-sidebar-item group relative flex w-full cursor-pointer items-center border-none text-left transition-colors duration-100"
-            onClick={() => openExternalUrl(githubProfileUrl(githubLogin))}
-            aria-label={`Open GitHub profile for ${githubLogin}`}
-            title={`@${githubLogin} on GitHub`}
-          >
-            <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+        {/* Account avatar — provider-aware image → monogram, routes to /account.
+            Always present so sign-in stays discoverable from the sidebar. */}
+        <NavLink
+          to="/account"
+          data-active={accountRouteActive ? "true" : undefined}
+          className="ade-shell-sidebar-item group relative flex w-full cursor-pointer items-center transition-colors duration-100"
+          aria-label={
+            accountStatus.signedIn
+              ? `ADE account — ${accountLabel}`
+              : "Sign in to ADE"
+          }
+          title={accountLabel}
+        >
+          {accountRouteActive ? <div className="absolute inset-0 bg-white/[0.08]" /> : null}
+          <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+            {avatarImage && !avatarBroken ? (
               <img
-                src={`https://github.com/${encodeURIComponent(githubLogin)}.png?size=64`}
+                src={avatarImage}
                 alt=""
                 onError={() => setAvatarBroken(true)}
                 className={cn(SIDEBAR_AVATAR_SIZE_CLASS, "rounded-full object-cover")}
                 draggable={false}
+                style={{ boxShadow: `0 0 0 1.5px color-mix(in srgb, ${accountRingTint} 55%, transparent)` }}
               />
-            </span>
-            <span className="ade-tab-label whitespace-nowrap">{githubLogin}</span>
-          </button>
-        ) : null}
+            ) : accountStatus.signedIn ? (
+              <span
+                className={cn(
+                  SIDEBAR_AVATAR_SIZE_CLASS,
+                  "inline-flex items-center justify-center rounded-full text-[9px] font-semibold uppercase tracking-tight text-fg/90",
+                )}
+                style={{
+                  background: `color-mix(in srgb, ${accountRingTint} 22%, transparent)`,
+                  boxShadow: `0 0 0 1.5px color-mix(in srgb, ${accountRingTint} 55%, transparent)`,
+                }}
+                aria-hidden
+              >
+                {accountInitials(accountStatus)}
+              </span>
+            ) : (
+              <UserCircle
+                size={SIDEBAR_ICON_SIZE}
+                weight="regular"
+                className="ade-shell-sidebar-icon shrink-0"
+              />
+            )}
+          </span>
+          <span className="ade-tab-label whitespace-nowrap">{accountLabel}</span>
+        </NavLink>
 
         {!webMode ? (
           <>

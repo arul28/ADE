@@ -186,6 +186,10 @@ import type {
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
+  AdeAccountStatus,
+  AdeAccountLoginStart,
+  AdeAccountLoginPoll,
+  AdeAccountMachinesResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -568,6 +572,7 @@ import {
 } from "../transcription/transcriptionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
+import { createAccountBridge } from "../account/accountBridge";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
@@ -8468,6 +8473,48 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.feedbackReporterService) return [];
     return ctx.feedbackReporterService.list();
+  });
+
+  // Machine-owned ADE account (Clerk identity, #815). The bridge owns the auth
+  // service in main and only ever exposes the token-free surface to the
+  // renderer — getToken is deliberately never wired here.
+  const accountBridge = createAccountBridge({
+    getProjectRoot: () => getCtx().project.rootPath ?? null,
+    logger: {
+      info: (message, meta) => getCtx().logger.info(message, meta),
+      warn: (message, meta) => getCtx().logger.warn(message, meta),
+    },
+  });
+
+  ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
+    return accountBridge.status();
+  });
+
+  ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
+    return accountBridge.startLogin();
+  });
+
+  ipcMain.handle(
+    IPC.accountPollLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
+      return accountBridge.pollLogin(arg?.sessionId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountCancelLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
+      accountBridge.cancelLogin(arg?.sessionId ?? "");
+      return accountBridge.status();
+    },
+  );
+
+  ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
+    return accountBridge.signOut();
+  });
+
+  ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
+    return accountBridge.listMachines();
   });
 
   const ensurePrMutationContext = (): AppContextWith<"prService" | "prPollingService"> => {

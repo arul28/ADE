@@ -37,3 +37,4 @@ export * from "./search";
 export * from "./externalSessions";
 export * from "./recovery";
 export * from "./productAnalytics";
+export * from "./account";

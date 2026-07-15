@@ -3178,6 +3178,88 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         day: new Date().toISOString().slice(0, 10),
       }),
     },
+    // Machine-owned ADE account (Clerk identity). The dev browser preview toggles
+    // signed-in vs signed-out via localStorage `ade.mock.account` = "out".
+    account: (() => {
+      const signedOut = () => {
+        try {
+          return window.localStorage.getItem("ade.mock.account") === "out";
+        } catch {
+          return false;
+        }
+      };
+      const signedInStatus = {
+        signedIn: true,
+        userId: "user_2xMockAccount",
+        email: "arul@ade.dev",
+        name: "Arul Sharma",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        provider: "github" as const,
+        imageUrl: null,
+        configured: true,
+      };
+      const signedOutStatus = {
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+        provider: null,
+        imageUrl: null,
+        configured: true,
+      };
+      const status = () => (signedOut() ? signedOutStatus : signedInStatus);
+      return {
+        status: async () => status(),
+        startLogin: async () => ({
+          sessionId: "mock-session",
+          authorizeUrl: "https://accounts.ade.dev/oauth/authorize?mock=1",
+          expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        }),
+        pollLogin: async () => ({
+          status: "signed_in" as const,
+          message: null,
+          authStatus: signedInStatus,
+        }),
+        cancelLogin: async () => status(),
+        signOut: async () => signedOutStatus,
+        listMachines: async () => {
+          if (signedOut()) {
+            return { state: "signed_out" as const, machines: [], message: null };
+          }
+          return {
+            state: "ok" as const,
+            message: null,
+            machines: [
+              {
+                machineKey: "mk_studio",
+                deviceId: "dev_studio",
+                name: "Studio",
+                platform: "darwin",
+                deviceType: "desktop",
+                reachableEndpoints: [
+                  { kind: "tailnet" as const, host: "100.92.14.3", port: 22 },
+                ],
+                lastSeenAt: Date.now() - 45_000,
+                online: true,
+              },
+              {
+                machineKey: "mk_mini",
+                deviceId: "dev_mini",
+                name: "Mac mini",
+                platform: "darwin",
+                deviceType: "desktop",
+                reachableEndpoints: [
+                  { kind: "relay" as const, url: "wss://relay.ade.dev/mini" },
+                ],
+                lastSeenAt: Date.now() - 6 * 3_600_000,
+                online: false,
+              },
+            ],
+          };
+        },
+      };
+    })(),
     app: {
       ping: resolved("pong" as const),
       getInfo: resolved({
