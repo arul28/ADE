@@ -7,7 +7,8 @@ or changed.
 The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
 - `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
-- `GET /device` accepts the human code and redirects through Clerk OAuth + PKCE.
+- `GET /device` renders a read-only human-code confirmation page.
+- `POST /device` confirms the code and redirects through Clerk OAuth + PKCE.
 - `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
 - `POST /device/token` lets the initiating daemon redeem the pair once.
 

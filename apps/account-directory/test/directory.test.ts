@@ -409,6 +409,21 @@ function request(
   });
 }
 
+function deviceConfirmationRequest(
+  userCode: string,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request("https://directory.test/device", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "https://directory.test",
+      ...headers,
+    },
+    body: new URLSearchParams({ user_code: userCode }),
+  });
+}
+
 async function register(
   env: Env,
   token: string,
@@ -494,7 +509,7 @@ describe("device authorization bridge", () => {
     expect(await pending.json()).toEqual({ error: "authorization_pending", interval: 5 });
 
     const approval = await handleRequest(
-      new Request(String(device.verification_uri_complete)),
+      deviceConfirmationRequest(String(device.user_code)),
       env,
       { now: () => now },
     );
@@ -506,7 +521,7 @@ describe("device authorization bridge", () => {
     expect(clerkAuthorizeUrl.searchParams.get("redirect_uri")).toBe("https://directory.test/device/callback");
     const state = clerkAuthorizeUrl.searchParams.get("state")!;
     const duplicateApproval = await handleRequest(
-      new Request(String(device.verification_uri_complete)),
+      deviceConfirmationRequest(String(device.user_code)),
       env,
       { now: () => now },
     );
@@ -593,6 +608,62 @@ describe("device authorization bridge", () => {
     expect(expiredReplay.status).toBe(400);
     expect(await expiredReplay.json()).toEqual({ error: "expired" });
     expect(env.DB.deviceRows[0]?.status).toBe("consumed");
+  });
+
+  it("keeps verification-link GET previews read-only until explicit confirmation", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    const rowBeforePreview = { ...env.DB.deviceRows[0]! };
+    const limitsBeforePreview = Array.from(
+      env.DB.approvalRateLimits,
+      ([key, value]) => [key, { ...value }] as const,
+    );
+
+    const firstPreview = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+    const repeatedPreview = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+
+    expect([firstPreview.status, repeatedPreview.status]).toEqual([200, 200]);
+    expect(await firstPreview.text()).toContain('form method="post" action="/device"');
+    expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
+    expect(Array.from(env.DB.approvalRateLimits)).toEqual(limitsBeforePreview);
+
+    const crossSiteSubmit = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "https://preview.test" }),
+      env,
+      { now: () => now },
+    );
+    expect(crossSiteSubmit.status).toBe(403);
+    expect(env.DB.deviceRows[0]).toEqual(rowBeforePreview);
+    expect(Array.from(env.DB.approvalRateLimits)).toEqual(limitsBeforePreview);
+
+    const confirmed = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code)),
+      env,
+      { now: () => now },
+    );
+    expect(confirmed.status).toBe(302);
+    expect(env.DB.deviceRows[0]).toMatchObject({
+      status: "pending",
+      code_verifier: expect.any(String),
+      oauth_state_hash: expect.any(String),
+    });
+    expect(env.DB.approvalRateLimits.size).toBe(2);
   });
 
   it("returns expired for a device code after its short TTL", async () => {
@@ -700,9 +771,7 @@ describe("device authorization bridge", () => {
     expect(env.DB.deviceRows).toHaveLength(10);
 
     const approval = await handleRequest(
-      new Request("https://directory.test/device?user_code=ZZZZ-ZZZZ", {
-        headers: { "cf-connecting-ip": "203.0.113.8" },
-      }),
+      deviceConfirmationRequest("ZZZZ-ZZZZ", { "cf-connecting-ip": "203.0.113.8" }),
       env,
       { now: () => now },
     );
@@ -752,23 +821,19 @@ describe("device authorization bridge", () => {
     expect(Array.from(env.DB.approvalRateLimits.values(), (entry) => entry.attempts)).toEqual([1]);
   });
 
-  it("rate-limits user-code lookups on the hosted approval page", async () => {
+  it("rate-limits user-code confirmations on the hosted approval page", async () => {
     const env = makeEnv();
     const now = Date.parse("2026-07-14T12:00:00.000Z");
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const response = await handleRequest(
-        new Request("https://directory.test/device?user_code=ABCD-EFGH", {
-          headers: { "cf-connecting-ip": "203.0.113.7" },
-        }),
+        deviceConfirmationRequest("ABCD-EFGH", { "cf-connecting-ip": "203.0.113.7" }),
         env,
         { now: () => now },
       );
       expect(response.status).toBe(404);
     }
     const blocked = await handleRequest(
-      new Request("https://directory.test/device?user_code=ABCD-EFGH", {
-        headers: { "cf-connecting-ip": "203.0.113.7" },
-      }),
+      deviceConfirmationRequest("ABCD-EFGH", { "cf-connecting-ip": "203.0.113.7" }),
       env,
       { now: () => now },
     );

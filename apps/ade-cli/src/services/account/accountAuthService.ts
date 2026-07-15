@@ -588,6 +588,7 @@ export function createAccountAuthService(args: {
     : DEVICE_BRIDGE_REQUEST_TIMEOUT_MS;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
+  const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
   let refreshInFlight: Promise<AccountSessionRecord> | null = null;
   let envRefreshInFlight: Promise<string> | null = null;
   let envSession: AccountSessionRecord | null = null;
@@ -977,29 +978,10 @@ export function createAccountAuthService(args: {
     };
   };
 
-  const pollDeviceLogin = async (sessionId: string): Promise<AccountDeviceLoginPollResult> => {
-    const normalizedSessionId = sessionId.trim();
-    const session = pendingDeviceSessions.get(normalizedSessionId);
-    if (!normalizedSessionId || !session) {
-      return {
-        status: "error",
-        message: normalizedSessionId
-          ? "ADE account device sign-in session was not found."
-          : "ADE account device sign-in session id is required.",
-        intervalSec: null,
-        authStatus: toStatus(readSession()),
-      };
-    }
-    if (session.expiresAtMs <= now()) {
-      pendingDeviceSessions.delete(normalizedSessionId);
-      return {
-        status: "expired",
-        message: "ADE account device sign-in expired.",
-        intervalSec: null,
-        authStatus: toStatus(readSession()),
-      };
-    }
-
+  const pollDeviceLoginOnce = async (
+    normalizedSessionId: string,
+    session: PendingDeviceLoginSession,
+  ): Promise<AccountDeviceLoginPollResult> => {
     const epochAtPoll = authEpoch;
     let response: Response;
     try {
@@ -1052,6 +1034,17 @@ export function createAccountAuthService(args: {
         status: "pending",
         message: null,
         intervalSec: session.intervalSec,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    if (
+      authEpoch !== epochAtPoll
+      || pendingDeviceSessions.get(normalizedSessionId) !== session
+    ) {
+      return {
+        status: "error",
+        message: "ADE account device sign-in was cancelled.",
+        intervalSec: null,
         authStatus: toStatus(readSession()),
       };
     }
@@ -1149,6 +1142,49 @@ export function createAccountAuthService(args: {
       intervalSec: null,
       authStatus: toStatus(record),
     };
+  };
+
+  const pollDeviceLogin = async (sessionId: string): Promise<AccountDeviceLoginPollResult> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return {
+        status: "error",
+        message: "ADE account device sign-in session id is required.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    const inFlight = devicePollsInFlight.get(normalizedSessionId);
+    if (inFlight) return inFlight;
+
+    const session = pendingDeviceSessions.get(normalizedSessionId);
+    if (!session) {
+      return {
+        status: "error",
+        message: "ADE account device sign-in session was not found.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    if (session.expiresAtMs <= now()) {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "expired",
+        message: "ADE account device sign-in expired.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+
+    const poll = pollDeviceLoginOnce(normalizedSessionId, session);
+    devicePollsInFlight.set(normalizedSessionId, poll);
+    try {
+      return await poll;
+    } finally {
+      if (devicePollsInFlight.get(normalizedSessionId) === poll) {
+        devicePollsInFlight.delete(normalizedSessionId);
+      }
+    }
   };
 
   const getStatus = (): AccountAuthStatus => {

@@ -166,7 +166,7 @@ function approvalForm(userCode = ""): Response {
     title: "Sign in to ADE",
     body: `<h1>Sign in to ADE</h1>
       <p>Enter the code shown by <code>ade login</code> on your other machine.</p>
-      <form method="get" action="/device">
+      <form method="post" action="/device">
         <label for="user_code">Device code</label>
         <input id="user_code" name="user_code" value="${userCode}" autocomplete="one-time-code" maxlength="9" required autofocus>
         <button type="submit">Continue</button>
@@ -321,11 +321,25 @@ async function handleDeviceApproval(
   env: DeviceAuthorizationEnv,
   options: Required<Pick<DeviceAuthorizationRequestOptions, "now" | "randomBytes">>,
 ): Promise<Response> {
-  if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
   const url = new URL(request.url);
-  const rawUserCode = url.searchParams.get("user_code");
-  if (!rawUserCode) return approvalForm();
-  const userCode = normalizeUserCode(rawUserCode);
+  if (request.method === "GET") {
+    const rawUserCode = url.searchParams.get("user_code");
+    if (!rawUserCode) return approvalForm();
+    return approvalForm(normalizeUserCode(rawUserCode) ?? "");
+  }
+  if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (request.headers.get("origin") !== url.origin) {
+    return approvalMessage("Confirmation required", "Open the ADE sign-in page and confirm this device code.", 403);
+  }
+
+  let rawUserCode: string | null = null;
+  try {
+    const value = (await request.formData()).get("user_code");
+    rawUserCode = typeof value === "string" ? value : null;
+  } catch {
+    // Invalid form submissions fall through to the blank confirmation form.
+  }
+  const userCode = rawUserCode ? normalizeUserCode(rawUserCode) : null;
   if (!userCode) return approvalForm("");
 
   const now = options.now();

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2910,6 +2911,7 @@ describe("ADE CLI", () => {
         "--text",
       ]);
       expect(tokenResult.exitCode).toBe(0);
+      expect(tokenResult.output).toContain("durable-token-output");
       expect(requests.at(-1)).toEqual({
         method: "account.call",
         params: {
@@ -3160,6 +3162,119 @@ describe("ADE CLI", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  posixIt("autostarts a machine brain for socketless headless login", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-account-login-"));
+    const projectRoot = path.join(adeHome, "project");
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const accessToken = [
+      Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+      Buffer.from(JSON.stringify({
+        sub: "socketless-headless-user",
+        email: "socketless@example.com",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })).toString("base64url"),
+      "signature",
+    ].join(".");
+    let codeRequests = 0;
+    let tokenRequests = 0;
+    const directory = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/device/code") {
+        codeRequests += 1;
+        response.end(JSON.stringify({
+          device_code: "socketless-device-code",
+          user_code: "SOCK-LESS",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 60,
+          interval: 1,
+        }));
+        return;
+      }
+      if (request.url === "/device/token") {
+        tokenRequests += 1;
+        response.end(JSON.stringify({
+          access_token: accessToken,
+          refresh_token: "socketless-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not_found" }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      directory.once("error", reject);
+      directory.listen(0, "127.0.0.1", () => {
+        directory.off("error", reject);
+        resolve();
+      });
+    });
+    const address = directory.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Failed to start the account directory test server.");
+    }
+
+    const envKeys = [
+      "ADE_HOME",
+      "ADE_PROJECT_ROOT",
+      "ADE_RUNTIME_SOCKET_PATH",
+      "ADE_RPC_SOCKET_PATH",
+      "ADE_RPC_URL",
+      "ADE_ACCOUNT_DIRECTORY_URL",
+      "ADE_ACCOUNT_TOKEN",
+      "NODE_OPTIONS",
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const previousArgvEntry = process.argv[1];
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_PROJECT_ROOT = projectRoot;
+      delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      delete process.env.ADE_RPC_SOCKET_PATH;
+      delete process.env.ADE_RPC_URL;
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      process.env.ADE_ACCOUNT_DIRECTORY_URL = `http://127.0.0.1:${address.port}`;
+      process.env.NODE_OPTIONS = process.env.NODE_OPTIONS?.includes("--import tsx")
+        ? process.env.NODE_OPTIONS
+        : `${process.env.NODE_OPTIONS?.trim() ?? ""} --import tsx`.trim();
+      process.argv[1] = path.join(path.dirname(new URL(import.meta.url).pathname), "cli.ts");
+
+      expect(fs.existsSync(socketPath)).toBe(false);
+      const result = await runCli([
+        "--project-root",
+        projectRoot,
+        "login",
+        "--headless",
+        "--text",
+      ]);
+
+      expect(result).toEqual({
+        output: "Signed in as socketless@example.com (device)\n",
+        exitCode: 0,
+      });
+      expect(fs.existsSync(socketPath)).toBe(true);
+      expect(codeRequests).toBe(1);
+      expect(tokenRequests).toBe(1);
+    } finally {
+      try {
+        await runCli(["--socket", socketPath, "runtime", "stop", "--text"]);
+      } catch {
+        // Best-effort cleanup if the detached test runtime never became available.
+      }
+      stderrWrite.mockRestore();
+      process.argv[1] = previousArgvEntry;
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await new Promise<void>((resolve) => directory.close(() => resolve()));
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   posixIt("accepts current-session deadline success but rejects a stale signed-in account", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));

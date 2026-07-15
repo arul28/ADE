@@ -406,6 +406,117 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
+  it("coalesces concurrent polls so a one-time device code is redeemed once", async () => {
+    const store = new MemoryCredentialStore();
+    const accessToken = jwt({ sub: "coalesced-device-user", email: "coalesced@example.com" });
+    let tokenRequests = 0;
+    let resolveTokenResponse: ((response: Response) => void) | null = null;
+    const tokenResponse = new Promise<Response>((resolve) => {
+      resolveTokenResponse = resolve;
+    });
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "one-time-device-code",
+          user_code: "ONCE-ONLY",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      tokenRequests += 1;
+      if (tokenRequests === 1) return tokenResponse;
+      return jsonResponse({
+        error: "invalid_grant",
+        error_description: "Device code was already redeemed.",
+      }, 400);
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "coalesced-device-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    const firstPoll = service.pollDeviceLogin(start.sessionId);
+    const secondPoll = service.pollDeviceLogin(start.sessionId);
+    expect(tokenRequests).toBe(1);
+
+    resolveTokenResponse!(jsonResponse({
+      access_token: accessToken,
+      refresh_token: "coalesced-refresh-token",
+      expires_in: 3600,
+    }));
+    const results = await Promise.all([firstPoll, secondPoll]);
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        status: "signed_in",
+        authStatus: expect.objectContaining({ userId: "coalesced-device-user" }),
+      }),
+      expect.objectContaining({
+        status: "signed_in",
+        authStatus: expect.objectContaining({ userId: "coalesced-device-user" }),
+      }),
+    ]);
+    expect(tokenRequests).toBe(1);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken,
+      refreshToken: "coalesced-refresh-token",
+      authSource: "device",
+    });
+  });
+
+  it("shares cancellation across coalesced device polls and rejects a late token", async () => {
+    const store = new MemoryCredentialStore();
+    let resolveTokenResponse: ((response: Response) => void) | null = null;
+    const tokenResponse = new Promise<Response>((resolve) => {
+      resolveTokenResponse = resolve;
+    });
+    let tokenRequests = 0;
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/device/code")) {
+        return jsonResponse({
+          device_code: "cancelled-device-code",
+          user_code: "CANC-ELLD",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        });
+      }
+      tokenRequests += 1;
+      return tokenResponse;
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "cancelled-coalesced-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    const firstPoll = service.pollDeviceLogin(start.sessionId);
+    const secondPoll = service.pollDeviceLogin(start.sessionId);
+    service.cancelLogin(start.sessionId);
+    resolveTokenResponse!(jsonResponse({
+      access_token: jwt({ sub: "late-device-user" }),
+      refresh_token: "late-refresh-token",
+      expires_in: 3600,
+    }));
+
+    await expect(Promise.all([firstPoll, secondPoll])).resolves.toEqual([
+      expect.objectContaining({ status: "error", message: expect.stringContaining("cancelled") }),
+      expect.objectContaining({ status: "error", message: expect.stringContaining("cancelled") }),
+    ]);
+    expect(tokenRequests).toBe(1);
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
   it("keeps an explicit device identity active instead of reverting to inherited env auth", async () => {
     const store = new MemoryCredentialStore();
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
