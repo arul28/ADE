@@ -35,6 +35,10 @@
   <string>$(ADE_POSTHOG_HOST)</string>
   <key>ADEPostHogProjectToken</key>
   <string>$(ADE_POSTHOG_PROJECT_TOKEN)</string>
+  <key>ADEClerkPublishableKey</key>
+  <string>$(CLERK_PUBLISHABLE_KEY)</string>
+  <key>ADEAccountDirectoryBaseURL</key>
+  <string>$(ADE_ACCOUNT_DIRECTORY_BASE_URL)</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSAppTransportSecurity</key>

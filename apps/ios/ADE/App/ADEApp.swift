@@ -9,6 +9,9 @@ struct ADEApp: App {
   /// here (rather than per-composer) lets recording survive navigation and
   /// drive the global in-app recording pill.
   @StateObject private var dictationController = DictationController()
+  /// ClerkKit-backed account state (identity + directory machines). A singleton
+  /// so it's reachable from sheets without threading it through the environment.
+  @StateObject private var accountService = AccountService.shared
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
   @State private var didEnterBackground = false
@@ -26,6 +29,13 @@ struct ADEApp: App {
       ContentView()
         .environmentObject(syncService)
         .environmentObject(dictationController)
+        .environmentObject(accountService)
+        .task {
+          // Configure ClerkKit and restore any cached session as early as
+          // possible so the account surface has determinate state. No-op when
+          // no publishable key is wired into the build.
+          await accountService.bootstrap()
+        }
         .task {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
