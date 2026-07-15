@@ -137,6 +137,7 @@ describe("ADE CLI", () => {
       formatter: "account-auth",
       machineOnly: true,
       machineAutoStart: true,
+      connectRole: "cto",
       steps: [{
         method: "account.call",
         params: { action: "status", args: {} },
@@ -179,6 +180,7 @@ describe("ADE CLI", () => {
       method: "account.call",
       params: { action: "status", args: {} },
     });
+    expect(rawActionPlan.connectRole).toBeUndefined();
 
     const connection = {
       mode: "runtime-socket" as const,
@@ -2829,7 +2831,7 @@ describe("ADE CLI", () => {
     }
   });
 
-  posixIt("runs projectless account RPC while passing project config root for token creation", async () => {
+  posixIt("runs typed account status as CTO and passes project config root for token creation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-status-sock-"));
     const socketPath = path.join(root, "ade.sock");
     const requests: Array<{ method: string; params?: unknown }> = [];
@@ -2867,11 +2869,12 @@ describe("ADE CLI", () => {
             domain: "account",
             action,
             result: {
-              signedIn: false,
-              userId: null,
-              email: null,
-              name: null,
-              expiresAt: null,
+              signedIn: true,
+              userId: "typed-status-user",
+              email: "typed-status@example.com",
+              name: "Typed Status User",
+              expiresAt: "2026-07-15T10:00:00.000Z",
+              source: "env-token",
             },
             statusHints: {},
           };
@@ -2890,9 +2893,14 @@ describe("ADE CLI", () => {
         "--text",
       ]);
       expect(result).toEqual({
-        output: "Not signed in — local use does not require an account.\n",
+        output: "Signed in as typed-status@example.com (env-token)\n",
         exitCode: 0,
       });
+      const initializeRequests = requests.filter((request) => request.method === "ade/initialize");
+      expect(initializeRequests.length).toBeGreaterThan(0);
+      for (const request of initializeRequests) {
+        expect(request.params).toMatchObject({ identity: { role: "cto" } });
+      }
       expect(requests.at(-1)).toEqual({
         method: "account.call",
         params: { action: "status", args: {} },

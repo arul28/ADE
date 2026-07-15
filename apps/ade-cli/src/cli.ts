@@ -11615,6 +11615,9 @@ function buildCliPlan(
       formatter: "account-auth",
       machineOnly: true,
       machineAutoStart: true,
+      // This first-party typed command intentionally shows the operator their
+      // account identity; generic agent actions keep the redacted status view.
+      connectRole: "cto",
       steps: [accountActionStep("result", "status")],
     };
   }
