@@ -26,7 +26,6 @@ import type {
   AdeAccountStatus,
 } from "../../../shared/types";
 
-const DIRECTORY_URL_SECRET = "ACCOUNT_DIRECTORY_URL";
 const MACHINES_FETCH_TIMEOUT_MS = 8_000;
 
 type AccountBridgeOptions = {
@@ -97,20 +96,15 @@ export function parseTrustedDirectoryBaseUrl(
  * Resolve the machine directory origin the account bearer may be sent to.
  *
  * Trust model: the bearer is the MACHINE's account token (machine-scoped
- * infrastructure), so where it is sent must be controlled by the machine owner,
- * not by whatever project happens to be open. Read the machine-level
- * `ADE_ACCOUNT_DIRECTORY_URL` env FIRST and only fall back to the per-project
- * `ACCOUNT_DIRECTORY_URL` secret when no machine-level value is set — a project
- * can never redirect a machine-configured directory. The chosen value is then
- * passed through `parseTrustedDirectoryBaseUrl`, so the token is only ever
- * attached to a trusted https (or loopback) origin.
+ * infrastructure), so where it is sent must be controlled by the machine owner
+ * alone. We read ONLY the machine-level `ADE_ACCOUNT_DIRECTORY_URL` env — the
+ * per-project `ACCOUNT_DIRECTORY_URL` secret is deliberately NOT consulted, so
+ * an opened project can never redirect the token to a host it controls. The
+ * value is passed through `parseTrustedDirectoryBaseUrl`, so the token is only
+ * ever attached to a trusted https (or loopback) origin.
  */
-function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
-  const raw =
-    process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim()
-    || readProjectSecret(projectRoot, DIRECTORY_URL_SECRET)
-    || null;
-  return parseTrustedDirectoryBaseUrl(raw);
+function resolveDirectoryBaseUrl(): string | null {
+  return parseTrustedDirectoryBaseUrl(process.env.ADE_ACCOUNT_DIRECTORY_URL);
 }
 
 function toAccountStatus(
@@ -209,8 +203,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (!svc.getStatus().signedIn) {
         return { state: "signed_out", machines: [], message: null };
       }
-      const projectRoot = options.getProjectRoot();
-      const baseUrl = resolveDirectoryBaseUrl(projectRoot);
+      const baseUrl = resolveDirectoryBaseUrl();
       if (!baseUrl) {
         return {
           state: "not_configured",

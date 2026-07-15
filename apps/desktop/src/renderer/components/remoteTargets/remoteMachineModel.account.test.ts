@@ -92,6 +92,38 @@ describe("assignMachineSections — account machines", () => {
     ).toBe(false);
   });
 
+  it("matches a saved SSH target even when the account endpoint advertises the ADE service port", () => {
+    // Real account-directory endpoints advertise the ADE service port (8787),
+    // not the SSH port — matching/dedup must ignore it and key on the host.
+    expect(
+      accountMachineMatchesTarget(
+        accountMachine({
+          reachableEndpoints: [{ kind: "tailnet", host: "100.92.14.3", port: 8787 }],
+        }),
+        savedTarget(),
+      ),
+    ).toBe(true);
+
+    const sections = assignMachineSections({
+      targets: [savedTarget()],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [],
+      accountMachines: [
+        accountMachine({
+          machineKey: "mk_service_port",
+          reachableEndpoints: [{ kind: "tailnet", host: "100.92.14.3", port: 8787 }],
+        }),
+      ],
+    });
+    const accountRows = [
+      ...sections.connected,
+      ...sections.available,
+      ...sections.unavailable,
+    ].filter((row) => row.kind === "account");
+    expect(accountRows).toHaveLength(0);
+  });
+
   it("is a no-op when no account machines are supplied", () => {
     const sections = assignMachineSections({
       targets: [],

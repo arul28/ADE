@@ -355,14 +355,21 @@ export type MachineSections = {
   unavailable: MachineRow[];
 };
 
-/** Host:port identities advertised by an account machine's reachable endpoints. */
+/**
+ * Host identities advertised by an account machine's reachable endpoints, keyed
+ * at the default SSH port. The advertised endpoint port is the ADE service port
+ * (e.g. 8787), not an SSH port, so it is deliberately ignored when building the
+ * identity — otherwise an account machine would never dedupe against its saved
+ * SSH target or a discovered peer (both keyed at :22) and would surface as a
+ * duplicate row.
+ */
 export function accountMachineRouteIdentities(
   machine: AdeAccountMachine,
 ): Set<string> {
   const identities = new Set<string>();
   for (const endpoint of machine.reachableEndpoints) {
     const host = endpoint.host ?? endpoint.url ?? null;
-    const identity = routeIdentity(host, endpoint.port ?? null);
+    const identity = routeIdentity(host, null);
     if (identity) identities.add(identity);
   }
   return identities;
