@@ -1,3 +1,9 @@
 # Intentional secret-shaped redaction fixtures introduced in ADE-116.
 7958e05ac0cb5cf2a3d4ba111962e5c2c232199d:apps/desktop/src/main/services/chat/agentChatService.test.ts:generic-api-key:4533
 7958e05ac0cb5cf2a3d4ba111962e5c2c232199d:apps/desktop/src/main/services/chat/agentChatService.test.ts:generic-api-key:4571
+
+# Clerk OAuth client IDs are public identifiers used with PKCE; no client
+# secret is embedded in the desktop app. Keep the exception scoped to the two
+# production-wiring findings so other generic API keys remain detectable.
+26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:21
+26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:26

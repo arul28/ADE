@@ -15,6 +15,7 @@ import {
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "./sharedAccountAuthService";
 
@@ -182,5 +183,26 @@ describe("getSharedAccountAttestationConfig", () => {
       jwksUrl: "https://env.example.test/jwks",
       oauthClientId: "env-client",
     });
+  });
+});
+
+describe("getSharedAccountDirectoryBaseUrl", () => {
+  it("uses the prioritized project's account directory secret for every account surface", () => {
+    const otherRoot = makeProjectRoot({
+      ADE_ACCOUNT_DIRECTORY_URL: "https://other-directory.example.test",
+    });
+    const invokingRoot = makeProjectRoot({
+      ADE_ACCOUNT_DIRECTORY_URL: "https://invoking-directory.example.test",
+    });
+    const secretsDir = uniqueSecretsDir();
+    registerAccountConfigProjectRoot(otherRoot, secretsDir);
+    registerAccountConfigProjectRoot(invokingRoot, secretsDir, { prioritize: true });
+
+    expect(getSharedAccountDirectoryBaseUrl({
+      secretsDir,
+      env: {
+        ADE_ACCOUNT_DIRECTORY_URL: "https://environment-directory.example.test",
+      } as NodeJS.ProcessEnv,
+    })).toBe("https://invoking-directory.example.test");
   });
 });

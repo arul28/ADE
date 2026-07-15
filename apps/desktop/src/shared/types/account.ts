@@ -66,9 +66,9 @@ export type AdeAccountMachine = {
  * rather than blocking the Machines panel.
  */
 export type AdeAccountMachinesResult = {
-  state: "ok" | "signed_out" | "auth_expired" | "not_configured" | "unavailable";
+  state: "ok" | "signed_out" | "auth_expired" | "not_configured" | "unavailable" | "cancelled";
   machines: AdeAccountMachine[];
-  /** Human-readable detail for the "unavailable"/"not_configured" states. */
+  /** Human-readable detail for non-success states that need explanation. */
   message: string | null;
 };
 

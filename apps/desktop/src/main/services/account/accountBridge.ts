@@ -168,10 +168,6 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     signOut: () => toAccountStatus(service().signOut(), configured()),
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
-      const svc = service();
-      if (!svc.getStatus().signedIn) {
-        return { state: "signed_out", machines: [], message: null };
-      }
       const result = await directoryService().listMachines();
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });

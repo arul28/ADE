@@ -12,7 +12,10 @@ import { buildPairedEndpointCandidates } from "../../../desktop/src/main/service
 import { openSyncRuntimeTransport, type SyncRuntimeTransport } from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
 import { RuntimeRpcClient } from "../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
 import { AccountMachineDirectoryService } from "../services/account/accountMachineDirectoryService";
-import { getSharedAccountAuthService } from "../services/account/sharedAccountAuthService";
+import {
+  getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
+} from "../services/account/sharedAccountAuthService";
 import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
@@ -1256,6 +1259,7 @@ export async function resolveRemoteTargetForLaunch(
   options: {
     registry?: Pick<RemoteTargetRegistry, "get" | "remove">;
     accountMachines?: AccountMachineResolver;
+    accountProjectRoots?: readonly string[];
     budget?: RemoteLaunchBudget;
   } = {},
 ): Promise<RemoteRuntimeTarget> {
@@ -1264,7 +1268,12 @@ export async function resolveRemoteTargetForLaunch(
   const registry = options.registry ?? new RemoteTargetRegistry();
   const accountMachines = options.accountMachines ?? new AccountMachineDirectoryService(
     getSharedAccountAuthService(),
-    { appVersion: localCliVersion() },
+    {
+      appVersion: localCliVersion(),
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+        projectRoots: () => options.accountProjectRoots ?? [],
+      }),
+    },
   );
   const directoryTimeoutMs = options.budget
     ? attemptTimeoutMs(options.budget, 10_000)
@@ -1350,7 +1359,11 @@ export function takeAdeCodeRemoteArgs(rest: string[]): string[] | null {
   return null;
 }
 
-export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCodeCli): Promise<number> {
+export async function runAdeCodeRemote(
+  argv: string[],
+  runAdeCodeCli: RunAdeCodeCli,
+  launchOptions: { accountProjectRoots?: readonly string[] } = {},
+): Promise<number> {
   const options = parseRemoteAdeCodeArgs(argv);
   if (options.help) {
     printRemoteHelp();
@@ -1382,7 +1395,11 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
   let remote: OpenedRemoteSession;
   try {
     target = await withTimeout(
-      resolveRemoteTargetForLaunch(selectedTarget, { registry, budget }),
+      resolveRemoteTargetForLaunch(selectedTarget, {
+        registry,
+        budget,
+        accountProjectRoots: launchOptions.accountProjectRoots,
+      }),
       attemptTimeoutMs(budget, 10_000),
       "Timed out resolving the saved machine against the account directory.",
       controller.signal,

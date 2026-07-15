@@ -41,13 +41,13 @@ import {
 } from "../../desktop/src/main/services/adeActions/registry";
 import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
-import { officialAccountDirectoryUrlForIssuer } from "../../desktop/src/shared/accountDirectory";
 import {
   callAccountAction,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
 import {
   getSharedAccountAttestationConfig,
+  getSharedAccountDirectoryBaseUrl,
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
@@ -800,10 +800,9 @@ export function createMultiProjectRpcRequestHandler(
       if (action === "listMachines" || action === "pairMachine") {
         const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
           appVersion: options.serverVersion,
-          directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim()
-            || officialAccountDirectoryUrlForIssuer(getSharedAccountAttestationConfig({
-              projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-            }).issuer),
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+          }),
         });
         const actionArgs = isRecord(params.args) ? params.args : {};
         const result = action === "listMachines"

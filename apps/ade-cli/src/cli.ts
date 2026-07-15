@@ -11959,7 +11959,10 @@ async function runAdeCode(
   const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
   const remoteArgs = takeAdeCodeRemoteArgs(rest);
   if (remoteArgs) {
-    const exitCode = await runAdeCodeRemote(remoteArgs, runAdeCodeCli);
+    const roots = resolveRoots(options);
+    const exitCode = await runAdeCodeRemote(remoteArgs, runAdeCodeCli, {
+      accountProjectRoots: [roots.projectRoot],
+    });
     return { output: "", exitCode };
   }
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
@@ -12005,6 +12008,7 @@ async function runAccountMachineConnect(
   const exitCode = await runAdeCodeRemote(
     ["--target", targetId, ...plan.remoteArgs],
     runAdeCodeCli,
+    { accountProjectRoots: [resolveRoots(options).projectRoot] },
   );
   return { output: "", exitCode };
 }

@@ -26,12 +26,17 @@ class FakeWebSocket extends EventEmitter {
   readyState = 0;
   bufferedAmount = 0;
 
-  constructor(private readonly onSend: (text: string, ws: FakeWebSocket) => void) {
+  constructor(
+    private readonly onSend: (text: string, ws: FakeWebSocket) => void,
+    autoOpen = true,
+  ) {
     super();
-    queueMicrotask(() => {
-      this.readyState = 1;
-      this.emit("open");
-    });
+    if (autoOpen) {
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit("open");
+      });
+    }
   }
 
   send(data: string | Buffer): void {
@@ -364,5 +369,89 @@ describe("DesktopPairedMachineStore", () => {
     expect(reauthenticated.endpoints).not.toContain("wss://arbitrary.example/account");
     expect(reauthenticated.endpoints).not.toContain("ws://relay-one.example/connect/plaintext");
     expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
+  });
+
+  it("stops account endpoint fallback immediately when authentication is cancelled", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-cancel-"));
+    process.env.ADE_HOME = adeHome;
+    const controller = new AbortController();
+    const openedEndpoints: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-cancel",
+      deviceId: "host-cancel",
+      name: "Cancelled Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-cancel" },
+        { kind: "relay", url: "wss://relay-two.example/connect/machine-cancel" },
+      ],
+    };
+
+    await expect(new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "account-token",
+      "Laptop",
+      {
+        signal: controller.signal,
+        relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+        createWebSocket: (endpoint) => {
+          openedEndpoints.push(endpoint);
+          return new FakeWebSocket((text) => {
+            const envelope = parseSyncEnvelope(wsDataToText(text));
+            if (envelope.type === "hello") {
+              controller.abort(new Error("cancel account authentication"));
+            }
+          }) as unknown as WebSocket;
+        },
+      },
+    )).rejects.toThrow("cancel account authentication");
+
+    expect(openedEndpoints).toEqual([
+      "wss://relay-one.example/connect/machine-cancel",
+    ]);
+  });
+
+  it("stops account endpoint fallback immediately when connection opening is cancelled", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-connect-cancel-"));
+    process.env.ADE_HOME = adeHome;
+    const controller = new AbortController();
+    const openedEndpoints: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-connect-cancel",
+      deviceId: "host-connect-cancel",
+      name: "Cancelled Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-connect-cancel" },
+        { kind: "relay", url: "wss://relay-two.example/connect/machine-connect-cancel" },
+      ],
+    };
+
+    const pairing = new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "account-token",
+      "Laptop",
+      {
+        signal: controller.signal,
+        relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+        createWebSocket: (endpoint) => {
+          openedEndpoints.push(endpoint);
+          return new FakeWebSocket(() => {}, false) as unknown as WebSocket;
+        },
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort(new Error("cancel account connection"));
+
+    await expect(pairing).rejects.toThrow("cancel account connection");
+    expect(openedEndpoints).toEqual([
+      "wss://relay-one.example/connect/machine-connect-cancel",
+    ]);
   });
 });

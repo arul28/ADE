@@ -258,7 +258,11 @@ export async function fetchAccountMachines(args: {
   if (args.signal?.aborted) onAbort();
   else args.signal?.addEventListener("abort", onAbort, { once: true });
   const timeoutMs = Math.max(250, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS));
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await (args.fetchImpl ?? fetch)(`${baseUrl}/account/machines`, {
       method: "GET",
@@ -289,10 +293,17 @@ export async function fetchAccountMachines(args: {
     const payload = await readBoundedJson(response);
     return { state: "ok", machines: parseAccountMachinesPayload(payload), message: null };
   } catch {
+    if (args.signal?.aborted) {
+      return {
+        state: "cancelled",
+        machines: [],
+        message: "Machine directory request was cancelled.",
+      };
+    }
     return {
       state: "unavailable",
       machines: [],
-      message: controller.signal.aborted
+      message: timedOut
         ? "Machine directory timed out."
         : "Couldn't reach the machine directory.",
     };

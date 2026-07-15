@@ -217,4 +217,40 @@ describe("shared account directory trust boundary", () => {
     expect(result).toMatchObject({ state: "unavailable", machines: [] });
     expect(emittedBytes).toBeLessThanOrEqual(MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES + chunkBytes);
   });
+
+  it("distinguishes caller cancellation from the directory's own timeout", async () => {
+    const abortingFetch = async (_input: string | URL | Request, init?: RequestInit) =>
+      await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+
+    const caller = new AbortController();
+    const cancelled = fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "account-token",
+      fetchImpl: abortingFetch,
+      signal: caller.signal,
+      timeoutMs: 5_000,
+    });
+    caller.abort(new Error("cancel machine lookup"));
+    await expect(cancelled).resolves.toMatchObject({
+      state: "cancelled",
+      message: "Machine directory request was cancelled.",
+    });
+
+    await expect(fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "account-token",
+      fetchImpl: abortingFetch,
+      timeoutMs: 1,
+    })).resolves.toMatchObject({
+      state: "unavailable",
+      message: "Machine directory timed out.",
+    });
+  });
 });

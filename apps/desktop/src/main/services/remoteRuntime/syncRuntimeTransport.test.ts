@@ -75,6 +75,22 @@ function credentials(): DesktopPairedMachineCredentials {
 }
 
 describe("openSyncRuntimeTransport", () => {
+  it("does not construct a WebSocket for an already-cancelled attempt", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancel before connect"));
+    let constructed = false;
+
+    await expect(openSyncEnvelopeConnection({
+      endpoint: "ws://offline.test",
+      signal: controller.signal,
+      createWebSocket: () => {
+        constructed = true;
+        return new FakeWebSocket(() => {}) as unknown as WebSocket;
+      },
+    })).rejects.toThrow("cancel before connect");
+    expect(constructed).toBe(false);
+  });
+
   it("cancels a paired WebSocket attempt that never opens", async () => {
     const controller = new AbortController();
     const socket = new FakeWebSocket(() => {}, false);

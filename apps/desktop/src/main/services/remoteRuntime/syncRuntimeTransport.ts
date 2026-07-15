@@ -81,6 +81,12 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Sync connection cancelled.");
+}
+
 function normalizeTimeout(value: number | undefined, fallback: number): number {
   const timeout = Number(value ?? fallback);
   if (!Number.isFinite(timeout) || timeout <= 0) {
@@ -236,14 +242,13 @@ export async function openSyncEnvelopeConnection(
 ): Promise<SyncEnvelopeConnection> {
   const endpoint = normalizeSyncEndpoint(options.endpoint);
   const timeoutMs = normalizeTimeout(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
+  if (options.signal?.aborted) throw abortError(options.signal);
   const ws = options.createWebSocket?.(endpoint) ?? new WebSocket(endpoint);
   const connection = createConnection(endpoint, ws);
 
   if (options.signal?.aborted) {
     connection.close(1000, "Sync connection cancelled.");
-    throw options.signal.reason instanceof Error
-      ? options.signal.reason
-      : new Error("Sync connection cancelled.");
+    throw abortError(options.signal);
   }
   if (ws.readyState === WebSocket.OPEN) return connection;
   await new Promise<void>((resolve, reject) => {
@@ -279,9 +284,7 @@ export async function openSyncEnvelopeConnection(
       settled = true;
       cleanup();
       connection.close(1000, "Sync connection cancelled.");
-      reject(options.signal?.reason instanceof Error
-        ? options.signal.reason
-        : new Error("Sync connection cancelled."));
+      reject(options.signal ? abortError(options.signal) : new Error("Sync connection cancelled."));
     }
     const timer = setTimeout(() => {
       if (settled) return;

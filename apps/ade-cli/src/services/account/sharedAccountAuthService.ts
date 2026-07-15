@@ -157,6 +157,21 @@ export function getSharedAccountAttestationConfig(args: {
   });
 }
 
+export function getSharedAccountDirectoryBaseUrl(args: {
+  secretsDir?: string;
+  projectRoots?: () => Iterable<string>;
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const secretsDir = path.resolve(args.secretsDir ?? resolveMachineAdeLayout().secretsDir);
+  for (const projectRoot of args.projectRoots?.() ?? []) {
+    registerAccountConfigProjectRoot(projectRoot, secretsDir);
+  }
+  return resolveDeviceBridgeUrl({
+    env: args.env ?? process.env,
+    projectRoots: rootsFor(secretsDir),
+  });
+}
+
 export function getSharedAccountAuthService(args: {
   secretsDir?: string;
   projectRoots?: () => Iterable<string>;
@@ -179,9 +194,9 @@ export function getSharedAccountAuthService(args: {
       env: args.env ?? process.env,
       projectRoots: rootsFor(secretsDir),
     }),
-    getDeviceBridgeUrl: () => resolveDeviceBridgeUrl({
-      env: args.env ?? process.env,
-      projectRoots: rootsFor(secretsDir),
+    getDeviceBridgeUrl: () => getSharedAccountDirectoryBaseUrl({
+      secretsDir,
+      env: args.env,
     }),
     env: args.env ?? process.env,
     logger: args.logger,
