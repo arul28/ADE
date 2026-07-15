@@ -416,6 +416,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  const isAccountRoute =
+    location.pathname === "/account" || location.pathname.startsWith("/account/");
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
   const productAnalyticsScreen = productAnalyticsScreenForPathname(location.pathname);
@@ -1282,6 +1284,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="shrink-0 relative z-20">
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
+          accountRouteActive={isAccountRoute}
           onNavigate={(path, opts) => navigate(path, opts)}
         />
       </div>

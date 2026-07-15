@@ -823,9 +823,11 @@ function ProjectTabIcon({
 
 export function TopBar({
   personalChatsRouteActive = false,
+  accountRouteActive = false,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
+  accountRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
@@ -1292,21 +1294,21 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-    if (personalChatsRouteActive) onNavigate?.("/work");
-  }, [isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (personalChatsRouteActive || accountRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  // Clicking a project tab while the Chats machine tab is foreground must
-  // leave /chats, or ProjectTabHost's route replay (which skips personal chats
-  // routes) never surfaces the project. Navigate to the CURRENT binding's
-  // stored route so the route-cache effect writes that same value back instead
-  // of stamping /work over the project's remembered position.
-  const leavePersonalChatsRoute = useCallback(() => {
-    if (!personalChatsRouteActive) return;
+  // Clicking a project tab while either the personal-chats or account machine
+  // route is foreground must leave it, or ProjectTabHost's route replay never
+  // surfaces the project. Navigate to the CURRENT binding's stored route so the
+  // route-cache effect writes that same value back instead of stamping /work
+  // over the project's remembered position.
+  const leaveMachineRoute = useCallback(() => {
+    if (!personalChatsRouteActive && !accountRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1314,12 +1316,12 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
 
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
-      leavePersonalChatsRoute();
+      leaveMachineRoute();
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
@@ -1329,7 +1331,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      leavePersonalChatsRoute,
+      leaveMachineRoute,
       project?.rootPath,
       remoteBinding,
       switchProjectToPath,
@@ -1339,7 +1341,7 @@ export function TopBar({
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
-      leavePersonalChatsRoute();
+      leaveMachineRoute();
       if (remoteBinding?.key === binding.key) {
         cancelNewTab();
         return;
@@ -1349,7 +1351,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      leavePersonalChatsRoute,
+      leaveMachineRoute,
       remoteBinding?.key,
       switchRemoteProject,
     ],

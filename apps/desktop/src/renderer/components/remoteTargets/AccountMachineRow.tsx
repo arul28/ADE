@@ -59,6 +59,8 @@ export function AccountMachineRow({
   const primaryEndpoint = machine.reachableEndpoints[0];
   const connectHost = accountMachineConnectHost(machine);
   const isOffline = section === "unavailable";
+  const relayOnly = machine.online && !connectHost;
+  const trulyOffline = !machine.online;
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
@@ -91,7 +93,11 @@ export function AccountMachineRow({
               {[machine.platform, machine.deviceType].filter(Boolean).join(" · ") || "Registered on your account"}
             </div>
             <div style={helperTextStyle}>
-              {machine.online ? "Online · reachable on your account" : relativeLastSeen(machine.lastSeenAt)}
+              {relayOnly
+                ? "Online · relay only — connect from a machine on its network"
+                : machine.online
+                  ? "Online · reachable on your account"
+                  : relativeLastSeen(machine.lastSeenAt)}
             </div>
           </div>
 
@@ -107,7 +113,7 @@ export function AccountMachineRow({
                 {connecting ? "Connecting…" : "Connect"}
               </button>
             ) : null}
-            {isOffline ? (
+            {trulyOffline ? (
               <button
                 type="button"
                 aria-expanded={detailOpen}
@@ -123,7 +129,7 @@ export function AccountMachineRow({
         </div>
       </div>
 
-      {isOffline && detailOpen ? (
+      {trulyOffline && detailOpen ? (
         <div id={`account-machine-detail-${row.id}`} style={inlineDetailStyle}>
           <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600 }}>
             {relativeLastSeen(machine.lastSeenAt)}

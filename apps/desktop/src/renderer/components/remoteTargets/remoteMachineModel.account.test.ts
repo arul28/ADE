@@ -63,6 +63,42 @@ describe("assignMachineSections — account machines", () => {
     expect(sections.available[0]).toMatchObject({ kind: "account" });
   });
 
+  it("buckets an online relay-only account machine into UNAVAILABLE", () => {
+    const sections = assignMachineSections({
+      targets: [],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [],
+      accountMachines: [
+        accountMachine({
+          machineKey: "mk_relay_only",
+          reachableEndpoints: [{ kind: "relay", url: "wss://relay/x" }],
+        }),
+      ],
+    });
+
+    expect(sections.available).toHaveLength(0);
+    expect(sections.unavailable.map((row) => row.id)).toEqual(["account:mk_relay_only"]);
+  });
+
+  it("keeps an online account machine with a direct route in AVAILABLE", () => {
+    const sections = assignMachineSections({
+      targets: [],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [],
+      accountMachines: [
+        accountMachine({
+          machineKey: "mk_lan",
+          reachableEndpoints: [{ kind: "lan", host: "10.0.0.9", port: 22 }],
+        }),
+      ],
+    });
+
+    expect(sections.available.map((row) => row.id)).toEqual(["account:mk_lan"]);
+    expect(sections.unavailable).toHaveLength(0);
+  });
+
   it("dedupes an account machine that maps to a saved target by host identity", () => {
     const sections = assignMachineSections({
       targets: [savedTarget()],

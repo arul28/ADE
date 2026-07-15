@@ -375,6 +375,13 @@ export function accountMachineRouteIdentities(
   return identities;
 }
 
+/** True when an account machine advertises a directly-connectable (non-relay) endpoint. */
+export function accountMachineHasDirectRoute(machine: AdeAccountMachine): boolean {
+  return machine.reachableEndpoints.some(
+    (endpoint) => endpoint.kind !== "relay" && Boolean(endpoint.host ?? endpoint.url),
+  );
+}
+
 function intersects(a: Set<string>, b: Set<string>): boolean {
   for (const value of a) {
     if (b.has(value)) return true;
@@ -529,7 +536,9 @@ export function assignMachineSections(args: {
       machine,
       matchedTargetId: null,
     };
-    if (machine.online) {
+    // A relay-only online machine has no direct SSH route, so it must not sit in
+    // AVAILABLE as a dead (unconnectable) row.
+    if (machine.online && accountMachineHasDirectRoute(machine)) {
       sections.available.push(row);
     } else {
       sections.unavailable.push(row);
