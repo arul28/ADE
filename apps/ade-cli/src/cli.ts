@@ -17883,17 +17883,16 @@ async function runAccountLogin(
     };
 
     const timedOut = async (
-      flowStatus?: JsonObject,
+      pollAction: "pollLogin" | "pollDeviceLogin",
+      sessionId: string,
     ): Promise<{ output: string; exitCode: number }> => {
-      const status = await runAccountAction("status");
-      const ignoredEnvCredential = mode === "device"
-        && (plan.explicitHeadless || options.headless)
-        && asString(status.source) === "env-token";
-      if (status.signedIn === true && !ignoredEnvCredential) return finishSignedIn(status);
+      const finalPoll = await runAccountAction(pollAction, { sessionId });
+      const finalPollStatus = asString(finalPoll.status);
+      const authStatus = isRecord(finalPoll.authStatus) ? finalPoll.authStatus : finalPoll;
+      if (finalPollStatus === "signed_in") return finishSignedIn(authStatus);
       process.stderr.write("ADE account sign-in timed out.\n");
-      const outputStatus = ignoredEnvCredential && flowStatus ? flowStatus : status;
       return {
-        output: formatOutput(outputStatus, options, "account-auth"),
+        output: formatOutput({ signedIn: false }, options, "account-auth"),
         exitCode: 1,
       };
     };
@@ -17937,7 +17936,9 @@ async function runAccountLogin(
           if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
             intervalSec = poll.intervalSec;
           }
-          if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut(authStatus);
+          if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+            return timedOut("pollDeviceLogin", sessionId);
+          }
           continue;
         }
         const message = asString(poll.message) ?? "ADE account device sign-in failed.";
@@ -17991,7 +17992,9 @@ async function runAccountLogin(
       const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
       if (pollStatus === "signed_in") return finishSignedIn(authStatus);
       if (pollStatus === "pending") {
-        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) return timedOut(authStatus);
+        if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+          return timedOut("pollLogin", sessionId);
+        }
         continue;
       }
       const message = asString(poll.message) ?? "ADE account sign-in failed.";

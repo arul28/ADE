@@ -3161,11 +3161,12 @@ describe("ADE CLI", () => {
     }
   });
 
-  posixIt("accepts current-flow deadline success but ignores inherited env auth", async () => {
+  posixIt("accepts current-session deadline success but rejects a stale signed-in account", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));
     const socketPath = path.join(root, "ade.sock");
     const requests: Array<{ method: string; params?: any }> = [];
-    let deadlineStatusSource: "device" | "env-token" = "device";
+    let completeCurrentSessionAtDeadline = true;
+    let devicePollCount = 0;
     const stop = await startHeadlessRpcSocketServer({
       socketPath,
       createHandler: () => (async (request: any) => {
@@ -3197,26 +3198,38 @@ describe("ADE CLI", () => {
             };
           }
           if (action === "pollDeviceLogin") {
-            return {
-              domain: "account",
-              action,
-              result: { status: "pending", authStatus: { signedIn: false } },
-              statusHints: {},
-            };
-          }
-          if (action === "status") {
+            devicePollCount += 1;
+            if (completeCurrentSessionAtDeadline && devicePollCount === 2) {
+              return {
+                domain: "account",
+                action,
+                result: {
+                  status: "signed_in",
+                  authStatus: {
+                    signedIn: true,
+                    userId: "deadline-user",
+                    email: "deadline@example.com",
+                    name: null,
+                    expiresAt: "2026-07-14T13:00:00.000Z",
+                    source: "device",
+                  },
+                },
+                statusHints: {},
+              };
+            }
             return {
               domain: "account",
               action,
               result: {
-                signedIn: true,
-                userId: deadlineStatusSource === "device" ? "deadline-user" : "inherited-env-user",
-                email: deadlineStatusSource === "device"
-                  ? "deadline@example.com"
-                  : "inherited@example.com",
-                name: null,
-                expiresAt: "2026-07-14T13:00:00.000Z",
-                source: deadlineStatusSource,
+                status: "pending",
+                authStatus: completeCurrentSessionAtDeadline
+                  ? { signedIn: false }
+                  : {
+                      signedIn: true,
+                      userId: "stale-user",
+                      email: "stale@example.com",
+                      source: "device",
+                    },
               },
               statusHints: {},
             };
@@ -3225,7 +3238,7 @@ describe("ADE CLI", () => {
             return {
               domain: "account",
               action,
-              result: { signedIn: true, source: deadlineStatusSource },
+              result: { signedIn: true, source: "device" },
               statusHints: {},
             };
           }
@@ -3247,20 +3260,20 @@ describe("ADE CLI", () => {
         .map((request) => request.params?.action)).toEqual([
         "startDeviceLogin",
         "pollDeviceLogin",
-        "status",
+        "pollDeviceLogin",
       ]);
 
       requests.length = 0;
-      deadlineStatusSource = "env-token";
-      process.env.ADE_ACCOUNT_TOKEN = "valid-inherited-env-token";
-      const ignoredEnvResult = await runCli([
+      completeCurrentSessionAtDeadline = false;
+      devicePollCount = 0;
+      const staleAccountResult = await runCli([
         "--socket",
         socketPath,
         "login",
         "--headless",
         "--text",
       ]);
-      expect(ignoredEnvResult).toEqual({
+      expect(staleAccountResult).toEqual({
         output: "Not signed in — local use does not require an account.\n",
         exitCode: 1,
       });
@@ -3268,7 +3281,7 @@ describe("ADE CLI", () => {
         .map((request) => request.params?.action)).toEqual([
         "startDeviceLogin",
         "pollDeviceLogin",
-        "status",
+        "pollDeviceLogin",
         "cancelLogin",
       ]);
     } finally {
