@@ -24,10 +24,28 @@ function rootsFor(secretsDir: string): Set<string> {
 export function registerAccountConfigProjectRoot(
   projectRoot: string,
   secretsDir = resolveMachineAdeLayout().secretsDir,
+  options: { prioritize?: boolean } = {},
 ): void {
   const normalized = projectRoot.trim();
   if (!normalized) return;
-  rootsFor(secretsDir).add(path.resolve(normalized));
+  const resolved = path.resolve(normalized);
+  const key = path.resolve(secretsDir);
+  const roots = rootsFor(secretsDir);
+  if (!options.prioritize) {
+    roots.add(resolved);
+    return;
+  }
+  // `ade login` passes its invoking project root here so that project's CLERK_*
+  // secrets win OAuth config resolution. resolveOAuthConfig walks the set in
+  // insertion order, so re-seat this root at the FRONT — otherwise a project
+  // registered earlier (e.g. via registerAccountProjects) would shadow it in a
+  // multi-project brain.
+  if (roots.size === 0 || [...roots][0] === resolved) {
+    roots.add(resolved);
+    return;
+  }
+  const rest = [...roots].filter((root) => root !== resolved);
+  configProjectRoots.set(key, new Set([resolved, ...rest]));
 }
 
 function readProjectSecret(projectRoot: string, name: string): string | null {

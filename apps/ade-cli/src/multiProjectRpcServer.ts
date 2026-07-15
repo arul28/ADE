@@ -780,7 +780,11 @@ export function createMultiProjectRpcRequestHandler(
         const startProjectRoot =
           typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";
         if (startProjectRoot) {
-          registerAccountConfigProjectRoot(startProjectRoot);
+          // Prioritize the invoking project's root so its CLERK_* secrets win
+          // over any project registered earlier in a multi-project brain.
+          registerAccountConfigProjectRoot(startProjectRoot, undefined, {
+            prioritize: true,
+          });
         }
       }
       registerAccountProjects();

@@ -4,7 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
 import type { AccountAuthService } from "./accountAuthService";
-import { getSharedAccountAuthService } from "./sharedAccountAuthService";
+import {
+  getSharedAccountAuthService,
+  registerAccountConfigProjectRoot,
+} from "./sharedAccountAuthService";
 
 const tempPaths: string[] = [];
 const activeServices: AccountAuthService[] = [];
@@ -61,5 +64,33 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
     const authorizeUrl = new URL(start.authorizeUrl);
     expect(authorizeUrl.origin).toBe("https://issuer-a.example.test");
     expect(authorizeUrl.searchParams.get("client_id")).toBe("client-from-env");
+  });
+
+  it("prioritizes the invoking project root over a project registered earlier", async () => {
+    const otherRoot = makeProjectRoot({
+      CLERK_ISSUER: "https://other.example.test",
+      CLERK_OAUTH_CLIENT_ID: "other-client",
+    });
+    const invokingRoot = makeProjectRoot({
+      CLERK_ISSUER: "https://invoking.example.test",
+      CLERK_OAUTH_CLIENT_ID: "invoking-client",
+    });
+    const secretsDir = uniqueSecretsDir();
+    // `other` is registered first (as registerAccountProjects would for the
+    // machine's registered projects); `ade login` then prioritizes its invoking
+    // root so that project's Clerk app wins, not `other`'s.
+    registerAccountConfigProjectRoot(otherRoot, secretsDir);
+    registerAccountConfigProjectRoot(invokingRoot, secretsDir, { prioritize: true });
+    const service = getSharedAccountAuthService({
+      secretsDir,
+      projectRoots: () => [],
+      env: {} as NodeJS.ProcessEnv,
+    });
+    activeServices.push(service);
+
+    const start = await service.startLogin();
+    const authorizeUrl = new URL(start.authorizeUrl);
+    expect(authorizeUrl.origin).toBe("https://invoking.example.test");
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("invoking-client");
   });
 });
