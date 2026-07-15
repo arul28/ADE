@@ -181,6 +181,7 @@ describe("ADE CLI", () => {
       formatter: "account-machines",
       machineOnly: true,
       machineAutoStart: true,
+      connectRole: "cto",
       steps: [{
         method: "account.call",
         params: { action: "listMachines", args: {} },

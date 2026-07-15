@@ -145,6 +145,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "signOut",
     "getToken",
     "createToken",
+    "listMachines",
     "pairMachine",
   ],
   // The CTO's durable memory is injected into every CTO session; only the CTO

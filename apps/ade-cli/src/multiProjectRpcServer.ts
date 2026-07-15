@@ -754,7 +754,7 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       // Gate credential-bearing account actions (tokens plus interactive login
-      // start/poll/cancel/sign-out and pairMachine) to cto-role callers,
+      // start/poll/cancel/sign-out and machine directory access) to cto-role callers,
       // mirroring the run_ade_action gate in
       // adeRpcServer. The caller's requested role (from ade/initialize identity)
       // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that

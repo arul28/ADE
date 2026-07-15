@@ -13215,6 +13215,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       formatter: "account-machines",
       machineOnly: true,
       machineAutoStart: true,
+      connectRole: "cto",
       steps: [accountActionStep("result", "listMachines")],
     };
   }
