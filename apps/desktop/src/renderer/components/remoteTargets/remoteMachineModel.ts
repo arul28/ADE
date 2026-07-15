@@ -1,6 +1,7 @@
 import { extractError } from "../../lib/format";
 import type {
   AdeAccountMachine,
+  AdeAccountMachineEndpoint,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionRoute,
   RemoteRuntimeConnectionStatus,
@@ -356,6 +357,27 @@ export type MachineSections = {
 };
 
 /**
+ * The bare host/address for an account endpoint. Directory endpoints may carry
+ * either a plain `host` or a full `url` (e.g. https://100.92.14.3:8787); the SSH
+ * connect + dedupe paths need the hostname alone, never the whole URL string.
+ */
+export function accountEndpointHost(
+  endpoint: AdeAccountMachineEndpoint,
+): string | null {
+  const host = endpoint.host?.trim();
+  if (host) return host.replace(/\.$/, "");
+  const raw = endpoint.url?.trim();
+  if (!raw) return null;
+  try {
+    // URL.hostname wraps IPv6 in brackets; strip them for a usable SSH host.
+    return new URL(raw).hostname.replace(/^\[|\]$/g, "") || null;
+  } catch {
+    // Not a URL — accept a bare host (no scheme/slash/space) as-is.
+    return /^[^/\s]+$/.test(raw) ? raw.replace(/\.$/, "") : null;
+  }
+}
+
+/**
  * Host identities advertised by an account machine's reachable endpoints, keyed
  * at the default SSH port. The advertised endpoint port is the ADE service port
  * (e.g. 8787), not an SSH port, so it is deliberately ignored when building the
@@ -368,7 +390,7 @@ export function accountMachineRouteIdentities(
 ): Set<string> {
   const identities = new Set<string>();
   for (const endpoint of machine.reachableEndpoints) {
-    const host = endpoint.host ?? endpoint.url ?? null;
+    const host = accountEndpointHost(endpoint);
     const identity = routeIdentity(host, null);
     if (identity) identities.add(identity);
   }
@@ -378,7 +400,7 @@ export function accountMachineRouteIdentities(
 /** True when an account machine advertises a directly-connectable (non-relay) endpoint. */
 export function accountMachineHasDirectRoute(machine: AdeAccountMachine): boolean {
   return machine.reachableEndpoints.some(
-    (endpoint) => endpoint.kind !== "relay" && Boolean(endpoint.host ?? endpoint.url),
+    (endpoint) => endpoint.kind !== "relay" && accountEndpointHost(endpoint) != null,
   );
 }
 

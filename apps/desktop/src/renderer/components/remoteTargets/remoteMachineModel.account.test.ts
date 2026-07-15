@@ -118,6 +118,31 @@ describe("assignMachineSections — account machines", () => {
     expect(sections.available.some((row) => row.kind === "saved")).toBe(true);
   });
 
+  it("dedupes a URL-valued account endpoint against a saved target by host identity", () => {
+    const sections = assignMachineSections({
+      targets: [savedTarget()],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [],
+      accountMachines: [
+        accountMachine({
+          machineKey: "mk_url_dupe",
+          reachableEndpoints: [
+            { kind: "tailnet", url: "https://100.92.14.3:8787" },
+          ],
+        }),
+      ],
+    });
+
+    const accountRows = [
+      ...sections.connected,
+      ...sections.available,
+      ...sections.unavailable,
+    ].filter((row) => row.kind === "account");
+    expect(accountRows).toHaveLength(0);
+    expect(sections.available.some((row) => row.kind === "saved")).toBe(true);
+  });
+
   it("accountMachineMatchesTarget matches on shared host:port", () => {
     expect(accountMachineMatchesTarget(accountMachine(), savedTarget())).toBe(true);
     expect(

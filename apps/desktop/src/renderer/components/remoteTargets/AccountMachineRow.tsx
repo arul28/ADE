@@ -2,7 +2,11 @@ import { CaretDown, CaretUp, Cloud, PlugsConnected } from "@phosphor-icons/react
 import type { AdeAccountMachine } from "../../../shared/types";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
-import type { AccountMachineRow as AccountMachineRowModel, MachineSection } from "./remoteMachineModel";
+import {
+  accountEndpointHost,
+  type AccountMachineRow as AccountMachineRowModel,
+  type MachineSection,
+} from "./remoteMachineModel";
 import { helperTextStyle, inlineDetailStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
 
 type AccountMachineRowProps = {
@@ -23,7 +27,7 @@ export function accountMachineConnectHost(machine: AdeAccountMachine): { host: s
   });
   for (const endpoint of ranked) {
     if (endpoint.kind === "relay") continue;
-    const host = endpoint.host ?? endpoint.url ?? null;
+    const host = accountEndpointHost(endpoint);
     if (host) return { host, port: endpoint.port ?? null };
   }
   return null;

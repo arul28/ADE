@@ -1084,7 +1084,7 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
   });
 
-  it("does not reuse an account machine's service port as the SSH port", async () => {
+  it("parses an account endpoint URL without reusing its service port", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [],
@@ -1120,7 +1120,7 @@ describe("RemoteTargetList", () => {
         platform: "darwin",
         deviceType: "desktop",
         reachableEndpoints: [
-          { kind: "tailnet", host: "100.92.14.3", port: 8787 },
+          { kind: "tailnet", url: "http://100.92.14.3:8787" },
         ],
         lastSeenAt: Date.now() - 30_000,
         online: true,
@@ -1142,6 +1142,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(
         expect.objectContaining({
+          // The endpoint URL must be reduced to its bare SSH hostname.
           hostname: "100.92.14.3",
           // The 8787 service port must NOT become the SSH port; leave it default.
           port: null,
