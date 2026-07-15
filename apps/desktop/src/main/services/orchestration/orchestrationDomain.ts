@@ -143,6 +143,7 @@ export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) 
         orchestrationRunId: arg.runId,
         orchestrationRole: arg.role,
         orchestrationParentSessionId: arg.leadSessionId,
+        spawnKind: "subagent",
         orchestrationTag: arg.tag,
         orchestrationStepId: arg.stepId,
         orchestrationBundlePath: bundlePath,

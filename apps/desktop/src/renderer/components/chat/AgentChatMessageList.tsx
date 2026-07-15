@@ -39,6 +39,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
+  AgentChatSpawnCompletion,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   ChatSurfaceChipTone,
@@ -86,6 +87,7 @@ import {
   type ChatActivityBundleItem,
   type CollapseTranscriptResult,
   type ScheduledWakeDividerRenderEvent,
+  type SpawnWakeDividerRenderEvent,
   type SubagentResultCardRenderEvent,
   type SubagentSpawnAnchorRenderEvent,
   type SubagentStoppedGroupEvent,
@@ -93,6 +95,7 @@ import {
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
 import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
+import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
@@ -689,7 +692,8 @@ type RenderEnvelope = {
   | SubagentResultCardRenderEvent
   | SubagentStoppedGroupEvent
   | BackgroundFinishChipRenderEvent
-  | ScheduledWakeDividerRenderEvent;
+  | ScheduledWakeDividerRenderEvent
+  | SpawnWakeDividerRenderEvent;
 };
 
 function MessageCopyButton({
@@ -2725,6 +2729,32 @@ function renderEvent(
     );
   }
 
+  /* ── Spawn-completion wake header (ADE woke this chat) ── */
+  if (event.type === "spawn_wake_divider") {
+    const summary = event.summary?.trim();
+    return (
+      <div className="my-3 flex flex-col gap-1" data-spawn-wake-child={event.childSessionId}>
+        <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-violet-200/70">
+          <span className="h-px flex-1 bg-violet-300/[0.1]" />
+          <span className="inline-flex shrink-0 items-center gap-1.5">
+            <Robot size={11} weight="duotone" className="text-violet-300/75" aria-hidden />
+            ADE woke this chat
+          </span>
+          <span className="h-px flex-1 bg-violet-300/[0.1]" />
+        </div>
+        <button
+          type="button"
+          onClick={() => navigateToSpawnedChat(event.childSessionId, options?.laneId ?? null)}
+          className="mx-auto inline-flex max-w-[min(100%,70ch)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
+          title="Open the spawned chat"
+        >
+          <span className="min-w-0 truncate">{summary || `"${event.childTitle}" finished`}</span>
+          <span className="inline-flex shrink-0 items-center gap-0.5 text-violet-200/70">open<CaretRight size={10} weight="bold" aria-hidden /></span>
+        </button>
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message") {
     const deliveryChip = describeUserDeliveryState(event);
@@ -3070,6 +3100,7 @@ function renderEvent(
     return (
       <SubagentSpawnCard
         event={event}
+        laneId={options?.laneId ?? null}
         onJumpToResult={
           options?.onScrollToRowKey
             ? () => options!.onScrollToRowKey?.(`subagent-result:${event.agentKey}`)
@@ -3306,38 +3337,66 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
-    // "Subagent spawned" chip — one quiet line deep-linking to the child
-    // chat session (spawnAgent + CLI-spawned children). SDK Task-tool
-    // subagents stay panel-only; the side panel remains the primary surface.
+    // Spawn notices. The "spawned" announcement is now carried by the unified,
+    // navigable spawn-anchor card (SubagentSpawnCard) — do NOT render a second
+    // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
+    // notice; render a single quiet steel chip that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
-      const spawned = event.detail && typeof event.detail === "object" && "spawnedSession" in event.detail
-        ? (event.detail as { spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string } }).spawnedSession
-        : undefined;
-      const childTitle = spawned?.title ?? event.message.replace(/^Subagent spawned:\s*/, "");
+      // A plain spawn's announcement is carried by the unified, navigable
+      // SubagentSpawnCard, so suppress this quiet pill there (hasInlineCard).
+      // Orchestration-run children and continuity-recovery spawns emit only the
+      // notice (no inline card) — keep a compact deep-link chip for those.
+      const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
+        hasInlineCard?: boolean;
+        spawnKind?: "subagent" | "peer" | "none";
+        spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string };
+      };
+      if (detail.hasInlineCard) return null;
+      const spawned = detail.spawnedSession;
       const childSessionId = typeof spawned?.sessionId === "string" && spawned.sessionId.length ? spawned.sessionId : null;
+      const childTitle = spawned?.title?.trim() || event.message.replace(/^Subagent spawned:\s*/, "") || "chat";
+      const isPeer = detail.spawnKind === "peer";
       return (
         <button
           type="button"
           disabled={!childSessionId}
-          onClick={() => {
-            if (!childSessionId) return;
-            try {
-              window.dispatchEvent(
-                new CustomEvent("ade:work:select-session", {
-                  detail: { sessionId: childSessionId, laneId: spawned?.laneId ?? null },
-                }),
-              );
-            } catch {
-              /* no-op */
-            }
-          }}
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-border/14 bg-surface-recessed/70 px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70 transition-colors enabled:hover:border-border/28 enabled:hover:text-fg/85"
+          onClick={() => navigateToSpawnedChat(childSessionId, spawned?.laneId ?? options?.laneId ?? null)}
+          className={cn(
+            "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
+            isPeer
+              ? "border-slate-400/16 bg-slate-400/[0.05] text-slate-300/70 enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
+              : "border-violet-300/16 bg-violet-400/[0.05] text-violet-200/75 enabled:hover:border-violet-300/30 enabled:hover:text-violet-100/90",
+          )}
           title={childSessionId ? "Open the spawned chat" : undefined}
         >
-          <Robot size={11} weight="duotone" className="shrink-0 text-muted-fg/55" />
-          <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/45">subagent</span>
+          <Robot size={11} weight="duotone" className={cn("shrink-0", isPeer ? "text-slate-300/60" : "text-violet-300/70")} aria-hidden />
+          <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", isPeer ? "text-slate-300/50" : "text-violet-300/55")}>
+            {isPeer ? "peer" : "subagent"}
+          </span>
           <span className="min-w-0 truncate">{childTitle}</span>
-          {childSessionId ? <CaretRight size={10} className="shrink-0 text-muted-fg/50" /> : null}
+          {childSessionId ? <CaretRight size={10} className={cn("shrink-0", isPeer ? "text-slate-300/55" : "text-violet-300/55")} /> : null}
+        </button>
+      );
+    }
+    if (event.noticeKind === "info" && event.status === "spawn_completed") {
+      const completion: AgentChatSpawnCompletion | undefined =
+        event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
+      const childTitle = completion?.childTitle?.trim() || event.message.replace(/^Peer\s+"?|"?\s+finished$/g, "").trim() || "Peer";
+      const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
+        ? completion.childSessionId
+        : null;
+      return (
+        <button
+          type="button"
+          disabled={!childSessionId}
+          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
+          title={childSessionId ? "Open the peer chat" : undefined}
+        >
+          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
+          <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-slate-300/50">peer</span>
+          <span className="min-w-0 truncate">"{childTitle}" finished</span>
+          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
         </button>
       );
     }
@@ -3365,7 +3424,6 @@ function renderEvent(
     // A chat whose provider thread couldn't be resumed after a disk-full incident
     // carries a persisted continuity-recovery detail — render the dedicated card
     // (retry / recover-from-history / start-new) instead of a plain notice chip.
-    // The `subagent_spawned` continuity notice keeps its deep-link chip above.
     if (
       event.detail
       && typeof event.detail === "object"

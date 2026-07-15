@@ -476,6 +476,19 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return set;
   }, [childrenByParentId]);
+  // Live-children badge: count, per spawner id, its still-running spawned chats.
+  // Derived once from the already-loaded session list (no extra fetch); clears
+  // as children reach a terminal status.
+  const liveChildrenByParentId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const session of allSessions) {
+      const parentId = session.orchestrationParentSessionId;
+      if (!parentId || parentId === session.id) continue;
+      if (session.status !== "running") continue;
+      map.set(parentId, (map.get(parentId) ?? 0) + 1);
+    }
+    return map;
+  }, [allSessions]);
   const isChildSectionCollapsed = useCallback(
     (parentId: string) => workCollapsedSectionIds.includes(`chat:${parentId}`),
     [workCollapsedSectionIds],
@@ -621,6 +634,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         key={session.id}
         session={session}
         lane={laneById.get(session.laneId) ?? null}
+        liveChildrenCount={liveChildrenByParentId.get(session.id) ?? 0}
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
