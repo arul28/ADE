@@ -404,6 +404,41 @@ export function accountMachineHasDirectRoute(machine: AdeAccountMachine): boolea
   );
 }
 
+function endpointRank(kind: AdeAccountMachineEndpoint["kind"]): number {
+  return kind === "tailnet" ? 0 : kind === "lan" ? 1 : 2;
+}
+
+/**
+ * SSH fallback routes for an account machine: every non-relay endpoint as a
+ * host at the default SSH port (the advertised service port is not an SSH
+ * port). Ranked tailnet-first then lan, deduped by host, so the saved target
+ * keeps fallback candidates like a discovered machine does.
+ */
+export function accountMachineSshRoutes(
+  machine: AdeAccountMachine,
+): RemoteRuntimeTargetRoute[] {
+  const ranked = [...machine.reachableEndpoints].sort(
+    (a, b) => endpointRank(a.kind) - endpointRank(b.kind),
+  );
+  const routes: RemoteRuntimeTargetRoute[] = [];
+  const seen = new Set<string>();
+  for (const endpoint of ranked) {
+    if (endpoint.kind === "relay") continue;
+    const host = accountEndpointHost(endpoint);
+    if (!host) continue;
+    const key = host.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    routes.push({
+      hostname: host,
+      port: null,
+      source: endpoint.kind === "tailnet" ? "tailscale" : "bonjour",
+      lastSucceededAt: null,
+    });
+  }
+  return routes;
+}
+
 function intersects(a: Set<string>, b: Set<string>): boolean {
   for (const value of a) {
     if (b.has(value)) return true;

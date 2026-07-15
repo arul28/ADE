@@ -177,11 +177,12 @@ export function ConnectionsPanel({
     }
   }, []);
 
-  // Fetch account machines up front (and refresh when the Machines tab opens) so
-  // the merged list is ready without blocking the local saved/discovered rows.
+  // Fetch account machines whenever the Machines tab opens (including the first
+  // render) without blocking the local saved/discovered rows.
   useEffect(() => {
+    if (tab !== "machines") return;
     void loadAccountMachines();
-  }, [loadAccountMachines]);
+  }, [loadAccountMachines, tab]);
 
   const goToAccount = useCallback(() => {
     onClose();

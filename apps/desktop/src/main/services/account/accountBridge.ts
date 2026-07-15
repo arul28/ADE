@@ -87,7 +87,9 @@ export function parseTrustedDirectoryBaseUrl(
     url.protocol === "https:" ||
     (url.protocol === "http:" && isLoopbackHost(url.hostname))
   ) {
-    return trimmed.replace(/\/+$/, "");
+    if (url.username || url.password || url.search || url.hash) return null;
+    const pathname = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${pathname}`;
   }
   return null;
 }

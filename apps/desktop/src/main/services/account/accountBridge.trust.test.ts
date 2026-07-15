@@ -9,6 +9,8 @@ describe("parseTrustedDirectoryBaseUrl", () => {
     expect(parseTrustedDirectoryBaseUrl("https://directory.ade.dev/")).toBe(
       "https://directory.ade.dev",
     );
+    expect(parseTrustedDirectoryBaseUrl("https://h/base/")).toBe("https://h/base");
+    expect(parseTrustedDirectoryBaseUrl("https://h/")).toBe("https://h");
     expect(
       parseTrustedDirectoryBaseUrl("https://directory.ade.dev/account//"),
     ).toBe("https://directory.ade.dev/account");
@@ -47,5 +49,11 @@ describe("parseTrustedDirectoryBaseUrl", () => {
     expect(parseTrustedDirectoryBaseUrl("ftp://directory.ade.dev")).toBeNull();
     expect(parseTrustedDirectoryBaseUrl("ws://localhost:8787")).toBeNull();
     expect(parseTrustedDirectoryBaseUrl("file:///etc/passwd")).toBeNull();
+  });
+
+  it("rejects credentials, query strings, and fragments", () => {
+    expect(parseTrustedDirectoryBaseUrl("https://h?x=1")).toBeNull();
+    expect(parseTrustedDirectoryBaseUrl("https://h#f")).toBeNull();
+    expect(parseTrustedDirectoryBaseUrl("https://user:pass@h")).toBeNull();
   });
 });

@@ -1788,6 +1788,8 @@ export function registerIpc({
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
     [IPC.builtInBrowserShowPanel]: new Set(["url"]),
     [IPC.transcriptionTranscribe]: new Set(["pcm"]),
+    [IPC.accountPollLogin]: new Set(["sessionId"]),
+    [IPC.accountCancelLogin]: new Set(["sessionId"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1861,13 +1863,70 @@ export function registerIpc({
   });
 
   const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
-    if (channel !== IPC.transcriptionTranscribe) return result;
-    if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
-    return {
-      ...(result as Record<string, unknown>),
-      raw: "[redacted]",
-      cleaned: "[redacted]",
-    };
+    if (channel === IPC.transcriptionTranscribe) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+      return {
+        ...(result as Record<string, unknown>),
+        raw: "[redacted]",
+        cleaned: "[redacted]",
+      };
+    }
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+    const record = result as Record<string, unknown>;
+    if (channel === IPC.accountStartLogin) {
+      return {
+        ...record,
+        sessionId: "[redacted]",
+        authorizeUrl: "[redacted]",
+      };
+    }
+    if (
+      channel === IPC.accountStatus
+      || channel === IPC.accountCancelLogin
+      || channel === IPC.accountSignOut
+    ) {
+      return {
+        ...record,
+        userId: "[redacted]",
+        email: "[redacted]",
+        name: "[redacted]",
+        imageUrl: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountPollLogin) {
+      const authStatus = record.authStatus;
+      return {
+        ...record,
+        authStatus: authStatus && typeof authStatus === "object" && !Array.isArray(authStatus)
+          ? {
+              ...(authStatus as Record<string, unknown>),
+              userId: "[redacted]",
+              email: "[redacted]",
+              name: "[redacted]",
+              imageUrl: "[redacted]",
+            }
+          : authStatus,
+      };
+    }
+    if (channel === IPC.accountListMachines) {
+      return {
+        ...record,
+        machines: Array.isArray(record.machines)
+          ? record.machines.map((machine) => (
+              machine && typeof machine === "object" && !Array.isArray(machine)
+                ? {
+                    ...(machine as Record<string, unknown>),
+                    machineKey: "[redacted]",
+                    deviceId: "[redacted]",
+                    name: "[redacted]",
+                    reachableEndpoints: "[redacted]",
+                  }
+                : machine
+            ))
+          : record.machines,
+      };
+    }
+    return result;
   };
 
   const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {

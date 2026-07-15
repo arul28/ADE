@@ -26,6 +26,7 @@ import {
 import { ShareMachineCard } from "./ShareMachineCard";
 import { PairMachineForm } from "./PairMachineForm";
 import {
+  accountMachineSshRoutes,
   assignMachineSections,
   discoveredTargetInput,
   formatRemoteTargetError,
@@ -450,7 +451,7 @@ export function RemoteTargetList({
         // leave it null so the SSH transport falls back to its default (22).
         port: null,
         sshKeyPath: null,
-        routes: null,
+        routes: accountMachineSshRoutes(machine),
       };
       setBusyId(`account:${machine.machineKey}`);
       setSelectedId(null);

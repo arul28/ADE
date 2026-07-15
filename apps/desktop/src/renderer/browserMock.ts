@@ -3188,6 +3188,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return false;
         }
       };
+      const setSignedOut = (value: boolean) => {
+        try {
+          if (value) {
+            window.localStorage.setItem("ade.mock.account", "out");
+          } else {
+            window.localStorage.removeItem("ade.mock.account");
+          }
+        } catch {
+          // localStorage may be unavailable in hardened contexts.
+        }
+      };
       const signedInStatus = {
         signedIn: true,
         userId: "user_2xMockAccount",
@@ -3216,13 +3227,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           authorizeUrl: "https://accounts.ade.dev/oauth/authorize?mock=1",
           expiresAt: new Date(Date.now() + 300_000).toISOString(),
         }),
-        pollLogin: async () => ({
-          status: "signed_in" as const,
-          message: null,
-          authStatus: signedInStatus,
-        }),
+        pollLogin: async () => {
+          setSignedOut(false);
+          return {
+            status: "signed_in" as const,
+            message: null,
+            authStatus: signedInStatus,
+          };
+        },
         cancelLogin: async () => status(),
-        signOut: async () => signedOutStatus,
+        signOut: async () => {
+          setSignedOut(true);
+          return signedOutStatus;
+        },
         listMachines: async () => {
           if (signedOut()) {
             return { state: "signed_out" as const, machines: [], message: null };

@@ -72,6 +72,10 @@ export function useAccountLogin(options?: {
     let sessionId: string;
     try {
       const start = await api.startLogin();
+      if (cancelledRef.current) {
+        void accountApi()?.cancelLogin({ sessionId: start.sessionId }).catch(() => {});
+        return;
+      }
       sessionId = start.sessionId;
       sessionIdRef.current = sessionId;
       openExternalUrl(start.authorizeUrl);

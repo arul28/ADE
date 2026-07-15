@@ -30,6 +30,7 @@ const STATUS_TTL_MS = 15_000;
 
 let cachedStatus: { value: AdeAccountStatus; fetchedAtMs: number } | null = null;
 let inFlight: Promise<AdeAccountStatus> | null = null;
+let fetchSerial = 0;
 const listeners = new Set<(status: AdeAccountStatus) => void>();
 
 function accountApi() {
@@ -71,15 +72,16 @@ export async function fetchAccountStatus(options?: { force?: boolean }): Promise
     return cachedStatus.value;
   }
   if (!options?.force && inFlight) return inFlight;
+  const serial = ++fetchSerial;
   inFlight = api
     .status()
     .then((status) => {
-      emit(status);
+      if (serial === fetchSerial) emit(status);
       return status;
     })
     .catch(() => cachedStatus?.value ?? SIGNED_OUT_ACCOUNT)
     .finally(() => {
-      inFlight = null;
+      if (serial === fetchSerial) inFlight = null;
     });
   return inFlight;
 }

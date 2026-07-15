@@ -456,6 +456,7 @@ export function AccountPage() {
   const { status, refresh } = useAccountStatus();
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   const [justSignedIn, setJustSignedIn] = useState(false);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
 
@@ -490,10 +491,15 @@ export function AccountPage() {
     }).account;
     if (!api?.signOut) return;
     setSigningOut(true);
+    setSignOutError(null);
     try {
       const next = await api.signOut();
       publishAccountStatus(next);
       setJustSignedIn(false);
+    } catch (err) {
+      setSignOutError(
+        err instanceof Error ? err.message : "Couldn't sign out of your ADE account.",
+      );
     } finally {
       setSigningOut(false);
     }
@@ -685,6 +691,11 @@ export function AccountPage() {
             </div>
 
             <SessionsCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
+            {signOutError ? (
+              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
+                {signOutError}
+              </div>
+            ) : null}
           </>
         )}
       </div>

@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types";
 import {
   accountMachineMatchesTarget,
+  accountMachineSshRoutes,
   assignMachineSections,
 } from "./remoteMachineModel";
 
@@ -39,6 +40,41 @@ function savedTarget(overrides: Partial<RemoteRuntimeTarget> = {}): RemoteRuntim
 }
 
 const NO_STATUS = new Map<string, RemoteRuntimeConnectionStatus>();
+
+describe("accountMachineSshRoutes", () => {
+  it("returns direct SSH routes tailnet-first and excludes relay-only machines", () => {
+    expect(
+      accountMachineSshRoutes(
+        accountMachine({
+          reachableEndpoints: [
+            { kind: "lan", host: "10.0.0.9", port: 8787 },
+            { kind: "tailnet", host: "100.92.14.3", port: 8787 },
+          ],
+        }),
+      ),
+    ).toEqual([
+      {
+        hostname: "100.92.14.3",
+        port: null,
+        source: "tailscale",
+        lastSucceededAt: null,
+      },
+      {
+        hostname: "10.0.0.9",
+        port: null,
+        source: "bonjour",
+        lastSucceededAt: null,
+      },
+    ]);
+    expect(
+      accountMachineSshRoutes(
+        accountMachine({
+          reachableEndpoints: [{ kind: "relay", url: "wss://relay/x" }],
+        }),
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe("assignMachineSections — account machines", () => {
   it("buckets an online account machine into AVAILABLE and offline into UNAVAILABLE", () => {
