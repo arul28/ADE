@@ -250,6 +250,7 @@ type CliPlan =
       writeResultPath?: string;
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
+      laneCreationNudge?: { newLaneName: string };
       /**
        * Derive a nonzero exit code from the executed result (e.g. `ade search`
        * exits 1 when a query returns no results, so scripts can branch on it).
@@ -1318,6 +1319,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --auto-create-lane     Create a new lane first, then launch there.
     --lane-name <name>     Explicit name for an auto-created lane.
     --base <branch>        Optional base branch for an auto-created lane.
+    --type <subagent|peer|none>
+                           Cosmetic relationship + completion-report policy; a typed agent is a full agent. subagent = ADE wakes you when it finishes; peer = quiet note; none (default) = no report.
     --provider <name>      claude | codex | cursor | droid | opencode. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
@@ -1344,6 +1347,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
+  --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent wakes the parent, peer leaves a quiet note, and none (default) sends no report.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -1364,8 +1368,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
                                                     Create one lane per issue (partial success, no orphans)
     $ ade lanes create --base <ref>                 Override the base ref (omit to use the configured new-lane base, remote-first by default)
+    $ ade lanes create --parent <lane> --name <name>
+                                                    Create from a parent lane's HEAD
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
+                                                    Child lanes carry the parent's unmerged work
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes unarchive <lane>                    Restore an archived lane
@@ -2497,6 +2504,51 @@ function readParentSessionId(args: string[]): string | undefined {
   return env?.length ? env : undefined;
 }
 
+type LaneNudgeGitResult = {
+  status: number | null;
+  stdout: string | Buffer;
+};
+
+type LaneNudgeGitRunner = (args: string[], cwd: string) => LaneNudgeGitResult;
+
+function detectUnmergedLaneCreateNudge(
+  args: {
+    newLaneName: string;
+    cwd?: string;
+    currentLaneId?: string | null;
+  },
+  runGit: LaneNudgeGitRunner = (gitArgs, cwd) => spawnSync("git", gitArgs, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }),
+): string | null {
+  const cwd = args.cwd ?? process.cwd();
+  const readGit = (gitArgs: string[]): string | null => {
+    const result = runGit(gitArgs, cwd);
+    if (result.status !== 0) return null;
+    return Buffer.isBuffer(result.stdout)
+      ? result.stdout.toString("utf8").trim()
+      : result.stdout.trim();
+  };
+  const remoteHead = readGit(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+  const defaultBranch = remoteHead?.replace(/^origin\//, "").trim() || "main";
+  const countRaw = readGit(["rev-list", "--count", `origin/${defaultBranch}..HEAD`]);
+  const commitCount = Number.parseInt(countRaw ?? "", 10);
+  if (!Number.isFinite(commitCount) || commitCount <= 0) return null;
+
+  const currentBranch = readGit(["branch", "--show-current"]);
+  const currentLaneId = args.currentLaneId?.trim() || process.env.ADE_LANE_ID?.trim() || "";
+  const currentLabel = currentBranch || currentLaneId || "current";
+  const currentLane = currentLaneId || currentBranch || "current";
+  return [
+    `⚠ Lane "${currentLabel}" has ${commitCount} commit(s) not on ${defaultBranch}.`,
+    "  To carry them into the new lane instead:",
+    `    ade lanes child --lane ${currentLane} --name ${args.newLaneName}`,
+    `  Continuing off remote main (origin/${defaultBranch}).`,
+  ].join("\n");
+}
+
 type ToolClaimArgs = {
   laneId?: string;
   chatSessionId?: string;
@@ -3576,14 +3628,18 @@ function buildLanePlan(args: string[]): CliPlan {
       throw new CliUsageError(
         "parent lane is required. Use --lane <parent> or --parent <parent>.",
       );
+    const createArgs = collectGenericObjectArgs(args, input);
     return {
       kind: "execute",
       label: "lane create",
+      ...(!createArgs.parentLaneId && !createArgs.baseBranch && typeof createArgs.name === "string" && createArgs.name.trim()
+        ? { laneCreationNudge: { newLaneName: createArgs.name.trim() } }
+        : {}),
       steps: [
         actionCallStep(
           "result",
           "create_lane",
-          collectGenericObjectArgs(args, input),
+          createArgs,
         ),
       ],
     };
@@ -4072,6 +4128,8 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const modelArg = readValue(args, ["--model", "--model-id"]);
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
+  const spawnKind = mode === "chat" ? spawnTypeArg?.trim().toLowerCase() : undefined;
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -4081,6 +4139,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
   if (mode === "chat" && provider === "shell") {
     throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, or opencode.");
+  }
+  if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer" && spawnKind !== "none") {
+    throw new CliUsageError("--type must be subagent, peer, or none.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -4114,6 +4175,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         reasoningEffort,
         permissionMode,
         ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+        ...(spawnKind ? { spawnKind } : {}),
         droidPermissionMode: readValue(args, [
           "--droid-permission-mode",
           "--droid-autonomy",
@@ -4156,6 +4218,14 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
 
   const steps: InvocationStep[] = [];
+  const laneCreationNudge = lane.autoCreateLane
+    && lane.createLaneArgs
+    && !lane.createLaneArgs.parentLaneId
+    && !lane.createLaneArgs.baseBranch
+    && typeof lane.createLaneArgs.name === "string"
+    && lane.createLaneArgs.name.trim()
+    ? { newLaneName: lane.createLaneArgs.name.trim() }
+    : null;
   if (lane.autoCreateLane) {
     steps.push(actionCallStep("lane", "create_lane", lane.createLaneArgs ?? {}));
   }
@@ -4178,6 +4248,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       label: "new chat cli",
       formatter: "pty-create",
       steps,
+      ...(laneCreationNudge ? { laneCreationNudge } : {}),
     };
   }
 
@@ -4227,6 +4298,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     kind: "execute",
     label: "new chat",
     steps,
+    ...(laneCreationNudge ? { laneCreationNudge } : {}),
   };
 }
 
@@ -11222,6 +11294,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--since",
   "--source",
   "--source-lane",
+  "--spawn-type",
   "--stack",
   "--stack-base",
   "--stack-base-branch",
@@ -11254,6 +11327,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--title",
   "--tool-type",
   "--title-query",
+  "--type",
   "--udid",
   "--url",
   "--until",
@@ -11508,6 +11582,12 @@ function buildCliPlan(
         listActionsStep("actions"),
         {
           ...actionStep("projectConfig", "project_config", "get"),
+          optional: true,
+        },
+        {
+          key: "syncStatus",
+          method: "sync.getStatus",
+          params: { includeTransferReadiness: false },
           optional: true,
         },
       ],
@@ -12126,6 +12206,70 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   }
 }
 
+function checkSyncReadiness(value: unknown): ReadinessCheck & {
+  enabled: boolean;
+  usable: boolean;
+  failingRoutes: string[];
+} {
+  const snapshot = isRecord(value) ? value : null;
+  const routeHealth = snapshot && isRecord(snapshot.routeHealth) ? snapshot.routeHealth : null;
+  const listener = routeHealth && isRecord(routeHealth.listener) ? routeHealth.listener : null;
+  const tailscale = routeHealth && isRecord(routeHealth.tailscale) ? routeHealth.tailscale : null;
+  const relay = routeHealth && isRecord(routeHealth.relay) ? routeHealth.relay : null;
+  const enabled = Boolean(snapshot?.pairingConnectInfo) || relay?.enabled === true;
+  if (!snapshot || !routeHealth) {
+    return {
+      ready: false,
+      enabled: false,
+      usable: false,
+      status: "unavailable",
+      message: "Sync route health is unavailable.",
+      nextAction: "Run 'ade sync status --text' against the live ADE runtime.",
+      failingRoutes: [],
+    };
+  }
+  if (!enabled) {
+    return {
+      ready: true,
+      enabled: false,
+      usable: false,
+      status: "unavailable",
+      message: "Phone sync hosting is not enabled in this runtime.",
+      failingRoutes: [],
+      details: { routeHealth },
+    };
+  }
+
+  const failures: string[] = [];
+  if (listener?.listenerBound !== true || listener?.loopbackAdeValidated !== true) {
+    failures.push(`listener: ${asString(listener?.reason) ?? "loopback listener mismatch"}`);
+  }
+  if (tailscale?.enabled === true && tailscale?.tailscaleReachable !== true) {
+    failures.push(`tailscale: ${asString(tailscale.reason) ?? "published route is not reachable"}`);
+  }
+  if (
+    relay?.enabled === true
+    && (relay?.relayControlConnected !== true || asString(relay?.reason) != null)
+  ) {
+    failures.push(`relay: ${asString(relay.reason) ?? "control channel is not connected"}`);
+  }
+  const usable = failures.length === 0;
+  return {
+    ready: usable,
+    enabled: true,
+    usable,
+    status: usable ? "ready" : "warning",
+    message: usable
+      ? "Enabled sync routes are usable."
+      : `Sync route failure: ${failures.join("; ")}`,
+    nextAction: usable
+      ? undefined
+      : "Run 'ade sync status --text' and resolve the named listener or route failure.",
+    failingRoutes: failures,
+    details: { routeHealth },
+  };
+}
+
 function requireAdeLayout(): {
   resolveAdeLayout: (projectRoot: string) => { secretsDir: string };
 } {
@@ -12183,6 +12327,7 @@ function buildReadinessSnapshot(args: {
     computerUse: checkComputerUseReadiness(),
     path: checkPathReadiness(),
     storage: checkStorageReadiness(connection.projectRoot),
+    sync: checkSyncReadiness(values.syncStatus),
   };
   const recommendations = Object.entries(checks)
     .filter(([, check]) => check.nextAction)
@@ -12258,6 +12403,7 @@ function buildReadinessSnapshot(args: {
     computerUse: checks.computerUse,
     path: checks.path,
     storage: checks.storage,
+    sync: checks.sync,
     auth: {
       localProjectAccess: projectInitialized && actions.length > 0,
       providerSecretsExposed: false,
@@ -17064,6 +17210,8 @@ function formatTextOutput(
         isRecord(value) && isRecord(value.path) ? value.path : {};
       const storage =
         isRecord(value) && isRecord(value.storage) ? value.storage : {};
+      const sync =
+        isRecord(value) && isRecord(value.sync) ? value.sync : {};
       const recommendations =
         isRecord(value) && Array.isArray(value.recommendations)
           ? value.recommendations
@@ -17087,6 +17235,7 @@ function formatTextOutput(
           ["computer use", computerUse.message],
           ["path", pathStatus.message],
           ["storage", storage.message],
+          ["sync", sync.message],
           ["recommendation", isRecord(value) ? value.recommendation : null],
         ]),
         ...(recommendations.length
@@ -18150,6 +18299,10 @@ async function runCli(
       output: formatOutput(plan.value, parsed.options, plan.formatter),
       exitCode: 0,
     };
+  if (plan.kind === "execute" && plan.laneCreationNudge) {
+    const notice = detectUnmergedLaneCreateNudge(plan.laneCreationNudge);
+    if (notice) process.stderr.write(`${notice}\n`);
+  }
   if (
     plan.kind === "execute"
     && plan.machineOnly
@@ -18416,6 +18569,7 @@ export {
   buildCliPlan,
   buildAdeCodeArgs,
   checkLinearReadiness,
+  detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatOutput,
   graphWaitState,

@@ -361,6 +361,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   runningFiltered,
   awaitingInputFiltered,
   endedFiltered,
+  allSessionsUnfiltered,
   loading: _loading,
   filterLaneId,
   setFilterLaneId,
@@ -392,6 +393,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
+  /** All sessions before the search/lane filter — the live-children badge counts
+   * from this so a filtered-out running child doesn't undercount its parent. */
+  allSessionsUnfiltered: TerminalSessionSummary[];
   loading: boolean;
   filterLaneId: string;
   setFilterLaneId: (v: string) => void;
@@ -476,6 +480,20 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return set;
   }, [childrenByParentId]);
+  // Live-children badge: count, per spawner id, its still-running spawned chats.
+  // Counts from the UNFILTERED session list (not `allSessions`, which is already
+  // search/lane-filtered) so hiding a running child by filter does not undercount
+  // its visible parent's badge. No extra fetch; clears as children go terminal.
+  const liveChildrenByParentId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const session of allSessionsUnfiltered) {
+      const parentId = session.orchestrationParentSessionId;
+      if (!parentId || parentId === session.id) continue;
+      if (session.status !== "running") continue;
+      map.set(parentId, (map.get(parentId) ?? 0) + 1);
+    }
+    return map;
+  }, [allSessionsUnfiltered]);
   const isChildSectionCollapsed = useCallback(
     (parentId: string) => workCollapsedSectionIds.includes(`chat:${parentId}`),
     [workCollapsedSectionIds],
@@ -621,6 +639,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         key={session.id}
         session={session}
         lane={laneById.get(session.laneId) ?? null}
+        liveChildrenCount={liveChildrenByParentId.get(session.id) ?? 0}
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}

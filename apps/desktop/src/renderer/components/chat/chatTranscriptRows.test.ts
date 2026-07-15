@@ -381,6 +381,83 @@ describe("chatTranscriptRows", () => {
     expect(rows[2]!.event.text).toBe(" world");
   });
 
+  it("threads childSessionId and spawnKind onto a spawned-ADE-chat anchor", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          agentType: "claude",
+          description: "Wave 2 UI",
+          spawnKind: "peer",
+          taskType: "subagent",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const anchor = rows[0]!.event;
+    if (anchor.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(anchor.childSessionId).toBe("child-123");
+    expect(anchor.spawnKind).toBe("peer");
+    expect(anchor.agentType).toBe("claude");
+  });
+
+  it("leaves childSessionId/spawnKind null for a runtime-native subagent", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-native",
+          agentType: "Explore",
+          description: "Search the tree",
+        },
+      },
+    ]);
+
+    const anchor = rows[0]!.event;
+    if (anchor.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(anchor.childSessionId).toBeNull();
+    expect(anchor.spawnKind).toBeNull();
+  });
+
+  it("emits a spawn-wake divider above a subagent completion wake turn", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: 'Your subagent "Docs" finished — done.',
+          turnId: "turn-wake",
+          metadata: {
+            spawnCompletion: {
+              childSessionId: "child-9",
+              childTitle: "Docs",
+              spawnKind: "subagent",
+              status: "completed",
+              summary: "Wrote the docs.",
+            },
+          },
+        },
+      },
+    ]);
+
+    const divider = rows.find((row) => row.event.type === "spawn_wake_divider");
+    expect(divider).toBeTruthy();
+    if (!divider || divider.event.type !== "spawn_wake_divider") throw new Error("Expected spawn_wake_divider");
+    expect(divider.event.childSessionId).toBe("child-9");
+    expect(divider.event.childTitle).toBe("Docs");
+    expect(divider.event.summary).toBe("Wrote the docs.");
+    // The synthetic wake user turn still renders below the divider.
+    expect(rows.some((row) => row.event.type === "user_message")).toBe(true);
+  });
+
   it("updates streaming command and file-change entries in place instead of stacking", () => {
     const rows = collapseChatTranscriptEvents([
       {

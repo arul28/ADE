@@ -351,6 +351,7 @@ describe("spawnAgent tool", () => {
     expect(createArgs.orchestrationRunId).toBe(setup.runId);
     expect(createArgs.orchestrationRole).toBe("worker");
     expect(createArgs.orchestrationStepId).toBe("T-1");
+    expect(createArgs.spawnKind).toBe("subagent");
     expect(createArgs.provider).toBe("claude");
     expect(createArgs.model).toBe("claude-sonnet-5");
     expect(createArgs.claudePermissionMode).toBe("bypassPermissions");
@@ -363,6 +364,26 @@ describe("spawnAgent tool", () => {
       routingKey: "fallback",
     });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows the lead to override the cosmetic spawn kind", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const result: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      spawnKind: "peer",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(setup.chat.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ spawnKind: "peer" }),
+    );
   });
 
   it("blocks spawning until the orchestration plan is approved", async () => {

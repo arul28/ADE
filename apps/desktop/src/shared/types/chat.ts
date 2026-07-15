@@ -172,6 +172,20 @@ export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "c
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 
 export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
+export type AgentChatSpawnKind = "subagent" | "peer" | "none";
+
+/**
+ * Terminal outcome of a spawned child chat, delivered to the spawner. Rides the
+ * `subagent` wake message's metadata and the `peer` `spawn_completed` notice
+ * detail — one shape both producer and every renderer consumer narrow off.
+ */
+export type AgentChatSpawnCompletion = {
+  childSessionId: string;
+  childTitle: string;
+  spawnKind: AgentChatSpawnKind;
+  status: "completed" | "failed" | "stopped";
+  summary?: string;
+};
 
 export type AgentChatContinuityRecovery = {
   state: "required" | "reconstructed";
@@ -218,6 +232,16 @@ export type AgentChatNoticeDetail = {
     laneId?: string | null;
     title?: string;
   };
+  spawnKind?: AgentChatSpawnKind;
+  /**
+   * True when an inline spawned-chat card (`subagent_started`) accompanies this
+   * `subagent_spawned` notice — i.e. a plain (non-orchestration) spawn. The
+   * renderer suppresses the quiet pill in that case (the card is the surface) and
+   * keeps the pill only for orchestration-run children, which emit the notice but
+   * no inline card. Absent/false → render the pill.
+   */
+  hasInlineCard?: boolean;
+  spawnCompletion?: AgentChatSpawnCompletion;
   crossMachineHandoff?: {
     handoffId: string;
     targetMachineName: string;
@@ -426,6 +450,9 @@ export type AgentChatScheduledWakeMetadata = {
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
+  /** Rides the `subagent` completion wake so the renderer can render the
+   * "ADE woke this chat" divider off a typed shape (mirrors `scheduledWake`). */
+  spawnCompletion?: AgentChatSpawnCompletion;
 };
 
 export type AgentChatScheduledWorkKind =
@@ -690,6 +717,7 @@ export type AgentChatEvent =
       description: string;
       background?: boolean;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+      spawnKind?: AgentChatSpawnKind;
       workflowName?: string;
       turnId?: string;
     }
@@ -1102,6 +1130,7 @@ export type OrchestrationSessionFields = {
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
   orchestrationParentSessionId?: string;
+  spawnKind?: AgentChatSpawnKind;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -1649,6 +1678,7 @@ export type AgentChatCreateArgs = {
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
   orchestrationParentSessionId?: string;
+  spawnKind?: AgentChatSpawnKind;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;

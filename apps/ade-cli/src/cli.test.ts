@@ -8,6 +8,7 @@ import {
   buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
+  detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatOutput,
   graphWaitState,
@@ -1826,6 +1827,69 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("adds a valid --type to new chat createSession args and rejects invalid values", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "chat",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--type",
+      "peer",
+    ]);
+    const executePlan = expectExecutePlan(plan);
+    const createParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(createParams).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "createSession",
+        args: { spawnKind: "peer" },
+      },
+    });
+
+    expect(() => buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "chat",
+      "--lane",
+      "lane-1",
+      "--type",
+      "manager",
+    ])).toThrow(/--type must be subagent, peer, or none/);
+  });
+
+  it("builds the unmerged-work child-lane nudge when the current lane is ahead", () => {
+    const notice = detectUnmergedLaneCreateNudge(
+      { newLaneName: "next-task", cwd: "/tmp/worktree", currentLaneId: "lane-current" },
+      (gitArgs) => {
+        const command = gitArgs.join(" ");
+        if (command === "symbolic-ref --quiet --short refs/remotes/origin/HEAD") {
+          return { status: 0, stdout: "origin/main\n" };
+        }
+        if (command === "rev-list --count origin/main..HEAD") {
+          return { status: 0, stdout: "3\n" };
+        }
+        if (command === "branch --show-current") {
+          return { status: 0, stdout: "feature/current\n" };
+        }
+        return { status: 1, stdout: "" };
+      },
+    );
+
+    expect(notice).toBe([
+      '⚠ Lane "feature/current" has 3 commit(s) not on main.',
+      "  To carry them into the new lane instead:",
+      "    ade lanes child --lane lane-current --name next-task",
+      "  Continuing off remote main (origin/main).",
+    ].join("\n"));
+  });
+
   it("rejects unknown providers for new chat before launching", () => {
     expect(() =>
       buildCliPlan([
@@ -3315,6 +3379,81 @@ describe("ADE CLI", () => {
     expect(output).toContain("Git repository detected");
   });
 
+  it("adds sync route health to doctor and names a loopback listener mismatch", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-sync-"));
+    fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+    try {
+      const plan = expectExecutePlan(buildCliPlan(["doctor"]));
+      expect(plan.steps).toContainEqual({
+        key: "syncStatus",
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: false },
+        optional: true,
+      });
+      const summary = summarizeExecution({
+        plan,
+        connection: {
+          mode: "runtime-socket",
+          projectRoot,
+          workspaceRoot: projectRoot,
+          socketPath: path.join(projectRoot, ".ade", "ade.sock"),
+        },
+        values: {
+          rpcActions: { actions: [{}] },
+          actions: { actions: [{}] },
+          syncStatus: {
+            pairingConnectInfo: { port: 8787 },
+            routeHealth: {
+              listener: {
+                listenerBound: true,
+                loopbackAdeValidated: false,
+                reason: "Expected ADE 426 Upgrade Required; received 404 Not Found.",
+              },
+              tailscale: {
+                enabled: true,
+                tailscaleReachable: false,
+                reason: "Tailscale route points at the listener mismatch.",
+              },
+              relay: {
+                enabled: true,
+                relayControlConnected: true,
+                relayBridgeValidated: false,
+                reason: "Relay bridge refused the listener mismatch.",
+              },
+            },
+          },
+        },
+      } as any) as Record<string, any>;
+
+      expect(summary.sync).toMatchObject({
+        enabled: true,
+        usable: false,
+        status: "warning",
+      });
+      expect(summary.sync.failingRoutes).toEqual([
+        expect.stringContaining("listener"),
+        expect.stringContaining("tailscale"),
+        expect.stringContaining("relay"),
+      ]);
+      expect(summary.sync.message).toContain("404 Not Found");
+      const output = formatOutput(summary, {
+        projectRoot,
+        workspaceRoot: projectRoot,
+        role: "agent",
+        headless: false,
+        requireSocket: false,
+        socketPath: null,
+        pretty: true,
+        text: true,
+        timeoutMs: 1000,
+      }, "doctor");
+      expect(output).toContain("Sync route failure");
+      expect(output).toContain("listener");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("detects project-local Linear credentials in doctor readiness", () => {
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;
     const previousLinearApiKey = process.env.LINEAR_API_KEY;
@@ -4324,6 +4463,17 @@ describe("ADE CLI", () => {
     expect(chatHelp.text).toContain("ade chat models --provider codex");
     expect(chatHelp.text).toContain("ade chat read <session>");
     expect(chatHelp.text).toContain("ade new chat --mode cli");
+
+    const newChatHelp = buildCliPlan(["help", "new", "chat"]);
+    expect(newChatHelp.kind).toBe("help");
+    if (newChatHelp.kind !== "help") return;
+    expect(newChatHelp.text).toContain("--type <subagent|peer|none>");
+
+    const laneCommandHelp = buildCliPlan(["help", "lanes"]);
+    expect(laneCommandHelp.kind).toBe("help");
+    if (laneCommandHelp.kind !== "help") return;
+    expect(laneCommandHelp.text).toContain("lanes create --parent <lane>");
+    expect(laneCommandHelp.text).toContain("carry the parent's unmerged work");
 
     const chatRecoveryHelp = buildCliPlan(["help", "chat", "recover"]);
     expect(chatRecoveryHelp.kind).toBe("help");

@@ -4170,6 +4170,57 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("returns a non-blocking stale-base warning when the remote fetch fails", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+    ]) as any;
+    fixture.runtime.gitService.fetch = vi.fn(async () => { throw new Error("offline"); });
+    fixture.runtime.gitService.listBranches = vi.fn(async () => [
+      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
+    ]) as any;
+    fixture.runtime.projectConfigService = {
+      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
+    } as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "create_lane", { name: "new-feature" });
+
+    expect(response.structuredContent.warning).toBe(
+      "⚠ Base origin/main may be stale — fetch failed; using last-known ref.",
+    );
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ baseBranch: "origin/main" }),
+    );
+  });
+
+  it("returns a non-blocking warning when local main is behind and no remote ref can be selected", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+    ]) as any;
+    fixture.runtime.gitService.listBranches = vi.fn(async () => [
+      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+    ]) as any;
+    fixture.runtime.gitService.getSyncStatus = vi.fn(async () => ({ behind: 4, ahead: 0 }));
+    fixture.runtime.projectConfigService = {
+      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
+    } as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "create_lane", { name: "new-feature" });
+
+    expect(response.structuredContent.warning).toBe(
+      "⚠ local main is 4 behind origin — creating off possibly-stale base.",
+    );
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({ baseBranch: expect.anything() }),
+    );
+  });
+
   it("defaults a base-less run_ade_action lane.create to the remote-tracking ref", async () => {
     const fixture = createRuntime();
     fixture.runtime.laneService.list = vi.fn(async () => [

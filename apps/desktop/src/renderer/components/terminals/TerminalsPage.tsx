@@ -1035,6 +1035,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             runningFiltered={work.runningFiltered}
             awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
+            allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}
             setFilterLaneId={work.setFilterLaneId}

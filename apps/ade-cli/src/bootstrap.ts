@@ -1515,6 +1515,8 @@ export async function createAdeRuntime(args: {
       logger,
       configStore: cloudRelayStore,
       getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
+      getExpectedLoopbackNonce: () =>
+        resolvedArgs.syncRuntime?.sharedSyncListener?.getExpectedLoopbackNonce() ?? null,
     }));
   // Only the runtime that actually hosts phone sync (owns the brain-level
   // shared listener) may register the relay tunnel. The relay DO keeps ONE
@@ -1539,6 +1541,7 @@ export async function createAdeRuntime(args: {
       usageTrackingService,
       productAnalyticsService,
       logger,
+      accountAuthService,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,
       projectRoot,
@@ -1587,6 +1590,7 @@ export async function createAdeRuntime(args: {
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
+      syncTunnelClientService,
       onCloudRelayEnabledChanged: (enabled) => {
         // Same gate as startup: only the sync-hosting runtime may register
         // the relay tunnel (see canHostRelayTunnel above).

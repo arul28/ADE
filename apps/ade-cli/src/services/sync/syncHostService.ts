@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -84,6 +85,9 @@ import type {
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import type { AccountAuthService } from "../account/accountAuthService";
+import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
+import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -141,6 +145,15 @@ import {
   type SharedSyncListener,
   type SyncPeerHandoffSnapshot,
 } from "./sharedSyncListener";
+import {
+  assertAdeLoopbackListener,
+  generateLoopbackNonce,
+  isLoopbackShadowedError,
+  probeAdeLoopbackListener,
+  writeAdeLoopbackUpgradeResponse,
+  type SyncLoopbackProbeResult,
+  type SyncLoopbackValidationStatus,
+} from "./syncLoopbackProbe";
 export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
 // db_version window per pump poll. Large enough to cross sparse version
@@ -195,12 +208,18 @@ export function isRuntimeHostPairingRecord(
   return record?.runtimeHostGranted === true;
 }
 
+type SyncHostAuthKind = "bootstrap" | "paired" | "account" | null;
+
+function isRecordBackedSyncAuthKind(kind: SyncHostAuthKind): kind is "paired" | "account" {
+  return kind === "paired" || kind === "account";
+}
+
 export function isRuntimeOnlySyncPeer(args: {
-  authKind: "bootstrap" | "paired" | null;
+  authKind: SyncHostAuthKind;
   pairingRecord: SyncPairingRecord | null;
   metadata: SyncPeerMetadata | null;
 }): boolean {
-  return args.authKind === "paired"
+  return isRecordBackedSyncAuthKind(args.authKind)
     && isRuntimeHostPairingRecord(args.pairingRecord)
     && Array.isArray(args.metadata?.capabilities)
     && args.metadata.capabilities.includes(SYNC_RUNTIME_ONLY_CAPABILITY);
@@ -398,7 +417,7 @@ type PeerState = {
   metadata: SyncPeerMetadata | null;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
-  authKind: "bootstrap" | "paired" | null;
+  authKind: SyncHostAuthKind;
   pairedDeviceId: string | null;
   pairingRecord: SyncPairingRecord | null;
   connectedAt: string;
@@ -657,6 +676,8 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
+  accountAuthService?: Pick<AccountAuthService, "getStatus">;
+  getAccountAttestationConfig?: () => AccountAttestationConfig;
   runtimeNameStore?: SyncRuntimeNameStore;
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
@@ -699,6 +720,8 @@ type SyncHostServiceArgs = {
    * re-scanning a QR.
    */
   getCloudRelayWssUrl?: () => string | null;
+  /** Test seam; production always uses the HTTP 426 loopback probe. */
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
 function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string | null {
@@ -1034,6 +1057,13 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     if (!toOptionalString(normalizedAuth.token)) return null;
   } else if (normalizedAuth.kind === "paired") {
     if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.secret)) return null;
+  } else if (normalizedAuth.kind === "account") {
+    if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.accountToken)) return null;
+    if (
+      normalizedAuth.dpop != null
+      && (typeof normalizedAuth.dpop !== "object" || Array.isArray(normalizedAuth.dpop))
+    ) return null;
+    if (normalizedAuth.runtimeHostGrant != null && !toOptionalString(normalizedAuth.runtimeHostGrant)) return null;
   } else {
     return null;
   }
@@ -1936,19 +1966,44 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
+    ?? generateLoopbackNonce();
   // Self-owned listener (desktop-embedded / standalone): only created when no
   // shared listener is injected. The brain injects a shared listener so the
   // websocket — and every connected phone — survives hosted-project switches.
+  //
+  // We front the WebSocketServer with an explicit http.Server so the non-upgrade
+  // 426 response carries the ADE loopback marker header. `ws`'s built-in `{port}`
+  // server owns an un-customizable 426 handler, which a bare/foreign `ws` process
+  // matches exactly — the marker is what lets the loopback probe tell ADE apart.
+  // Passing `server` (not `port`) means the WS upgrade path still works: `ws`
+  // re-emits the http server's `listening`/`error` events and delegates
+  // `address()`, so all existing event wiring below is preserved verbatim.
+  const httpServer = sharedListener
+    ? null
+    : http.createServer((request, response) => {
+        writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
+      });
   const server = sharedListener
     ? null
     : new WebSocketServer({
-        host: SYNC_HOST_BIND_HOST,
-        port: args.port ?? DEFAULT_SYNC_HOST_PORT,
+        server: httpServer!,
         maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES,
       });
+  httpServer?.listen(args.port ?? DEFAULT_SYNC_HOST_PORT, SYNC_HOST_BIND_HOST);
 
   let disposed = false;
   let startupError: Error | null = null;
+  const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
+  let loopbackValidationStatus: SyncLoopbackValidationStatus = sharedListener
+    ? sharedListener.getLoopbackValidationStatus()
+    : {
+        port: null,
+        loopbackAdeValidated: false,
+        lastFailureAt: null,
+        reason: "The sync host listener has not been validated yet.",
+        lastSuccessAt: null,
+      };
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let nativeBonjourProcess: ChildProcess | null = null;
@@ -2272,10 +2327,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws.removeAllListeners("error");
       const peer = registerPeer(ws, sanitizeRemoteAddress(snapshot.remoteAddress), snapshot.remotePort);
       if (snapshot.metadata && snapshot.authKind) {
-        const pairingRecord = snapshot.authKind === "paired" && snapshot.pairedDeviceId
+        const pairingRecord = isRecordBackedSyncAuthKind(snapshot.authKind) && snapshot.pairedDeviceId
           ? pairingStore.getPairingRecord(snapshot.pairedDeviceId)
           : null;
-        if (snapshot.authKind === "paired" && !pairingRecord) {
+        if (isRecordBackedSyncAuthKind(snapshot.authKind) && !pairingRecord) {
           // Pairing is not valid for this host (revoked or different secrets
           // store) — fail closed and force a fresh authenticated reconnect.
           clearPeerAuthTimeout(peer);
@@ -2821,6 +2876,58 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         code,
       });
     }
+  };
+
+  const validateListeningPort = async (
+    port: number,
+    options?: { force?: boolean },
+  ): Promise<void> => {
+    // Re-publish paths pass force:true so a shadow that arose AFTER startup is
+    // caught before we (re)advertise the port; the startup path keeps the cheap
+    // short-circuit once a port is validated.
+    if (
+      !options?.force
+      && loopbackValidationStatus.port === port
+      && loopbackValidationStatus.loopbackAdeValidated
+    ) return;
+    try {
+      const result = await assertAdeLoopbackListener(
+        port,
+        expectedLoopbackNonce,
+        loopbackProbe,
+      );
+      loopbackValidationStatus = {
+        port,
+        loopbackAdeValidated: true,
+        lastFailureAt: loopbackValidationStatus.lastFailureAt,
+        reason: null,
+        lastSuccessAt: result.checkedAt,
+      };
+    } catch (error) {
+      if (isLoopbackShadowedError(error)) {
+        loopbackValidationStatus = {
+          port,
+          loopbackAdeValidated: false,
+          lastFailureAt: error.failedAt,
+          reason: error.message,
+          lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
+        };
+      }
+      throw error;
+    }
+  };
+
+  const publishValidatedDiscovery = async (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    const lanPortChanged = bonjourPort != null && bonjourPort !== port;
+    const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
+    if (lanPortChanged) unpublishLanDiscovery();
+    if (tailnetPortChanged) await unpublishTailnetDiscovery();
+    if (disposed) return;
+    publishLanDiscovery(port, { force: options?.forceLan });
+    publishTailnetDiscovery(port, { force: options?.forceTailnet });
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -3952,7 +4059,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function isMobilePeer(peer: PeerState): boolean {
-    if (peer.authKind === "paired") {
+    if (isRecordBackedSyncAuthKind(peer.authKind)) {
       return isMobilePairingRecord(peer.pairingRecord);
     }
     return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
@@ -4533,7 +4640,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Return semantics: `true` means authentication FAILED -> the caller below
       // sends a `hello_error` (auth_failed) and closes the socket (4003).
       // `false` means the device is authenticated.
-      const authFailed = (() => {
+      const authFailed = await (async () => {
         if (hello.auth?.kind === "bootstrap") {
           // The bootstrap token is a shared, plaintext, never-rotating secret.
           // Once the sync host is bound to the LAN (the new 0.0.0.0 default),
@@ -4602,6 +4709,61 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           return false;
         }
+        if (hello.auth?.kind === "account") {
+          const accountAuth = hello.auth;
+          if (accountAuth.deviceId !== hello.peer.deviceId) return true;
+          try {
+            const ownerStatus = args.accountAuthService?.getStatus();
+            const ownerUserId = ownerStatus?.signedIn ? ownerStatus.userId?.trim() || null : null;
+            if (!ownerUserId) {
+              args.logger.warn("sync_host.account_owner_missing", {
+                deviceId: accountAuth.deviceId,
+              });
+              return true;
+            }
+            const config = args.getAccountAttestationConfig?.();
+            if (!config) return true;
+            const attestation = await verifyClerkAccountAttestation({
+              token: accountAuth.accountToken,
+              expectedUserId: ownerUserId,
+              config,
+            });
+            const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
+            // A known device is pinned to its existing key; only a genuinely new
+            // device id may TOFU-adopt the inline key. The account token is the
+            // challenge secret, binding that verified token to the device key.
+            const dpopFailure = evaluatePairedHelloDpop({
+              storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
+              deviceId: accountAuth.deviceId,
+              secret: accountAuth.accountToken,
+              proof: accountAuth.dpop ?? null,
+              requireDpop: true,
+              nonceCache: dpopNonceCache,
+            });
+            if (dpopFailure) {
+              args.logger.warn("sync_host.account_dpop_rejected", {
+                deviceId: accountAuth.deviceId,
+                reason: dpopFailure,
+              });
+              return true;
+            }
+            const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
+              dpopPublicKey: existingPairingRecord ? null : accountAuth.dpop?.publicKey ?? null,
+              runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+            });
+            if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+            authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
+            return authenticatedPairingRecord == null;
+          } catch (error) {
+            args.logger.warn("sync_host.account_auth_rejected", {
+              deviceId: accountAuth.deviceId,
+              reason: typeof (error as { code?: unknown } | null)?.code === "string"
+                ? (error as { code: string }).code
+                : "verification_failed",
+            });
+            return true;
+          }
+        }
         return true;
       })();
       if (authFailed) {
@@ -4632,8 +4794,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
       peer.authKind = auth.kind;
-      peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
-      peer.pairingRecord = auth.kind === "paired" ? authenticatedPairingRecord : null;
+      const recordBackedAuth = auth.kind === "paired" || auth.kind === "account";
+      peer.pairedDeviceId = recordBackedAuth ? auth.deviceId : null;
+      peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
       // Prefer the client's cursor for THIS project DB. The legacy single
       // dbVersion is only meaningful when the client last synced this same
       // DB; after a hosted-project change it points into a different DB's
@@ -4677,7 +4840,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
         runtimeChannelEnabled:
-          auth.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
+          isRecordBackedSyncAuthKind(auth.kind) && isRuntimeHostPairingRecord(authenticatedPairingRecord),
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
@@ -4690,11 +4853,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.ws,
         envelope.type,
         envelope.payload,
-        peer.authKind === "paired",
+        isRecordBackedSyncAuthKind(peer.authKind),
         // Gate the runtime RPC channel + port-forward to desktop runtime-host
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
-        peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
+        isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
       return;
     }
@@ -5238,8 +5401,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // ensureListening is idempotent and returns the existing port.
         const port = sharedListener!.getPort()
           ?? await sharedListener!.ensureListening([args.port ?? DEFAULT_SYNC_HOST_PORT]);
-        publishLanDiscovery(port);
-        publishTailnetDiscovery(port);
+        try {
+          // A project-host handoff may happen long after the listener's bind
+          // probe. Force a fresh identity check before this host republishes
+          // LAN/Tailscale discovery for the shared port.
+          await sharedListener!.revalidateLoopback();
+        } finally {
+          loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
+        }
+        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
+          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
+        }
+        await publishValidatedDiscovery(port);
         return port;
       }
       if (startupError) {
@@ -5248,8 +5421,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (server.address()) {
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
-        publishLanDiscovery(port);
-        publishTailnetDiscovery(port);
+        await validateListeningPort(port);
+        await publishValidatedDiscovery(port);
         return port;
       }
       await new Promise<void>((resolve, reject) => {
@@ -5281,8 +5454,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
-      publishLanDiscovery(port);
-      publishTailnetDiscovery(port);
+      await validateListeningPort(port);
+      await publishValidatedDiscovery(port);
       return port;
     },
 
@@ -5301,8 +5474,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
       const port = getListeningPort();
       if (port != null) {
-        publishLanDiscovery(port, { force: options?.forceLan });
-        publishTailnetDiscovery(port, { force: options?.forceTailnet });
+        // Re-validate the loopback listener before republishing so a post-startup
+        // shadow cannot re-advertise a stale port. On failure validateListeningPort
+        // marks the route unvalidated and throws, so we skip the publish.
+        void (async () => {
+          await validateListeningPort(port, { force: true });
+          await publishValidatedDiscovery(port, options);
+        })().catch((error) => {
+          args.logger.warn("sync_host.discovery_refresh_failed", {
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
     },
 
@@ -5325,8 +5508,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (port != null) {
-        publishLanDiscovery(port, { force: true });
-        publishTailnetDiscovery(port, { force: true });
+        // Re-enabling discovery must also re-validate the loopback listener so a
+        // shadow that appeared while discovery was off cannot be published.
+        void (async () => {
+          await validateListeningPort(port, { force: true });
+          publishLanDiscovery(port, { force: true });
+          publishTailnetDiscovery(port, { force: true });
+        })().catch((error) => {
+          args.logger.warn("sync_host.discovery_refresh_failed", {
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
     },
 
@@ -5334,7 +5527,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pairingStore.revoke(deviceId);
       let revokedConnectedPeer = false;
       for (const peer of peers) {
-        if (!peer.authenticated || peer.authKind !== "paired" || peer.pairedDeviceId !== deviceId) continue;
+        if (
+          !peer.authenticated
+          || !isRecordBackedSyncAuthKind(peer.authKind)
+          || peer.pairedDeviceId !== deviceId
+        ) continue;
         revokedConnectedPeer = true;
         const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? deviceId;
         const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");
@@ -5373,6 +5570,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
       return { ...tailnetDiscoveryStatus };
+    },
+
+    getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
+      return { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
@@ -5543,12 +5744,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               // ignore
             }
           }
-          if (!server.address()) {
+          // Graceful close frames were sent to peers above. ws's close() for an
+          // externally-supplied http server resolves only after every client
+          // socket drains — a wedged socket would hang dispose — and it does NOT
+          // close the http server (which owns the port). So detach ws's
+          // listeners, then close the http server directly, forcing any lingering
+          // sockets so the port frees deterministically.
+          try {
+            server.close();
+          } catch {
+            // ignore: we free the port via the http server below
+          }
+          if (!httpServer || !httpServer.listening) {
             finish();
             return;
           }
           try {
-            server.close(() => finish());
+            httpServer.close(() => finish());
+            httpServer.closeAllConnections?.();
           } catch {
             finish();
           }

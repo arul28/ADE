@@ -7,6 +7,11 @@ import {
   signRelayHmacHex,
   type SyncCloudRelayStore,
 } from "./syncCloudRelayStore";
+import {
+  assertAdeLoopbackListener,
+  probeAdeLoopbackListener,
+  type SyncLoopbackProbeResult,
+} from "./syncLoopbackProbe";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -20,6 +25,10 @@ export type SyncTunnelClientStatus = {
   connected: boolean;
   activeTunnels: number;
   lastError: string | null;
+  relayBridgeValidated: boolean;
+  validatedPort: number | null;
+  lastFailureAt: string | null;
+  lastSuccessAt: string | null;
   relayUrl: string;
   machineKey: string;
 };
@@ -37,9 +46,13 @@ type SyncTunnelClientArgs = {
   logger?: Logger;
   /** Local ADE sync WebSocket server port, or null when the host isn't up. */
   getSyncPort: () => number | null;
+  /** Expected identity of the active in-process sync listener. */
+  getExpectedLoopbackNonce?: () => string | null;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
+  /** Test seam; production always uses the HTTP 426 loopback probe. */
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
 const BACKOFF_BASE_MS = 1_000;
@@ -95,8 +108,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let stopped = false;
   let connected = false;
   let lastError: string | null = null;
+  let validatedPort: number | null = null;
+  let validatedLoopbackNonce: string | null = null;
+  let lastFailureAt: string | null = null;
+  let lastSuccessAt: string | null = null;
   let claimed = false;
   const tunnels = new Set<Tunnel>();
+  const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
+
+  const recordFailure = (reason: string): void => {
+    lastError = reason;
+    lastFailureAt = new Date().toISOString();
+  };
 
   const identity = (): MachineIdentity => {
     const override = args.machineIdentity?.();
@@ -145,7 +168,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     try {
       await claimOnce(id);
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      recordFailure(error instanceof Error ? error.message : String(error));
       log.warn?.("sync_tunnel.claim_failed", { error: lastError });
       scheduleReconnect();
       return;
@@ -158,13 +181,14 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     const socket = new WebSocket(url);
     control = socket;
     armOpenDeadline(socket, () => {
-      lastError = "relay control socket connect timed out";
+      recordFailure("relay control socket connect timed out");
     });
 
     socket.on("open", () => {
       attempt = 0;
       connected = true;
       lastError = null;
+      lastSuccessAt = new Date().toISOString();
       log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
     });
     socket.on("message", (raw: RawData) => {
@@ -172,7 +196,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (message?.t === "open") void openTunnel(id, message.id);
     });
     socket.on("error", (error: Error) => {
-      lastError = error.message;
+      recordFailure(error.message);
       log.warn?.("sync_tunnel.control_error", { error: error.message });
     });
     socket.on("close", () => {
@@ -185,7 +209,38 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const openTunnel = async (id: MachineIdentity, connectionId: string): Promise<void> => {
     const port = args.getSyncPort();
     if (port == null) {
+      recordFailure("Relay bridge refused because the ADE sync listener is not bound.");
       log.warn?.("sync_tunnel.no_sync_port", { connectionId });
+      return;
+    }
+    const expectedLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
+    if (!expectedLoopbackNonce) {
+      validatedPort = null;
+      validatedLoopbackNonce = null;
+      recordFailure("Relay bridge refused because the ADE sync listener identity is unavailable.");
+      log.warn?.("sync_tunnel.no_loopback_identity", { connectionId, port });
+      return;
+    }
+    try {
+      const result = await assertAdeLoopbackListener(
+        port,
+        expectedLoopbackNonce,
+        loopbackProbe,
+      );
+      validatedPort = port;
+      validatedLoopbackNonce = expectedLoopbackNonce;
+      lastError = null;
+      lastSuccessAt = result.checkedAt;
+    } catch (error) {
+      validatedPort = null;
+      validatedLoopbackNonce = null;
+      const reason = `Relay bridge refused because 127.0.0.1:${port} is not the ADE sync listener: ${error instanceof Error ? error.message : String(error)}`;
+      recordFailure(reason);
+      log.warn?.("sync_tunnel.loopback_validation_failed", {
+        connectionId,
+        port,
+        error: reason,
+      });
       return;
     }
     const ts = nowSeconds();
@@ -195,10 +250,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     const pipe = new WebSocket(pipeUrl);
     const local = new WebSocket(`ws://127.0.0.1:${String(port)}`);
     armOpenDeadline(pipe, () => {
-      lastError = "relay pipe connect timed out";
+      recordFailure("relay pipe connect timed out");
     });
     armOpenDeadline(local, () => {
-      lastError = "local sync socket connect timed out";
+      recordFailure("local sync socket connect timed out");
     });
     const tunnel: Tunnel = { pipe, local, connectionId };
     tunnels.add(tunnel);
@@ -230,11 +285,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     pipe.on("close", closeBoth);
     local.on("close", closeBoth);
     pipe.on("error", (error: Error) => {
-      lastError = error.message;
+      recordFailure(error.message);
       closeBoth();
     });
     local.on("error", (error: Error) => {
-      lastError = error.message;
+      recordFailure(error.message);
       closeBoth();
     });
     log.debug?.("sync_tunnel.open", { connectionId });
@@ -282,11 +337,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
     getStatus(): SyncTunnelClientStatus {
       const { machineKey } = identity();
+      const currentPort = args.getSyncPort();
+      const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
       return {
         enabled: args.configStore.isEnabled(),
         connected,
         activeTunnels: tunnels.size,
         lastError,
+        relayBridgeValidated: currentPort != null
+          && currentLoopbackNonce != null
+          && validatedPort === currentPort
+          && validatedLoopbackNonce === currentLoopbackNonce,
+        validatedPort,
+        lastFailureAt,
+        lastSuccessAt,
         relayUrl: relayHttpUrl(),
         machineKey,
       };

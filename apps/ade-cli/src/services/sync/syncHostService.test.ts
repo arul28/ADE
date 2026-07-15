@@ -1,8 +1,12 @@
 import fs from "node:fs";
+import { createSign, generateKeyPairSync } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatEventEnvelope,
   CrsqlChangeRow,
@@ -36,8 +40,10 @@ import {
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener } from "./sharedSyncListener";
+import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
+import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
 import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 
@@ -1181,6 +1187,436 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
   };
 }
 
+describe("sync host account authentication", () => {
+  const issuer = "https://sync-host-clerk.test";
+  const oauthClientId = "sync-host-client";
+  const ownerUserId = "user_sync_owner";
+  let jwksServer: Server;
+  let jwksUrl = "";
+  let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
+
+  beforeAll(async () => {
+    const keyPair = await generateKeyPair("RS256", { extractable: true });
+    signingKey = keyPair.privateKey;
+    const publicJwk = await exportJWK(keyPair.publicKey);
+    const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "sync-host-test-key", use: "sig" }] };
+    jwksServer = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(jwks));
+    });
+    await new Promise<void>((resolve, reject) => {
+      jwksServer.once("error", reject);
+      jwksServer.listen(0, "127.0.0.1", resolve);
+    });
+    jwksUrl = `http://127.0.0.1:${(jwksServer.address() as AddressInfo).port}/jwks`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      jwksServer.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  async function mintAccountToken(sub = ownerUserId): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "sync-host-test-key" })
+      .setIssuer(issuer)
+      .setSubject(sub)
+      .setAudience(oauthClientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .sign(signingKey);
+  }
+
+  function makeDpopKeyPair() {
+    const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const jwk = publicKey.export({ format: "jwk" }) as { x: string; y: string };
+    const publicKeyX963 = Buffer.concat([
+      Buffer.from([4]),
+      Buffer.from(jwk.x, "base64url"),
+      Buffer.from(jwk.y, "base64url"),
+    ]).toString("base64");
+    return { privateKey, publicKeyX963 };
+  }
+
+  function signAccountDpop(args: {
+    privateKey: ReturnType<typeof makeDpopKeyPair>["privateKey"];
+    publicKeyX963: string;
+    deviceId: string;
+    accountToken: string;
+    advertisedPublicKeyX963?: string;
+    signedDeviceId?: string;
+  }) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = `account-${args.deviceId}-${Math.random()}`;
+    const challenge = buildSyncDpopChallenge({
+      deviceId: args.signedDeviceId ?? args.deviceId,
+      secretSha256Hex: sha256Hex(args.accountToken),
+      timestamp,
+      nonce,
+    });
+    return {
+      publicKey: args.advertisedPublicKeyX963 ?? args.publicKeyX963,
+      timestamp,
+      nonce,
+      signature: createSign("sha256")
+        .update(challenge, "utf8")
+        .sign(args.privateKey)
+        .toString("base64"),
+    };
+  }
+
+  function accountDependencies(signedIn = true) {
+    return {
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn,
+          userId: signedIn ? ownerUserId : null,
+          email: null,
+          name: null,
+          expiresAt: null,
+        }),
+      },
+      getAccountAttestationConfig: () => ({
+        issuer,
+        jwksUrl,
+        oauthClientId,
+      }),
+    };
+  }
+
+  async function openAccountClient(port: number) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const tracked = trackClientEnvelopes(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    return { ws, ...tracked };
+  }
+
+  function sendAccountHello(args: {
+    ws: WebSocket;
+    peer: SyncPeerMetadata;
+    accountToken: string;
+    dpop?: ReturnType<typeof signAccountDpop> | null;
+    runtimeHostGrant?: string | null;
+  }): void {
+    args.ws.send(encodeSyncEnvelope({
+      type: "hello",
+      payload: {
+        peer: args.peer,
+        auth: {
+          kind: "account",
+          deviceId: args.peer.deviceId,
+          accountToken: args.accountToken,
+          dpop: args.dpop ?? null,
+          runtimeHostGrant: args.runtimeHostGrant ?? null,
+        },
+      },
+    }));
+  }
+
+  it("authenticates the owner with JWKS + DPoP, mints a record, and enables the grant-gated desktop runtime channel", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const runtimeHostGrant = pairingStore.issueRuntimeHostGrant();
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await openAccountClient(port);
+      const peer = {
+        deviceId: "account-desktop-runtime",
+        deviceName: "Account desktop runtime",
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: "account-desktop-runtime-site",
+        dbVersion: 0,
+        capabilities: [SYNC_RUNTIME_ONLY_CAPABILITY],
+      } satisfies SyncPeerMetadata;
+      const accountToken = await mintAccountToken();
+      const dpopKey = makeDpopKeyPair();
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+        runtimeHostGrant,
+      });
+
+      const hello = await waitForValue(
+        () => client?.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "account hello_ok",
+      );
+      expect(hello.payload).toMatchObject({
+        features: { rpcChannel: true, portForward: true },
+      });
+      expect(pinStore.hasPin()).toBe(false);
+      expect(pairingStore.getPairingRecord(peer.deviceId)).toMatchObject({
+        dpopPublicKey: dpopKey.publicKeyX963,
+        runtimeHostGranted: true,
+        peerDeviceType: "desktop",
+        lastUsedAt: expect.any(String),
+      });
+      expect(isRuntimeOnlySyncPeer({
+        authKind: "account",
+        pairingRecord: pairingStore.getPairingRecord(peer.deviceId),
+        metadata: peer,
+      })).toBe(true);
+    } finally {
+      client?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("pins account re-authentication to an existing DPoP key and never silently re-keys the record", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const peer = {
+      deviceId: "existing-account-device",
+      deviceName: "Existing account device",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "existing-account-device-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const legitimateKey = makeDpopKeyPair();
+    const attackerKey = makeDpopKeyPair();
+    pinStore.setPin("428193");
+    pairingStore.pairPeer(peer, "428193", { dpopPublicKey: legitimateKey.publicKeyX963 });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const accountToken = await mintAccountToken();
+      const attackerClient = await openAccountClient(port);
+      clients.push(attackerClient);
+      sendAccountHello({
+        ws: attackerClient.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: attackerKey.privateKey,
+          publicKeyX963: attackerKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => attackerClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "stored-key account hijack rejection",
+      );
+      expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
+
+      const legitimateClient = await openAccountClient(port);
+      clients.push(legitimateClient);
+      sendAccountHello({
+        ws: legitimateClient.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: legitimateKey.privateKey,
+          publicKeyX963: legitimateKey.publicKeyX963,
+          advertisedPublicKeyX963: attackerKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => legitimateClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "stored-key account hello_ok",
+      );
+      expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects missing and device-mismatched DPoP proofs without minting pairing records", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const accountToken = await mintAccountToken();
+      const missingPeer = {
+        deviceId: "account-missing-dpop",
+        deviceName: "Missing DPoP",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "account-missing-dpop-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const missing = await openAccountClient(port);
+      clients.push(missing);
+      sendAccountHello({ ws: missing.ws, peer: missingPeer, accountToken, dpop: null });
+      await waitForValue(
+        () => missing.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "missing DPoP hello_error",
+      );
+
+      const invalidPeer = {
+        ...missingPeer,
+        deviceId: "account-invalid-dpop",
+        deviceName: "Invalid DPoP",
+        siteId: "account-invalid-dpop-site",
+      };
+      const invalid = await openAccountClient(port);
+      clients.push(invalid);
+      const dpopKey = makeDpopKeyPair();
+      sendAccountHello({
+        ws: invalid.ws,
+        peer: invalidPeer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: invalidPeer.deviceId,
+          accountToken,
+          signedDeviceId: "different-account-device",
+        }),
+      });
+      await waitForValue(
+        () => invalid.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "invalid DPoP hello_error",
+      );
+
+      expect(pairingStore.getPairingRecord(missingPeer.deviceId)).toBeNull();
+      expect(pairingStore.getPairingRecord(invalidPeer.deviceId)).toBeNull();
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects account auth while signed out and leaves PIN pairing available", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    pinStore.setPin("428193");
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(false),
+      pinStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const peer = {
+        deviceId: "signed-out-account-peer",
+        deviceName: "Signed-out account peer",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "signed-out-account-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const accountToken = await mintAccountToken();
+      const dpopKey = makeDpopKeyPair();
+      const accountClient = await openAccountClient(port);
+      clients.push(accountClient);
+      sendAccountHello({
+        ws: accountClient.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => accountClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "signed-out account hello_error",
+      );
+
+      const pinClient = await openAccountClient(port);
+      clients.push(pinClient);
+      pinClient.ws.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId: "pin-fallback",
+        payload: { code: "428193", peer },
+      }));
+      const pairingResult = await waitForValue(
+        () => pinClient.envelopes.find((envelope) =>
+          envelope.type === "pairing_result" && envelope.requestId === "pin-fallback"),
+        "PIN fallback pairing_result",
+      );
+      expect(pairingResult.payload).toMatchObject({
+        ok: true,
+        deviceId: peer.deviceId,
+        secret: expect.stringMatching(/^[0-9a-f]{48}$/),
+      });
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("paired runtime host authorization", () => {
   it("refuses rpc/fwd when a PIN-authorized project-host pairing request merely claims desktop", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
@@ -1331,6 +1767,121 @@ describe("createSyncHostService LAN discovery", () => {
       Reflect.deleteProperty(process.versions, "electron");
     }
     vi.restoreAllMocks();
+  });
+
+  it("rejects a self-owned listener before discovery when loopback is not ADE", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe: async (port: number) => ({
+        ok: false,
+        port,
+        statusCode: 404,
+        statusMessage: "Not Found",
+        markerValue: null,
+        checkedAt: new Date().toISOString(),
+        reason: "foreign loopback listener",
+      }),
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow("foreign loopback listener");
+      expect(host.getLoopbackValidationStatus()).toMatchObject({
+        loopbackAdeValidated: false,
+        reason: "foreign loopback listener",
+      });
+      expect(host.getTailnetDiscoveryStatus().updatedAt).toBeNull();
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-validates the loopback listener before refreshLanDiscovery and skips (re)publish on a post-startup shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> =>
+      probeOk
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", markerValue: expectedNonce, checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", markerValue: null, checkedAt: new Date().toISOString(), reason: "shadow appeared after startup" });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await host.waitUntilListening();
+      expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(true);
+      const probeCallsAfterStartup = loopbackProbe.mock.calls.length;
+      const publishCallsAfterStartup = publishMock.mock.calls.length;
+      const spawnCallsAfterStartup = spawnMock.mock.calls.length;
+      const tailnetUpdatedAfterStartup = host.getTailnetDiscoveryStatus().updatedAt;
+
+      // A foreign listener shadows the loopback route AFTER startup.
+      probeOk = false;
+      host.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+
+      // The refresh forces a re-probe (bypassing the validated-port short-circuit)
+      // and, seeing the shadow, marks the route unvalidated and skips publishing.
+      await vi.waitFor(() =>
+        expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(false));
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(probeCallsAfterStartup);
+      expect(host.getLoopbackValidationStatus().reason).toMatch(/shadow appeared/);
+      // No new bonjour/tailnet advertisement for the stale port.
+      expect(publishMock.mock.calls.length).toBe(publishCallsAfterStartup);
+      expect(spawnMock.mock.calls.length).toBe(spawnCallsAfterStartup);
+      expect(host.getTailnetDiscoveryStatus().updatedAt).toBe(tailnetUpdatedAfterStartup);
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-validates the loopback listener before setDiscoveryEnabled(true) and skips publish on a post-startup shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> =>
+      probeOk
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", markerValue: expectedNonce, checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", markerValue: null, checkedAt: new Date().toISOString(), reason: "shadow appeared while disabled" });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await host.waitUntilListening();
+      expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(true);
+      // Turn discovery off, then let a shadow take over the loopback route.
+      host.setDiscoveryEnabled(false);
+      const probeCallsBeforeReenable = loopbackProbe.mock.calls.length;
+      const publishCallsBeforeReenable = publishMock.mock.calls.length;
+      const spawnCallsBeforeReenable = spawnMock.mock.calls.length;
+
+      probeOk = false;
+      host.setDiscoveryEnabled(true);
+
+      // Re-enabling forces a fresh loopback check; the shadow blocks (re)publish.
+      await vi.waitFor(() =>
+        expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(false));
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(probeCallsBeforeReenable);
+      expect(publishMock.mock.calls.length).toBe(publishCallsBeforeReenable);
+      expect(spawnMock.mock.calls.length).toBe(spawnCallsBeforeReenable);
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
   });
 
   it("closes inbound sockets that never authenticate", async () => {
@@ -2624,6 +3175,142 @@ describe("sync host handoff over a shared listener", () => {
         // ignore
       }
       await loggedListener.close();
+    }
+  });
+});
+
+describe("shared listener waitUntilListening ADE-validation gate", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+    bonjourConstructorMock.mockImplementation(() => ({
+      publish: publishMock,
+      destroy: bonjourDestroyMock,
+    }));
+    publishMock.mockImplementation(() => ({ on: vi.fn(), stop: vi.fn() }));
+  });
+
+  it("force re-probes a shared listener at handoff and blocks discovery for a post-bind shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> => probeOk
+      ? {
+          ok: true,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: null,
+        }
+      : {
+          ok: false,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: "post-bind-shadow",
+          checkedAt: new Date().toISOString(),
+          reason: "post-bind shadow presented a different loopback identity",
+        });
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      loopbackProbe,
+    });
+    const boundPort = await listener.ensureListening([0]);
+    const bindProbeCalls = loopbackProbe.mock.calls.length;
+    probeOk = false;
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      sharedListener: listener,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow(/post-bind shadow/);
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(bindProbeCalls);
+      expect(loopbackProbe).toHaveBeenLastCalledWith(
+        boundPort,
+        listener.getExpectedLoopbackNonce(),
+      );
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port: boundPort,
+        loopbackAdeValidated: false,
+        reason: expect.stringMatching(/post-bind shadow/),
+      });
+      expect(host.getLoopbackValidationStatus()).toMatchObject({
+        port: boundPort,
+        loopbackAdeValidated: false,
+        reason: expect.stringMatching(/post-bind shadow/),
+      });
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("throws before discovery when the shared listener loopback is not ADE-validated", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const boundPort = await listener.ensureListening([0]);
+    // The brain-level listener bound, but its loopback probe never confirmed ADE.
+    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
+      port: boundPort,
+      loopbackAdeValidated: false,
+      lastFailureAt: new Date().toISOString(),
+      reason: `127.0.0.1:${boundPort} did not answer as ADE.`,
+      lastSuccessAt: null,
+    });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      sharedListener: listener,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
+      // The host must refuse to advertise an unvalidated shared listener.
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("throws before discovery when the shared listener validated a different port", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const boundPort = await listener.ensureListening([0]);
+    // Loopback was validated, but for a stale port that no longer matches the
+    // listener's live bind — the host must reject rather than publish it.
+    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
+      port: boundPort + 1,
+      loopbackAdeValidated: true,
+      lastFailureAt: null,
+      reason: null,
+      lastSuccessAt: new Date().toISOString(),
+    });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      sharedListener: listener,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      await listener.close();
+      cleanup();
     }
   });
 });

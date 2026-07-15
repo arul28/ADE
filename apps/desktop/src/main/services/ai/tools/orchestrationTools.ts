@@ -190,6 +190,7 @@ function createSpawnAgentTool(
       goalSummary: z.string().min(1, "goalSummary is required"),
       stepId: z.string().min(1, "stepId is required"),
       initialMessage: z.string().min(1, "initialMessage is required"),
+      spawnKind: z.enum(["subagent", "peer", "none"]).optional(),
       modelOverride: z
         .object({
           provider: z.string(),
@@ -245,6 +246,7 @@ function createSpawnAgentTool(
             orchestrationRunId: ctx.runId,
             orchestrationRole: input.role,
             orchestrationParentSessionId: ctx.sessionId,
+            spawnKind: input.spawnKind ?? "subagent",
             orchestrationTag: input.tag,
             orchestrationStepId: input.stepId,
             orchestrationBundlePath: ctx.bundlePath,

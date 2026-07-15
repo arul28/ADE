@@ -108,6 +108,19 @@ provider CLI terminal. Both accept lane, provider, model, reasoning effort,
 permission mode, fast/no-fast, and prompt flags. Use `--lane auto` or
 `--auto-create-lane` when the desktop UI would use the auto-create lane row.
 
+### Spawning agents
+
+`ade new chat --mode chat --provider <p> --prompt "..."` spawns a tracked ADE
+agent and automatically links it back to the current chat through
+`ADE_CHAT_SESSION_ID`. Add `--type subagent|peer|none` to choose the cosmetic
+relationship and completion-report policy: `subagent` wakes the parent, `peer`
+adds a quiet note, and `none` adds no report. A typed agent is still a full ADE
+agent with the same runtime, permissions, and tools.
+
+When the new work must carry the current lane's unmerged commits, follow the
+child-lane rule in the `ade-lanes-git` skill and use
+`ade lanes child --lane <current> --name <n>` instead of a fresh lane.
+
 Use `ade chat read <session> --text` to confirm recent transcript messages
 before and after steering another chat.
 

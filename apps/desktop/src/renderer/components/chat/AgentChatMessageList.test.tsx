@@ -927,6 +927,98 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("renders a spawn_completed peer notice as a quiet chip that navigates to the child", () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "spawn_completed",
+          message: 'Peer "Docs" finished',
+          detail: {
+            spawnCompletion: {
+              childSessionId: "child-peer-1",
+              childTitle: "Docs",
+              spawnKind: "peer",
+              status: "completed",
+              summary: "Wrote the docs.",
+            },
+          },
+        },
+      },
+    ], { sessionId: "parent-session" });
+
+    const chip = screen.getByRole("button", { name: /Docs.*finished/i });
+    fireEvent.click(chip);
+
+    const navEvent = dispatchSpy.mock.calls
+      .map(([evt]) => evt)
+      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+    expect(navEvent).toBeTruthy();
+    expect((navEvent!.detail as { sessionId?: string }).sessionId).toBe("child-peer-1");
+  });
+
+  it("suppresses the legacy subagent_spawned pill for a plain spawn (the unified card replaces it)", () => {
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "subagent_spawned",
+          message: "Subagent spawned: Wave 2 UI",
+          detail: {
+            spawnedSession: { sessionId: "child-1", laneId: null, title: "Wave 2 UI" },
+            spawnKind: "subagent",
+            // Plain spawn: an inline SubagentSpawnCard accompanies the notice, so
+            // the quiet pill is suppressed.
+            hasInlineCard: true,
+          },
+        },
+      },
+    ], { sessionId: "parent-session" });
+
+    expect(screen.queryByText("Wave 2 UI")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("keeps the subagent_spawned deep-link pill when there is no inline card (orchestration/continuity)", () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "subagent_spawned",
+          message: "Subagent spawned: Worker A",
+          detail: {
+            spawnedSession: { sessionId: "child-worker-1", laneId: null, title: "Worker A" },
+            spawnKind: "subagent",
+            // No accompanying card (orchestration-run child / continuity spawn) →
+            // the quiet deep-link pill is retained.
+            hasInlineCard: false,
+          },
+        },
+      },
+    ], { sessionId: "parent-session" });
+
+    const pill = screen.getByRole("button");
+    expect(pill.textContent).toContain("Worker A");
+    fireEvent.click(pill);
+    const navEvent = dispatchSpy.mock.calls
+      .map(([evt]) => evt)
+      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+    expect(navEvent).toBeTruthy();
+    expect((navEvent!.detail as { sessionId?: string }).sessionId).toBe("child-worker-1");
+    dispatchSpy.mockRestore();
+  });
+
   it("runs Codex stalled-turn recovery actions against the source chat", async () => {
     const onCodexRecovery = vi.fn().mockResolvedValue({
       action: "wait",

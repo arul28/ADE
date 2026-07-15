@@ -172,6 +172,10 @@
 		F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* SettingsSupportTypes.swift */; };
 		F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* SettingsConnectionHeader.swift */; };
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
+		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
+		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
+		AD0000000000000000000B03 /* AccountSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A03 /* AccountSignInView.swift */; };
+		AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A04 /* AccountConnectionsSection.swift */; };
 		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
 		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
@@ -439,6 +443,10 @@
 		F20000000000000000000001 /* SettingsSupportTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsSupportTypes.swift; path = ADE/Views/Settings/SettingsSupportTypes.swift; sourceTree = "<group>"; };
 		F20000000000000000000002 /* SettingsConnectionHeader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsConnectionHeader.swift; path = ADE/Views/Settings/SettingsConnectionHeader.swift; sourceTree = "<group>"; };
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A03 /* AccountSignInView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountSignInView.swift; path = ADE/Views/Account/AccountSignInView.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A04 /* AccountConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountConnectionsSection.swift; path = ADE/Views/Account/AccountConnectionsSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
@@ -610,6 +618,7 @@
 				D2000000000000000000009F /* Linear */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
+				AD0000000000000000000C01 /* Account */,
 				D30000000000000000000004 /* AttentionDrawer */,
 				K30000000000000000000001 /* Deeplinks */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
@@ -776,6 +785,15 @@
 			name = Work;
 			sourceTree = "<group>";
 		};
+		AD0000000000000000000C01 /* Account */ = {
+			isa = PBXGroup;
+			children = (
+				AD0000000000000000000A03 /* AccountSignInView.swift */,
+				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
+			);
+			name = Account;
+			sourceTree = "<group>";
+		};
 		A10000000000000000000015 /* Settings */ = {
 			isa = PBXGroup;
 			children = (
@@ -808,6 +826,8 @@
 				AF00000000000000000000A1 /* DpopKeyService.swift */,
 				AF00000000000000000000A2 /* PairingQrPayload.swift */,
 				AC1000000000000000000006 /* ClipPairingHandoff.swift */,
+				AD0000000000000000000A01 /* AccountService.swift */,
+				AD0000000000000000000A02 /* AccountDirectory.swift */,
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
@@ -1008,6 +1028,7 @@
 			name = ADE;
 			packageProductDependencies = (
 				DD10000000000000000000B1 /* SwiftTerm */,
+				DD10000000000000000000C2 /* ClerkKit */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -1138,6 +1159,7 @@
 			mainGroup = 564208E3878DD0F0137C7E86;
 			packageReferences = (
 				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -1308,6 +1330,10 @@
 				F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */,
 				F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */,
 				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,
+				AD0000000000000000000B01 /* AccountService.swift in Sources */,
+				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				AD0000000000000000000B03 /* AccountSignInView.swift in Sources */,
+				AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */,
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
 				F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */,
 				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
@@ -1506,6 +1532,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
+				ADE_ACCOUNT_DIRECTORY_BASE_URL = "";
+				CLERK_PUBLISHABLE_KEY = "pk_test_Y29oZXJlbnQtZm94aG91bmQtNjIuY2xlcmsuYWNjb3VudHMuZGV2JA";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1585,6 +1613,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
+				ADE_ACCOUNT_DIRECTORY_BASE_URL = "";
+				CLERK_PUBLISHABLE_KEY = "pk_test_Y29oZXJlbnQtZm94aG91bmQtNjIuY2xlcmsuYWNjb3VudHMuZGV2JA";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1869,6 +1899,14 @@
 				minimumVersion = 1.13.0;
 			};
 		};
+		DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/clerk/clerk-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.3.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1876,6 +1914,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		DD10000000000000000000C2 /* ClerkKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */;
+			productName = ClerkKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

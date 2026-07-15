@@ -8,6 +8,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatSpawnKind,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
@@ -123,6 +124,15 @@ export type TerminalSessionSummary = {
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
   orchestrationTag?: string;
+  /**
+   * Spawn lineage for chat-backed sessions, projected from the underlying chat
+   * session (independent of any orchestration run). `orchestrationParentSessionId`
+   * marks a chat spawned by another chat; `spawnKind` is the spawner-declared,
+   * cosmetic relationship (subagent/peer/none) the sidebar renders as a pill and
+   * uses to count a spawner's live children. Both optional for migration tolerance.
+   */
+  orchestrationParentSessionId?: string;
+  spawnKind?: AgentChatSpawnKind;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

@@ -42,6 +42,7 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
+import { navigateToSpawnedChat } from "./spawnNavigation";
 
 const GLYPH_SIZE = 16;
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
@@ -1209,6 +1210,16 @@ export function ChatSubagentsPanel({
   const immediateForRunning = canTakeover && (capability?.hasRichMetadata ?? false);
 
   const handleRowClick = (snap: ChatSubagentSnapshot) => {
+    // A spawned ADE chat (peer/subagent) carries a `chat:<id>` taskId — clicking
+    // navigates to that chat instead of a transcript takeover/drawer. Only
+    // runtime-native subagents (non-`chat:` taskIds) keep the takeover behavior.
+    if (snap.taskId.startsWith("chat:")) {
+      const childSessionId = snap.agentId?.trim() || snap.taskId.slice("chat:".length);
+      if (childSessionId) {
+        navigateToSpawnedChat(childSessionId, null);
+        return;
+      }
+    }
     // Clicking the row whose drawer is open closes it.
     if (expandedTaskId === snap.taskId) {
       setExpandedTaskId(null);
