@@ -5,8 +5,10 @@ import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { createSharedSyncListener } from "./sharedSyncListener";
+import { createSyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncService, type SyncService } from "./syncService";
 import { probeAdeLoopbackListener, type SyncLoopbackProbeResult } from "./syncLoopbackProbe";
+import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
 
 const ORIGINAL_BIND_HOST = vi.hoisted(() => process.env.ADE_SYNC_BIND_HOST);
 vi.hoisted(() => {
@@ -250,4 +252,69 @@ describe("sync loopback collision recovery", () => {
       else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
     }
   });
+
+  // Regression for PR #816: when relay is enabled and the loopback listener is
+  // genuinely ADE-validated, but the relay bridge has NOT been validated against
+  // the current sync port, the relay route must report a non-null reason (an
+  // unhealthy/failing route) rather than swallowing it as a null lastError.
+  it.runIf(process.platform === "darwin")(
+    "flags the relay route unhealthy when the relay bridge is not validated against the current sync port",
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-relay-bridge-"));
+      const lockPath = path.join(projectRoot, "sync-host.lock");
+      const previousLockPath = process.env.ADE_SYNC_HOST_LOCK_PATH;
+      process.env.ADE_SYNC_HOST_LOCK_PATH = lockPath;
+      const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+      const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+      (db.sync as { isAvailable?: () => boolean }).isAvailable = () => true;
+      const cloudRelayStore = createSyncCloudRelayStore({
+        filePath: path.join(projectRoot, ".ade", "secrets", "sync", "cloud-relay.json"),
+      });
+      cloudRelayStore.setEnabled(true);
+      // Relay control is up, but the bridge has not been validated against the
+      // live sync port — exactly the state that must surface as a failing route.
+      const tunnelStatus: SyncTunnelClientStatus = {
+        enabled: true,
+        connected: true,
+        activeTunnels: 0,
+        lastError: null,
+        relayBridgeValidated: false,
+        validatedPort: null,
+        lastFailureAt: null,
+        lastSuccessAt: null,
+        relayUrl: "https://relay.test.ade",
+        machineKey: "a".repeat(32),
+      };
+      const service = createService(db, projectRoot, {
+        sharedSyncListener: listener,
+        cloudRelayStore,
+        syncTunnelClientService: { getStatus: () => tunnelStatus },
+      });
+      const preferredPort = await findFreeLegacyPort();
+      service.getDeviceRegistryService().touchLocalDevice({ lastPort: preferredPort });
+
+      try {
+        await service.initialize();
+        const status = await service.getStatus({ includeTransferReadiness: false });
+
+        // Sanity: the loopback listener really is ADE-validated, so the relay
+        // reason below cannot be attributed to a bad loopback branch.
+        expect(status.routeHealth.listener.loopbackAdeValidated).toBe(true);
+        expect(status.routeHealth.relay.enabled).toBe(true);
+        expect(status.routeHealth.relay.relayControlConnected).toBe(true);
+
+        // The regression: an unvalidated relay bridge must yield a non-null reason.
+        expect(status.routeHealth.relay.relayBridgeValidated).toBe(false);
+        expect(typeof status.routeHealth.relay.reason).toBe("string");
+        expect(status.routeHealth.relay.reason).toMatch(/not been validated/);
+      } finally {
+        await service.dispose();
+        await listener.close();
+        db.close();
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+        if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
+        else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
+      }
+    },
+  );
 });
