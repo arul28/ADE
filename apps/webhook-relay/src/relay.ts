@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTPayload } from "jose";
 
 export type RelayEnv = {
   DB: D1Database;
@@ -12,6 +12,9 @@ export type RelayEnv = {
   CLERK_JWKS_URL?: string;
   CLERK_ISSUER?: string;
   CLERK_OAUTH_CLIENT_ID?: string;
+  CLERK_SECONDARY_JWKS_URL?: string;
+  CLERK_SECONDARY_ISSUER?: string;
+  CLERK_SECONDARY_OAUTH_CLIENT_ID?: string;
   /**
    * Signing secret of the ADE Linear OAuth application. OAuth-app webhooks
    * sign every workspace's deliveries with this one app-level secret (unlike
@@ -441,6 +444,50 @@ function isAllowedAccountToken(payload: JWTPayload, oauthClientId: string): bool
   return audienceIncludes(payload.aud, oauthClientId) || payload.azp === oauthClientId;
 }
 
+type ClerkAccountTokenConfig = {
+  issuer: string;
+  jwksUrl: string;
+  oauthClientId: string;
+};
+
+function readClerkAccountTokenConfigs(env: RelayEnv): ClerkAccountTokenConfig[] {
+  const primary = {
+    issuer: env.CLERK_ISSUER?.trim() ?? "",
+    jwksUrl: env.CLERK_JWKS_URL?.trim() ?? "",
+    oauthClientId: env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
+  };
+  if (!primary.issuer || !primary.jwksUrl || !primary.oauthClientId) {
+    throw new Error("Clerk authentication is not configured");
+  }
+
+  const secondary = {
+    issuer: env.CLERK_SECONDARY_ISSUER?.trim() ?? "",
+    jwksUrl: env.CLERK_SECONDARY_JWKS_URL?.trim() ?? "",
+    oauthClientId: env.CLERK_SECONDARY_OAUTH_CLIENT_ID?.trim() ?? "",
+  };
+  const hasSecondaryValue = Boolean(secondary.issuer || secondary.jwksUrl || secondary.oauthClientId);
+  if (hasSecondaryValue && (!secondary.issuer || !secondary.jwksUrl || !secondary.oauthClientId)) {
+    throw new Error("Secondary Clerk authentication is only partially configured");
+  }
+
+  return hasSecondaryValue ? [primary, secondary] : [primary];
+}
+
+async function verifyAccountTokenWithConfig(
+  token: string,
+  config: ClerkAccountTokenConfig,
+): Promise<string> {
+  const { payload } = await jwtVerify(token, getRemoteJwks(config.jwksUrl), {
+    issuer: config.issuer,
+    algorithms: ["RS256"],
+    clockTolerance: 5,
+    requiredClaims: ["sub", "exp"],
+  });
+  if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
+  if (!isAllowedAccountToken(payload, config.oauthClientId)) throw new Error("Token audience is not allowed");
+  return payload.sub;
+}
+
 function looksLikeJwt(value: string): boolean {
   return value.split(".").length === 3;
 }
@@ -452,20 +499,13 @@ function accountTokenCandidates(request: Request): string[] {
 }
 
 export async function verifyAccountToken(token: string, env: RelayEnv): Promise<string> {
-  const issuer = env.CLERK_ISSUER?.trim() ?? "";
-  const jwksUrl = env.CLERK_JWKS_URL?.trim() ?? "";
-  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
-  if (!issuer || !jwksUrl || !oauthClientId) throw new Error("Clerk authentication is not configured");
-
-  const { payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
-    issuer,
-    algorithms: ["RS256"],
-    clockTolerance: 5,
-    requiredClaims: ["sub", "exp"],
-  });
-  if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
-  if (!isAllowedAccountToken(payload, oauthClientId)) throw new Error("Token audience is not allowed");
-  return payload.sub;
+  const configs = readClerkAccountTokenConfigs(env);
+  const claimedIssuer = decodeJwt(token).iss;
+  const config = typeof claimedIssuer === "string"
+    ? configs.find((candidate) => candidate.issuer === claimedIssuer)
+    : undefined;
+  if (!config) throw new Error("Token issuer is not allowed");
+  return await verifyAccountTokenWithConfig(token, config);
 }
 
 async function hasValidBearerAccountToken(request: Request, env: RelayEnv): Promise<boolean> {

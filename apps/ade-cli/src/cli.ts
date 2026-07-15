@@ -90,6 +90,7 @@ import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
@@ -15123,6 +15124,7 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
+  let accountMachinePublisher: AccountMachinePublisherService | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -15158,6 +15160,8 @@ async function runServe(
     return null;
   };
   const disposeServeResources = async () => {
+    accountMachinePublisher?.dispose();
+    accountMachinePublisher = null;
     // Before scopes detach (which clears the run map): best-effort Live
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
@@ -15287,6 +15291,27 @@ async function runServe(
     states.push(tcpState);
     await listen(tcpState.server, { port, host: "127.0.0.1" });
     tcpUrl = `tcp://127.0.0.1:${port}`;
+  }
+
+  if (syncEnabled) {
+    const { createBrainAccountMachinePublisherService } = await import(
+      "./services/account/accountMachinePublisherService"
+    );
+    const accountProjectRoots = () => projectRegistry.list().map((record) => record.rootPath);
+    accountMachinePublisher = createBrainAccountMachinePublisherService({
+      secretsDir: layout.secretsDir,
+      projectRoots: accountProjectRoots,
+      logger: headlessProjectLogger,
+      getSnapshot: async () => {
+        const activeScope = await scopeRegistry.resolveActiveSyncHost();
+        return await activeScope?.runtime.syncService?.getStatus({
+          includeTransferReadiness: false,
+        }) ?? null;
+      },
+      getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+      directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+    });
+    accountMachinePublisher.start();
   }
 
   process.stderr.write(

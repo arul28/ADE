@@ -112,10 +112,10 @@ private struct AccountMachinesResponse: Codable {
   let machines: [AccountMachine]
 }
 
-/// Thin HTTP client for the account-directory Worker. The base URL is
-/// configurable (the Worker is not deployed yet); when it's absent or
-/// unreachable, callers degrade to a quiet empty state and the local pairing
-/// flow keeps working.
+/// Thin HTTP client for the account-directory Worker. The official Worker URL
+/// ships in the app build settings and can be overridden by another build;
+/// when it's absent or unreachable, callers degrade to a quiet empty state and
+/// the local pairing flow keeps working.
 struct AccountDirectoryClient {
   enum DirectoryError: LocalizedError, Equatable {
     case notConfigured

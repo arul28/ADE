@@ -1,5 +1,11 @@
 import path from "node:path";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import {
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEFAULT_ADE_CLERK_JWKS_URL,
+  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  officialAccountDirectoryUrlForIssuer,
+} from "../../../../desktop/src/shared/accountDirectory";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import {
@@ -79,9 +85,14 @@ function resolveOAuthConfig(args: {
       };
     }
   }
+  const issuer = args.env.CLERK_ISSUER?.trim() ?? "";
+  const clientId = args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
+  // Environment overrides are another atomic pair: a partial custom pair must
+  // fail closed rather than borrowing the missing half from ADE production.
+  if (issuer || clientId) return { issuer, clientId };
   return {
-    issuer: args.env.CLERK_ISSUER?.trim() || "",
-    clientId: args.env.CLERK_OAUTH_CLIENT_ID?.trim() || "",
+    issuer: DEFAULT_ADE_CLERK_ISSUER,
+    clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   };
 }
 
@@ -93,7 +104,9 @@ function resolveDeviceBridgeUrl(args: {
     const value = readProjectSecret(projectRoot, "ADE_ACCOUNT_DIRECTORY_URL");
     if (value) return value;
   }
-  return args.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || "";
+  const machineOverride = args.env.ADE_ACCOUNT_DIRECTORY_URL?.trim();
+  if (machineOverride) return machineOverride;
+  return officialAccountDirectoryUrlForIssuer(resolveOAuthConfig(args).issuer);
 }
 
 function resolveAttestationConfig(args: {
@@ -116,10 +129,16 @@ function resolveAttestationConfig(args: {
       };
     }
   }
+  const issuer = args.env.CLERK_ISSUER?.trim() ?? "";
+  const jwksUrl = args.env.CLERK_JWKS_URL?.trim() ?? "";
+  const oauthClientId = args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
+  if (issuer || jwksUrl || oauthClientId) {
+    return { issuer, jwksUrl, oauthClientId };
+  }
   return {
-    issuer: args.env.CLERK_ISSUER?.trim() || "",
-    jwksUrl: args.env.CLERK_JWKS_URL?.trim() || "",
-    oauthClientId: args.env.CLERK_OAUTH_CLIENT_ID?.trim() || "",
+    issuer: DEFAULT_ADE_CLERK_ISSUER,
+    jwksUrl: DEFAULT_ADE_CLERK_JWKS_URL,
+    oauthClientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   };
 }
 

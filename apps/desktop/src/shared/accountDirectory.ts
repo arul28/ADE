@@ -15,6 +15,17 @@ export const MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export const DEFAULT_ADE_TUNNEL_RELAY_URL =
   "https://ade-tunnel-relay.arulsharma1028.workers.dev";
+export const DEFAULT_ADE_CLERK_ISSUER = "https://clerk.ade-app.dev";
+export const DEFAULT_ADE_CLERK_JWKS_URL =
+  `${DEFAULT_ADE_CLERK_ISSUER}/.well-known/jwks.json`;
+export const DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID = "Az7TbviBocyXjZk1";
+export const DEFAULT_ADE_ACCOUNT_DIRECTORY_URL =
+  "https://ade-account-directory-production.arulsharma1028.workers.dev";
+export const DEVELOPMENT_ADE_CLERK_ISSUER =
+  "https://coherent-foxhound-62.clerk.accounts.dev";
+export const DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID = "d6pUGxQXTqIMYl5w";
+export const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL =
+  "https://ade-account-directory.arulsharma1028.workers.dev";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -60,6 +71,34 @@ export function parseTrustedAccountDirectoryBaseUrl(
   if (url.username || url.password || url.search || url.hash) return null;
   const pathname = url.pathname.replace(/\/+$/, "");
   return `${url.origin}${pathname}`;
+}
+
+/**
+ * Resolve an optional machine-owner override while keeping ADE's hosted
+ * directory as the zero-config default. Blank values mean "not overridden";
+ * a non-blank invalid value still fails closed instead of silently redirecting
+ * the account bearer elsewhere.
+ */
+export function resolveTrustedAccountDirectoryBaseUrl(
+  raw: string | null | undefined,
+): string | null {
+  return parseTrustedAccountDirectoryBaseUrl(
+    raw?.trim() || DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  );
+}
+
+/**
+ * Development tokens are accepted only by ADE's isolated development Worker;
+ * every other issuer uses the production directory. The project may select an
+ * issuer, but it can never select an arbitrary bearer destination through this
+ * mapping.
+ */
+export function officialAccountDirectoryUrlForIssuer(
+  rawIssuer: string | null | undefined,
+): string {
+  return parseTrustedAccountDirectoryBaseUrl(rawIssuer) === DEVELOPMENT_ADE_CLERK_ISSUER
+    ? DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL
+    : DEFAULT_ADE_ACCOUNT_DIRECTORY_URL;
 }
 
 function parseEndpoint(value: unknown): AdeAccountMachineEndpoint | null {

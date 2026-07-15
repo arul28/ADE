@@ -24,7 +24,10 @@ import type {
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   fetchAccountMachines,
+  officialAccountDirectoryUrlForIssuer,
   parseTrustedAccountDirectoryBaseUrl,
 } from "../../../shared/accountDirectory";
 
@@ -48,12 +51,16 @@ function readProjectSecret(projectRoot: string | null, name: string): string | n
 
 /** Best-effort: is machine sign-in configured (CLERK issuer + client id present)? */
 function isLoginConfigured(projectRoot: string | null): boolean {
-  const issuer =
-    readProjectSecret(projectRoot, "CLERK_ISSUER") ?? process.env.CLERK_ISSUER?.trim() ?? "";
-  const clientId =
-    readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID")
-    ?? process.env.CLERK_OAUTH_CLIENT_ID?.trim()
-    ?? "";
+  const projectIssuer = readProjectSecret(projectRoot, "CLERK_ISSUER");
+  const projectClientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
+  const envIssuer = process.env.CLERK_ISSUER?.trim() ?? "";
+  const envClientId = process.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
+  if (projectIssuer || projectClientId) {
+    return Boolean(projectIssuer ?? envIssuer) && Boolean(projectClientId ?? envClientId);
+  }
+  if (envIssuer || envClientId) return Boolean(envIssuer && envClientId);
+  const issuer = DEFAULT_ADE_CLERK_ISSUER;
+  const clientId = DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID;
   return Boolean(issuer && clientId);
 }
 
@@ -77,14 +84,22 @@ export function parseTrustedDirectoryBaseUrl(
  *
  * Trust model: the bearer is the MACHINE's account token (machine-scoped
  * infrastructure), so where it is sent must be controlled by the machine owner
- * alone. We read ONLY the machine-level `ADE_ACCOUNT_DIRECTORY_URL` env — the
- * per-project `ACCOUNT_DIRECTORY_URL` secret is deliberately NOT consulted, so
- * an opened project can never redirect the token to a host it controls. The
+ * alone. A machine-level `ADE_ACCOUNT_DIRECTORY_URL` env override may select a
+ * self-hosted directory; otherwise ADE uses its compiled Cloudflare Worker
+ * origin. Per-project secrets are deliberately NOT consulted, so an opened
+ * project can never redirect the token to a host it controls. The selected
  * value is passed through `parseTrustedDirectoryBaseUrl`, so the token is only
  * ever attached to a trusted https (or loopback) origin.
  */
-function resolveDirectoryBaseUrl(): string | null {
-  return parseTrustedDirectoryBaseUrl(process.env.ADE_ACCOUNT_DIRECTORY_URL);
+function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
+  const machineOverride = process.env.ADE_ACCOUNT_DIRECTORY_URL;
+  if (machineOverride?.trim()) {
+    return parseTrustedAccountDirectoryBaseUrl(machineOverride);
+  }
+  const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER")
+    ?? process.env.CLERK_ISSUER?.trim()
+    ?? DEFAULT_ADE_CLERK_ISSUER;
+  return officialAccountDirectoryUrlForIssuer(issuer);
 }
 
 function toAccountStatus(
@@ -150,7 +165,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (!svc.getStatus().signedIn) {
         return { state: "signed_out", machines: [], message: null };
       }
-      const baseUrl = resolveDirectoryBaseUrl();
+      const baseUrl = resolveDirectoryBaseUrl(options.getProjectRoot());
       if (!baseUrl) {
         return {
           state: "not_configured",

@@ -228,7 +228,10 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 - Secret directories are created with mode `0700`; credential blobs, lock files, and legacy machine keys are written with mode `0600`.
 
 `ade login`, `ade logout`, and `ade auth status` operate on the daemon-owned ADE
-account session in that store. `ade machines list` reads the authenticated
+account session in that store. Installed ADE uses the production Clerk
+application and production account directory without project configuration;
+the ADE repository's development Clerk secrets select the isolated development
+tenant during source work. `ade machines list` reads the matching authenticated
 account directory; signed-out users get a local-first message and existing
 local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
 and device IDs are stable selectors. A display name is accepted only when it is

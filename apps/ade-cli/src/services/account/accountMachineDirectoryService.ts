@@ -12,6 +12,7 @@ import type {
 } from "../../../../desktop/src/shared/types/account";
 import {
   fetchAccountMachines,
+  resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
 } from "../../../../desktop/src/shared/accountDirectory";
 import type { AccountAuthService } from "./accountAuthService";
@@ -62,9 +63,10 @@ export class AccountMachineDirectoryService {
         : { state: "unavailable", machines: [], message: "Couldn't read the shared ADE account session." };
     }
     return await fetchAccountMachines({
-      baseUrl: this.options.directoryBaseUrl?.()
-        ?? process.env.ADE_ACCOUNT_DIRECTORY_URL
-        ?? null,
+      baseUrl: resolveTrustedAccountDirectoryBaseUrl(
+        this.options.directoryBaseUrl?.()
+          ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+      ),
       accessToken: token,
       fetchImpl: this.options.fetchImpl,
     });

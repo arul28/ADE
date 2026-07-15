@@ -1,6 +1,12 @@
 import {
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEVELOPMENT_ADE_CLERK_ISSUER,
+  DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
   fetchAccountMachines,
   parseTrustedAccountDirectoryBaseUrl,
+  resolveTrustedAccountDirectoryBaseUrl,
   trustedAccountRelayBaseUrls,
 } from "../../../shared/accountDirectory";
 import type {
@@ -106,11 +112,19 @@ function decodeClaims(accessToken: string): Pick<BrowserAccountSession, "userId"
 }
 
 export function readBrowserAccountConfig(env: Record<string, unknown>): BrowserAccountConfig | null {
-  const issuer = parseTrustedAccountDirectoryBaseUrl(stringValue(env.VITE_ADE_CLERK_ISSUER));
-  const directoryBaseUrl = parseTrustedAccountDirectoryBaseUrl(
-    stringValue(env.VITE_ADE_ACCOUNT_DIRECTORY_URL),
+  const development = env.DEV === true;
+  const issuer = parseTrustedAccountDirectoryBaseUrl(
+    stringValue(env.VITE_ADE_CLERK_ISSUER)
+      ?? (development ? DEVELOPMENT_ADE_CLERK_ISSUER : DEFAULT_ADE_CLERK_ISSUER),
   );
-  const clientId = stringValue(env.VITE_ADE_CLERK_OAUTH_CLIENT_ID);
+  const directoryOverride = stringValue(env.VITE_ADE_ACCOUNT_DIRECTORY_URL);
+  const directoryBaseUrl = development && !directoryOverride
+    ? DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL
+    : resolveTrustedAccountDirectoryBaseUrl(directoryOverride);
+  const clientId = stringValue(env.VITE_ADE_CLERK_OAUTH_CLIENT_ID)
+    ?? (development
+      ? DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID
+      : DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID);
   if (!issuer || !directoryBaseUrl || !clientId) return null;
   const configuredRelayBaseUrls = stringValue(env.VITE_ADE_ACCOUNT_RELAY_URLS)
     ?.split(",")

@@ -10,16 +10,31 @@
     "ONLINE_WINDOW_MS": "90000",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
-    "WEB_CLIENT_ORIGIN": ""
+    "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "ade-account-directory",
-      // Local build/dev identifier. Replace it with the created D1 database UUID
-      // during the deferred Cloudflare setup before any remote migration/deploy.
-      "database_id": "local-account-directory",
+      "database_id": "215bebd4-6601-4705-ab6e-e6f2d1397156",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "env": {
+    "production": {
+      "name": "ade-account-directory-production",
+      "vars": {
+        "ONLINE_WINDOW_MS": "90000",
+        "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ade-account-directory-production",
+          "database_id": "38ebe0bb-ac4d-4b39-b73e-bab2f0092971",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
 }

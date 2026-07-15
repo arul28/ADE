@@ -74,6 +74,9 @@ printf '%s' "$GITHUB_APP_PRIVATE_KEY" | npx wrangler secret put GITHUB_APP_PRIVA
 printf '%s' "$CLERK_JWKS_URL" | npx wrangler secret put CLERK_JWKS_URL
 printf '%s' "$CLERK_ISSUER" | npx wrangler secret put CLERK_ISSUER
 printf '%s' "$CLERK_OAUTH_CLIENT_ID" | npx wrangler secret put CLERK_OAUTH_CLIENT_ID
+printf '%s' "$CLERK_SECONDARY_JWKS_URL" | npx wrangler secret put CLERK_SECONDARY_JWKS_URL
+printf '%s' "$CLERK_SECONDARY_ISSUER" | npx wrangler secret put CLERK_SECONDARY_ISSUER
+printf '%s' "$CLERK_SECONDARY_OAUTH_CLIENT_ID" | npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
 npm run deploy
 ```
 
@@ -95,6 +98,13 @@ Linear organizations. `DELETE /account/integrations` clears those account
 associations and records an account-specific unlink tombstone, so subsequent
 dual-credential requests cannot silently restore them. It does not delete
 provider mappings, events, signing secrets, or legacy access.
+
+During the development-to-production migration, the optional
+`CLERK_SECONDARY_JWKS_URL`, `CLERK_SECONDARY_ISSUER`, and
+`CLERK_SECONDARY_OAUTH_CLIENT_ID` triple allows the relay to accept one more
+explicitly pinned Clerk instance. All three values are required together. Each
+token must still pass RS256 verification, exact issuer validation, expiry and
+subject checks, and the OAuth client binding for the same Clerk instance.
 
 Legacy Linear support requires no additional Wrangler secrets. Each ADE client
 generates its own webhook signing secret and registers it into the

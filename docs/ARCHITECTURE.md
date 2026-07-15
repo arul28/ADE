@@ -254,10 +254,11 @@ The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app
 
 ### 2.7 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
 
-Three independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
+Four independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
 
 - **`apps/push-relay/`** — fans ADE agent-state transitions out to iPhones as APNs alert pushes and Live Activity updates (Worker + a single D1 database; free-plan compatible, no Durable Objects). The brain is the only publisher: it claims an unguessable 32–64-hex `machineKey` with a relay secret (`POST /machines/:key/claim`, first-writer-wins) and HMAC-signs every later call (`x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`). It stores only device tokens and in-flight notification payloads — no chat/PR content. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
 - **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a phone and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket; a phone dials `/connect/:machineKey`; the DO pairs the phone with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the normal ADE hello / PIN / DPoP handshake is unchanged. Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`. The deployed relay is **on by default**; Settings > Sync and `ade sync relay disable` are explicit kill-switches whose choice survives upgrades. It is advertised as the lowest-priority `relay` address candidate.
+- **`apps/account-directory/`** — Clerk-authenticated machine directory and OAuth device-authorization bridge (Worker + D1). The machine brain publishes one health-filtered registration every 30 seconds through `accountMachinePublisherService.ts`; the Worker scopes rows by Clerk `sub` and treats a machine as online for 90 seconds. Desktop, ADE Code, hosted web, and iOS use the compiled HTTPS Worker origin by default. Headless login binds each short-lived device code to a daemon secret, uses Clerk OAuth + PKCE in any browser, and atomically burns the approved token pair on redemption.
 - **`apps/webhook-relay/`** — the pre-existing GitHub webhook relay (different trust model and lifecycle again). See its own docs.
 
 ---
@@ -1066,6 +1067,7 @@ ADE/
 │   ├── web/            # Marketing + download landing (Vite + React)
 │   ├── push-relay/     # Cloudflare Worker + D1: APNs push + Live Activity relay
 │   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
+│   ├── account-directory/ # Cloudflare Worker + D1: account machines + device login
 │   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
 ├── docs/
 │   ├── PRD.md
@@ -1100,23 +1102,23 @@ Per-app scripts:
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
-| `apps/push-relay`, `apps/tunnel-relay`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
+| `apps/push-relay`, `apps/tunnel-relay`, `apps/account-directory`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
 
 ### 14.2 CI (`.github/workflows/ci.yml`)
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` has its own lockfile and is not in the shared cache; its jobs `npm ci` inline.)
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
-   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay` — the three Cloudflare Workers.
+   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay`, `typecheck-account-directory` — the four Cloudflare Workers; account-directory also runs a Wrangler dry-run build.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
    - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
-   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay` — the three Cloudflare Workers.
+   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay`, `test-account-directory` — the four Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).

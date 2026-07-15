@@ -3,9 +3,15 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
   accountMachinePairedSyncEndpoints,
   accountMachineSecureSyncEndpoints,
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEVELOPMENT_ADE_CLERK_ISSUER,
   fetchAccountMachines,
   MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES,
+  officialAccountDirectoryUrlForIssuer,
   parseAccountMachinesPayload,
+  resolveTrustedAccountDirectoryBaseUrl,
   resolveAccountHelloPairing,
   selectAccountMachine,
 } from "../../../shared/accountDirectory";
@@ -29,6 +35,27 @@ function machine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine 
 // security-relevant unit is where that token is allowed to go: an https origin,
 // or http on a loopback host for local dev. Everything else must be rejected.
 describe("parseTrustedDirectoryBaseUrl", () => {
+  it("uses the hosted directory for absent or blank machine overrides", () => {
+    expect(resolveTrustedAccountDirectoryBaseUrl(null)).toBe(
+      DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    );
+    expect(resolveTrustedAccountDirectoryBaseUrl("   ")).toBe(
+      DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    );
+  });
+
+  it("maps only ADE's development issuer to the isolated development directory", () => {
+    expect(officialAccountDirectoryUrlForIssuer(DEVELOPMENT_ADE_CLERK_ISSUER)).toBe(
+      DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+    );
+    expect(officialAccountDirectoryUrlForIssuer(DEFAULT_ADE_CLERK_ISSUER)).toBe(
+      DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    );
+    expect(officialAccountDirectoryUrlForIssuer("https://attacker.example")).toBe(
+      DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    );
+  });
+
   it("accepts an https URL and normalizes trailing slashes", () => {
     expect(parseTrustedDirectoryBaseUrl("https://directory.ade.dev/")).toBe(
       "https://directory.ade.dev",

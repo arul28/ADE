@@ -344,14 +344,17 @@ The web client never talks to an ADE application server for project data. A
 Cloudflare Pages request serves static assets; after that all application state
 flows through the selected sync WebSocket transport to the machine runtime.
 
-## Optional account machine directory
+## Account machine directory
 
 Pairing remains the no-account fallback. A configured deployment also offers
 ADE account sign-in in the machine picker, then loads the user's machines from
 the existing Clerk-verified account-directory Worker. Offline machines remain
 listed with their last-seen state and cannot be selected.
 
-The static client uses these build-time variables:
+Hosted builds use ADE's production Clerk application and production directory
+by default. Vite development uses the isolated development Clerk application
+and directory. Self-hosted builds can override that selection with these
+build-time variables:
 
 ```text
 VITE_ADE_CLERK_ISSUER=https://<clerk-instance-or-approved-proxy>
