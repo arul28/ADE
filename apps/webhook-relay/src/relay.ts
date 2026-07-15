@@ -468,6 +468,17 @@ export async function verifyAccountToken(token: string, env: RelayEnv): Promise<
   return payload.sub;
 }
 
+async function hasValidBearerAccountToken(request: Request, env: RelayEnv): Promise<boolean> {
+  const token = readBearerToken(request);
+  if (!looksLikeJwt(token)) return false;
+  try {
+    await verifyAccountToken(token, env);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function authenticateAccount(request: Request, env: RelayEnv): Promise<string | null> {
   for (const token of accountTokenCandidates(request)) {
     try {
@@ -517,6 +528,12 @@ async function verifyLinearViewerOrganization(
 ): Promise<LinearViewerOrganizationResult> {
   const authorization = readAuthorizationHeader(request);
   if (!authorization) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Linear authorization token is required" }, { status: 401 }),
+    };
+  }
+  if (await hasValidBearerAccountToken(request, env)) {
     return {
       authorized: false,
       response: json({ ok: false, error: "Linear authorization token is required" }, { status: 401 }),
@@ -608,6 +625,12 @@ async function assertGitHubRepoAuthorized(
 ): Promise<GitHubRepoAccessStatus> {
   const token = readBearerToken(request);
   if (!token) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "GitHub auth token is required" }, { status: 401 }),
+    };
+  }
+  if (await hasValidBearerAccountToken(request, env)) {
     return {
       authorized: false,
       response: json({ ok: false, error: "GitHub auth token is required" }, { status: 401 }),

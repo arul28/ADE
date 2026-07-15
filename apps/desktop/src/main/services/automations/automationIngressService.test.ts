@@ -189,6 +189,7 @@ describe("automationIngressService", () => {
           return null;
         },
       } as never,
+      getAccountAccessToken: vi.fn(async () => "clerk-account-token"),
       listRules: () => [],
     });
 
@@ -202,6 +203,8 @@ describe("automationIngressService", () => {
         }),
       }),
     );
+    const headers = new Headers(fetchSpy.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("x-ade-account-token")).toBeNull();
     expect(ingestGithubWebhook).toHaveBeenCalledWith(expect.objectContaining({
       eventName: "pull_request",
       deliveryId: "delivery-2",

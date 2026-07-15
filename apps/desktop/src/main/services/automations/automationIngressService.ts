@@ -595,7 +595,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           headers: {
             accept: "application/json",
             ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
-            ...(accountAccessToken ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken } : {}),
+            ...(accountAccessToken && !useLegacyProjectRoute
+              ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken }
+              : {}),
           },
           signal: controller.signal,
         }

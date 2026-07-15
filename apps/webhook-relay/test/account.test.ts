@@ -504,6 +504,16 @@ describe("account integration re-keying", () => {
 
     const accountStatus = await handleRequest(request("/github/repos/acme/repo/status", { accountToken }), env);
     const accountGitHub = await handleRequest(request("/github/repos/acme/repo/events", { accountToken }), env);
+    const providerCallsBeforeBearerAccountAuth = vi.mocked(fetch).mock.calls.length;
+    const bearerAccountGitHub = await handleRequest(request("/github/repos/acme/repo/events", {
+      authorization: `Bearer ${accountToken}`,
+    }), env);
+    const bearerAccountLinear = await handleRequest(request("/linear/orgs/org-1/events", {
+      authorization: `Bearer ${accountToken}`,
+    }), env);
+    expect(bearerAccountGitHub.status).toBe(200);
+    expect(bearerAccountLinear.status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(providerCallsBeforeBearerAccountAuth);
     const legacyGitHub = await handleRequest(request("/github/repos/acme/repo/events", {
       authorization: "Bearer ghp_repo_token",
     }), env);
