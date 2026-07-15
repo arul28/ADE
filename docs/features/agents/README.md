@@ -99,10 +99,12 @@ The important invariant is runtime locality: a desktop window bound to a remote 
 ADE accounts remain optional for local workflows. On an SSH or display-less
 runtime, `ade login` prints a device verification URL and short code that can
 be approved in any browser; browser-capable local runtimes retain the loopback
-OAuth callback. Fully non-interactive automation provisions a refresh
-credential once with `ade account token create`, stores it in a secret manager,
-and exposes it to the machine brain as `ADE_ACCOUNT_TOKEN`. The token never
-enters project files or operational logs, and account actions remain CTO-only.
+OAuth callback. Fully non-interactive automation provisions a versioned,
+self-contained refresh credential once with `ade account token create`, stores
+it in a secret manager, and exposes it to the machine brain as
+`ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
+the consuming host needs no local Clerk configuration. The token never enters
+project files or operational logs, and account actions remain CTO-only.
 
 ## Identity shape
 

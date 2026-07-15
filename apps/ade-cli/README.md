@@ -272,7 +272,7 @@ ade brain restart
 ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
 ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
-ade account token create --text           # print a refresh token once for ADE_ACCOUNT_TOKEN
+ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade doctor --json
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
@@ -429,11 +429,15 @@ CLI prints a verification URL and short code that can be completed in any
 browser. If opening the loopback URL fails, the CLI falls back to the same
 device flow.
 
-For non-interactive agents and CI, create a durable refresh credential once on
+For non-interactive agents and CI, create a durable credential once on
 an interactive machine with `ade account token create`, store it in a secret
-manager, and expose it as `ADE_ACCOUNT_TOKEN` to the ADE brain/runtime. Access
-tokens are used until their reported JWT expiry; opaque refresh tokens are
-exchanged in memory as needed. ADE never logs this environment value.
+manager, and expose it as `ADE_ACCOUNT_TOKEN` to the ADE brain/runtime. Newly
+provisioned tokens carry the refresh credential plus its public OAuth issuer and
+client id in a versioned secret envelope, so the agent/CI host needs no local
+Clerk configuration. Raw access tokens are used until their reported JWT expiry.
+Legacy opaque refresh tokens still work when local `CLERK_ISSUER` and
+`CLERK_OAUTH_CLIENT_ID` are configured; recreate them with the command above to
+remove that dependency. ADE never logs this environment value.
 
 Provider credentials, GitHub tokens, Linear tokens, and computer-use policy
 remain separate and are read from ADE project settings and their existing

@@ -1579,7 +1579,7 @@ describe("runtime account actions", () => {
         expiresAt: null,
       })),
       getAccessToken: vi.fn(async () => "account-token"),
-      createToken: vi.fn(() => ({
+      createToken: vi.fn(async () => ({
         token: "account-refresh-token",
         source: "refresh_token" as const,
         guidance: "Set ADE_ACCOUNT_TOKEN.",
@@ -1597,7 +1597,7 @@ describe("runtime account actions", () => {
       cancelLogin(args: { sessionId?: string }): void;
       signOut(): unknown;
       getToken(): Promise<string>;
-      createToken(): { token: string; source: string; guidance: string };
+      createToken(): Promise<{ token: string; source: string; guidance: string }>;
     };
 
     expect(listAllowedAdeActionNames("account", service as unknown as Record<string, unknown>)).toEqual([
@@ -1619,7 +1619,7 @@ describe("runtime account actions", () => {
     service.cancelLogin({ sessionId: "account-session" });
     service.signOut();
     await expect(service.getToken()).resolves.toBe("account-token");
-    expect(service.createToken()).toEqual({
+    await expect(service.createToken()).resolves.toEqual({
       token: "account-refresh-token",
       source: "refresh_token",
       guidance: "Set ADE_ACCOUNT_TOKEN.",

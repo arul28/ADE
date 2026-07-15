@@ -1043,7 +1043,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade login --headless         Print a verification URL + code for another browser
     $ ade logout                   Clear the shared machine account session
     $ ade auth status --text       Show the shared machine account status
-    $ ade account token create     Print the current refresh token once for agent/CI setup
+    $ ade account token create     Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
     --headless                     Force the copy-paste device authorization flow.

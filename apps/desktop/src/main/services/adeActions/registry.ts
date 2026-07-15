@@ -791,7 +791,7 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "no input",
     },
     createToken: {
-      description: "Return the current account refresh token once for ADE_ACCOUNT_TOKEN provisioning.",
+      description: "Return a self-contained durable account token once for ADE_ACCOUNT_TOKEN provisioning.",
       input: "no input",
       example: "ade account token create",
     },

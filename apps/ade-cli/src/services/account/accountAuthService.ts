@@ -9,6 +9,7 @@ const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
+const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -140,7 +141,7 @@ export type AccountAuthService = {
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   getAccessToken(): Promise<string>;
-  createToken(): AccountTokenCreateResult;
+  createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
   dispose(): void;
@@ -155,16 +156,17 @@ export type AccountActionDomainService = {
   cancelLogin(args: { sessionId?: string }): void;
   signOut(): AccountAuthStatus;
   getToken(): Promise<string>;
-  createToken(): AccountTokenCreateResult;
+  createToken(): Promise<AccountTokenCreateResult>;
 };
 
 export async function getSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
 ): Promise<string | null> {
   const status = service.getStatus();
-  if (!status.signedIn || !status.userId) return null;
+  if (!status.signedIn) return null;
   try {
-    return (await service.getAccessToken()).trim() || null;
+    const accessToken = (await service.getAccessToken()).trim();
+    return accessToken && service.getStatus().userId ? accessToken : null;
   } catch {
     // Relay account credentials are additive. An unavailable refresh must not
     // block the independent GitHub, Linear, or ade_proj_ authorization path.
@@ -229,6 +231,47 @@ function classifyEnvCredential(token: string): "access_token" | "refresh_token" 
   if (!payload) return "refresh_token";
   const tokenUse = readNonEmptyString(payload.token_use ?? payload.typ ?? payload.type)?.toLowerCase();
   return tokenUse?.includes("refresh") ? "refresh_token" : "access_token";
+}
+
+type EnvCredential =
+  | { kind: "access_token"; token: string }
+  | { kind: "refresh_token"; token: string; oauthConfig: AccountOAuthConfig | null }
+  | { kind: "invalid" };
+
+function provisionedAccountToken(args: {
+  refreshToken: string;
+  oauthConfig: AccountOAuthConfig;
+}): string {
+  const payload = Buffer.from(JSON.stringify({
+    version: 1,
+    refreshToken: args.refreshToken,
+    issuer: args.oauthConfig.issuer,
+    clientId: args.oauthConfig.clientId,
+  }), "utf8").toString("base64url");
+  return `${PROVISIONED_ACCOUNT_TOKEN_PREFIX}${payload}`;
+}
+
+function inspectEnvCredential(credential: string): EnvCredential {
+  if (credential.startsWith(PROVISIONED_ACCOUNT_TOKEN_PREFIX)) {
+    try {
+      const encoded = credential.slice(PROVISIONED_ACCOUNT_TOKEN_PREFIX.length);
+      const payload = asRecord(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")));
+      const refreshToken = readNonEmptyString(payload.refreshToken);
+      const issuer = readNonEmptyString(payload.issuer);
+      const clientId = readNonEmptyString(payload.clientId);
+      if (payload.version !== 1 || !refreshToken || !issuer || !clientId) return { kind: "invalid" };
+      return {
+        kind: "refresh_token",
+        token: refreshToken,
+        oauthConfig: { issuer, clientId },
+      };
+    } catch {
+      return { kind: "invalid" };
+    }
+  }
+  return classifyEnvCredential(credential) === "access_token"
+    ? { kind: "access_token", token: credential }
+    : { kind: "refresh_token", token: credential, oauthConfig: null };
 }
 
 function isLoopbackIssuerHost(hostname: string): boolean {
@@ -484,7 +527,7 @@ export async function callAccountAction(args: {
   } else if (action === "getToken") {
     result = await domain.getToken();
   } else {
-    result = domain.createToken();
+    result = await domain.createToken();
   }
   return { domain: "account", action: args.action, result, statusHints: {} };
 }
@@ -517,23 +560,31 @@ export function createAccountAuthService(args: {
 
   const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
-  const resetEnvSessionIfCredentialChanged = (credential: string): void => {
+  const resetEnvSessionIfCredentialChanged = (
+    credential: string,
+    inspected: EnvCredential,
+  ): void => {
     if (envSessionCredential === credential) return;
     envSessionCredential = credential;
     envSession = null;
     envRefreshInFlight = null;
-    envRefreshToken = credential;
+    envRefreshToken = inspected.kind === "refresh_token" ? inspected.token : null;
   };
 
   const envCredentialStatus = (credential: string): AccountAuthStatus => {
-    resetEnvSessionIfCredentialChanged(credential);
+    const inspected = inspectEnvCredential(credential);
+    resetEnvSessionIfCredentialChanged(credential, inspected);
     if (envSession) return { ...toStatus(envSession), source: "env-token" };
-    const isAccessToken = classifyEnvCredential(credential) === "access_token";
-    const expiresAt = isAccessToken ? accessTokenExpiresAt(credential) : null;
-    const claims = expiresAt ? decodeAccountClaims(credential) : { userId: null, email: null, name: null };
+    const isAccessToken = inspected.kind === "access_token";
+    const accessToken = inspected.kind === "access_token" ? inspected.token : null;
+    const expiresAt = accessToken ? accessTokenExpiresAt(accessToken) : null;
+    const claims = expiresAt && accessToken
+      ? decodeAccountClaims(accessToken)
+      : { userId: null, email: null, name: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
-      signedIn: !isAccessToken || (Number.isFinite(expiresAtMs) && expiresAtMs > now()),
+      signedIn: inspected.kind !== "invalid"
+        && (!isAccessToken || (Number.isFinite(expiresAtMs) && expiresAtMs > now())),
       userId: claims.userId,
       email: claims.email,
       name: claims.name,
@@ -970,16 +1021,24 @@ export function createAccountAuthService(args: {
   const getAccessToken = async (): Promise<string> => {
     const envCredential = readEnvCredential();
     if (envCredential) {
-      resetEnvSessionIfCredentialChanged(envCredential);
-      const directExpiresAt = accessTokenExpiresAt(envCredential);
-      if (classifyEnvCredential(envCredential) === "access_token") {
+      const inspected = inspectEnvCredential(envCredential);
+      resetEnvSessionIfCredentialChanged(envCredential, inspected);
+      if (inspected.kind === "invalid") {
+        throw new Error(
+          "ADE_ACCOUNT_TOKEN is not a valid provisioned account token. Recreate it with `ade account token create`.",
+        );
+      }
+      const directExpiresAt = inspected.kind === "access_token"
+        ? accessTokenExpiresAt(inspected.token)
+        : null;
+      if (inspected.kind === "access_token") {
         if (!directExpiresAt) {
           throw new Error(
             "ADE_ACCOUNT_TOKEN access token does not contain a usable expiration claim. Replace it with a current access token or a durable refresh token.",
           );
         }
         const expiresAtMs = Date.parse(directExpiresAt);
-        if (expiresAtMs > now()) return envCredential;
+        if (expiresAtMs > now()) return inspected.token;
         throw new Error(
           `ADE_ACCOUNT_TOKEN access token expired at ${directExpiresAt}. Replace it with a current access token or a durable refresh token.`,
         );
@@ -992,17 +1051,35 @@ export function createAccountAuthService(args: {
       }
       if (!envRefreshInFlight) {
         envRefreshInFlight = (async () => {
-          const config = normalizeOAuthConfig(await args.getOAuthConfig());
-          const token = await postTokenForm({
-            fetchImpl,
-            tokenUrl: `${config.issuer}/oauth/token`,
-            body: {
-              grant_type: "refresh_token",
-              refresh_token: envRefreshToken ?? envCredential,
-              client_id: config.clientId,
-            },
-          });
-          envRefreshToken = token.refreshToken ?? envRefreshToken ?? envCredential;
+          let config: AccountOAuthConfig;
+          if (inspected.oauthConfig) {
+            config = normalizeOAuthConfig(inspected.oauthConfig);
+          } else {
+            try {
+              config = normalizeOAuthConfig(await args.getOAuthConfig());
+            } catch {
+              throw new Error(
+                "Legacy ADE_ACCOUNT_TOKEN refresh tokens require local CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID. Recreate the token with `ade account token create` to make it self-contained.",
+              );
+            }
+          }
+          let token: TokenResponse;
+          try {
+            token = await postTokenForm({
+              fetchImpl,
+              tokenUrl: `${config.issuer}/oauth/token`,
+              body: {
+                grant_type: "refresh_token",
+                refresh_token: envRefreshToken ?? inspected.token,
+                client_id: config.clientId,
+              },
+            });
+          } catch {
+            throw new Error(
+              "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
+            );
+          }
+          envRefreshToken = token.refreshToken ?? envRefreshToken ?? inspected.token;
           const refreshed = buildSessionRecord(token, envSession, "loopback");
           envSession = refreshed;
           return refreshed;
@@ -1053,7 +1130,7 @@ export function createAccountAuthService(args: {
     return refreshed.accessToken;
   };
 
-  const createToken = (): AccountTokenCreateResult => {
+  const createToken = async (): Promise<AccountTokenCreateResult> => {
     if (readEnvCredential()) {
       throw new Error(
         "ADE is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.",
@@ -1063,10 +1140,11 @@ export function createAccountAuthService(args: {
     if (!record?.refreshToken) {
       throw new Error("The current ADE account session has no refresh token. Run `ade login` again, then retry.");
     }
+    const oauthConfig = normalizeOAuthConfig(await args.getOAuthConfig());
     return {
-      token: record.refreshToken,
+      token: provisionedAccountToken({ refreshToken: record.refreshToken, oauthConfig }),
       source: "refresh_token",
-      guidance: "Set this secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. Store it in a secret manager; do not commit or log it.",
+      guidance: "Set this self-contained secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. Store it in a secret manager; do not commit or log it.",
     };
   };
 

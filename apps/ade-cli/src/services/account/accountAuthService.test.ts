@@ -516,7 +516,78 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
   });
 
-  it("refreshes an opaque env credential in memory and never persists or logs the secret", async () => {
+  it("refreshes a newly provisioned token without local OAuth configuration", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const issuingStore = new MemoryCredentialStore();
+    issuingStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const issuingService = createAccountAuthService({
+      credentialStore: issuingStore,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env: {} as NodeJS.ProcessEnv,
+      now: () => nowMs,
+    });
+    activeServices.push(issuingService);
+    const provisioned = await issuingService.createToken();
+    expect(provisioned.token).toMatch(/^ade_account_v1\./);
+    expect(provisioned.token).not.toContain("refresh-old");
+
+    const localConfig = vi.fn(() => {
+      throw new Error("local Clerk config must not be read");
+    });
+    const refreshedAccessToken = jwt({
+      sub: "env-self-contained-user",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      expect(input).toBe("https://clerk.example.test/oauth/token");
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-old",
+        client_id: "client-public",
+      });
+      return jsonResponse({ access_token: refreshedAccessToken, expires_in: 3600 });
+    });
+    const consumingService = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: localConfig,
+      env: { ADE_ACCOUNT_TOKEN: provisioned.token } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(consumingService);
+
+    expect(consumingService.getStatus()).toMatchObject({
+      signedIn: true,
+      source: "env-token",
+      expiresAt: null,
+    });
+    await expect(getSignedInAccountAccessToken(consumingService)).resolves.toBe(refreshedAccessToken);
+    expect(localConfig).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const rejectedService = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: localConfig,
+      env: { ADE_ACCOUNT_TOKEN: provisioned.token } as NodeJS.ProcessEnv,
+      fetchImpl: vi.fn(async () => jsonResponse({
+        error: "invalid_grant",
+        error_description: "rejected refresh-old",
+      }, 400)),
+    });
+    activeServices.push(rejectedService);
+    let rejected: unknown;
+    try {
+      await rejectedService.getAccessToken();
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toMatch(/ADE_ACCOUNT_TOKEN refresh failed/);
+    expect(JSON.stringify(rejected)).not.toContain("refresh-old");
+    expect(JSON.stringify(rejected)).not.toContain(provisioned.token);
+  });
+
+  it("keeps legacy opaque refresh tokens working with local config and never persists or logs them", async () => {
     const envRefreshToken = "refresh-secret-that-must-not-be-logged";
     const loggerEvents: unknown[] = [];
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
@@ -556,6 +627,24 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     });
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
     expect(JSON.stringify(loggerEvents)).not.toContain(envRefreshToken);
+  });
+
+  it("gives migration guidance when a legacy opaque refresh token has no local config", async () => {
+    const legacyRefreshToken = "legacy-refresh-secret";
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer: "", clientId: "" }),
+      env: { ADE_ACCOUNT_TOKEN: legacyRefreshToken } as NodeJS.ProcessEnv,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({ signedIn: true, source: "env-token" });
+    await expect(service.getAccessToken()).rejects.toThrow(
+      /Legacy ADE_ACCOUNT_TOKEN.*ade account token create/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("surfaces access-token expiry instead of attempting an interactive flow", async () => {
@@ -687,7 +776,7 @@ describe("AccountAuthService refresh and sign-out", () => {
     })).resolves.toBeNull();
   });
 
-  it("creates a durable agent token only from an interactive refresh-token session", () => {
+  it("creates a durable agent token only from an interactive refresh-token session", async () => {
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
       authSource: "device",
@@ -699,10 +788,10 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
     activeServices.push(service);
 
-    expect(service.createToken()).toEqual({
-      token: "refresh-old",
+    await expect(service.createToken()).resolves.toEqual({
+      token: expect.stringMatching(/^ade_account_v1\./),
       source: "refresh_token",
-      guidance: expect.stringContaining("ADE_ACCOUNT_TOKEN"),
+      guidance: expect.stringContaining("self-contained secret as ADE_ACCOUNT_TOKEN"),
     });
   });
 });

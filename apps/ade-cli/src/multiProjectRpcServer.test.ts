@@ -74,7 +74,7 @@ function makeAccountAuthServiceMock() {
       expiresAt: null,
     })),
     getAccessToken: vi.fn(async () => "test-access-token"),
-    createToken: vi.fn(() => ({
+    createToken: vi.fn(async () => ({
       token: "test-refresh-token",
       source: "refresh_token" as const,
       guidance: "Set ADE_ACCOUNT_TOKEN.",
