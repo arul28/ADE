@@ -58,13 +58,59 @@ function isLoginConfigured(projectRoot: string | null): boolean {
   return Boolean(issuer && clientId);
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  // URL.hostname wraps IPv6 in brackets (e.g. "[::1]"); strip them before match.
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+/**
+ * Trust boundary for the machine account bearer. `listMachines` attaches the
+ * machine's account token to `${baseUrl}/account/machines`, so `baseUrl` must be
+ * an origin the machine owner explicitly trusts — never one that a per-project
+ * secret can point at an arbitrary host. Accept only an absolute `https:` origin
+ * (or `http:` on a loopback host for local dev) and reject everything else, so
+ * the bearer can only ever leave over TLS (or stay on the local machine).
+ * Returns the normalized base URL (trailing slashes stripped) or null.
+ */
+export function parseTrustedDirectoryBaseUrl(
+  raw: string | null | undefined,
+): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" && isLoopbackHost(url.hostname))
+  ) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return null;
+}
+
+/**
+ * Resolve the machine directory origin the account bearer may be sent to.
+ *
+ * Trust model: the bearer is the MACHINE's account token (machine-scoped
+ * infrastructure), so where it is sent must be controlled by the machine owner,
+ * not by whatever project happens to be open. Read the machine-level
+ * `ADE_ACCOUNT_DIRECTORY_URL` env FIRST and only fall back to the per-project
+ * `ACCOUNT_DIRECTORY_URL` secret when no machine-level value is set — a project
+ * can never redirect a machine-configured directory. The chosen value is then
+ * passed through `parseTrustedDirectoryBaseUrl`, so the token is only ever
+ * attached to a trusted https (or loopback) origin.
+ */
 function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
   const raw =
-    readProjectSecret(projectRoot, DIRECTORY_URL_SECRET)
-    ?? process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim()
-    ?? "";
-  if (!raw) return null;
-  return raw.replace(/\/+$/, "");
+    process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim()
+    || readProjectSecret(projectRoot, DIRECTORY_URL_SECRET)
+    || null;
+  return parseTrustedDirectoryBaseUrl(raw);
 }
 
 function toAccountStatus(
@@ -169,7 +215,8 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         return {
           state: "not_configured",
           machines: [],
-          message: "Machine directory isn't configured on this machine yet.",
+          message:
+            "Machine directory isn't configured — set a trusted https directory URL on this machine.",
         };
       }
       let token: string;

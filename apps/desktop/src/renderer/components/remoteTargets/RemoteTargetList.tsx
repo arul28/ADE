@@ -446,7 +446,9 @@ export function RemoteTargetList({
         name: machine.name ?? hostInfo.host,
         hostname: hostInfo.host.replace(/\.$/, ""),
         sshUser: null,
-        port: hostInfo.port,
+        // hostInfo.port is the ADE service port (lan/tailnet), not an SSH port —
+        // leave it null so the SSH transport falls back to its default (22).
+        port: null,
         sshKeyPath: null,
         routes: null,
       };

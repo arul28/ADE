@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AdeAccountMachine } from "../../../shared/types";
 import { RemoteTargetList } from "./RemoteTargetList";
 
 const remoteRuntimeMock = {
@@ -1081,5 +1082,71 @@ describe("RemoteTargetList", () => {
       ).toBeTruthy(),
     );
     expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
+  });
+
+  it("does not reuse an account machine's service port as the SSH port", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    const savedTarget = {
+      id: "target-account",
+      name: "Cloud Studio",
+      hostname: "100.92.14.3",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.saveTarget.mockResolvedValue(savedTarget);
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target: savedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    installAdeMock();
+
+    // The directory advertises the ADE service port (8787), not an SSH port.
+    const accountMachines: AdeAccountMachine[] = [
+      {
+        machineKey: "mk_cloud",
+        deviceId: "dev_cloud",
+        name: "Cloud Studio",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [
+          { kind: "tailnet", host: "100.92.14.3", port: 8787 },
+        ],
+        lastSeenAt: Date.now() - 30_000,
+        online: true,
+      },
+    ];
+
+    render(
+      <RemoteTargetList
+        accountMachines={accountMachines}
+        accountMachinesState="ok"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Cloud Studio")).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hostname: "100.92.14.3",
+          // The 8787 service port must NOT become the SSH port; leave it default.
+          port: null,
+        }),
+      ),
+    );
   });
 });
