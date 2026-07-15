@@ -132,6 +132,7 @@ import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { navigateToSpawnedChat } from "./spawnNavigation";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
@@ -4819,6 +4820,16 @@ export function AgentChatPane({
     }
     return chips;
   }, [resolvedChips, selectedSession?.claudeTag, selectedSessionImportedProvider]);
+
+  // Two-way lineage: a spawned child chat shows a "↳ from <spawner>" breadcrumb
+  // in its header that navigates back to the parent. Parent title resolves from
+  // the loaded session list; falls back to a generic label with the link intact.
+  const spawnLineage = useMemo(() => {
+    const parentId = selectedSession?.orchestrationParentSessionId?.trim();
+    if (!parentId || parentId === selectedSession?.sessionId) return null;
+    const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
+    return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
+  }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -10189,6 +10200,22 @@ export function AgentChatPane({
   );
   const chatHeaderTrailingActions = (
     <>
+      {spawnLineage ? (
+        <button
+          type="button"
+          onClick={() => navigateToSpawnedChat(spawnLineage.parentId, null)}
+          className={cn(
+            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+            spawnLineage.spawnKind === "peer"
+              ? "border-slate-400/18 bg-slate-400/[0.06] text-slate-300/75 hover:border-slate-300/30 hover:text-slate-100/90"
+              : "border-violet-400/20 bg-violet-400/[0.06] text-violet-200/80 hover:border-violet-300/32 hover:text-violet-100",
+          )}
+          title={spawnLineage.parentTitle ? `Open spawner: ${spawnLineage.parentTitle}` : "Open spawner"}
+        >
+          <span aria-hidden className="shrink-0">↳</span>
+          <span className="min-w-0 truncate">from {spawnLineage.parentTitle ? `"${spawnLineage.parentTitle}"` : "spawner"}</span>
+        </button>
+      ) : null}
       {chatTerminalVisible && selectedSessionId ? (
         <ClaudeLoginPromptButton
           visible={showClaudeLoginPrompt}

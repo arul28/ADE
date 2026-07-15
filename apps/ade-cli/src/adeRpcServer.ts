@@ -3533,6 +3533,7 @@ async function runTool(args: {
           laneService: runtime.laneService,
           gitService: runtime.gitService,
           projectConfigService: runtime.projectConfigService,
+          onWarning: (warning) => console.warn(warning),
         });
         if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
       }
@@ -3764,6 +3765,7 @@ async function runTool(args: {
     const description = asOptionalTrimmedString(toolArgs.description);
     const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
     let baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
+    let baseWarning: string | null = null;
     const branchName = asOptionalTrimmedString(toolArgs.branchName);
     if (!baseBranch && !parentLaneId) {
       // Base-less creates (`ade lanes create`, agent tool calls) must branch
@@ -3774,6 +3776,9 @@ async function runTool(args: {
         laneService: runtime.laneService,
         gitService: runtime.gitService,
         projectConfigService: runtime.projectConfigService,
+        onWarning: (warning) => {
+          baseWarning = warning;
+        },
       });
     }
     let linearIssue: LaneLinearIssue | null = null;
@@ -3797,7 +3802,8 @@ async function runTool(args: {
     });
 
     return {
-      lane: mapLaneSummary(lane as unknown as Record<string, unknown>)
+      lane: mapLaneSummary(lane as unknown as Record<string, unknown>),
+      ...(baseWarning ? { warning: baseWarning } : {}),
     };
   }
 

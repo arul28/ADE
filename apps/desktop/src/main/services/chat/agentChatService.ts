@@ -212,6 +212,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
+  AgentChatSpawnCompletion,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
@@ -663,6 +664,7 @@ type PersistedChatState = {
   orchestrationRunId?: string;
   orchestrationRole?: "lead" | "worker" | "validator";
   orchestrationParentSessionId?: string;
+  spawnKind?: AgentChatSession["spawnKind"];
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -5347,7 +5349,7 @@ function enforceOrchestrationLockedPermissionMode(
 }
 
 // ---------------------------------------------------------------------------
-// Orchestration field helpers — single source of truth for the 6-field bag
+// Orchestration field helpers — single source of truth for the session lineage bag
 // that gets spread/read in persistence, hydration, session creation, summary,
 // and dead-session reconstruction.  Every call-site that previously copy-pasted
 // these fields now delegates here.
@@ -5357,6 +5359,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
   "orchestrationRunId",
   "orchestrationRole",
   "orchestrationParentSessionId",
+  "spawnKind",
   "orchestrationTag",
   "orchestrationStepId",
   "orchestrationBundlePath",
@@ -5365,6 +5368,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
 type OrchestrationFieldSource = Partial<Record<(typeof ORCHESTRATION_SESSION_FIELD_NAMES)[number], unknown>>;
 
 const VALID_ORCHESTRATION_ROLES = new Set(["lead", "worker", "validator"]);
+const VALID_AGENT_CHAT_SPAWN_KINDS = new Set(["subagent", "peer", "none"]);
 
 /**
  * Read orchestration fields from an untyped record (e.g. persisted JSON),
@@ -5383,6 +5387,10 @@ function hydrateOrchestrationFields(
   }
   const parentId = record.orchestrationParentSessionId;
   if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
+  const spawnKind = record.spawnKind;
+  if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
+    out.spawnKind = spawnKind as "subagent" | "peer" | "none";
+  }
   const tag = record.orchestrationTag;
   if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
   const stepId = record.orchestrationStepId;
@@ -5436,8 +5444,20 @@ function stringifyExecutableToolOutput(output: unknown): string {
   }
 }
 
-function buildAdeGuidanceForLane(laneWorktreePath: string): string {
-  return buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+function buildSpawnSelfReportGuidance(
+  session: Pick<AgentChatSession, "orchestrationParentSessionId" | "spawnKind">,
+): string | null {
+  if (!session.orchestrationParentSessionId?.trim() || session.spawnKind !== "subagent") return null;
+  return "You were spawned as a subagent. When you finish, report a one-paragraph summary to your spawner with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. ADE will also notify them automatically, so this is enrichment, not required.";
+}
+
+function buildAdeGuidanceForLane(
+  laneWorktreePath: string,
+  session?: Pick<AgentChatSession, "orchestrationParentSessionId" | "spawnKind">,
+): string {
+  const base = buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+  const spawnGuidance = session ? buildSpawnSelfReportGuidance(session) : null;
+  return spawnGuidance ? `${base}\n${spawnGuidance}` : base;
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -5451,6 +5471,7 @@ function buildCodexDeveloperInstructions(args: {
     | "orchestrationBundlePath"
     | "orchestrationTag"
     | "orchestrationParentSessionId"
+    | "spawnKind"
     | "orchestrationStepId"
     | "surface"
   >;
@@ -5476,7 +5497,8 @@ function buildCodexDeveloperInstructions(args: {
     orchestrationParentSessionId: args.session.orchestrationParentSessionId,
     orchestrationStepId: args.session.orchestrationStepId,
   });
-  return args.linearDirective ? `${base}\n\n${args.linearDirective}` : base;
+  const spawnGuidance = buildSpawnSelfReportGuidance(args.session);
+  return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
 }
 
 function resolveCodexInstructionCollaborationMode(
@@ -6210,6 +6232,12 @@ export function createAgentChatService(args: {
             ADE_PROJECT_ROOT: projectRoot,
             ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
           }),
+      ...(managed.session.orchestrationParentSessionId
+        ? {
+            ADE_PARENT_CHAT_SESSION_ID: managed.session.orchestrationParentSessionId,
+            ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
+          }
+        : {}),
     };
     if (personalSession) {
       delete env.ADE_LANE_ID;
@@ -17872,7 +17900,7 @@ export function createAgentChatService(args: {
       "",
       ...slashCommandsSection,
       "",
-      buildAdeGuidanceForLane(managed.laneWorktreePath),
+      buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session),
     ].join("\n");
   };
 
@@ -23820,7 +23848,7 @@ export function createAgentChatService(args: {
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeGuidanceForLane(managed.laneWorktreePath),
+          buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session),
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -25053,7 +25081,7 @@ export function createAgentChatService(args: {
    * restart no stale subagent_result can fire for a spawn event that
    * predates the process.
    */
-  const childSpawnTracking = new Map<string, { parentSessionId: string }>();
+  const childSpawnTracking = new Map<string, { parentSessionId: string; emitInlineEvents: boolean }>();
 
   const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
@@ -25071,10 +25099,16 @@ export function createAgentChatService(args: {
           laneId: child.session.laneId ?? null,
           title: label,
         },
+        spawnKind: child.session.spawnKind ?? "none",
+        // A plain spawn also emits an inline `subagent_started` card below; an
+        // orchestration-run child emits only this notice. The renderer keeps the
+        // quiet deep-link pill only when no card accompanies it.
+        hasInlineCard: !child.session.orchestrationRunId,
       },
     });
-    if (child.session.orchestrationRunId) return;
-    childSpawnTracking.set(child.session.id, { parentSessionId });
+    const emitInlineEvents = !child.session.orchestrationRunId;
+    childSpawnTracking.set(child.session.id, { parentSessionId, emitInlineEvents });
+    if (!emitInlineEvents) return;
     emitChatEvent(parent, {
       type: "subagent_started",
       taskId: `chat:${child.session.id}`,
@@ -25084,6 +25118,7 @@ export function createAgentChatService(args: {
       description: label,
       background: false,
       taskType: "subagent",
+      spawnKind: child.session.spawnKind ?? "none",
     });
   };
 
@@ -25105,17 +25140,61 @@ export function createAgentChatService(args: {
       : resultStatus === "stopped"
         ? "Stopped before finishing."
         : "Turn failed.";
-    emitChatEvent(parent, {
-      type: "subagent_result",
-      taskId: `chat:${childSessionId}`,
-      agentId: childSessionId,
-      ...(child?.session.provider ? { agentType: child.session.provider } : {}),
-      parentToolUseId: null,
+    if (tracked.emitInlineEvents) {
+      emitChatEvent(parent, {
+        type: "subagent_result",
+        taskId: `chat:${childSessionId}`,
+        agentId: childSessionId,
+        ...(child?.session.provider ? { agentType: child.session.provider } : {}),
+        parentToolUseId: null,
+        status: resultStatus,
+        summary,
+        finalSummary: summary,
+        taskType: "subagent",
+      });
+    }
+    // Untyped spawns default to "none" (silent) — the completion report is opt-in
+    // via `--type subagent|peer`, matching the CLI docs and the self-report guidance.
+    const spawnKind = child?.session.spawnKind ?? "none";
+    if (spawnKind === "none") return;
+    const childTitle = sessionService.get(childSessionId)?.title?.trim()
+      || defaultChatSessionTitle(child?.session.provider ?? "claude");
+    const spawnCompletion: AgentChatSpawnCompletion = {
+      childSessionId,
+      childTitle,
+      spawnKind,
       status: resultStatus,
       summary,
-      finalSummary: summary,
-      taskType: "subagent",
-    });
+    };
+    // Delivery is best-effort: a failed wake/notice must never break child cleanup.
+    const onCompletionDeliveryFailed = (error: unknown) => {
+      logger.warn("agent_chat.spawn_completion_delivery_failed", {
+        childSessionId,
+        parentSessionId: parent.session.id,
+        spawnKind,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      if (spawnKind === "subagent") {
+        void messageSession({
+          sessionId: parent.session.id,
+          kind: "wake",
+          text: `Your subagent "${childTitle}" finished — ${summary}`,
+          metadata: { spawnCompletion },
+        }).catch(onCompletionDeliveryFailed);
+      } else {
+        emitChatEvent(parent, {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "spawn_completed",
+          message: `Peer "${childTitle}" finished`,
+          detail: { spawnCompletion },
+        });
+      }
+    } catch (error) {
+      onCompletionDeliveryFailed(error);
+    }
   };
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
@@ -25154,6 +25233,7 @@ export function createAgentChatService(args: {
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+    spawnKind: requestedSpawnKind,
     orchestrationTag: requestedOrchestrationTag,
     orchestrationStepId: requestedOrchestrationStepId,
     orchestrationBundlePath: requestedOrchestrationBundlePath,
@@ -25439,6 +25519,7 @@ export function createAgentChatService(args: {
           orchestrationRunId: requestedOrchestrationRunId,
           orchestrationRole: requestedOrchestrationRole,
           orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+          spawnKind: requestedSpawnKind,
           orchestrationTag: requestedOrchestrationTag,
           orchestrationStepId: requestedOrchestrationStepId,
           orchestrationBundlePath: requestedOrchestrationBundlePath,
@@ -27796,7 +27877,7 @@ export function createAgentChatService(args: {
           personalChatUserPromptFallback(managed.session),
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath) : null,
+          shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session) : null,
           personalSession
             ? null
             : buildComputerUseDirective(
@@ -37465,6 +37546,7 @@ export function createAgentChatService(args: {
       orchestrationRunId?: string | null;
       orchestrationRole?: "lead" | "worker" | "validator" | null;
       orchestrationParentSessionId?: string | null;
+      spawnKind?: AgentChatSession["spawnKind"] | null;
       orchestrationTag?: string | null;
       orchestrationStepId?: string | null;
       orchestrationBundlePath?: string | null;

@@ -1,6 +1,6 @@
 import React from "react";
 import { GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
-import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
   sessionStatusDot,
@@ -118,6 +118,44 @@ function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+   Spawn-type pill — cosmetic relationship + completion-report policy declared
+   by the spawner. Shares the orchestration-pill shape (uppercase mono capsule),
+   type-tinted: subagent = violet (the chat accent), peer = steel/neutral slate.
+   Hidden for `none`/undefined (the default, untyped spawn).
+   ────────────────────────────────────────────────────────────────────────── */
+
+const SPAWN_TYPE_PILL_PALETTE: Record<
+  "subagent" | "peer",
+  { background: string; borderColor: string; color: string }
+> = {
+  subagent: {
+    background: "rgba(167, 139, 250, 0.14)",
+    borderColor: "rgba(167, 139, 250, 0.42)",
+    color: "rgb(196, 181, 253)",
+  },
+  peer: {
+    background: "rgba(148, 163, 184, 0.12)",
+    borderColor: "rgba(148, 163, 184, 0.34)",
+    color: "rgb(203, 213, 225)",
+  },
+};
+
+function SpawnTypePill({ spawnKind }: { spawnKind: AgentChatSpawnKind }) {
+  if (spawnKind !== "subagent" && spawnKind !== "peer") return null;
+  const palette = SPAWN_TYPE_PILL_PALETTE[spawnKind];
+  const label = spawnKind.toUpperCase();
+  return (
+    <span
+      data-spawn-kind={spawnKind}
+      style={{ ...ORCHESTRATION_PILL_BASE, ...palette }}
+      title={label}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
    Attention capsule — one-word status from the shared canonical state module.
    Only ever renders for the three attention states; calm sessions get nothing
    (so the title row never reflows). Amber "Needs you", red "Failed", and an
@@ -220,6 +258,7 @@ export const SessionCard = React.memo(function SessionCard({
   onContextMenu,
   compact = false,
   gridBadge = null,
+  liveChildrenCount = 0,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -230,6 +269,8 @@ export const SessionCard = React.memo(function SessionCard({
   compact?: boolean;
   /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
   gridBadge?: "active" | "inactive" | null;
+  /** Count of this session's still-running spawned children (drives the `▸N` badge). */
+  liveChildrenCount?: number;
 }) {
   const dot = sessionStatusDot(session);
   // Blocked on a chat question/plan only the user can answer (distinct from a
@@ -398,6 +439,22 @@ export const SessionCard = React.memo(function SessionCard({
                       tag={session.orchestrationTag ?? null}
                     />
                   </>
+                ) : null}
+                {session.spawnKind && session.spawnKind !== "none" ? (
+                  <SpawnTypePill spawnKind={session.spawnKind} />
+                ) : null}
+                {liveChildrenCount > 0 ? (
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-0.5 rounded-full border border-violet-400/30 bg-violet-400/12 font-mono font-semibold leading-none text-violet-200/85",
+                      compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+                    )}
+                    title={`${liveChildrenCount} live spawned chat${liveChildrenCount === 1 ? "" : "s"}`}
+                    aria-label={`${liveChildrenCount} live spawned chat${liveChildrenCount === 1 ? "" : "s"}`}
+                  >
+                    <span aria-hidden>▸</span>
+                    {liveChildrenCount}
+                  </span>
                 ) : null}
                 {staleAgeHours != null ? (
                   <span

@@ -49,6 +49,47 @@ If a new consumer needs a lane's "upstream reference," it must use
 these helpers rather than reading `parent_lane_id` or `base_ref`
 directly.
 
+## Child-lane guidance for spawned work
+
+The base-ref mechanics above decide what a new lane branches from, but a
+caller still has to pick the right creation verb. A fresh lane
+(`ade lanes create`) branches off the remote default branch by default
+(`git.newLaneBaseSource: "remote"`, resolved host-side by
+`resolveDefaultRemoteLaneBase` / `resolveLaneCreateRemoteBase` — see the
+Lanes README lifecycle notes), so it does **not** carry the current lane's
+uncommitted-to-main commits. A child lane (`ade lanes child`) branches off
+the parent's HEAD, so it does. When an agent spins up new work that should
+build on the commits already sitting in its lane, it wants a child, not a
+fresh lane.
+
+Two CLI affordances make this reachable without the desktop UI:
+
+- **Unmerged-work nudge.** `ade lanes create` and
+  `ade new chat --auto-create-lane` (both go through
+  `detectUnmergedLaneCreateNudge` in `apps/ade-cli/src/cli.ts`) check
+  whether the current worktree has commits ahead of `origin/<default>`. If
+  it does, the command prints a stderr nudge before continuing —
+  `⚠ Lane "<current>" has N commit(s) not on <default>` — suggesting
+  `ade lanes child --lane <current> --name <new>` to carry them, and noting
+  that it is otherwise continuing off remote main. The nudge is advisory
+  only; the requested create still runs.
+- **Stale-base warning.** When the remote-first default base is resolved
+  (`resolveLaneCreateRemoteBase`, wired with an `onWarning` sink in
+  `adeRpcServer.ts`), a failed fetch surfaces
+  `⚠ Base origin/<default> may be stale — fetch failed; using last-known
+  ref.`, and a local default branch that is behind its upstream surfaces
+  `⚠ local <default> is N behind origin — creating off possibly-stale
+  base.` Both are best-effort enrichment; lane creation still falls back to
+  the local base on any failure.
+
+The agent-facing decision table lives in the `ade-lanes-git` Agent Skill
+(`apps/desktop/resources/agent-skills/ade-lanes-git/SKILL.md`): continue my
+unmerged work → `ade lanes child --lane <current> --name <n>`; fresh
+unrelated feature → `ade lanes create --name <n>` (off remote main);
+build on another lane's unlanded work → `ade lanes child --lane <that> --name <n>`.
+The `ade-cli-control-plane` skill cross-references the same rule from its
+spawning-agents guidance.
+
 ## Stack chain retrieval
 
 `laneService.getStackChain(laneId)`:

@@ -4,12 +4,42 @@ import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+import type { AgentChatSpawnKind } from "../../../shared/types";
+import { navigateToSpawnedChat } from "./spawnNavigation";
 import type {
   BackgroundFinishChipRenderEvent,
   SubagentResultCardRenderEvent,
   SubagentSpawnAnchorRenderEvent,
   SubagentStoppedGroupEvent,
 } from "./chatTranscriptRows";
+
+// Re-exported for existing importers that reach it through this module.
+export { navigateToSpawnedChat };
+
+/**
+ * Type-tinted accent for a spawned ADE chat card. subagent = violet (the chat's
+ * `--color-accent`); peer = steel/neutral slate. `none`/null spawns keep the
+ * default `--chat-accent` styling and show no type chip.
+ */
+export function spawnTypeAccent(
+  spawnKind: AgentChatSpawnKind | null | undefined,
+): { label: string; cardClass: string; chipClass: string } | null {
+  if (spawnKind === "subagent") {
+    return {
+      label: "SUBAGENT",
+      cardClass: "border-violet-400/22 bg-violet-400/[0.06] hover:border-violet-300/32",
+      chipClass: "border-violet-300/25 bg-violet-400/10 text-violet-200/85",
+    };
+  }
+  if (spawnKind === "peer") {
+    return {
+      label: "PEER",
+      cardClass: "border-slate-400/18 bg-slate-400/[0.06] hover:border-slate-300/28",
+      chipClass: "border-slate-300/20 bg-slate-400/10 text-slate-300/75",
+    };
+  }
+  return null;
+}
 
 // Two rows per real subagent — a spawn card anchored where it started, and a
 // result card at the settle position. Both inherit the chat accent
@@ -37,9 +67,12 @@ function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatS
 export function SubagentSpawnCard({
   event,
   onJumpToResult,
+  laneId,
 }: {
   event: SubagentSpawnAnchorRenderEvent;
   onJumpToResult?: () => void;
+  /** Lane of the spawner, forwarded to the navigation event when known. */
+  laneId?: string | null;
 }) {
   const isRunning = event.status === "running";
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -78,54 +111,95 @@ export function SubagentSpawnCard({
     elapsed,
   ].filter((part): part is string => Boolean(part));
 
-  return (
-    <div
-      className={cn(
-        "w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
-        "border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]",
-        "bg-[color:color-mix(in_srgb,var(--chat-accent)_6%,transparent)]",
-      )}
-    >
-      <div className="flex items-center gap-3 px-3.5 py-3">
-        <span className="flex h-[27px] w-[27px] shrink-0 items-center justify-center self-center">
-          <span className="scale-[1.5]">
-            <ChatSubagentGlyph id={event.agentKey} color={color} status={glyphStatusFor(event.status)} />
-          </span>
+  // A spawned ADE chat (peer/subagent) carries a child session id → the whole
+  // card navigates. Runtime-native subagents (no child id) keep the passive
+  // card + nested "jump to result" affordance.
+  const childSessionId = event.childSessionId?.trim() || null;
+  const navigable = Boolean(childSessionId);
+  const typeAccent = spawnTypeAccent(event.spawnKind);
+  const resultSummary = !isRunning ? event.resultSummary?.trim() || null : null;
+
+  const cardShell = cn(
+    "w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
+    typeAccent
+      ? typeAccent.cardClass
+      : "border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_6%,transparent)]",
+  );
+
+  const inner = (
+    <>
+      <span className="flex h-[27px] w-[27px] shrink-0 items-center justify-center self-center">
+        <span className="scale-[1.5]">
+          <ChatSubagentGlyph id={event.agentKey} color={color} status={glyphStatusFor(event.status)} />
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/82">
-              {event.description || "Subagent task"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/82">
+            {event.description || "Subagent task"}
+          </span>
+          {typeAccent ? (
+            <span className={cn("shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em]", typeAccent.chipClass)}>
+              {typeAccent.label}
             </span>
-            {event.agentType?.trim() && event.agentType.trim() !== "background" ? (
-              <span className="shrink-0 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_7%,transparent)] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-[color:var(--chat-accent)]">
-                {event.agentType.trim()}
-              </span>
-            ) : null}
-            {event.background ? (
-              <span className="shrink-0 rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-cyan-200/70">
-                background
-              </span>
-            ) : null}
-          </div>
-          {liveParts.length ? (
-            <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
-              <span className="min-w-0 truncate">{liveParts.join(" · ")}</span>
-            </div>
+          ) : null}
+          {event.agentType?.trim() && event.agentType.trim() !== "background" ? (
+            <span className="shrink-0 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_7%,transparent)] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-[color:var(--chat-accent)]">
+              {event.agentType.trim()}
+            </span>
+          ) : null}
+          {event.background ? (
+            <span className="shrink-0 rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-cyan-200/70">
+              background
+            </span>
           ) : null}
         </div>
-        {!isRunning && onJumpToResult ? (
-          <button
-            type="button"
-            onClick={onJumpToResult}
-            className="inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
-            title="Jump to result"
-          >
-            jump to result
-            <ArrowDown size={11} weight="bold" aria-hidden />
-          </button>
+        {liveParts.length ? (
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
+            <span className="min-w-0 truncate">{liveParts.join(" · ")}</span>
+          </div>
+        ) : null}
+        {resultSummary ? (
+          <div className="mt-1 line-clamp-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/62">
+            {resultSummary}
+          </div>
         ) : null}
       </div>
+      {navigable ? (
+        <span className="inline-flex shrink-0 items-center gap-0.5 self-center whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">
+          open
+          <CaretRight size={11} weight="bold" aria-hidden />
+        </span>
+      ) : !isRunning && onJumpToResult ? (
+        <button
+          type="button"
+          onClick={onJumpToResult}
+          className="inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
+          title="Jump to result"
+        >
+          jump to result
+          <ArrowDown size={11} weight="bold" aria-hidden />
+        </button>
+      ) : null}
+    </>
+  );
+
+  if (navigable && childSessionId) {
+    return (
+      <button
+        type="button"
+        onClick={() => navigateToSpawnedChat(childSessionId, laneId ?? null)}
+        className={cn(cardShell, "text-left")}
+        title="Open the spawned chat"
+      >
+        <div className="flex items-center gap-3 px-3.5 py-3">{inner}</div>
+      </button>
+    );
+  }
+
+  return (
+    <div className={cardShell}>
+      <div className="flex items-center gap-3 px-3.5 py-3">{inner}</div>
     </div>
   );
 }

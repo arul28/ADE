@@ -122,6 +122,83 @@ describe("SessionCard orchestration identity", () => {
   });
 });
 
+describe("SessionCard spawn type + live children", () => {
+  it("renders the SUBAGENT pill for a subagent-spawned session", () => {
+    render(
+      <SessionCard
+        session={makeSession({ spawnKind: "subagent", orchestrationParentSessionId: "parent-1" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const pill = screen.getByText("SUBAGENT");
+    expect(pill).toBeTruthy();
+    expect(pill.getAttribute("data-spawn-kind")).toBe("subagent");
+  });
+
+  it("renders the PEER pill for a peer-spawned session", () => {
+    render(
+      <SessionCard
+        session={makeSession({ spawnKind: "peer", orchestrationParentSessionId: "parent-1" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("PEER")).toBeTruthy();
+  });
+
+  it("hides the spawn-type pill for none/undefined spawnKind", () => {
+    render(
+      <SessionCard
+        session={makeSession({ spawnKind: "none" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("SUBAGENT")).toBeNull();
+    expect(screen.queryByText("PEER")).toBeNull();
+  });
+
+  it("shows the live-children badge when children are running", () => {
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        liveChildrenCount={3}
+      />,
+    );
+
+    expect(screen.getByLabelText("3 live spawned chats")).toBeTruthy();
+  });
+
+  it("hides the live-children badge when there are none", () => {
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        liveChildrenCount={0}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/live spawned chat/)).toBeNull();
+  });
+});
+
 describe("SessionCard auto-naming status", () => {
   it("shows the auto-naming status in place of the preview while the lane is being named", () => {
     setLaneNaming("lane-1", true);

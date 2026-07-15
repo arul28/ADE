@@ -9186,6 +9186,7 @@ describe("createAgentChatService", () => {
         model: "sonnet",
         title: "Fix flaky tests",
         orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
       });
 
       const parentEvents = events.filter((e) => e.sessionId === parent.id);
@@ -9195,6 +9196,7 @@ describe("createAgentChatService", () => {
       expect(notice).toBeTruthy();
       expect((notice!.event as any).message).toContain("Fix flaky tests");
       expect((notice!.event as any).detail?.spawnedSession?.sessionId).toBe(child.id);
+      expect((notice!.event as any).detail?.spawnKind).toBe("subagent");
 
       const row = parentEvents.find(
         (e) => e.event.type === "subagent_started" && (e.event as any).taskId === `chat:${child.id}`,
@@ -9202,8 +9204,203 @@ describe("createAgentChatService", () => {
       expect(row).toBeTruthy();
       expect((row!.event as any).agentId).toBe(child.id);
       expect((row!.event as any).description).toBe("Fix flaky tests");
+      expect((row!.event as any).spawnKind).toBe("subagent");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
+      expect(child.spawnKind).toBe("subagent");
+      expect(readPersistedChatState(child.id)).toMatchObject({ spawnKind: "subagent" });
+      await expect(service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
+      await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
+    });
+
+    it("wakes the parent with spawnCompletion metadata when a subagent finishes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-wake", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-wake",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Wake contract child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+
+      await vi.waitFor(() => {
+        const wake = events.find((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && (event.event.metadata as any)?.spawnCompletion?.childSessionId === child.id
+        );
+        expect(wake).toBeTruthy();
+        expect((wake!.event as any).text).toContain("Wake contract child");
+        expect((wake!.event as any).metadata.spawnCompletion).toMatchObject({
+          childSessionId: child.id,
+          childTitle: "Wake contract child",
+          spawnKind: "subagent",
+          status: "completed",
+          summary: "Kickoff turn finished.",
+        });
+      });
+    });
+
+    it("emits a quiet completion notice without a wake when a peer finishes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-peer", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-peer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Quiet peer",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+
+      await vi.waitFor(() => {
+        const completion = events.find((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed"
+        );
+        expect(completion).toBeTruthy();
+        expect((completion!.event as any).detail.spawnCompletion).toMatchObject({
+          childSessionId: child.id,
+          childTitle: "Quiet peer",
+          spawnKind: "peer",
+          status: "completed",
+        });
+      });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && (event.event.metadata as any)?.spawnCompletion
+      )).toBe(false);
+    });
+
+    it("emits no completion notice or wake when an untyped child finishes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-none", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-none",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "none",
+      });
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "subagent_result"
+          && event.event.agentId === child.id
+        )).toBe(true);
+      });
+
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && (event.event.metadata as any)?.spawnCompletion
+      )).toBe(false);
+    });
+
+    it("treats a parented spawn with no explicit type as silent (no wake, no notice)", async () => {
+      // Regression (quality A1): an untyped `ade new chat` spawn — spawnKind
+      // genuinely absent, not "none" — must NOT wake the parent. Before the fix
+      // the absent case resolved to "subagent" and fired a wake; the report is
+      // opt-in via --type subagent/peer.
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-absent", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-absent",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        // spawnKind intentionally omitted — the genuinely-untyped default.
+      });
+      expect(child.spawnKind).toBeUndefined();
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "subagent_result"
+          && event.event.agentId === child.id
+        )).toBe(true);
+      });
+
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+      )).toBe(false);
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && (event.event.metadata as any)?.spawnCompletion
+      )).toBe(false);
     });
   });
 

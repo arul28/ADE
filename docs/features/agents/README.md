@@ -12,7 +12,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, search, injection sections). |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
-| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser. `ade secrets list|get|set|delete` is the typed surface for encrypted project-scoped ADE secrets that agents may read when the user names a secret. `ade new chat --mode chat|cli --lane <lane|auto> --provider codex --model <id> --reasoning-effort <tier> --no-fast --permissions full-auto --prompt "..."` mirrors the desktop New Chat toggle. `ade chat create` / `ade new --mode chat` default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID` so agent-spawned chats link back to the spawning chat (`--parent <sessionId>` overrides, `--no-parent` opts out). `ade chat read <session> --text` reads recent transcript messages. `ade chat scheduled-work list [session] [--all]` reads the runtime's durable management store, while `ade chat scheduled-work cancel <session> <id>` uses the same provider-aware cancellation path as desktop Settings. `ade chat ... --personal` lists, creates, reads, sends to, interrupts, archives, and deletes machine-owned projectless chats through the running brain. `ade lanes link-linear-issue <laneId> --linear-issue-json '{...}'` (aliases `link-linear`, `linear-link`) links Linear issues to an existing lane. |
+| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser. `ade secrets list|get|set|delete` is the typed surface for encrypted project-scoped ADE secrets that agents may read when the user names a secret. `ade new chat --mode chat|cli --lane <lane|auto> --provider codex --model <id> --reasoning-effort <tier> --no-fast --permissions full-auto --type <subagent|peer|none> --prompt "..."` mirrors the desktop New Chat toggle. `ade chat create` / `ade new --mode chat` default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID` so agent-spawned chats link back to the spawning chat (`--parent <sessionId>` overrides, `--no-parent` opts out). `--type` (chat mode only; alias `--spawn-type`) sets the child's `AgentChatSpawnKind` and thereby its completion-report policy — see [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting). `ade chat read <session> --text` reads recent transcript messages. `ade chat scheduled-work list [session] [--all]` reads the runtime's durable management store, while `ade chat scheduled-work cancel <session> <id>` uses the same provider-aware cancellation path as desktop Settings. `ade chat ... --personal` lists, creates, reads, sends to, interrupts, archives, and deletes machine-owned projectless chats through the running brain. `ade lanes link-linear-issue <laneId> --linear-issue-json '{...}'` (aliases `link-linear`, `linear-link`) links Linear issues to an existing lane. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering, builds lane-scoped ADE guidance / `ADE_AGENT_SKILLS_DIRS` for CLI launches, injects an explicitly enabled and verified direct Computer Use MCP client into tracked Codex launches, and returns GitHub + ADE PR URLs from PR creation tools when available. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
@@ -58,6 +58,34 @@ or PR identity. They share provider/model/turn infrastructure with regular chat
 but receive a neutral general-assistant prompt and a scratch cwd. Project ADE
 guidance, project slash-command discovery, orchestration/Linear metadata, and
 project workflow tools are not injected. See [Personal chats](../personal-chats/README.md).
+
+## Spawning agents and spawn types
+
+Any chat-bound agent can spawn another full ADE agent by running
+`ade new chat` — the child inherits `orchestrationParentSessionId` from the
+spawner's `ADE_CHAT_SESSION_ID` (see the CLI row above). The optional
+`--type subagent|peer|none` flag sets the child's `AgentChatSpawnKind`,
+which is **cosmetic to capabilities**: the child is a normal agent with the
+same runtime, permissions, and tools regardless of type. The only thing the
+type governs is how ADE reports the child's completion back to the spawner —
+`subagent` wakes the spawner, `peer` leaves a quiet note, and `none` (the
+default) reports nothing.
+
+The orchestrator's `spawnAgent` tool
+(`services/ai/tools/orchestrationTools.ts`) and the orchestration domain
+spawn path (`services/orchestration/orchestrationDomain.ts`) set the same
+field, defaulting to `spawnKind: "subagent"` so orchestration workers wake
+their lead. A `subagent` child is additionally handed
+`ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and a self-report guidance
+line so it can optionally post its own summary through
+`chat.messageSession` on top of ADE's automatic report.
+
+The runtime mechanics — the completion-report policy, the wake/notice
+delivery, and the navigation/pill/breadcrumb surfacing — live in
+[Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
+When the spawned work must carry the current lane's unmerged commits, spawn
+into a child lane instead of a fresh one — see
+[Lanes › Child-lane guidance for spawned work](../lanes/stacking.md#child-lane-guidance-for-spawned-work).
 
 ## Agent CLI install / auth from chat
 

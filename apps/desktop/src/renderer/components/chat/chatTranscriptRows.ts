@@ -3,7 +3,7 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSpawnKind } from "../../../shared/types";
 import {
   isBackgroundShellCommand,
   longerSubagentText,
@@ -138,6 +138,16 @@ export type SubagentSpawnAnchorRenderEvent = {
   toolCount: number | null;
   startedAt: string;
   endedAt: string | null;
+  /**
+   * Spawned-ADE-chat navigation. Set only when the source lifecycle event carried
+   * a `chat:<id>` taskId (a spawned peer/subagent chat, not a runtime-native
+   * subagent). The whole card becomes a button that navigates to this session.
+   */
+  childSessionId: string | null;
+  /** Cosmetic relationship + completion-report policy; null for runtime-native subagents. */
+  spawnKind: AgentChatSpawnKind | null;
+  /** Final result summary, surfaced on the card once the agent settles. */
+  resultSummary: string | null;
 };
 
 /**
@@ -204,6 +214,23 @@ export type ScheduledWakeDividerRenderEvent = {
   turnId?: string;
 };
 
+/**
+ * Header row rendered above a synthetic `wake` turn ADE delivered when a spawned
+ * `subagent` finished (`user_message.metadata.spawnCompletion`). Mirrors the
+ * scheduled-wake divider treatment; carries the child session id so the row's
+ * `[open ›]` affordance navigates to the finished child.
+ * Row key: `spawn-wake:${childSessionId}:${turnId}`.
+ */
+export type SpawnWakeDividerRenderEvent = {
+  type: "spawn_wake_divider";
+  childSessionId: string;
+  childTitle: string;
+  spawnKind: AgentChatSpawnKind;
+  status: "completed" | "failed" | "stopped";
+  summary: string | null;
+  turnId?: string;
+};
+
 export type ChatTranscriptRenderEvent =
   | ChatTranscriptVisibleEvent
   | RenderReasoningEvent
@@ -211,7 +238,8 @@ export type ChatTranscriptRenderEvent =
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
   | BackgroundFinishChipRenderEvent
-  | ScheduledWakeDividerRenderEvent;
+  | ScheduledWakeDividerRenderEvent
+  | SpawnWakeDividerRenderEvent;
 
 export type ChatTranscriptRenderEnvelope = {
   key: string;
@@ -267,6 +295,10 @@ type SubagentAnchorState = {
   status: SubagentCardStatus;
   resultSummary: string | null;
   error: string | null;
+  /** Child session id for a spawned ADE chat (`chat:<id>` taskId); null otherwise. */
+  childSessionId: string | null;
+  /** Spawn-kind carried on the `subagent_started` event; null for runtime-native subagents. */
+  spawnKind: AgentChatSpawnKind | null;
 };
 
 type CollapseTranscriptContext = {
@@ -887,6 +919,9 @@ function spawnAnchorEvent(state: SubagentAnchorState): SubagentSpawnAnchorRender
     toolCount: state.toolCount,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
+    childSessionId: state.childSessionId,
+    spawnKind: state.spawnKind,
+    resultSummary: state.resultSummary,
   };
 }
 
@@ -907,12 +942,22 @@ function enrichSubagentStateFromEvent(
     background?: unknown;
     description?: unknown;
     command?: unknown;
+    spawnKind?: unknown;
   };
   state.description = longerSubagentText(state.description, subagentText(record.description));
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
+  // A spawned ADE chat carries a `chat:<id>` taskId; the child session id (for
+  // navigation) is the agentId, equivalently taskId.slice("chat:".length).
+  const taskId = subagentText(event.taskId);
+  if (taskId && taskId.startsWith("chat:") && !state.childSessionId) {
+    state.childSessionId = subagentText(event.agentId) ?? (taskId.slice("chat:".length) || null);
+  }
+  if (typeof record.spawnKind === "string" && (record.spawnKind === "subagent" || record.spawnKind === "peer" || record.spawnKind === "none")) {
+    state.spawnKind = record.spawnKind;
+  }
 }
 
 function classificationInput(state: SubagentAnchorState) {
@@ -979,6 +1024,8 @@ function handleSubagentLifecycleEvent(
       status: "running",
       resultSummary: null,
       error: null,
+      childSessionId: null,
+      spawnKind: null,
     };
     anchors.set(agentKey, state);
     if (taskId) anchors.set(taskId, state);
@@ -1122,6 +1169,35 @@ export function appendCollapsedChatTranscriptEvent(
           ...(event.turnId ? { turnId: event.turnId } : {}),
         },
       });
+    }
+    // A spawned `subagent` that finished delivers a `wake` turn carrying a
+    // `spawnCompletion` metadata payload — render a distinct "ADE woke this chat"
+    // header above the synthetic turn. Read the typed slot; keep runtime guards
+    // since transcript payloads arrive off the wire.
+    const completion = event.metadata?.spawnCompletion;
+    if (completion) {
+      const childSessionId = completion.childSessionId?.trim() ?? "";
+      const spawnKind = completion.spawnKind === "subagent" || completion.spawnKind === "peer" || completion.spawnKind === "none"
+        ? completion.spawnKind
+        : null;
+      const status = completion.status === "completed" || completion.status === "failed" || completion.status === "stopped"
+        ? completion.status
+        : null;
+      if (childSessionId && spawnKind && status) {
+        rows.push({
+          key: `spawn-wake:${childSessionId}:${event.turnId ?? sequence}`,
+          timestamp: envelope.timestamp,
+          event: {
+            type: "spawn_wake_divider",
+            childSessionId,
+            childTitle: completion.childTitle?.trim() || "spawned chat",
+            spawnKind,
+            status,
+            summary: completion.summary?.trim() || null,
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+          },
+        });
+      }
     }
   }
 

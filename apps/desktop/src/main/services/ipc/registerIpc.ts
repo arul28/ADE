@@ -959,6 +959,13 @@ function projectChatOntoSession(
           orchestrationTag: chat.orchestrationTag,
         }
       : {}),
+    // Spawn lineage is independent of an orchestration run — a plain `ade new
+    // chat` spawn sets a parent + spawnKind with no run/role. Project both
+    // ungated so the sidebar can render the type pill and the live-children badge.
+    ...(chat.orchestrationParentSessionId
+      ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
+      : {}),
+    ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
   };
   if (chat.awaitingInput) {
     return {

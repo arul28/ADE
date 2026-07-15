@@ -170,6 +170,9 @@ describe("orchestrationDomain", () => {
 
     expect(result).toEqual({ sessionId: "sess-1", etag: "etag-B" });
     expect(h.agentChatService.createSession).toHaveBeenCalledTimes(1);
+    expect(h.agentChatService.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ spawnKind: "subagent" }),
+    );
     expect(h.orchestrationService.manifestPatch).toHaveBeenCalledTimes(1);
   });
 

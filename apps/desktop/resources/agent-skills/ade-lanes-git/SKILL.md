@@ -9,6 +9,17 @@ description: Use this skill when creating, inspecting, syncing, committing, push
 
 Lanes are ADE-managed git worktrees and branches.
 
+New lanes default to remote main (`git.newLaneBaseSource: "remote"`). Pass
+`--base` or set local mode to override that default. A child lane is based on
+the parent lane's HEAD, so it carries the parent's commits that have not landed
+on main yet.
+
+| situation | do |
+|---|---|
+| continue MY unmerged work in a new lane | `ade lanes child --lane <current> --name <n>` (carries your commits) |
+| fresh, unrelated feature | `ade lanes create --name <n>` (off remote main by default) |
+| build on ANOTHER lane's unlanded work | `ade lanes child --lane <that-lane> --name <n>` |
+
 ```bash
 ade lanes list --text
 ade lanes show <lane> --text
@@ -46,4 +57,3 @@ For conflicts, inspect both sides and preserve intent from both branches. Do not
 - Use `--lane` for anything other than the active workspace.
 - Use `ade diff changes --lane <lane> --text` when you need ADE's view of file changes.
 - Do not archive or delete lanes unless the user asked for cleanup or the release workflow explicitly requires it.
-

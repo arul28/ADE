@@ -277,6 +277,7 @@ ade init
 ade lanes list --text
 ade lanes create "fix-checkout-flow" --parent main
 ade lanes create "fix-login" --base origin/main   # omit --base to branch from the configured new-lane base (remote-first by default)
+ade lanes child --lane lane-parent --name fix-followup            # child lane carries the parent's unmerged work; a base-less `ade lanes create`/`--auto-create-lane` from a lane with commits not yet on main prints a non-blocking stderr nudge to use this instead
 ade lanes create "lin-123" --linear-issue-json '{"id":"...","identifier":"LIN-123","title":"...","projectId":"...","projectSlug":"...","teamId":"...","teamKey":"...","stateId":"...","stateName":"Todo","stateType":"unstarted","priority":2,"priorityLabel":"high","labels":[],"assigneeId":null,"assigneeName":null,"createdAt":"...","updatedAt":"..."}'
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
 ade lanes delete lane-id --force --delete-branch
@@ -327,6 +328,7 @@ ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
+ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # --type subagent|peer|none (chat mode only): cosmetic relationship + completion-report policy — subagent wakes the parent on completion, peer leaves a quiet note, none (default) is silent; a typed agent is still a full agent
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
