@@ -6,6 +6,7 @@ import {
   parseControlMessage,
 } from "./syncTunnelClientService";
 import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
+import { createSharedSyncListener } from "./sharedSyncListener";
 
 // syncCloudRelayStore itself (enablement default/migration, identity mint, url
 // derivation, signature builders) is covered in syncCloudRelayStore.test.ts.
@@ -62,6 +63,7 @@ describe("createSyncTunnelClientService", () => {
   it("is a no-op and reports disabled when the store is disabled", async () => {
     const service = createSyncTunnelClientService({
       getSyncPort: () => 12345,
+      getRelayBridgeProof: () => null,
       configStore: fakeStore(false),
     });
     await service.start();
@@ -104,6 +106,7 @@ describe("createSyncTunnelClientService", () => {
     const service = createSyncTunnelClientService({
       getSyncPort: () => 8787,
       getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
       configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
       loopbackProbe,
     });
@@ -125,6 +128,55 @@ describe("createSyncTunnelClientService", () => {
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("authenticates the tunnel client's local socket as the trusted relay bridge", async () => {
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const localOrigins: string[] = [];
+    listener.setConnectionHandler((connection) => {
+      localOrigins.push(connection.transportOrigin);
+    });
+    const syncPort = await listener.ensureListening([0]);
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const connections: string[] = [];
+    relay.on("connection", (socket, request) => {
+      connections.push(request.url ?? "");
+      if (connections.length === 1) {
+        socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => syncPort,
+      getExpectedLoopbackNonce: () => listener.getExpectedLoopbackNonce(),
+      getRelayBridgeProof: () => listener.getRelayBridgeProof(),
+      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(connections).toHaveLength(2);
+        expect(localOrigins).toEqual(["relay-bridge"]);
+      });
+      expect(connections[1]).toContain(`/pipe/abcdef01`);
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await listener.close();
       await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });

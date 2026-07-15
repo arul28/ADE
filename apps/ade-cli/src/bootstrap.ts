@@ -1524,6 +1524,8 @@ export async function createAdeRuntime(args: {
       getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
       getExpectedLoopbackNonce: () =>
         resolvedArgs.syncRuntime?.sharedSyncListener?.getExpectedLoopbackNonce() ?? null,
+      getRelayBridgeProof: () =>
+        resolvedArgs.syncRuntime?.sharedSyncListener?.getRelayBridgeProof() ?? null,
     }));
   // Only the runtime that actually hosts phone sync (owns the brain-level
   // shared listener) may register the relay tunnel. The relay DO keeps ONE

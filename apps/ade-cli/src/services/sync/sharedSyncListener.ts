@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
@@ -31,6 +32,9 @@ export const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
   || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
 
 export const SYNC_HOST_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
+export const SYNC_RELAY_BRIDGE_PROOF_HEADER = "x-ade-sync-relay-bridge";
+
+export type SyncTransportOrigin = "direct" | "relay-bridge";
 
 // How long an unowned socket may sit parked (between sync host services, or
 // before the first one attaches) before the listener gives up and closes it.
@@ -55,6 +59,7 @@ export type SharedSyncListenerConnection = {
   ws: WebSocket;
   remoteAddress: string | null;
   remotePort: number | null;
+  transportOrigin: SyncTransportOrigin;
 };
 
 export type SharedSyncListenerConnectionHandler = (connection: SharedSyncListenerConnection) => void;
@@ -70,6 +75,7 @@ export type SyncPeerHandoffSnapshot = {
   ws: WebSocket;
   remoteAddress: string | null;
   remotePort: number | null;
+  transportOrigin: SyncTransportOrigin;
   metadata: SyncPeerMetadata | null;
   authKind: "bootstrap" | "paired" | "account" | null;
   pairedDeviceId: string | null;
@@ -114,6 +120,8 @@ export type SharedSyncListener = {
   getPort(): number | null;
   isListening(): boolean;
   getExpectedLoopbackNonce(): string;
+  /** Private in-process credential attached only by the trusted relay tunnel client. */
+  getRelayBridgeProof(): string;
   getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
   /** Force-check that loopback still reaches this exact listener instance. */
   revalidateLoopback(): Promise<void>;
@@ -197,6 +205,18 @@ function rawDataBytes(data: RawData): number {
   return Buffer.byteLength(String(data), "utf8");
 }
 
+function hasValidRelayBridgeProof(request: http.IncomingMessage, expectedProof: Buffer): boolean {
+  const rawProof = request.headers[SYNC_RELAY_BRIDGE_PROOF_HEADER];
+  const proof = Array.isArray(rawProof) ? rawProof[0] : rawProof;
+  if (typeof proof !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(proof)) return false;
+  const decoded = Buffer.from(proof, "base64url");
+  if (decoded.length !== expectedProof.length) {
+    timingSafeEqual(expectedProof, Buffer.alloc(expectedProof.length));
+    return false;
+  }
+  return timingSafeEqual(expectedProof, decoded);
+}
+
 export function createSharedSyncListener(options: {
   logger?: SharedSyncListenerLogger;
   bindHost?: string;
@@ -213,6 +233,10 @@ export function createSharedSyncListener(options: {
   // instance emits the same nonce, and only in-process validators receive the
   // expected value they must compare against.
   const expectedLoopbackNonce = generateLoopbackNonce();
+  // Separate from the public 426-probe nonce: this credential is disclosed
+  // only to the in-process tunnel client and rotates with the listener process.
+  const relayBridgeProofBytes = randomBytes(32);
+  const relayBridgeProof = relayBridgeProofBytes.toString("base64url");
 
   let server: WebSocketServer | null = null;
   // The http.Server fronting `server`. `ws` does not own/close an
@@ -403,6 +427,9 @@ export function createSharedSyncListener(options: {
           ws,
           remoteAddress: request.socket.remoteAddress ?? null,
           remotePort: request.socket.remotePort ?? null,
+          transportOrigin: hasValidRelayBridgeProof(request, relayBridgeProofBytes)
+            ? "relay-bridge"
+            : "direct",
         };
         const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
         const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
@@ -414,6 +441,7 @@ export function createSharedSyncListener(options: {
           ws,
           remoteAddress: connection.remoteAddress,
           remotePort: connection.remotePort,
+          transportOrigin: connection.transportOrigin,
           metadata: null,
           authKind: null,
           pairedDeviceId: null,
@@ -510,6 +538,10 @@ export function createSharedSyncListener(options: {
 
     getExpectedLoopbackNonce(): string {
       return expectedLoopbackNonce;
+    },
+
+    getRelayBridgeProof(): string {
+      return relayBridgeProof;
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {

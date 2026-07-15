@@ -12,6 +12,7 @@ import {
   probeAdeLoopbackListener,
   type SyncLoopbackProbeResult,
 } from "./syncLoopbackProbe";
+import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -48,6 +49,8 @@ type SyncTunnelClientArgs = {
   getSyncPort: () => number | null;
   /** Expected identity of the active in-process sync listener. */
   getExpectedLoopbackNonce?: () => string | null;
+  /** Private proof accepted only by the active in-process sync listener. */
+  getRelayBridgeProof: () => string | null;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
@@ -243,12 +246,22 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       });
       return;
     }
+    const relayBridgeProof = args.getRelayBridgeProof();
+    if (!relayBridgeProof) {
+      validatedPort = null;
+      validatedLoopbackNonce = null;
+      recordFailure("Relay bridge refused because the local bridge credential is unavailable.");
+      log.warn?.("sync_tunnel.no_bridge_credential", { connectionId, port });
+      return;
+    }
     const ts = nowSeconds();
     const sig = signRelayHmacHex(id.secret, buildPipeSignatureBase(id.machineKey, connectionId, ts));
     const pipeUrl = `${httpToWsUrl(relayHttpUrl())}/host/${id.machineKey}/pipe/${connectionId}?ts=${ts}&sig=${sig}`;
 
     const pipe = new WebSocket(pipeUrl);
-    const local = new WebSocket(`ws://127.0.0.1:${String(port)}`);
+    const local = new WebSocket(`ws://127.0.0.1:${String(port)}`, {
+      headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
+    });
     armOpenDeadline(pipe, () => {
       recordFailure("relay pipe connect timed out");
     });
