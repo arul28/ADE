@@ -143,7 +143,7 @@ class FakeAccountD1 {
       if (existing) {
         existing.webhook_secret = String(secret);
         existing.updated_at = String(updatedAt);
-        if (accountId != null) existing.account_id = String(accountId);
+        if (existing.account_id == null && accountId != null) existing.account_id = String(accountId);
       } else {
         this.linearOrganizations.push({
           org_id: String(organizationId),
@@ -158,22 +158,26 @@ class FakeAccountD1 {
     if (sql.includes("update github_app_repositories set account_id = ?")) {
       const [accountId, repositoryKey] = values;
       const row = this.repositories.find((entry) => entry.repository_key === repositoryKey);
-      if (row) row.account_id = String(accountId);
+      if (row && row.account_id == null) row.account_id = String(accountId);
       return;
     }
-    if (sql.includes("update github_events set account_id = ?")) {
-      const [accountId, repositoryFullName] = values;
+    if (sql.includes("update github_events") && sql.includes("set account_id = ?")) {
+      const [accountId, repositoryFullName, repositoryKey, mappedAccountId] = values;
+      const repository = this.repositories.find((entry) => entry.repository_key === repositoryKey);
+      if (repository?.account_id !== mappedAccountId) return;
       for (const row of this.githubEvents) {
-        if (row.repository_full_name.toLowerCase() === String(repositoryFullName).toLowerCase()) {
+        if (row.account_id == null && row.repository_full_name.toLowerCase() === String(repositoryFullName).toLowerCase()) {
           row.account_id = String(accountId);
         }
       }
       return;
     }
-    if (sql.includes("update linear_events set account_id = ?")) {
-      const [accountId, organizationId] = values;
+    if (sql.includes("update linear_events") && sql.includes("set account_id = ?")) {
+      const [accountId, organizationId, mappedOrganizationId, mappedAccountId] = values;
+      const organization = this.linearOrganizations.find((row) => row.org_id === mappedOrganizationId);
+      if (organization?.account_id !== mappedAccountId) return;
       for (const row of this.linearEvents) {
-        if (row.org_id === organizationId) row.account_id = String(accountId);
+        if (row.account_id == null && row.org_id === organizationId) row.account_id = String(accountId);
       }
       return;
     }
@@ -481,5 +485,34 @@ describe("account integration re-keying", () => {
     expect((await handleRequest(request("/linear/orgs/org-1/events", {
       authorization: "lin_admin",
     }), env)).status).toBe(200);
+  });
+
+  it("preserves existing integration ownership for another legacy-authorized account", async () => {
+    const env = makeEnv();
+    seedRepository(env.DB, "user_1");
+    seedLinear(env.DB, "user_1");
+    stubLegacyApis();
+    const otherAccountToken = await mintToken("user_2");
+
+    const status = await handleRequest(request("/github/repos/acme/repo/status", {
+      authorization: "Bearer ghp_repo_token",
+      accountToken: otherAccountToken,
+    }), env);
+    const registration = await handleRequest(request("/linear/orgs/register", {
+      method: "POST",
+      authorization: "lin_admin",
+      accountToken: otherAccountToken,
+      body: { secret: "replacement-secret" },
+    }), env);
+
+    expect(status.status).toBe(200);
+    expect(registration.status).toBe(200);
+    expect(env.DB.repositories[0]?.account_id).toBe("user_1");
+    expect(env.DB.githubEvents[0]?.account_id).toBe("user_1");
+    expect(env.DB.linearOrganizations[0]?.account_id).toBe("user_1");
+    expect(env.DB.linearEvents[0]?.account_id).toBe("user_1");
+    expect(await (await handleRequest(request("/account/integrations", {
+      authorization: `Bearer ${otherAccountToken}`,
+    }), env)).json()).toEqual({ repositories: [], linearOrganizations: [] });
   });
 });

@@ -900,12 +900,22 @@ async function associateGitHubRepositoryWithAccount(
   accountId: string,
 ): Promise<void> {
   await env.DB
-    .prepare("update github_app_repositories set account_id = ? where repository_key = ?")
+    .prepare("update github_app_repositories set account_id = ? where repository_key = ? and account_id is null")
     .bind(accountId, repositoryKey)
     .run();
   await env.DB
-    .prepare("update github_events set account_id = ? where repository_full_name = ? collate nocase")
-    .bind(accountId, repositoryFullName)
+    .prepare(`
+      update github_events
+         set account_id = ?
+       where repository_full_name = ? collate nocase
+         and account_id is null
+         and exists (
+           select 1
+             from github_app_repositories
+            where repository_key = ? and account_id = ?
+         )
+    `)
+    .bind(accountId, repositoryFullName, repositoryKey, accountId)
     .run();
 }
 
@@ -1548,7 +1558,7 @@ async function handleRepoStatus(request: Request, env: RelayEnv, repo: { project
     `)
     .bind(key)
     .first<AppRepositoryRow>();
-  if (accountId && row && row.account_id !== accountId) {
+  if (accountId && row && row.account_id == null) {
     await associateGitHubRepositoryWithAccount(env, key, row.repository_full_name, accountId);
     row = { ...row, account_id: accountId };
   }
@@ -1761,14 +1771,24 @@ async function handleLinearOrganizationRegister(request: Request, env: RelayEnv)
       on conflict(org_id) do update set
         webhook_secret = excluded.webhook_secret,
         updated_at = excluded.updated_at,
-        account_id = coalesce(excluded.account_id, linear_organizations.account_id)
+        account_id = coalesce(linear_organizations.account_id, excluded.account_id)
     `)
     .bind(auth.organizationId, secret, now, now, accountId)
     .run();
   if (accountId) {
     await env.DB
-      .prepare("update linear_events set account_id = ? where org_id = ?")
-      .bind(accountId, auth.organizationId)
+      .prepare(`
+        update linear_events
+           set account_id = ?
+         where org_id = ?
+           and account_id is null
+           and exists (
+             select 1
+               from linear_organizations
+              where org_id = ? and account_id = ?
+           )
+      `)
+      .bind(accountId, auth.organizationId, auth.organizationId, accountId)
       .run();
   }
 
