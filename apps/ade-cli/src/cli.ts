@@ -11584,6 +11584,12 @@ function buildCliPlan(
           ...actionStep("projectConfig", "project_config", "get"),
           optional: true,
         },
+        {
+          key: "syncStatus",
+          method: "sync.getStatus",
+          params: { includeTransferReadiness: false },
+          optional: true,
+        },
       ],
     };
   }
@@ -12200,6 +12206,70 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   }
 }
 
+function checkSyncReadiness(value: unknown): ReadinessCheck & {
+  enabled: boolean;
+  usable: boolean;
+  failingRoutes: string[];
+} {
+  const snapshot = isRecord(value) ? value : null;
+  const routeHealth = snapshot && isRecord(snapshot.routeHealth) ? snapshot.routeHealth : null;
+  const listener = routeHealth && isRecord(routeHealth.listener) ? routeHealth.listener : null;
+  const tailscale = routeHealth && isRecord(routeHealth.tailscale) ? routeHealth.tailscale : null;
+  const relay = routeHealth && isRecord(routeHealth.relay) ? routeHealth.relay : null;
+  const enabled = Boolean(snapshot?.pairingConnectInfo) || relay?.enabled === true;
+  if (!snapshot || !routeHealth) {
+    return {
+      ready: false,
+      enabled: false,
+      usable: false,
+      status: "unavailable",
+      message: "Sync route health is unavailable.",
+      nextAction: "Run 'ade sync status --text' against the live ADE runtime.",
+      failingRoutes: [],
+    };
+  }
+  if (!enabled) {
+    return {
+      ready: true,
+      enabled: false,
+      usable: false,
+      status: "unavailable",
+      message: "Phone sync hosting is not enabled in this runtime.",
+      failingRoutes: [],
+      details: { routeHealth },
+    };
+  }
+
+  const failures: string[] = [];
+  if (listener?.listenerBound !== true || listener?.loopbackAdeValidated !== true) {
+    failures.push(`listener: ${asString(listener?.reason) ?? "loopback listener mismatch"}`);
+  }
+  if (tailscale?.enabled === true && tailscale?.tailscaleReachable !== true) {
+    failures.push(`tailscale: ${asString(tailscale.reason) ?? "published route is not reachable"}`);
+  }
+  if (
+    relay?.enabled === true
+    && (relay?.relayControlConnected !== true || asString(relay?.reason) != null)
+  ) {
+    failures.push(`relay: ${asString(relay.reason) ?? "control channel is not connected"}`);
+  }
+  const usable = failures.length === 0;
+  return {
+    ready: usable,
+    enabled: true,
+    usable,
+    status: usable ? "ready" : "warning",
+    message: usable
+      ? "Enabled sync routes are usable."
+      : `Sync route failure: ${failures.join("; ")}`,
+    nextAction: usable
+      ? undefined
+      : "Run 'ade sync status --text' and resolve the named listener or route failure.",
+    failingRoutes: failures,
+    details: { routeHealth },
+  };
+}
+
 function requireAdeLayout(): {
   resolveAdeLayout: (projectRoot: string) => { secretsDir: string };
 } {
@@ -12257,6 +12327,7 @@ function buildReadinessSnapshot(args: {
     computerUse: checkComputerUseReadiness(),
     path: checkPathReadiness(),
     storage: checkStorageReadiness(connection.projectRoot),
+    sync: checkSyncReadiness(values.syncStatus),
   };
   const recommendations = Object.entries(checks)
     .filter(([, check]) => check.nextAction)
@@ -12332,6 +12403,7 @@ function buildReadinessSnapshot(args: {
     computerUse: checks.computerUse,
     path: checks.path,
     storage: checks.storage,
+    sync: checks.sync,
     auth: {
       localProjectAccess: projectInitialized && actions.length > 0,
       providerSecretsExposed: false,
@@ -17138,6 +17210,8 @@ function formatTextOutput(
         isRecord(value) && isRecord(value.path) ? value.path : {};
       const storage =
         isRecord(value) && isRecord(value.storage) ? value.storage : {};
+      const sync =
+        isRecord(value) && isRecord(value.sync) ? value.sync : {};
       const recommendations =
         isRecord(value) && Array.isArray(value.recommendations)
           ? value.recommendations
@@ -17161,6 +17235,7 @@ function formatTextOutput(
           ["computer use", computerUse.message],
           ["path", pathStatus.message],
           ["storage", storage.message],
+          ["sync", sync.message],
           ["recommendation", isRecord(value) ? value.recommendation : null],
         ]),
         ...(recommendations.length

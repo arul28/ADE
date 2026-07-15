@@ -1,6 +1,16 @@
+import http from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import {
+  assertAdeLoopbackListener,
+  generateLoopbackNonce,
+  isLoopbackShadowedError,
+  probeAdeLoopbackListener,
+  writeAdeLoopbackUpgradeResponse,
+  type SyncLoopbackProbeResult,
+  type SyncLoopbackValidationStatus,
+} from "./syncLoopbackProbe";
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
@@ -103,6 +113,10 @@ export type SharedSyncListener = {
   ensureListening(portCandidates: number[]): Promise<number>;
   getPort(): number | null;
   isListening(): boolean;
+  getExpectedLoopbackNonce(): string;
+  getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
+  /** Force-check that loopback still reaches this exact listener instance. */
+  revalidateLoopback(): Promise<void>;
   /**
    * Install the connection handler for NEW sockets. Returns a detach function
    * that only clears the handler if it has not been superseded by a newer
@@ -133,8 +147,44 @@ type ParkedEntry = {
 };
 
 function isRetryableListenerBindError(error: unknown): boolean {
+  if (isLoopbackShadowedError(error)) return true;
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
+}
+
+async function closeCandidateServer(
+  candidateServer: WebSocketServer,
+  candidateHttpServer: http.Server,
+): Promise<void> {
+  for (const client of candidateServer.clients) {
+    try {
+      client.terminate();
+    } catch {
+      // ignore cleanup failures on a rejected candidate
+    }
+  }
+  // Closing the WebSocketServer only detaches its listeners from the
+  // externally-supplied http server; the http server owns the port and must be
+  // closed explicitly so a rejected candidate does not leak the bind. ws's
+  // close() for an external server resolves only after every client drains, so
+  // close the http server directly (forcing lingering sockets) instead.
+  try {
+    candidateServer.close();
+  } catch {
+    // ignore
+  }
+  await new Promise<void>((resolve) => {
+    if (!candidateHttpServer.listening) {
+      resolve();
+      return;
+    }
+    try {
+      candidateHttpServer.close(() => resolve());
+      candidateHttpServer.closeAllConnections?.();
+    } catch {
+      resolve();
+    }
+  });
 }
 
 function rawDataBytes(data: RawData): number {
@@ -152,19 +202,63 @@ export function createSharedSyncListener(options: {
   bindHost?: string;
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 } = {}): SharedSyncListener {
   const logger = options.logger ?? {};
   const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
+  const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
+  // One identity per listener instance. Every candidate bind for this
+  // instance emits the same nonce, and only in-process validators receive the
+  // expected value they must compare against.
+  const expectedLoopbackNonce = generateLoopbackNonce();
 
   let server: WebSocketServer | null = null;
+  // The http.Server fronting `server`. `ws` does not own/close an
+  // externally-supplied server, so we track it to free the port on close.
+  let httpServer: http.Server | null = null;
   let listeningPromise: Promise<number> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
+  let loopbackValidationStatus: SyncLoopbackValidationStatus = {
+    port: null,
+    loopbackAdeValidated: false,
+    lastFailureAt: null,
+    reason: "The shared sync listener has not been validated yet.",
+    lastSuccessAt: null,
+  };
   const parked = new Map<WebSocket, ParkedEntry>();
+
+  const validateLoopback = async (port: number): Promise<void> => {
+    try {
+      const result = await assertAdeLoopbackListener(
+        port,
+        expectedLoopbackNonce,
+        loopbackProbe,
+      );
+      loopbackValidationStatus = {
+        port,
+        loopbackAdeValidated: true,
+        lastFailureAt: loopbackValidationStatus.lastFailureAt,
+        reason: null,
+        lastSuccessAt: result.checkedAt,
+      };
+    } catch (error) {
+      if (isLoopbackShadowedError(error)) {
+        loopbackValidationStatus = {
+          port,
+          loopbackAdeValidated: false,
+          lastFailureAt: error.failedAt,
+          reason: error.message,
+          lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
+        };
+      }
+      throw error;
+    }
+  };
 
   const unpark = (entry: ParkedEntry): void => {
     clearTimeout(entry.expireTimer);
@@ -269,43 +363,93 @@ export function createSharedSyncListener(options: {
 
   const bindOnce = async (portCandidates: number[]): Promise<number> => {
     const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
+    // A fixed preferred port is re-attempted so a dying listener can free it.
+    // An ephemeral port (0) is ALSO re-attempted, but for a different reason:
+    // each bind(0) yields a fresh OS-assigned port, so a loopback shadow on the
+    // first resolved port is escaped simply by re-binding. Both are bounded by
+    // PREFERRED_PORT_BIND_ATTEMPTS so a persistent shadow still terminates.
     const attemptPlan = candidates.flatMap((candidatePort, candidateIndex) =>
-      candidateIndex === 0 && candidatePort !== 0
+      (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
         ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
         : [candidatePort],
     );
     let lastError: unknown = null;
     let previousAttemptedPort: number | null = null;
+    // Tracks RESOLVED shadowed ports. For port 0 the literal 0 is never added
+    // (each re-bind resolves a different port), so a shadow on one ephemeral
+    // port does not short-circuit the remaining fresh-port attempts.
+    const shadowedPorts = new Set<number>();
     for (const attemptedPort of attemptPlan) {
       if (closed) throw new Error("The shared sync listener has been closed.");
-      if (previousAttemptedPort === attemptedPort) {
+      if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
+      // The retry delay lets a dying listener free a FIXED port; an ephemeral
+      // re-bind gets a fresh port immediately, so skip the delay for port 0.
+      if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
         await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
       }
       previousAttemptedPort = attemptedPort;
+      const candidateHttpServer = http.createServer((request, response) => {
+        writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
+      });
       const candidateServer = new WebSocketServer({
-        host: bindHost,
-        port: attemptedPort,
+        server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
+      });
+      candidateHttpServer.listen(attemptedPort, bindHost);
+      // Install the handler before the validation RTT so a LAN peer that
+      // arrives in that narrow window is parked/owned instead of orphaned.
+      candidateServer.on("connection", (ws, request) => {
+        const connection: SharedSyncListenerConnection = {
+          ws,
+          remoteAddress: request.socket.remoteAddress ?? null,
+          remotePort: request.socket.remotePort ?? null,
+        };
+        const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
+        const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
+        if (activeHandler) {
+          activeHandler(connection);
+          return;
+        }
+        park({
+          ws,
+          remoteAddress: connection.remoteAddress,
+          remotePort: connection.remotePort,
+          metadata: null,
+          authKind: null,
+          pairedDeviceId: null,
+          connectedAt: new Date().toISOString(),
+        });
       });
       try {
         const resolvedPort = await new Promise<number>((resolve, reject) => {
-          const onListening = () => {
-            cleanup();
+          const onListening = async () => {
             const address = candidateServer.address();
-            resolve(typeof address === "object" && address ? address.port : attemptedPort);
+            const port = typeof address === "object" && address ? address.port : attemptedPort;
+            try {
+              await validateLoopback(port);
+              cleanup();
+              resolve(port);
+            } catch (error) {
+              cleanup();
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
           };
           const onError = (error: unknown) => {
             cleanup();
             reject(error instanceof Error ? error : new Error(String(error)));
           };
+          const handleListening = () => {
+            void onListening();
+          };
           const cleanup = () => {
-            candidateServer.off("listening", onListening);
+            candidateServer.off("listening", handleListening);
             candidateServer.off("error", onError);
           };
-          candidateServer.on("listening", onListening);
+          candidateServer.on("listening", handleListening);
           candidateServer.on("error", onError);
         });
         server = candidateServer;
+        httpServer = candidateHttpServer;
         server.on("error", (error: unknown) => {
           logger.warn?.("sync_listener.server_error", {
             error: error instanceof Error ? error.message : String(error),
@@ -313,42 +457,21 @@ export function createSharedSyncListener(options: {
             port: resolvedPort,
           });
         });
-        server.on("connection", (ws, request) => {
-          const connection: SharedSyncListenerConnection = {
-            ws,
-            remoteAddress: request.socket.remoteAddress ?? null,
-            remotePort: request.socket.remotePort ?? null,
-          };
-          const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
-          const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
-          if (activeHandler) {
-            activeHandler(connection);
-            return;
-          }
-          // No host service owns the listener right now (mid project switch
-          // or before the first host starts). Park the socket and buffer its
-          // frames; the next host adopts it via takePeers().
-          park({
-            ws,
-            remoteAddress: connection.remoteAddress,
-            remotePort: connection.remotePort,
-            metadata: null,
-            authKind: null,
-            pairedDeviceId: null,
-            connectedAt: new Date().toISOString(),
-          });
-        });
         return resolvedPort;
       } catch (error) {
         lastError = error;
-        try {
-          candidateServer.close();
-        } catch {
-          // ignore cleanup failures
+        await closeCandidateServer(candidateServer, candidateHttpServer);
+        // Record the RESOLVED port (not the literal 0) so an ephemeral shadow
+        // does not poison the remaining fresh-port re-binds.
+        if (isLoopbackShadowedError(error)) {
+          shadowedPorts.add(attemptedPort === 0 ? error.port : attemptedPort);
         }
-        const retryable = isRetryableListenerBindError(error) && attemptedPort !== 0;
+        const retryable = isRetryableListenerBindError(error)
+          && (attemptedPort !== 0 || isLoopbackShadowedError(error));
         logger.warn?.(
-          retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
+          isLoopbackShadowedError(error)
+            ? "sync_listener.loopback_shadowed"
+            : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
           {
             attemptedPort,
             error: error instanceof Error ? error.message : String(error),
@@ -383,6 +506,22 @@ export function createSharedSyncListener(options: {
 
     isListening(): boolean {
       return server?.address() != null;
+    },
+
+    getExpectedLoopbackNonce(): string {
+      return expectedLoopbackNonce;
+    },
+
+    getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
+      return { ...loopbackValidationStatus };
+    },
+
+    async revalidateLoopback(): Promise<void> {
+      const address = server?.address();
+      if (typeof address !== "object" || !address) {
+        throw new Error("The shared sync listener is not listening.");
+      }
+      await validateLoopback(address.port);
     },
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
@@ -441,24 +580,42 @@ export function createSharedSyncListener(options: {
       for (const entry of [...parked.values()]) {
         unpark(entry);
         try {
-          entry.snapshot.ws.close();
+          entry.snapshot.ws.terminate();
         } catch {
           // ignore close failures
         }
       }
       const current = server;
+      const currentHttp = httpServer;
       server = null;
+      httpServer = null;
       if (!current) return;
+      // Force-terminate every client. ws's close() for an EXTERNALLY-supplied
+      // http server resolves only after every client socket drains, so a single
+      // wedged socket would hang final shutdown; terminate side-steps that.
       for (const ws of current.clients) {
         try {
-          ws.close();
+          ws.terminate();
         } catch {
           // ignore close failures
         }
       }
+      try {
+        // Detach ws's listeners from the http server (external server: this does
+        // NOT close the http server, so we close it ourselves below).
+        current.close();
+      } catch {
+        // ignore
+      }
       await new Promise<void>((resolve) => {
+        if (!currentHttp || !currentHttp.listening) {
+          resolve();
+          return;
+        }
         try {
-          current.close(() => resolve());
+          currentHttp.close(() => resolve());
+          // Force any lingering upgraded/keep-alive sockets so close() cannot hang.
+          currentHttp.closeAllConnections?.();
         } catch {
           resolve();
         }
