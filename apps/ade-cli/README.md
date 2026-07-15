@@ -182,6 +182,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get
+account.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
@@ -199,6 +200,12 @@ sync.setActiveLanePresence
 sync.getCloudRelayStatus  sync.setCloudRelayEnabled
 sync.getRequireDpop       sync.setRequireDpop
 ```
+
+`account.call` owns machine-scoped account status, login, token, and machine
+directory operations. Prefer the typed `ade login`, `ade auth status`,
+`ade account token create`, `ade machines list`, and `ade machines connect`
+commands; they select the CTO role where credential-bearing operations require
+it and keep account-machine pairing on the DPoP-bound runtime path.
 
 `runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
 
@@ -261,11 +268,18 @@ ade --project-root /repo code      # bind to a specific project root
 then uses the target's declared transport. Paired targets connect through the
 DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a
 validated SSH route. Account-created targets are paired-only and fail closed
-instead of falling back to SSH or a plaintext address. The launcher bridges the
-selected transport back into the normal TUI with `--remote`, `--remote-label`,
-`--require-socket`, remote project roots, and an optional `--session` hint. Use
-`--list-targets`, `--list-projects`, and `--list-sessions` for non-interactive
-discovery.
+instead of falling back to SSH or a plaintext address. Legacy account machines
+that desktop ADE saved as uncredentialed SSH targets are adopted into the same
+paired store before launch; if the account directory cannot verify that legacy
+shape, ADE fails closed instead of attempting SSH. Explicit SSH targets keep
+their saved host alias so OpenSSH can apply its `Host`-scoped user, identity,
+agent, and proxy settings
+while ADE changes only the concrete route. Route/runtime probing shares one
+bounded, cancellable connection deadline and reports the attempted failures.
+The launcher bridges the selected transport back into the normal TUI with
+`--remote`, `--remote-label`, `--require-socket`, remote project roots, and an
+optional `--session` hint. Use `--list-targets`, `--list-projects`, and
+`--list-sessions` for non-interactive discovery.
 
 **Browser mirror (dev):** from the repo root, `npm run dev:code:web` runs **one** `ade code` in a **single PTY** and mirrors that TTY to the browser (xterm). Use Cursor’s browser tools against that page like any other local URL. This is not the same as running `ade code` in a terminal app **and** in the browser at once—that would be two separate processes.
 

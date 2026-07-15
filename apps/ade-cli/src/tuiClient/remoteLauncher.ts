@@ -11,11 +11,15 @@ import {
 import { buildPairedEndpointCandidates } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
 import { openSyncRuntimeTransport, type SyncRuntimeTransport } from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
 import { RuntimeRpcClient } from "../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
+import { AccountMachineDirectoryService } from "../services/account/accountMachineDirectoryService";
+import { getSharedAccountAuthService } from "../services/account/sharedAccountAuthService";
 import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
 } from "../../../desktop/src/shared/types/remoteRuntime";
+import type { AdeAccountMachine } from "../../../desktop/src/shared/types/account";
+import { accountMachineEndpointHost } from "../../../desktop/src/shared/accountDirectory";
 import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
 import {
@@ -76,6 +80,18 @@ type RemoteSessionChoice = {
 export type RunAdeCodeCli = (argv: string[]) => Promise<number>;
 
 const REMOTE_RPC_TIMEOUT_MS = 20_000;
+const REMOTE_CONNECT_TOTAL_TIMEOUT_MS = 45_000;
+
+type RemoteLaunchBudget = {
+  deadline: number;
+  totalTimeoutMs: number;
+  signal?: AbortSignal;
+};
+
+type AccountMachineResolver = Pick<
+  AccountMachineDirectoryService,
+  "listMachines" | "pairListedMachine"
+>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -451,10 +467,11 @@ export function buildRemoteRuntimeRpcCommand(layout: RemoteRuntimeLayout, binary
   ].join("; ");
 }
 
-function buildSshArgs(target: RemoteRuntimeTarget, route: RemoteRuntimeTargetRoute, command: string): string[] {
+export function buildSshArgs(target: RemoteRuntimeTarget, route: RemoteRuntimeTargetRoute, command: string): string[] {
+  const destinationHost = target.hostname.trim();
   const destination = target.sshUser?.trim()
-    ? `${target.sshUser.trim()}@${route.hostname}`
-    : route.hostname;
+    ? `${target.sshUser.trim()}@${destinationHost}`
+    : destinationHost;
   const args = [
     "-T",
     "-o",
@@ -468,6 +485,13 @@ function buildSshArgs(target: RemoteRuntimeTarget, route: RemoteRuntimeTargetRou
     "-o",
     "StrictHostKeyChecking=yes",
   ];
+  if (route.hostname.trim().toLowerCase().replace(/\.$/, "") !== destinationHost.toLowerCase().replace(/\.$/, "")) {
+    // Keep the saved host as the OpenSSH config selector while dialing the
+    // concrete LAN/tailnet route. This preserves Host-scoped User,
+    // IdentityFile, agent, and proxy settings that make the desktop target
+    // connect successfully.
+    args.push("-o", `HostName=${route.hostname}`);
+  }
   const port = route.port ?? target.port;
   if (port) args.push("-p", String(port));
   if (target.sshKeyPath) args.push("-i", target.sshKeyPath);
@@ -506,14 +530,113 @@ function remoteRpcAttempts(target: RemoteRuntimeTarget): RemoteRpcAttempt[] {
   return attempts;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+function cancellationError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Remote ADE connection cancelled.");
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  signal?: AbortSignal,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    promise.then(resolve, reject).finally(() => {
+    let settled = false;
+    function onAbort(): void {
+      if (signal) finish(() => reject(cancellationError(signal)));
+    }
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
-    });
+      signal?.removeEventListener("abort", onAbort);
+      action();
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => finish(() => reject(new Error(message))), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
   });
+}
+
+function createRemoteLaunchBudget(
+  totalTimeoutMs = REMOTE_CONNECT_TOTAL_TIMEOUT_MS,
+  signal?: AbortSignal,
+): RemoteLaunchBudget {
+  const normalizedTimeoutMs = Math.max(1, totalTimeoutMs);
+  return {
+    deadline: Date.now() + normalizedTimeoutMs,
+    totalTimeoutMs: normalizedTimeoutMs,
+    signal,
+  };
+}
+
+function remainingBudgetMs(budget: RemoteLaunchBudget): number {
+  if (budget.signal?.aborted) throw cancellationError(budget.signal);
+  return Math.max(0, budget.deadline - Date.now());
+}
+
+function attemptTimeoutMs(budget: RemoteLaunchBudget, maximum = REMOTE_RPC_TIMEOUT_MS): number {
+  const remaining = remainingBudgetMs(budget);
+  if (remaining <= 0) {
+    throw new Error(`Remote connection deadline exceeded after ${budget.totalTimeoutMs}ms.`);
+  }
+  return Math.max(1, Math.min(maximum, remaining));
+}
+
+function createBoundedAttempt(
+  budget: RemoteLaunchBudget,
+  maximum: number,
+): { signal: AbortSignal; timeoutMs: number; dispose: () => void } {
+  const timeoutMs = attemptTimeoutMs(budget, maximum);
+  const controller = new AbortController();
+  const budgetSignal = budget.signal;
+  const onBudgetAbort = (): void => {
+    if (budgetSignal) controller.abort(cancellationError(budgetSignal));
+  };
+  if (budgetSignal?.aborted) onBudgetAbort();
+  else budgetSignal?.addEventListener("abort", onBudgetAbort, { once: true });
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Remote connection attempt exceeded its ${timeoutMs}ms budget.`));
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    timeoutMs,
+    dispose: () => {
+      clearTimeout(timer);
+      budgetSignal?.removeEventListener("abort", onBudgetAbort);
+    },
+  };
+}
+
+async function withBoundedAttempt<T>(
+  budget: RemoteLaunchBudget,
+  maximum: number,
+  run: (attempt: { signal: AbortSignal; timeoutMs: number }) => Promise<T>,
+): Promise<T> {
+  const attempt = createBoundedAttempt(budget, maximum);
+  try {
+    return await run(attempt);
+  } finally {
+    attempt.dispose();
+  }
+}
+
+function isSshAuthenticationError(error: unknown): boolean {
+  return /permission denied|authentication failed|all configured authentication methods failed/i.test(
+    errorMessage(error),
+  );
 }
 
 async function initializeRemoteRpc(client: RemoteRpcClientLike): Promise<InitializeResponse> {
@@ -550,29 +673,58 @@ async function initializeRemoteRpc(client: RemoteRpcClientLike): Promise<Initial
   return initialize;
 }
 
-async function openRemoteRpcSession(target: RemoteRuntimeTarget): Promise<RemoteRpcSession> {
+export async function openRemoteRpcSession(
+  target: RemoteRuntimeTarget,
+  options: {
+    budget?: RemoteLaunchBudget;
+    totalTimeoutMs?: number;
+    attemptTimeoutMs?: number;
+    spawnProcess?: typeof spawnRemoteRpcProcess;
+    signal?: AbortSignal;
+  } = {},
+): Promise<RemoteRpcSession> {
   const errors: string[] = [];
+  const authFailedRoutes = new Set<string>();
+  const budget = options.budget
+    ?? createRemoteLaunchBudget(options.totalTimeoutMs, options.signal);
   for (const attempt of remoteRpcAttempts(target)) {
-    const client = new ProcessJsonRpcClient(spawnRemoteRpcProcess(attempt));
+    const attemptRouteKey = routeKey(attempt.route);
+    if (authFailedRoutes.has(attemptRouteKey)) continue;
+    let timeoutMs: number;
+    try {
+      timeoutMs = attemptTimeoutMs(budget, options.attemptTimeoutMs ?? REMOTE_RPC_TIMEOUT_MS);
+    } catch (error) {
+      errors.push(`total deadline: ${errorMessage(error)}`);
+      break;
+    }
+    const client = new ProcessJsonRpcClient((options.spawnProcess ?? spawnRemoteRpcProcess)(attempt));
     try {
       await withTimeout(
         initializeRemoteRpc(client),
-        REMOTE_RPC_TIMEOUT_MS,
-        `Remote ADE RPC did not initialize within ${REMOTE_RPC_TIMEOUT_MS / 1000}s.`,
+        timeoutMs,
+        `Remote ADE RPC did not initialize within ${timeoutMs}ms.`,
+        budget.signal,
       );
       return { client, attempt };
     } catch (error) {
       client.close();
       errors.push(`${attempt.label}: ${errorMessage(error)}`);
+      // Authentication is independent of the remote ADE home/command. Trying
+      // the same route against every channel only repeats the same failure and
+      // turns a useful error into a multi-minute stall.
+      if (isSshAuthenticationError(error)) authFailedRoutes.add(attemptRouteKey);
     }
   }
   throw new Error(
     `Could not connect to remote ADE on ${target.name}. ` +
-      `Tried ${errors.length} route/runtime combinations. ${errors.slice(0, 4).join(" | ")}`,
+      `Tried ${errors.length} bounded route/runtime combinations. ${errors.slice(0, 8).join(" | ")}`,
   );
 }
 
-async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<OpenedRemoteSession> {
+async function openPairedRemoteSession(
+  target: RemoteRuntimeTarget,
+  budget = createRemoteLaunchBudget(),
+): Promise<OpenedRemoteSession> {
   const registry = new RemoteTargetRegistry();
   const pairedStore = new DesktopPairedMachineStore();
   const credentials = target.pairedMachine
@@ -592,11 +744,16 @@ async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<Ope
   for (const candidate of candidates) {
     let transport: SyncRuntimeTransport;
     try {
-      transport = await openSyncRuntimeTransport({
-        credentials,
-        endpoint: candidate.endpoint,
-        appVersion: localCliVersion(),
-      });
+      transport = await withBoundedAttempt(budget, 10_000, async (attempt) =>
+        await openSyncRuntimeTransport({
+          credentials,
+          endpoint: candidate.endpoint,
+          appVersion: localCliVersion(),
+          connectTimeoutMs: attempt.timeoutMs,
+          authTimeoutMs: attempt.timeoutMs,
+          signal: attempt.signal,
+        })
+      );
     } catch (error) {
       failures.push(`${candidate.endpoint}: ${errorMessage(error)}`);
       continue;
@@ -611,7 +768,13 @@ async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<Ope
       close: () => runtimeClient.close(),
     };
     try {
-      const initialized = await initializeRemoteRpc(client);
+      const timeoutMs = attemptTimeoutMs(budget);
+      const initialized = await withTimeout(
+        initializeRemoteRpc(client),
+        timeoutMs,
+        `Paired ADE RPC did not initialize within ${timeoutMs}ms.`,
+        budget.signal,
+      );
       const connectedAt = Date.now();
       try {
         pairedStore.markEndpointSucceeded(
@@ -649,7 +812,10 @@ async function openPairedRemoteSession(target: RemoteRuntimeTarget): Promise<Ope
   );
 }
 
-async function openPairedTransport(target: RemoteRuntimeTarget): Promise<SyncRuntimeTransport> {
+async function openPairedTransport(
+  target: RemoteRuntimeTarget,
+  budget = createRemoteLaunchBudget(),
+): Promise<SyncRuntimeTransport> {
   const pairedStore = new DesktopPairedMachineStore();
   const credentials = target.pairedMachine
     ? pairedStore.getForReference(target.pairedMachine)
@@ -663,11 +829,16 @@ async function openPairedTransport(target: RemoteRuntimeTarget): Promise<SyncRun
   const failures: string[] = [];
   for (const candidate of candidates) {
     try {
-      return await openSyncRuntimeTransport({
-        credentials,
-        endpoint: candidate.endpoint,
-        appVersion: localCliVersion(),
-      });
+      return await withBoundedAttempt(budget, 10_000, async (attempt) =>
+        await openSyncRuntimeTransport({
+          credentials,
+          endpoint: candidate.endpoint,
+          appVersion: localCliVersion(),
+          connectTimeoutMs: attempt.timeoutMs,
+          authTimeoutMs: attempt.timeoutMs,
+          signal: attempt.signal,
+        })
+      );
     } catch (error) {
       failures.push(errorMessage(error));
     }
@@ -1027,6 +1198,130 @@ function printSessions(sessions: RemoteSessionChoice[]): void {
   }
 }
 
+function normalizedHost(value: string | null | undefined): string {
+  return value?.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "") ?? "";
+}
+
+function accountMachineHosts(machine: AdeAccountMachine): Set<string> {
+  const hosts = new Set<string>();
+  for (const endpoint of machine.reachableEndpoints) {
+    const direct = normalizedHost(accountMachineEndpointHost(endpoint));
+    if (direct) hosts.add(direct);
+  }
+  return hosts;
+}
+
+export function accountMachineMatchesRemoteTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  const machineHosts = accountMachineHosts(machine);
+  if (machineHosts.size === 0) return false;
+  return [target.hostname, ...(target.routes ?? []).map((route) => route.hostname)]
+    .some((hostname) => machineHosts.has(normalizedHost(hostname)));
+}
+
+function isLegacyAccountCreatedSshTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  if (!isUncredentialedRoutedSshTarget(target)) return false;
+  if (machine.name?.trim().toLowerCase() !== target.name.trim().toLowerCase()) return false;
+  const machineHosts = accountMachineHosts(machine);
+  const routes = target.routes ?? [];
+  if (routes.some((route) => route.source === "manual")) return false;
+  const targetHosts = [target.hostname, ...routes.map((route) => route.hostname)]
+    .map(normalizedHost)
+    .filter(Boolean);
+  return targetHosts.length > 0 && targetHosts.every((host) => machineHosts.has(host));
+}
+
+function isUncredentialedRoutedSshTarget(target: RemoteRuntimeTarget): boolean {
+  return target.transport === "ssh"
+    && !target.sshUser?.trim()
+    && !target.sshKeyPath?.trim()
+    && Boolean(target.routes?.length);
+}
+
+function isUnverifiedLegacyAccountCandidate(target: RemoteRuntimeTarget): boolean {
+  if (!isUncredentialedRoutedSshTarget(target)) return false;
+  const primaryHost = normalizedHost(target.hostname);
+  const routes = target.routes ?? [];
+  return routes.some((route) => normalizedHost(route.hostname) === primaryHost)
+    && routes.every((route) => route.source !== "manual");
+}
+
+export async function resolveRemoteTargetForLaunch(
+  target: RemoteRuntimeTarget,
+  options: {
+    registry?: Pick<RemoteTargetRegistry, "get" | "remove">;
+    accountMachines?: AccountMachineResolver;
+    budget?: RemoteLaunchBudget;
+  } = {},
+): Promise<RemoteRuntimeTarget> {
+  if (target.transport === "paired") return target;
+  if (target.sshUser?.trim() || target.sshKeyPath?.trim()) return target;
+  const registry = options.registry ?? new RemoteTargetRegistry();
+  const accountMachines = options.accountMachines ?? new AccountMachineDirectoryService(
+    getSharedAccountAuthService(),
+    { appVersion: localCliVersion() },
+  );
+  const directoryTimeoutMs = options.budget
+    ? attemptTimeoutMs(options.budget, 10_000)
+    : 10_000;
+  const listed = await accountMachines.listMachines({
+    signal: options.budget?.signal,
+    timeoutMs: directoryTimeoutMs,
+  });
+  if (listed.state !== "ok") {
+    if (isUnverifiedLegacyAccountCandidate(target)) {
+      throw new PairedRuntimeTransportUnavailableError(
+        `Could not verify whether ${target.name} is an account-created paired-only target because ` +
+          `the account machine directory is ${listed.state.replaceAll("_", " ")}. ` +
+          "ADE will not silently downgrade this uncredentialed discovered target to SSH. " +
+          "Sign in again or save an explicit SSH user/key for a true SSH target.",
+      );
+    }
+    return target;
+  }
+  const matches = listed.machines.filter((machine) =>
+    accountMachineMatchesRemoteTarget(machine, target),
+  );
+  if (matches.length !== 1) return target;
+  const machine = matches[0]!;
+  const legacyAccountTarget = isLegacyAccountCreatedSshTarget(machine, target);
+  if (!legacyAccountTarget) return target;
+  if (!machine.online) {
+    throw new PairedRuntimeTransportUnavailableError(
+      `${machine.name ?? target.name} is offline. This account-created target is paired-only and will not downgrade to SSH.`,
+    );
+  }
+  try {
+    const pairingBudget = options.budget ?? createRemoteLaunchBudget(10_000);
+    const paired = await withBoundedAttempt(pairingBudget, 10_000, async (attempt) =>
+      await accountMachines.pairListedMachine(machine, {
+        connectTimeoutMs: attempt.timeoutMs,
+        pairingTimeoutMs: attempt.timeoutMs,
+        signal: attempt.signal,
+      })
+    );
+    const pairedTarget = registry.get(paired.targetId);
+    if (!pairedTarget || pairedTarget.transport !== "paired") {
+      throw new Error("Account machine adoption did not persist a paired remote target.");
+    }
+    if (pairedTarget.id !== target.id) {
+      registry.remove(target.id);
+    }
+    return pairedTarget;
+  } catch (error) {
+    throw new PairedRuntimeTransportUnavailableError(
+      `Could not establish the paired runtime for ${machine.name ?? target.name}. ` +
+        `This account-created target is paired-only and will not downgrade to SSH. ${errorMessage(error)}`,
+      error,
+    );
+  }
+}
+
 export function takeAdeCodeRemoteArgs(rest: string[]): string[] | null {
   const valueFlags = new Set([
     "--project-root",
@@ -1062,33 +1357,58 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
     return 0;
   }
 
-  const targets = new RemoteTargetRegistry().list();
+  const registry = new RemoteTargetRegistry();
+  const targets = registry.list();
   if (options.listTargets) {
     printTargets(targets);
     return 0;
   }
 
-  const target = await selectTarget(targets, options.targetQuery);
+  const selectedTarget = await selectTarget(targets, options.targetQuery);
+  const controller = new AbortController();
+  const cancel = (signal: NodeJS.Signals): void => {
+    controller.abort(new Error(`Remote ADE connection cancelled by ${signal}.`));
+  };
+  const onSigint = () => cancel("SIGINT");
+  const onSigterm = () => cancel("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  const removeSignalHandlers = (): void => {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+  const budget = createRemoteLaunchBudget(REMOTE_CONNECT_TOTAL_TIMEOUT_MS, controller.signal);
+  let target: RemoteRuntimeTarget;
   let remote: OpenedRemoteSession;
-  if (target.transport === "paired") {
-    try {
-      remote = await openPairedRemoteSession(target);
-    } catch (pairedError) {
-      // Preserve the explicit SSH fallback for paired targets that also have
-      // vetted SSH routes. Account relay-only targets fail clearly here.
-      if (
-        !target.routes?.length
-        || !(
-          pairedError instanceof PairedRuntimeTransportUnavailableError
-          || pairedError instanceof PairedRuntimeCompatibilityError
-        )
-      ) {
-        throw pairedError;
+  try {
+    target = await withTimeout(
+      resolveRemoteTargetForLaunch(selectedTarget, { registry, budget }),
+      attemptTimeoutMs(budget, 10_000),
+      "Timed out resolving the saved machine against the account directory.",
+      controller.signal,
+    );
+    if (target.transport === "paired") {
+      try {
+        remote = await openPairedRemoteSession(target, budget);
+      } catch (pairedError) {
+        // Preserve the explicit SSH fallback for paired targets that also have
+        // vetted SSH routes. Account relay-only targets fail clearly here.
+        if (
+          !target.routes?.length
+          || !(
+            pairedError instanceof PairedRuntimeTransportUnavailableError
+            || pairedError instanceof PairedRuntimeCompatibilityError
+          )
+        ) {
+          throw pairedError;
+        }
+        remote = { ...(await openRemoteRpcSession(target, { budget })), mode: "ssh" };
       }
-      remote = { ...(await openRemoteRpcSession(target)), mode: "ssh" };
+    } else {
+      remote = { ...(await openRemoteRpcSession(target, { budget })), mode: "ssh" };
     }
-  } else {
-    remote = { ...(await openRemoteRpcSession(target)), mode: "ssh" };
+  } finally {
+    removeSignalHandlers();
   }
   let bridge: RemoteBridge | null = null;
   try {
@@ -1112,7 +1432,10 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
 
     remote.client.close();
     bridge = remote.mode === "paired"
-      ? await startSyncRemoteBridge({ target, openTransport: openPairedTransport })
+      ? await startSyncRemoteBridge({
+          target,
+          openTransport: (currentTarget) => openPairedTransport(currentTarget, createRemoteLaunchBudget()),
+        })
       : await startRemoteBridge({
           target,
           initialAttempt: remote.attempt,

@@ -165,6 +165,23 @@ export function parseAccountMachinesPayload(payload: unknown): AdeAccountMachine
   return machines;
 }
 
+/** Return the normalized host identity advertised by an account endpoint. */
+export function accountMachineEndpointHost(
+  endpoint: AdeAccountMachineEndpoint,
+): string | null {
+  const host = endpoint.host?.trim();
+  if (host) return host.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null;
+  const raw = endpoint.url?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null;
+  } catch {
+    return /^[^/\s]+$/.test(raw)
+      ? raw.replace(/^\[|\]$/g, "").replace(/\.$/, "") || null
+      : null;
+  }
+}
+
 function parseTrustedAccountRelayBaseUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -223,6 +240,7 @@ export async function fetchAccountMachines(args: {
   accessToken: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<AdeAccountMachinesResult> {
   const baseUrl = parseTrustedAccountDirectoryBaseUrl(args.baseUrl);
   if (!baseUrl) {
@@ -236,6 +254,9 @@ export async function fetchAccountMachines(args: {
   if (!token) return { state: "signed_out", machines: [], message: null };
 
   const controller = new AbortController();
+  const onAbort = () => controller.abort(args.signal?.reason);
+  if (args.signal?.aborted) onAbort();
+  else args.signal?.addEventListener("abort", onAbort, { once: true });
   const timeoutMs = Math.max(250, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -277,6 +298,7 @@ export async function fetchAccountMachines(args: {
     };
   } finally {
     clearTimeout(timer);
+    args.signal?.removeEventListener("abort", onAbort);
   }
 }
 

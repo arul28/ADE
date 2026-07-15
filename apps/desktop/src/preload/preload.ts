@@ -226,6 +226,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountMachinesResult,
+  AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -7596,6 +7597,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
+    pairMachine: (machineKey: string): Promise<AdeAccountMachinePairResult> =>
+      ipcRenderer.invoke(IPC.accountPairMachine, { machineKey }),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

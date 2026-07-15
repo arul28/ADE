@@ -71,3 +71,11 @@ export type AdeAccountMachinesResult = {
   /** Human-readable detail for the "unavailable"/"not_configured" states. */
   message: string | null;
 };
+
+/** Token-free result of adopting an account-directory machine for paired use. */
+export type AdeAccountMachinePairResult = {
+  targetId: string;
+  machineKey: string;
+  deviceId: string;
+  name: string;
+};

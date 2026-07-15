@@ -12,7 +12,9 @@ import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import os from "node:os";
 import type {
   AccountAuthStatus,
   AccountLoginPollResult,
@@ -20,13 +22,13 @@ import type {
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProjectSecretService } from "../secrets/projectSecretService";
 import type {
+  AdeAccountMachinePairResult,
   AdeAccountMachinesResult,
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
-  fetchAccountMachines,
   officialAccountDirectoryUrlForIssuer,
   parseTrustedAccountDirectoryBaseUrl,
 } from "../../../shared/accountDirectory";
@@ -127,6 +129,7 @@ export type AccountBridge = {
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
+  pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult>;
 };
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
@@ -143,6 +146,10 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     });
 
   const configured = () => isLoginConfigured(options.getProjectRoot());
+  const directoryService = () => new AccountMachineDirectoryService(service(), {
+    directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
+    deviceName: () => `ADE Desktop on ${os.hostname()}`,
+  });
 
   return {
     status: () => toAccountStatus(service().getStatus(), configured()),
@@ -165,37 +172,17 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (!svc.getStatus().signedIn) {
         return { state: "signed_out", machines: [], message: null };
       }
-      const baseUrl = resolveDirectoryBaseUrl(options.getProjectRoot());
-      if (!baseUrl) {
-        return {
-          state: "not_configured",
-          machines: [],
-          message:
-            "Machine directory isn't configured — set a trusted https directory URL on this machine.",
-        };
-      }
-      let token: string;
-      try {
-        token = await svc.getAccessToken();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // Preserve the concrete expired state so the UI can offer re-auth
-        // without confusing it with a user who intentionally signed out.
-        if (/not signed in|session expired/i.test(message)) {
-          return {
-            state: "auth_expired",
-            machines: [],
-            message: "Your ADE account session expired. Sign in again.",
-          };
-        }
-        return { state: "unavailable", machines: [], message };
-      }
-
-      const result = await fetchAccountMachines({ baseUrl, accessToken: token });
+      const result = await directoryService().listMachines();
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
-      return result;
+      return result.state === "auth_expired"
+        ? { ...result, message: "Your ADE account session expired. Sign in again." }
+        : result;
+    },
+
+    pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {
+      return await directoryService().pairMachine(machineKey);
     },
   };
 }

@@ -325,9 +325,15 @@ invoke the normal `runAdeCodeCli` with `--remote`, `--remote-label`,
 an exact allowlisted WSS relay; the returned paired credentials are persisted
 and subsequent LAN, tailnet, and relay connections use the ordinary paired
 path. Account-created targets have no SSH routes and fail closed. Explicit
-address, pairing-code, local, and existing SSH behavior is unchanged. Remote
-launches skip local project-root and build-hash compatibility checks because the
-authoritative runtime and filesystem are on the target machine.
+address, pairing-code, local, and existing SSH behavior is unchanged. A legacy
+account machine that desktop saved as an uncredentialed SSH target is upgraded
+to the same paired record before launch; if it cannot be verified, is offline,
+or pairing fails, the CLI fails closed instead of retrying SSH. For a true SSH target, route overrides
+retain the saved host alias so OpenSSH still applies `Host`-scoped credentials
+and proxy configuration. All route/runtime attempts share one cancellable total
+deadline and return aggregated diagnostics. Remote launches skip local
+project-root and build-hash compatibility checks because the authoritative
+runtime and filesystem are on the target machine.
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI in the terminal against the shared dev runtime at `/tmp/ade-runtime-dev.sock`; `npm run dev:code:web` mirrors that same process in the browser (see [Browser mirror](#browser-mirror-development)).
 

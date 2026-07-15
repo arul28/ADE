@@ -4,24 +4,31 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeTarget,
 } from "../../../shared/types";
+import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import {
   accountMachineMatchesTarget,
-  accountMachineSshRoutes,
   assignMachineSections,
 } from "./remoteMachineModel";
 
 function accountMachine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine {
-  return {
+  const machine: AdeAccountMachine = {
     machineKey: "mk_default",
     deviceId: "dev_default",
     name: "Studio",
     platform: "darwin",
     deviceType: "desktop",
-    reachableEndpoints: [{ kind: "tailnet", host: "100.92.14.3", port: 22 }],
+    reachableEndpoints: [],
     lastSeenAt: Date.now() - 30_000,
     online: true,
     ...overrides,
   };
+  if (overrides.reachableEndpoints === undefined) {
+    machine.reachableEndpoints = [
+      { kind: "tailnet", host: "100.92.14.3", port: 22 },
+      { kind: "relay", url: `${DEFAULT_ADE_TUNNEL_RELAY_URL.replace("https:", "wss:")}/connect/${machine.machineKey}` },
+    ];
+  }
+  return machine;
 }
 
 function savedTarget(overrides: Partial<RemoteRuntimeTarget> = {}): RemoteRuntimeTarget {
@@ -40,41 +47,6 @@ function savedTarget(overrides: Partial<RemoteRuntimeTarget> = {}): RemoteRuntim
 }
 
 const NO_STATUS = new Map<string, RemoteRuntimeConnectionStatus>();
-
-describe("accountMachineSshRoutes", () => {
-  it("returns direct SSH routes tailnet-first and excludes relay-only machines", () => {
-    expect(
-      accountMachineSshRoutes(
-        accountMachine({
-          reachableEndpoints: [
-            { kind: "lan", host: "10.0.0.9", port: 8787 },
-            { kind: "tailnet", host: "100.92.14.3", port: 8787 },
-          ],
-        }),
-      ),
-    ).toEqual([
-      {
-        hostname: "100.92.14.3",
-        port: null,
-        source: "tailscale",
-        lastSucceededAt: null,
-      },
-      {
-        hostname: "10.0.0.9",
-        port: null,
-        source: "bonjour",
-        lastSucceededAt: null,
-      },
-    ]);
-    expect(
-      accountMachineSshRoutes(
-        accountMachine({
-          reachableEndpoints: [{ kind: "relay", url: "wss://relay/x" }],
-        }),
-      ),
-    ).toEqual([]);
-  });
-});
 
 describe("assignMachineSections — account machines", () => {
   it("buckets an online account machine into AVAILABLE and offline into UNAVAILABLE", () => {
@@ -99,7 +71,7 @@ describe("assignMachineSections — account machines", () => {
     expect(sections.available[0]).toMatchObject({ kind: "account" });
   });
 
-  it("buckets an online relay-only account machine into UNAVAILABLE", () => {
+  it("keeps an online relay-only account machine AVAILABLE for paired transport", () => {
     const sections = assignMachineSections({
       targets: [],
       statusById: NO_STATUS,
@@ -108,16 +80,19 @@ describe("assignMachineSections — account machines", () => {
       accountMachines: [
         accountMachine({
           machineKey: "mk_relay_only",
-          reachableEndpoints: [{ kind: "relay", url: "wss://relay/x" }],
+          reachableEndpoints: [{
+            kind: "relay",
+            url: `${DEFAULT_ADE_TUNNEL_RELAY_URL.replace("https:", "wss:")}/connect/mk_relay_only`,
+          }],
         }),
       ],
     });
 
-    expect(sections.available).toHaveLength(0);
-    expect(sections.unavailable.map((row) => row.id)).toEqual(["account:mk_relay_only"]);
+    expect(sections.available.map((row) => row.id)).toEqual(["account:mk_relay_only"]);
+    expect(sections.unavailable).toHaveLength(0);
   });
 
-  it("keeps an online account machine with a direct route in AVAILABLE", () => {
+  it("keeps an online direct-only account machine UNAVAILABLE until secure adoption is possible", () => {
     const sections = assignMachineSections({
       targets: [],
       statusById: NO_STATUS,
@@ -131,8 +106,8 @@ describe("assignMachineSections — account machines", () => {
       ],
     });
 
-    expect(sections.available.map((row) => row.id)).toEqual(["account:mk_lan"]);
-    expect(sections.unavailable).toHaveLength(0);
+    expect(sections.available).toHaveLength(0);
+    expect(sections.unavailable.map((row) => row.id)).toEqual(["account:mk_lan"]);
   });
 
   it("dedupes an account machine that maps to a saved target by host identity", () => {

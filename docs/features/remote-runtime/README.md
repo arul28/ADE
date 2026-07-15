@@ -38,6 +38,16 @@ end-to-end encrypted tunnel; see the trust boundary in
   lookups, replay-aware event streams, manual disconnect handling, and
   per-window remote-open generation guards so a slow earlier remote-project
   open cannot overwrite the latest window binding.
+- `apps/desktop/src/main/services/account/accountBridge.ts` and
+  `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
+  account-directory adoption. The desktop Machines row and packaged CLI both
+  turn an online account machine into the same paired-machine credential record
+  and paired-only remote target; account credentials are not retained as an
+  alternate transport.
+- `apps/ade-cli/src/tuiClient/remoteLauncher.ts` and `remoteBridge.ts` —
+  `ade code remote` target resolution, legacy account-target migration,
+  paired/SSH launch ordering, bounded cancellation, project/session selection,
+  and the one-connection local socket handed to the normal ADE Code client.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local runtime connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. It preserves a newer already-running machine
@@ -175,6 +185,26 @@ run a local repair against data owned by the remote machine. See
    calls `projects.add { rootPath }` against the remote runtime to bind it.
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.
+
+`ade code remote` consumes that same saved target registry and paired credential
+store. Before opening a credentialless routed SSH record, it compares the saved
+name and all saved hosts with the signed-in account directory. An exact, unique
+legacy account-machine match is adopted into the paired store and the obsolete
+SSH-shaped record is removed. If the directory cannot be verified, the machine
+is offline, or adoption fails, that account-created target fails closed; ADE
+does not silently retry it as SSH. Targets with an explicit SSH user or private
+key remain true SSH targets and bypass this migration.
+
+For a true SSH target, each alternate route is passed as
+`-o HostName=<concrete-route>` while the saved hostname stays in the destination
+argument. OpenSSH therefore still selects the saved `Host` alias and applies its
+`User`, `IdentityFile`, agent, and proxy configuration, while
+`StrictHostKeyChecking=yes` remains enforced. Account resolution, paired
+LAN/tailnet/relay dialing, and the SSH route × channel-home × binary-command
+matrix share one 45-second startup deadline. Each child process and paired
+WebSocket/auth wait is capped by the remaining budget and observes cancellation;
+authentication failure stops redundant channel-home probes for that route, and
+the final error aggregates the routes/runtimes that were actually attempted.
 
 After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. When the app relaunches with no startup project path, the first window restores the last remote binding and reconnects to the same target / project automatically. A user-triggered disconnect records manual intent on the target and suppresses restore/autoconnect until the user presses Connect again; repeated implicit reconnect failures also pause automatic reconnects and surface a "Press Connect to try again" message.
 

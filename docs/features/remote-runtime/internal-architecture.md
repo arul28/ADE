@@ -59,6 +59,15 @@ The runtime transport itself is an SSH `exec` channel running `ade rpc --stdio` 
 
 Short SSH exec probes use `ADE_REMOTE_SSH_EXEC_TIMEOUT_MS` (default 30 s). Connect failures are normalized before surfacing to the renderer so handshake timeouts, connection resets before ready, and local TCP port exhaustion have actionable messages.
 
+`ade code remote` uses the system OpenSSH client rather than the desktop's
+`ssh2` transport, but preserves the same config identity. The destination stays
+the saved target hostname (and therefore remains the `Host` pattern selector in
+`~/.ssh/config`); alternate LAN/tailnet addresses are supplied with
+`-o HostName=<route>`. This keeps alias-scoped `User`, `IdentityFile`, agent,
+`ProxyJump`/`ProxyCommand`, and other OpenSSH settings active while dialing a
+concrete address. The CLI also passes `StrictHostKeyChecking=yes`; route fallback
+never relaxes host-key verification.
+
 ### Multi-route fallback
 
 A remote target stores a primary `hostname` plus an optional `routes` array (`RemoteRuntimeTargetRoute[]`). Each route has `{ hostname, port, source: "manual" | "bonjour" | "tailscale", lastSucceededAt }`. Discovery captures every reachable address advertised by a peer (Tailscale FQDN, mDNS host, raw IPv4/IPv6 entries) and `RemoteTargetForm` persists them alongside the manual host on save.
@@ -133,6 +142,37 @@ registered for that paired device; it protects the host from replay with only a
 stolen paired secret. It does not authenticate the host to the client or prevent
 a relay operator from impersonating the host. Treat relay routes as
 trusted-operator paths, not confidential channels.
+
+### ADE Code saved-target resolution and launch budget
+
+The desktop Machines panel and `ade code remote` share
+`RemoteTargetRegistry` plus `DesktopPairedMachineStore`. Selecting an account
+directory machine asks `AccountMachineDirectoryService` to perform account
+adoption over the exact allowlisted WSS relay, persist the resulting paired
+secret and DPoP reference, and save a `transport: "paired"` target with no SSH
+fallback routes. The account access token is used for directory lookup and
+adoption; subsequent LAN, tailnet, and relay connections authenticate from the
+paired store.
+
+Older desktop builds could save that account row as a credentialless routed SSH
+target even though the desktop's own SSH stack happened to find a working local
+identity. `resolveRemoteTargetForLaunch` recognizes only the high-confidence
+legacy shape: no saved SSH user/key, non-manual routes, an exact name match, and
+all saved hosts belonging to one account-directory machine. It adopts that
+machine into the paired store and removes the obsolete record. An unavailable
+directory, offline machine, or pairing failure is a terminal paired-transport
+error for that shape. ADE never downgrades an account-created target to SSH;
+explicit SSH credentials remain the opt-in boundary for a true SSH target.
+
+`remoteLauncher.ts` gives target resolution, account adoption, paired route
+dials, and every SSH route × channel-home × absolute/PATH binary probe one shared
+45-second startup budget. Every child process, WebSocket open, and paired hello
+wait is bounded by the smaller of its normal per-attempt cap and the budget that
+remains. `SIGINT`/`SIGTERM` abort the active wait and close the corresponding
+child/socket; exhaustion returns the collected route/runtime diagnostics instead
+of polling indefinitely. After project/session selection, a paired bridge
+reconnect receives a fresh bounded startup budget; the deadline does not limit
+the connected ADE Code session itself.
 
 ## Local runtime routing
 

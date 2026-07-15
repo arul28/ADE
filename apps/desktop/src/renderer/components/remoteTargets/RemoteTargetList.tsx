@@ -26,7 +26,6 @@ import {
 import { ShareMachineCard } from "./ShareMachineCard";
 import { PairMachineForm } from "./PairMachineForm";
 import {
-  accountMachineSshRoutes,
   assignMachineSections,
   discoveredTargetInput,
   formatRemoteTargetError,
@@ -34,7 +33,7 @@ import {
 } from "./remoteMachineModel";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
-import { AccountMachineRow, accountMachineConnectHost } from "./AccountMachineRow";
+import { AccountMachineRow } from "./AccountMachineRow";
 import {
   helperTextStyle,
   inlineDetailStyle,
@@ -441,29 +440,21 @@ export function RemoteTargetList({
 
   const connectAccountMachine = useCallback(
     async (machine: AdeAccountMachine) => {
-      const hostInfo = accountMachineConnectHost(machine);
-      if (!hostInfo) return;
-      const input: RemoteRuntimeTargetInput = {
-        name: machine.name ?? hostInfo.host,
-        hostname: hostInfo.host.replace(/\.$/, ""),
-        sshUser: null,
-        // hostInfo.port is the ADE service port (lan/tailnet), not an SSH port —
-        // leave it null so the SSH transport falls back to its default (22).
-        port: null,
-        sshKeyPath: null,
-        routes: accountMachineSshRoutes(machine),
-      };
       setBusyId(`account:${machine.machineKey}`);
       setSelectedId(null);
       setHostKeyTrust(null);
       setError(null);
       try {
-        await saveTargetAndConnect(input);
+        const paired = await window.ade.account.pairMachine(machine.machineKey);
+        await loadTargets();
+        await connectTarget(paired.targetId, { skipHostKeyTrustCheck: true });
+      } catch (err) {
+        setError(formatRemoteTargetError(err));
       } finally {
         setBusyId(null);
       }
     },
-    [saveTargetAndConnect],
+    [connectTarget, loadTargets],
   );
 
   const onPaired = useCallback(

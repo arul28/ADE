@@ -3275,6 +3275,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             ],
           };
         },
+        pairMachine: async (machineKey: string) => ({
+          targetId: `paired-${machineKey}`,
+          machineKey,
+          deviceId: "dev_studio",
+          name: "Studio",
+        }),
       };
     })(),
     app: {

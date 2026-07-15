@@ -376,6 +376,7 @@ export class DesktopPairedMachineStore {
     const connection = await openSyncEnvelopeConnection({
       endpoint,
       connectTimeoutMs: options.connectTimeoutMs,
+      signal: options.signal,
       createWebSocket: options.createWebSocket,
     });
     try {
@@ -385,6 +386,7 @@ export class DesktopPairedMachineStore {
         (envelope) => envelope.type === "pairing_result"
           && envelope.requestId === pairingRequestId,
         options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+        options.signal,
       );
       try {
         connection.send("pairing_request", {
@@ -452,6 +454,7 @@ export class DesktopPairedMachineStore {
         (envelope) => envelope.requestId === helloRequestId
           && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
         options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+        options.signal,
       );
       try {
         connection.send(
@@ -552,6 +555,7 @@ export class DesktopPairedMachineStore {
       const connection = await openSyncEnvelopeConnection({
         endpoint,
         connectTimeoutMs: options.connectTimeoutMs,
+        signal: options.signal,
         createWebSocket: options.createWebSocket,
       }).catch((error) => {
         failures.push(error instanceof Error ? error.message : String(error));
@@ -574,6 +578,7 @@ export class DesktopPairedMachineStore {
           (envelope) => envelope.requestId === requestId
             && (envelope.type === "hello_ok" || envelope.type === "hello_error"),
           options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+          options.signal,
         );
         connection.send("hello", hello, requestId);
         const envelope = await response;

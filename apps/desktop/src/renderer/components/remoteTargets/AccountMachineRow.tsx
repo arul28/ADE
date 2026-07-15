@@ -1,9 +1,9 @@
 import { CaretDown, CaretUp, Cloud, PlugsConnected } from "@phosphor-icons/react";
 import type { AdeAccountMachine } from "../../../shared/types";
+import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import {
-  accountEndpointHost,
   type AccountMachineRow as AccountMachineRowModel,
   type MachineSection,
 } from "./remoteMachineModel";
@@ -18,20 +18,6 @@ type AccountMachineRowProps = {
   onToggleDetail: (rowId: string) => void;
   onConnect: (machine: AdeAccountMachine) => void;
 };
-
-/** The best lan/tailnet endpoint an account machine can be adopted+connected on. */
-export function accountMachineConnectHost(machine: AdeAccountMachine): { host: string; port: number | null } | null {
-  const ranked = [...machine.reachableEndpoints].sort((a, b) => {
-    const rank = (kind: string) => (kind === "tailnet" ? 0 : kind === "lan" ? 1 : 2);
-    return rank(a.kind) - rank(b.kind);
-  });
-  for (const endpoint of ranked) {
-    if (endpoint.kind === "relay") continue;
-    const host = accountEndpointHost(endpoint);
-    if (host) return { host, port: endpoint.port ?? null };
-  }
-  return null;
-}
 
 function endpointLabel(endpoint: AdeAccountMachine["reachableEndpoints"][number]): string {
   const detail = endpoint.host ?? endpoint.url ?? "";
@@ -50,6 +36,17 @@ function relativeLastSeen(lastSeenAt: number | null): string {
   return `Last seen ${days}d ago`;
 }
 
+function accountMachineStatusLabel(
+  machine: AdeAccountMachine,
+  connectionState: ReturnType<typeof accountMachineConnectionState>,
+  relayOnly: boolean,
+): string {
+  if (connectionState === "unreachable") return "Online · no verified paired relay";
+  if (relayOnly) return "Online · reachable through paired relay";
+  if (machine.online) return "Online · reachable on your account";
+  return relativeLastSeen(machine.lastSeenAt);
+}
+
 export function AccountMachineRow({
   row,
   section,
@@ -61,9 +58,12 @@ export function AccountMachineRow({
 }: AccountMachineRowProps) {
   const { machine } = row;
   const primaryEndpoint = machine.reachableEndpoints[0];
-  const connectHost = accountMachineConnectHost(machine);
+  const connectionState = accountMachineConnectionState(machine);
+  const available = connectionState === "available";
   const isOffline = section === "unavailable";
-  const relayOnly = machine.online && !connectHost;
+  const relayOnly = machine.online
+    && machine.reachableEndpoints.length > 0
+    && machine.reachableEndpoints.every((endpoint) => endpoint.kind === "relay");
   const trulyOffline = !machine.online;
 
   return (
@@ -97,16 +97,12 @@ export function AccountMachineRow({
               {[machine.platform, machine.deviceType].filter(Boolean).join(" · ") || "Registered on your account"}
             </div>
             <div style={helperTextStyle}>
-              {relayOnly
-                ? "Online · relay only — connect from a machine on its network"
-                : machine.online
-                  ? "Online · reachable on your account"
-                  : relativeLastSeen(machine.lastSeenAt)}
+              {accountMachineStatusLabel(machine, connectionState, relayOnly)}
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            {machine.online && connectHost ? (
+            {available ? (
               <button
                 type="button"
                 disabled={busy}
