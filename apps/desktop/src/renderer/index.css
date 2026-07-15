@@ -17,6 +17,8 @@
 
   --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
+  --animate-pulse: ade-duty-pulse 2s infinite;
+  --animate-ping: ade-duty-ping 2s infinite;
 
   --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
   --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
@@ -1113,25 +1115,42 @@ h6 {
   background-clip: text;
   color: transparent;
   font-weight: 500;
+  background-position: 0 0;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .ade-orchestrator-rainbow-text {
-    animation: ade-orchestrator-rainbow-text-shift 10s linear infinite;
-  }
+[data-orchestrator-lead-frame] {
+  position: relative;
+  isolation: isolate;
 }
 
-@keyframes ade-orchestrator-rainbow-text-shift {
-  to {
-    background-position: -200% 0;
-  }
+[data-orchestrator-lead-frame] > [data-orchestrator-lead-ring] {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .ade-orchestrator-rainbow-text {
-    animation: none;
-    background-position: 0 0;
-  }
+[data-orchestrator-lead-frame] > [data-orchestrator-lead-ring]::before,
+[data-orchestrator-lead-frame] > [data-orchestrator-lead-ring]::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+}
+
+[data-orchestrator-lead-frame] > [data-orchestrator-lead-ring]::before {
+  inset: 0;
+  background: conic-gradient(from 0deg, #ff5f5f, #ff9b3f, #f7d05c, #59d97f, #4f93ff, #a566ff, #ff5f5f);
+  opacity: 0.78;
+}
+
+[data-orchestrator-lead-frame] > [data-orchestrator-lead-ring]::after {
+  inset: 1.5px;
+  background: var(--color-bg, #0a0a0c);
+}
+
+[data-orchestrator-lead-frame][data-orchestrator-lead-frame-glow="true"] {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 0 32px 0 color-mix(in srgb, var(--color-accent, #a566ff) 14%, transparent);
 }
 
 .ade-lane-popover-branch-row {
@@ -1799,72 +1818,25 @@ button:active, [role="button"]:active {
   transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
 }
 
-@keyframes ade-pr-edge-active {
-  0% {
-    stroke-dashoffset: 0;
-    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
-  }
-  50% {
-    filter: drop-shadow(0 0 6px rgba(167, 139, 250, 0.35));
-  }
-  100% {
-    stroke-dashoffset: -18;
-    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
-  }
-}
-
 .ade-pr-edge-active {
   stroke-dasharray: 8 6;
-  animation: ade-pr-edge-active 1200ms linear infinite;
-}
-
-@keyframes ade-pr-badge-pulse {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
-  }
-  100% {
-    opacity: 1;
-  }
+  filter: drop-shadow(0 0 3px rgba(167, 139, 250, 0.24));
 }
 
 .ade-pr-badge-pulse {
-  animation: ade-pr-badge-pulse 900ms ease-in-out infinite;
-}
-
-@keyframes ade-pr-ci-pending {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-  100% {
-    opacity: 1;
-  }
+  animation: ade-duty-pulse 2s infinite;
 }
 
 .ade-pr-ci-pending {
-  animation: ade-pr-ci-pending 800ms ease-in-out infinite;
+  animation: ade-duty-pulse 2s infinite;
 }
 
 /* ═══════════════════════════════════════════════════════════
    Node Animations
    ═══════════════════════════════════════════════════════════ */
 
-@keyframes ade-node-merging-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
-  }
-  100% {
-    box-shadow: 0 0 0 12px rgba(56, 189, 248, 0);
-  }
-}
-
 .ade-node-merging {
-  animation: ade-node-merging-pulse 1200ms ease-out infinite;
+  box-shadow: 0 0 8px 2px rgba(56, 189, 248, 0.32);
 }
 
 @keyframes ade-node-disappear {
@@ -1923,6 +1895,37 @@ button:active, [role="button"]:active {
   50% {
     opacity: 1;
     transform: scale(1.3);
+  }
+}
+
+/* Status motion is intentionally duty-cycled. Long flat holds let Chromium
+   skip compositor frames while preserving a clear active/working signal. */
+@keyframes ade-duty-pulse {
+  0%,
+  40% {
+    opacity: 1;
+    animation-timing-function: steps(6);
+  }
+  50%,
+  90% {
+    opacity: 0.5;
+    animation-timing-function: steps(6);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ade-duty-ping {
+  0% {
+    opacity: 0.75;
+    scale: 0.75;
+    animation-timing-function: steps(8);
+  }
+  40%,
+  100% {
+    opacity: 0;
+    scale: 2;
   }
 }
 
@@ -1986,17 +1989,6 @@ button:active, [role="button"]:active {
     opacity: 1;
   }
 }
-
-@keyframes ade-glow-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0);
-  }
-  50% {
-    box-shadow: 0 0 12px 2px rgba(167, 139, 250, 0.15);
-  }
-}
-
 
 @keyframes ade-radar-sweep {
   0% {
@@ -2425,7 +2417,7 @@ button:active, [role="button"]:active {
 
 /* Status dot breathe */
 .ade-status-breathe {
-  animation: ade-breathe 4s ease-in-out infinite;
+  animation: ade-duty-pulse 2s infinite;
 }
 
 /* Float animation utility */
@@ -2433,70 +2425,30 @@ button:active, [role="button"]:active {
   animation: ade-float 6s ease-in-out infinite;
 }
 
-/* Glow pulse utility */
+/* Static glow utility */
 .ade-glow-pulse {
-  animation: ade-glow-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 8px 1px rgba(167, 139, 250, 0.16);
 }
 
 
-/* Blue glow pulse for active work */
+/* Blue glow for active work */
 .ade-glow-pulse-blue {
-  animation: ade-glow-pulse-blue 2s ease-in-out infinite;
+  box-shadow: 0 0 8px 2px rgba(59, 130, 246, 0.22);
 }
 
-@keyframes ade-glow-pulse-blue {
-  0%,
-  100% {
-    box-shadow: 0 0 4px 1px rgba(59, 130, 246, 0.15);
-  }
-  50% {
-    box-shadow: 0 0 12px 4px rgba(59, 130, 246, 0.3);
-  }
-}
-
-/* Red glow pulse for high-risk conflict badges */
+/* Red glow for high-risk conflict badges */
 .ade-glow-pulse-red {
-  animation: ade-glow-pulse-red 2s ease-in-out infinite;
+  box-shadow: 0 0 7px 2px rgba(239, 68, 68, 0.22);
 }
 
-@keyframes ade-glow-pulse-red {
-  0%,
-  100% {
-    box-shadow: 0 0 4px 1px rgba(239, 68, 68, 0.15);
-  }
-  50% {
-    box-shadow: 0 0 10px 3px rgba(239, 68, 68, 0.3);
-  }
-}
-
-/* Green glow pulse for resolved/passing states */
+/* Green glow for resolved/passing states */
 .ade-glow-pulse-green {
-  animation: ade-glow-pulse-green 2s ease-in-out infinite;
+  box-shadow: 0 0 7px 2px rgba(34, 197, 94, 0.22);
 }
 
-@keyframes ade-glow-pulse-green {
-  0%,
-  100% {
-    box-shadow: 0 0 4px 1px rgba(34, 197, 94, 0.15);
-  }
-  50% {
-    box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.3);
-  }
-}
-
-/* Amber glow pulse for lanes tint */
+/* Amber glow for lanes tint */
 .ade-glow-pulse-amber {
-  animation: ade-glow-pulse-amber 2s ease-in-out infinite;
-}
-
-@keyframes ade-glow-pulse-amber {
-  0%,
-  100% {
-    box-shadow: 0 0 4px 1px rgba(245, 158, 11, 0.12);
-  }
-  50% {
-    box-shadow: 0 0 12px 4px rgba(245, 158, 11, 0.25);
-  }
+  box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.18);
 }
 
 /* Emerald glow for commit HEAD node */
@@ -3666,12 +3618,7 @@ button:active, [role="button"]:active {
 
 /* Pulsing animation for running operation nodes */
 .ade-timeline-node-pulse circle:last-child {
-  animation: ade-node-pulse 2s ease-in-out infinite;
-}
-
-@keyframes ade-node-pulse {
-  0%, 100% { opacity: 0.15; r: attr(r); }
-  50% { opacity: 0.4; }
+  animation: ade-duty-pulse 2s infinite;
 }
 
 /* Running status indicator spin */
@@ -3717,38 +3664,18 @@ button:active, [role="button"]:active {
   background: rgba(24, 20, 35, 0.3);
 }
 
-/* CI status glow animations */
+/* Static CI status glows */
 .ade-ci-passing {
-  animation: ade-ci-passing-glow 2.5s ease-in-out infinite;
-}
-
-@keyframes ade-ci-passing-glow {
-  0%, 100% { box-shadow: 0 0 4px 1px rgba(34, 197, 94, 0.2); }
-  50% { box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.35); }
+  box-shadow: 0 0 7px 2px rgba(34, 197, 94, 0.24);
 }
 
 .ade-ci-failing {
-  animation: ade-ci-failing-glow 1.5s ease-in-out infinite;
+  box-shadow: 0 0 6px 2px rgba(239, 68, 68, 0.24);
 }
 
-@keyframes ade-ci-failing-glow {
-  0%, 100% { box-shadow: 0 0 4px 1px rgba(239, 68, 68, 0.2); }
-  50% { box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.35); }
-}
-
-/* Subtle breathing opacity for medium-risk conflict badges */
+/* Duty-cycled opacity for medium-risk conflict badges */
 .ade-conflict-breathe {
-  animation: ade-conflict-breathe 2.5s ease-in-out infinite;
-}
-
-@keyframes ade-conflict-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.7;
-  }
+  animation: ade-duty-pulse 2s infinite;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -3805,7 +3732,7 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: -2px;
   border-radius: 6px;
-  animation: ade-glow-pulse-blue 2.5s ease-in-out infinite;
+  box-shadow: 0 0 8px 2px rgba(59, 130, 246, 0.22);
   pointer-events: none;
 }
 
@@ -3875,17 +3802,22 @@ button:active, [role="button"]:active {
 }
 
 @keyframes ade-thinking-pulse {
-  0%, 100% { opacity: 0.3; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.15); }
+  0%, 40% {
+    opacity: 0.3;
+    transform: scale(0.85);
+    animation-timing-function: steps(6);
+  }
+  50%, 90% {
+    opacity: 1;
+    transform: scale(1.15);
+    animation-timing-function: steps(6);
+  }
+  100% { opacity: 0.3; transform: scale(0.85); }
 }
 .ade-thinking-pulse {
-  animation: ade-thinking-pulse 1.2s ease-in-out infinite;
+  animation: ade-thinking-pulse 1.6s infinite;
 }
 
-@keyframes ade-text-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
 .ade-shimmer-text {
   background: linear-gradient(
     90deg,
@@ -3899,15 +3831,11 @@ button:active, [role="button"]:active {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: ade-text-shimmer 2.4s ease-in-out infinite;
+  background-position: 50% 0;
 }
 
-@keyframes pull-btn-flash {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
 .pull-btn-flash {
-  animation: pull-btn-flash 2s ease-in-out infinite;
+  animation: ade-duty-pulse 2s infinite;
 }
 
 @keyframes animate-fade-in-up {
@@ -3972,7 +3900,7 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.06), transparent);
-  animation: ade-streaming-shimmer 2s ease-in-out infinite;
+  animation: ade-streaming-shimmer 900ms ease-out 1;
   pointer-events: none;
 }
 
@@ -4008,10 +3936,6 @@ button:active, [role="button"]:active {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: ade-title-land 640ms ease-out 1;
-}
-
-.ade-glow-pulse {
-  animation: ade-glow-pulse 2s ease-in-out infinite;
 }
 
 .ade-fade-in {
@@ -4152,11 +4076,6 @@ button:active, [role="button"]:active {
   100% { transform: translateX(80%); opacity: 0; }
 }
 
-@keyframes ade-reasoning-grid-drift {
-  0% { background-position: 0 0, 0 0; }
-  100% { background-position: -18px 0, 0 0; }
-}
-
 .ade-reasoning-effort-word {
   display: inline-block;
   transform-origin: center bottom;
@@ -4183,7 +4102,7 @@ button:active, [role="button"]:active {
   inset: 0;
   pointer-events: none;
   background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.22) 50%, transparent 78%);
-  animation: ade-reasoning-fill-sheen 1.8s ease-in-out infinite;
+  animation: ade-reasoning-fill-sheen 700ms ease-out 1;
 }
 
 .ade-reasoning-slider-fill-max {
@@ -4191,8 +4110,18 @@ button:active, [role="button"]:active {
     radial-gradient(circle at center, rgba(255, 255, 255, 0.20) 0 0.8px, transparent 1px),
     var(--reasoning-progressive-gradient);
   background-size: 4px 4px, 100% 100%;
-  animation: ade-reasoning-grid-drift 1.15s linear infinite;
   box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
+}
+
+/* Project and route surfaces stay mounted for fast switching. Pause their CSS
+   animations while parked so hidden keep-alive trees cannot keep rendering. */
+[data-ade-animation-state="paused"],
+[data-ade-animation-state="paused"] *,
+[data-ade-animation-state="paused"]::before,
+[data-ade-animation-state="paused"]::after,
+[data-ade-animation-state="paused"] *::before,
+[data-ade-animation-state="paused"] *::after {
+  animation-play-state: paused !important;
 }
 
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,

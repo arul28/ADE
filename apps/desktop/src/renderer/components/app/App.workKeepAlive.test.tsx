@@ -303,6 +303,7 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.unmounts).toBe(0);
     expect(workPage.closest("[aria-hidden='true']")).toBeNull();
+    expect(workPage.closest("[data-ade-animation-state]")?.getAttribute("data-ade-animation-state")).toBe("running");
 
     fireEvent.click(screen.getByRole("button", { name: "Open files" }));
     await screen.findByTestId("files-page");
@@ -310,6 +311,7 @@ describe("App Work route keep-alive", () => {
     const parkedWorkSurface = screen.getByTestId("work-page").closest("[aria-hidden='true']");
     expect(parkedWorkSurface).not.toBeNull();
     expect(parkedWorkSurface?.hasAttribute("hidden")).toBe(false);
+    expect(parkedWorkSurface?.getAttribute("data-ade-animation-state")).toBe("paused");
     expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("false");
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
@@ -318,6 +320,7 @@ describe("App Work route keep-alive", () => {
     await waitFor(() => {
       expect(screen.getByTestId("work-page").closest("[aria-hidden='true']")).toBeNull();
       expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("true");
+      expect(screen.getByTestId("work-page").closest("[data-ade-animation-state]")?.getAttribute("data-ade-animation-state")).toBe("running");
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
@@ -549,6 +552,7 @@ describe("App Work route keep-alive", () => {
     });
     expect(lanesLifecycle.unmounts).toBe(0);
     expect(lanesPage.closest("[aria-hidden='true']")).toBeNull();
+    expect(lanesPage.closest("[data-ade-animation-state]")?.getAttribute("data-ade-animation-state")).toBe("running");
     expect(lanesPage.getAttribute("data-active")).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "Lanes open files" }));
@@ -643,6 +647,7 @@ describe("App Work route keep-alive", () => {
         .find((node) => node.closest("[data-project-root='/remote/project']"));
       expect(remoteSurface).toBeTruthy();
       expect(remoteSurface?.closest("[aria-hidden='true']")).toBeNull();
+      expect(remoteSurface?.closest("[data-project-root]")?.getAttribute("data-ade-animation-state")).toBe("running");
       expect(remoteSurface?.getAttribute("data-active")).toBe("true");
     });
     expect(createProjectAppStore).toHaveBeenCalledWith(
@@ -670,6 +675,7 @@ describe("App Work route keep-alive", () => {
       .getAllByTestId("work-page")
       .find((node) => node.closest("[data-project-root='/fake/project']"));
     expect(localSurface?.closest("[aria-hidden='true']")).not.toBeNull();
+    expect(localSurface?.closest("[data-project-root]")?.getAttribute("data-ade-animation-state")).toBe("paused");
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

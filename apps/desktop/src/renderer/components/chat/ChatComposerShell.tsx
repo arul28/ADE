@@ -5,27 +5,6 @@ import { cn } from "../ui/cn";
 const ORCHESTRATOR_COMPOSER_GRADIENT =
   "conic-gradient(from 0deg, #ff5f5f, #ff9b3f, #f7d05c, #59d97f, #4f93ff, #a566ff, #ff5f5f)";
 
-const orchestratorComposerStyleId = "ade-orchestrator-composer-effects";
-
-function ensureOrchestratorComposerStyles(): void {
-  if (typeof document === "undefined") return;
-  if (document.getElementById(orchestratorComposerStyleId)) return;
-  const sheet = document.createElement("style");
-  sheet.id = orchestratorComposerStyleId;
-  sheet.textContent = `
-    @keyframes ade-orchestrator-composer-pulse {
-      0%, 100% { opacity: 0.28; transform: scale(0.98); }
-      50% { opacity: 0.46; transform: scale(1.02); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      [data-chat-composer-orchestrator-glow] {
-        animation: none !important;
-      }
-    }
-  `;
-  document.head.appendChild(sheet);
-}
-
 export function ChatComposerShell({
   mode,
   glowColor,
@@ -47,8 +26,6 @@ export function ChatComposerShell({
   footer?: ReactNode;
   className?: string;
 }) {
-  if (orchestratorActive) ensureOrchestratorComposerStyles();
-
   return (
     <div
       className={cn(
@@ -69,8 +46,7 @@ export function ChatComposerShell({
           className="pointer-events-none absolute -inset-8 rounded-[calc(var(--chat-radius-shell)+24px)] blur-3xl"
           style={{
             background: ORCHESTRATOR_COMPOSER_GRADIENT,
-            animation: "ade-orchestrator-composer-pulse 4.8s ease-in-out infinite",
-            willChange: "opacity, transform",
+            opacity: 0.34,
           }}
         />
       ) : null}
