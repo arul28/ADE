@@ -340,6 +340,46 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  it("prioritizes the invoking project config root for durable token creation", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const registerAccountConfigRoot = vi.fn();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+        registerAccountConfigRoot,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: {
+          action: "createToken",
+          args: { projectRoot },
+        },
+      });
+
+      expect(registerAccountConfigRoot).toHaveBeenCalledWith(projectRoot, undefined, {
+        prioritize: true,
+      });
+      expect(accountAuthService.createToken).toHaveBeenCalledTimes(1);
+      expect(registry.list()).toEqual([]);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("reports a build hash for manually-started CLI entrypoints", async () => {
     const { registry, root } = createRegistry();
     const cliPath = path.join(root, "manual-cli.cjs");

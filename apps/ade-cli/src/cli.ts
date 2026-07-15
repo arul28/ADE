@@ -154,6 +154,7 @@ type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  injectProjectRootIntoArgs?: boolean;
 };
 
 type FormatterId =
@@ -11631,7 +11632,10 @@ function buildCliPlan(
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [accountActionStep("result", "createToken")],
+      steps: [{
+        ...accountActionStep("result", "createToken"),
+        injectProjectRootIntoArgs: true,
+      }],
     };
   }
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
@@ -18283,8 +18287,17 @@ async function executePlan(
     const values: JsonObject = {};
     for (const step of plan.steps) {
       try {
-        const params =
+        const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;
+        const params = step.injectProjectRootIntoArgs
+          ? {
+              ...(resolvedParams ?? {}),
+              args: {
+                ...(isRecord(resolvedParams?.args) ? resolvedParams.args : {}),
+                projectRoot: connection.projectRoot,
+              },
+            }
+          : resolvedParams;
         const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {

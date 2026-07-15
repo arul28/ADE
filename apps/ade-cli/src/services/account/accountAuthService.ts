@@ -55,6 +55,7 @@ export type AccountSessionRecord = {
   email: string | null;
   name: string | null;
   authSource?: Exclude<AccountAuthSource, "env-token" | null>;
+  suppressEnvCredential?: true;
 };
 
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
@@ -126,6 +127,7 @@ type PendingDeviceLoginSession = {
   deviceSecret: string;
   expiresAtMs: number;
   intervalSec: number;
+  suppressEnvCredential: boolean;
 };
 
 type TokenResponse = {
@@ -427,6 +429,7 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       email: readNonEmptyString(parsed.email),
       name: readNonEmptyString(parsed.name),
       authSource: readAuthSource(parsed.authSource),
+      ...(parsed.suppressEnvCredential === true ? { suppressEnvCredential: true } : {}),
     };
   } catch {
     return null;
@@ -668,6 +671,7 @@ export function createAccountAuthService(args: {
       email: claims.email ?? previous?.email ?? null,
       name: claims.name ?? previous?.name ?? null,
       authSource,
+      ...(previous?.suppressEnvCredential ? { suppressEnvCredential: true } : {}),
     };
   };
 
@@ -937,6 +941,7 @@ export function createAccountAuthService(args: {
       deviceSecret,
       expiresAtMs,
       intervalSec,
+      suppressEnvCredential: options.ignoreEnvCredential === true,
     });
     return {
       sessionId,
@@ -1084,12 +1089,15 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
-    const record = buildSessionRecord({
+    const baseRecord = buildSessionRecord({
       accessToken,
       refreshToken: readNonEmptyString(payload.refresh_token),
       tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
       expiresInSec,
     }, null, "device");
+    const record: AccountSessionRecord = session.suppressEnvCredential
+      ? { ...baseRecord, suppressEnvCredential: true }
+      : baseRecord;
     persistSession(record);
     authEpoch += 1;
     pendingDeviceSessions.delete(normalizedSessionId);
@@ -1103,13 +1111,16 @@ export function createAccountAuthService(args: {
   };
 
   const getStatus = (): AccountAuthStatus => {
+    const record = readSession();
+    if (record?.suppressEnvCredential) return toStatus(record);
     const envCredential = readEnvCredential();
-    return envCredential ? envCredentialStatus(envCredential) : toStatus(readSession());
+    return envCredential ? envCredentialStatus(envCredential) : toStatus(record);
   };
 
   const getAccessToken = async (): Promise<string> => {
+    const record = readSession();
     const envCredential = readEnvCredential();
-    if (envCredential) {
+    if (envCredential && !record?.suppressEnvCredential) {
       const inspected = inspectEnvCredential(envCredential);
       resetEnvSessionIfCredentialChanged(envCredential, inspected);
       if (inspected.kind === "invalid") {
@@ -1195,7 +1206,6 @@ export function createAccountAuthService(args: {
       }
     }
 
-    const record = readSession();
     if (!record?.accessToken) {
       throw new Error("ADE is not signed in. Run `ade login` to sign in.");
     }
@@ -1236,12 +1246,12 @@ export function createAccountAuthService(args: {
   };
 
   const createToken = async (): Promise<AccountTokenCreateResult> => {
-    if (readEnvCredential()) {
+    const record = readSession();
+    if (readEnvCredential() && !record?.suppressEnvCredential) {
       throw new Error(
         "ADE is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.",
       );
     }
-    const record = readSession();
     if (!record?.refreshToken) {
       throw new Error("The current ADE account session has no refresh token. Run `ade login` again, then retry.");
     }

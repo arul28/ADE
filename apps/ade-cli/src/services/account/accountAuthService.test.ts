@@ -406,6 +406,88 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
+  it("keeps an explicit device identity active instead of reverting to inherited env auth", async () => {
+    const store = new MemoryCredentialStore();
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const inheritedAccessToken = jwt({
+      sub: "inherited-user",
+      email: "inherited@example.com",
+      exp: Math.floor((nowMs + 3600_000) / 1000),
+    });
+    const deviceAccessToken = jwt({ sub: "device-user", email: "device@example.com" });
+    const env = { ADE_ACCOUNT_TOKEN: inheritedAccessToken } as NodeJS.ProcessEnv;
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "explicit-device-code",
+          user_code: "EXPL-ICIT",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: deviceAccessToken,
+          refresh_token: "explicit-device-refresh",
+          expires_in: 3600,
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      env,
+      now: () => nowMs,
+      randomUUID: () => "explicit-device-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin({ ignoreEnvCredential: true });
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: {
+        userId: "device-user",
+        email: "device@example.com",
+        source: "device",
+      },
+    });
+    expect(env.ADE_ACCOUNT_TOKEN).toBe(inheritedAccessToken);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "device-user",
+      email: "device@example.com",
+      source: "device",
+    });
+    await expect(service.getAccessToken()).resolves.toBe(deviceAccessToken);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: deviceAccessToken,
+      authSource: "device",
+      suppressEnvCredential: true,
+    });
+
+    const restartedService = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      env,
+      now: () => nowMs,
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(restartedService);
+    expect(restartedService.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "device-user",
+      email: "device@example.com",
+      source: "device",
+    });
+    await expect(restartedService.getAccessToken()).resolves.toBe(deviceAccessToken);
+
+    restartedService.signOut();
+    expect(restartedService.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "inherited-user",
+      email: "inherited@example.com",
+      source: "env-token",
+    });
+  });
+
   it("pins concurrent device sessions to the bridge that created each code", async () => {
     let activeBridge = "https://directory-a.example.test";
     const getDeviceBridgeUrl = vi.fn(() => activeBridge);

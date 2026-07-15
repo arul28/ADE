@@ -70,6 +70,7 @@ export type MultiProjectRpcHandlerOptions = {
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
   accountAuthService?: AccountAuthService;
+  registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -447,9 +448,11 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const registerAccountConfigRoot = options.registerAccountConfigRoot
+    ?? registerAccountConfigProjectRoot;
   const registerAccountProjects = (): void => {
     for (const project of projectRegistry.list()) {
-      registerAccountConfigProjectRoot(project.rootPath);
+      registerAccountConfigRoot(project.rootPath);
     }
   };
   registerAccountProjects();
@@ -773,18 +776,18 @@ export function createMultiProjectRpcRequestHandler(
           `account.${action} requires the cto role.`,
         );
       }
-      // `ade login` connects with autoRegisterProject:false, so the invoking
-      // project is never in projects.json. Register its root as an account-config
-      // source (WITHOUT projects.add) so startLogin can read that project's
-      // CLERK_* secrets; this preserves the "login does no projects.add" invariant.
-      if (action === "startLogin" || action === "startDeviceLogin") {
-        const startArgs = isRecord(params.args) ? params.args : {};
-        const startProjectRoot =
-          typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";
-        if (startProjectRoot) {
+      // Account auth commands connect with autoRegisterProject:false, so the
+      // invoking project may not be in projects.json. Register its root only as
+      // an account-config source (WITHOUT projects.add) so login and durable-token
+      // creation can resolve that project's CLERK_* secrets after a brain restart.
+      if (action === "startLogin" || action === "startDeviceLogin" || action === "createToken") {
+        const accountArgs = isRecord(params.args) ? params.args : {};
+        const accountProjectRoot =
+          typeof accountArgs.projectRoot === "string" ? accountArgs.projectRoot.trim() : "";
+        if (accountProjectRoot) {
           // Prioritize the invoking project's root so its CLERK_* secrets win
           // over any project registered earlier in a multi-project brain.
-          registerAccountConfigProjectRoot(startProjectRoot, undefined, {
+          registerAccountConfigRoot(accountProjectRoot, undefined, {
             prioritize: true,
           });
         }

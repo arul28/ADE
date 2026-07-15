@@ -167,7 +167,11 @@ describe("ADE CLI", () => {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [{ method: "account.call", params: { action: "createToken", args: {} } }],
+      steps: [{
+        method: "account.call",
+        params: { action: "createToken", args: {} },
+        injectProjectRootIntoArgs: true,
+      }],
     });
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
@@ -2824,7 +2828,7 @@ describe("ADE CLI", () => {
     }
   });
 
-  posixIt("reports signed-out account status over the machine socket in headless mode", async () => {
+  posixIt("runs projectless account RPC while passing project config root for token creation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-status-sock-"));
     const socketPath = path.join(root, "ade.sock");
     const requests: Array<{ method: string; params?: unknown }> = [];
@@ -2845,9 +2849,22 @@ describe("ADE CLI", () => {
           };
         }
         if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "createToken") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                token: "durable-token-output",
+                source: "refresh_token",
+                guidance: "Store it in a secret manager.",
+              },
+              statusHints: {},
+            };
+          }
           return {
             domain: "account",
-            action: "status",
+            action,
             result: {
               signedIn: false,
               userId: null,
@@ -2878,6 +2895,27 @@ describe("ADE CLI", () => {
       expect(requests.at(-1)).toEqual({
         method: "account.call",
         params: { action: "status", args: {} },
+      });
+      expect(requests.some((request) => request.method === "projects.add")).toBe(false);
+
+      requests.length = 0;
+      const tokenResult = await runCli([
+        "--project-root",
+        root,
+        "--socket",
+        socketPath,
+        "account",
+        "token",
+        "create",
+        "--text",
+      ]);
+      expect(tokenResult.exitCode).toBe(0);
+      expect(requests.at(-1)).toEqual({
+        method: "account.call",
+        params: {
+          action: "createToken",
+          args: { projectRoot: root },
+        },
       });
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
     } finally {
@@ -3008,6 +3046,12 @@ describe("ADE CLI", () => {
         exitCode: 0,
       });
       expect(JSON.stringify(result)).not.toContain("access-token-must-not-print");
+      expect(JSON.stringify(result)).not.toContain("refresh-env-secret-must-not-print");
+      const stderr = stderrWrite.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      expect(stderr).not.toContain("access-token-must-not-print");
+      expect(stderr).not.toContain("refresh-env-secret-must-not-print");
       expect(requests.filter((request) => request.method === "account.call"))
         .toEqual([
           { method: "account.call", params: { action: "status", args: {} } },
