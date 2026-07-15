@@ -438,7 +438,6 @@ function audienceIncludes(audience: JWTPayload["aud"], expected: string): boolea
 }
 
 function isAllowedAccountToken(payload: JWTPayload, oauthClientId: string): boolean {
-  if (payload.aud === undefined) return true;
   return audienceIncludes(payload.aud, oauthClientId) || payload.azp === oauthClientId;
 }
 

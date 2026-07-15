@@ -230,16 +230,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mintToken(sub: string, audience = OAUTH_CLIENT_ID): Promise<string> {
+async function mintToken(
+  sub: string,
+  audience: string | null = OAUTH_CLIENT_ID,
+  authorizedParty: string | null = audience,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ azp: audience })
+  let token = new SignJWT(authorizedParty ? { azp: authorizedParty } : {})
     .setProtectedHeader({ alg: "RS256", kid: "account-test" })
     .setIssuer(ISSUER)
     .setSubject(sub)
-    .setAudience(audience)
     .setIssuedAt(now)
-    .setExpirationTime(now + 600)
-    .sign(signingKey);
+    .setExpirationTime(now + 600);
+  if (audience) token = token.setAudience(audience);
+  return token.sign(signingKey);
 }
 
 function makeEnv(): RelayEnv & { DB: FakeAccountD1 } {
@@ -348,10 +352,17 @@ function request(pathname: string, args: {
 }
 
 describe("account integration re-keying", () => {
-  it("reuses the directory Worker Clerk JWKS issuer, subject, and audience checks", async () => {
+  it("verifies the Clerk issuer, subject, and ADE client binding", async () => {
     const env = makeEnv();
     await expect(verifyAccountToken(await mintToken("user_1"), env)).resolves.toBe("user_1");
+    await expect(verifyAccountToken(await mintToken("user_1", null, OAUTH_CLIENT_ID), env)).resolves.toBe("user_1");
     await expect(verifyAccountToken(await mintToken("user_1", "wrong-client"), env)).rejects.toThrow(
+      "Token audience is not allowed",
+    );
+    await expect(verifyAccountToken(await mintToken("user_1", null, "wrong-client"), env)).rejects.toThrow(
+      "Token audience is not allowed",
+    );
+    await expect(verifyAccountToken(await mintToken("user_1", null, null), env)).rejects.toThrow(
       "Token audience is not allowed",
     );
   });
