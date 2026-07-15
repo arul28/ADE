@@ -17829,10 +17829,11 @@ async function runAccountLogin(
   let pendingSessionId: string | null = null;
 
   try {
+    const explicitHeadless = plan.explicitHeadless || options.headless;
     const mode = detectAccountLoginMode({
-      explicitHeadless: plan.explicitHeadless || options.headless,
+      explicitHeadless,
     });
-    if (mode === "env-token") {
+    if (!explicitHeadless) {
       let status = await runAccountAction("status");
       const source = asString(status.source);
       if (status.signedIn === true && source === "env-token") {
@@ -17858,6 +17859,8 @@ async function runAccountLogin(
           { nextAction: "Replace it with a current access token or durable refresh token, then restart the ADE brain." },
         );
       }
+    }
+    if (mode === "env-token") {
       throw new CliExecutionError(
         "ADE_ACCOUNT_TOKEN is set in this shell, but the running ADE brain did not inherit it.",
         { nextAction: "Restart the ADE brain from this environment, then retry `ade login`." },

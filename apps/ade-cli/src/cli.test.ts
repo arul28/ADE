@@ -3001,6 +3001,68 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("uses a valid machine-brain env token when the invoking CLI did not inherit it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-brain-env-token-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: unknown }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "cto",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call" && request.params?.action === "status") {
+          return {
+            domain: "account",
+            action: "status",
+            result: {
+              signedIn: true,
+              userId: "brain-env-user",
+              email: "brain-env@example.com",
+              name: "Brain Env User",
+              expiresAt: "2026-07-14T13:00:00.000Z",
+              source: "env-token",
+            },
+            statusHints: {},
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const previousToken = process.env.ADE_ACCOUNT_TOKEN;
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      const result = await runCli(["--socket", socketPath, "login", "--text"]);
+
+      expect(result).toEqual({
+        output: "Signed in as brain-env@example.com (env-token)\n",
+        exitCode: 0,
+      });
+      expect(requests.filter((request) => request.method === "account.call")).toEqual([
+        { method: "account.call", params: { action: "status", args: {} } },
+      ]);
+      expect(stderrWrite.mock.calls.flat().join("")).toContain(
+        "Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.",
+      );
+    } finally {
+      stderrWrite.mockRestore();
+      if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
+      else process.env.ADE_ACCOUNT_TOKEN = previousToken;
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("verifies a refresh-token env credential before reporting login success", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-env-refresh-sock-"));
     const socketPath = path.join(root, "ade.sock");
@@ -3077,7 +3139,7 @@ describe("ADE CLI", () => {
     }
   });
 
-  posixIt("runs explicit headless login despite inherited env auth", async () => {
+  posixIt("runs explicit headless login despite local and brain env auth", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-explicit-device-sock-"));
     const socketPath = path.join(root, "ade.sock");
     const requests: Array<{ method: string; params?: any }> = [];
@@ -3097,6 +3159,21 @@ describe("ADE CLI", () => {
         }
         if (request.method === "account.call") {
           const action = request.params?.action;
+          if (action === "status") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                signedIn: true,
+                userId: "brain-env-user",
+                email: "brain-env@example.com",
+                name: null,
+                expiresAt: "2026-07-14T13:00:00.000Z",
+                source: "env-token",
+              },
+              statusHints: {},
+            };
+          }
           if (action === "startDeviceLogin") {
             return {
               domain: "account",
@@ -3439,6 +3516,21 @@ describe("ADE CLI", () => {
         }
         if (request.method === "account.call") {
           const action = request.params?.action;
+          if (action === "status") {
+            return {
+              domain: "account",
+              action,
+              result: {
+                signedIn: false,
+                userId: null,
+                email: null,
+                name: null,
+                expiresAt: null,
+                source: null,
+              },
+              statusHints: {},
+            };
+          }
           if (action === "startLogin") {
             return {
               domain: "account",
@@ -3510,7 +3602,7 @@ describe("ADE CLI", () => {
       const accountActions = requests
         .filter((request) => request.method === "account.call")
         .map((request) => request.params?.action);
-      expect(accountActions).toEqual(["startLogin", "startDeviceLogin", "pollLogin"]);
+      expect(accountActions).toEqual(["status", "startLogin", "startDeviceLogin", "pollLogin"]);
       expect(stderrWrite.mock.calls.flat().join("")).toContain(authorizeUrl);
     } finally {
       stderrWrite.mockRestore();
