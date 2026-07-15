@@ -147,7 +147,10 @@ import {
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
-import type { AccountAuthService } from "./services/account/accountAuthService";
+import {
+  getSignedInAccountAccessToken,
+  type AccountAuthService,
+} from "./services/account/accountAuthService";
 import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
@@ -692,6 +695,7 @@ export async function createAdeRuntime(args: {
       projectRoots: () => [projectRoot],
       logger,
     });
+    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1045,6 +1049,7 @@ export async function createAdeRuntime(args: {
     openExternal: async () => {},
     onGitHubStatusChanged: (status) =>
       pushEvent("runtime", { type: "github_status_changed", event: status }),
+    getAccountAccessToken,
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -1201,6 +1206,7 @@ export async function createAdeRuntime(args: {
     onPrStateIngested: () => prPollingServiceForIngress?.poke(),
     secretService: automationSecretService,
     githubService: headlessLinearServices.githubService,
+    getAccountAccessToken,
     listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
     ingressCursorStore: createKvIngressCursorStore(db),
     // 30s halves worst-case webhook latency. Each poll is one request to our
@@ -1221,6 +1227,7 @@ export async function createAdeRuntime(args: {
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
         getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
+        getAccountAccessToken,
         cursorStore: createKvIngressCursorStore(db),
         hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
         isAdeAppConnection: () => {

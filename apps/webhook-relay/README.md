@@ -44,6 +44,7 @@ and each ADE poll is one Worker request plus a bounded D1 read.
 npm --prefix apps/webhook-relay install
 npm --prefix apps/webhook-relay run typecheck
 npm --prefix apps/webhook-relay run test
+npm --prefix apps/webhook-relay run build
 npm --prefix apps/webhook-relay run dev
 ```
 
@@ -70,6 +71,9 @@ cd apps/webhook-relay
 printf '%s' "$GITHUB_WEBHOOK_SECRET" | npx wrangler secret put GITHUB_WEBHOOK_SECRET
 printf '%s' "$GITHUB_APP_ID" | npx wrangler secret put GITHUB_APP_ID
 printf '%s' "$GITHUB_APP_PRIVATE_KEY" | npx wrangler secret put GITHUB_APP_PRIVATE_KEY
+printf '%s' "$CLERK_JWKS_URL" | npx wrangler secret put CLERK_JWKS_URL
+printf '%s' "$CLERK_ISSUER" | npx wrangler secret put CLERK_ISSUER
+printf '%s' "$CLERK_OAUTH_CLIENT_ID" | npx wrangler secret put CLERK_OAUTH_CLIENT_ID
 npm run deploy
 ```
 
@@ -80,8 +84,20 @@ when webhook state has not arrived yet or the user presses Refresh in Settings.
 `GITHUB_APP_PRIVATE_KEY` should be the private key PEM downloaded from the
 GitHub App settings.
 
-Linear support requires no new Wrangler secrets. Each ADE client generates its
-own webhook signing secret and registers it into the
+`CLERK_JWKS_URL`, `CLERK_ISSUER`, and `CLERK_OAUTH_CLIENT_ID` enable the
+additive account integration path. Signed-in ADE clients send the Clerk access
+token in `x-ade-account-token` alongside the existing GitHub or Linear
+`Authorization` header. A matching Clerk `sub` can read a repository or Linear
+organization already associated with that account; callers without this header
+continue through the legacy authorization paths unchanged. `GET /account/integrations`
+lists only the caller's associated repositories and
+Linear organizations. `DELETE /account/integrations` clears those account
+associations and records an account-specific unlink tombstone, so subsequent
+dual-credential requests cannot silently restore them. It does not delete
+provider mappings, events, signing secrets, or legacy access.
+
+Legacy Linear support requires no additional Wrangler secrets. Each ADE client
+generates its own webhook signing secret and registers it into the
 `linear_organizations` D1 table through the authenticated registration route.
 For local tests or a Linear-compatible proxy, `LINEAR_API_BASE_URL` overrides
 the default `https://api.linear.app/graphql` endpoint. It may be the GraphQL URL
@@ -143,6 +159,8 @@ UUID or a stable ADE project slug.
 
 Self-hosted legacy project-token routes do not use the hosted app-user token and
 continue to authenticate with the derived `ade_proj_...` relay token.
+The `ade_proj_...` scheme remains supported alongside account authentication;
+account re-keying does not replace or retire it.
 
 For dev/runtime launches, ADE also accepts env vars instead of
 `local.secret.yaml`. Setting these opts the runtime into the legacy

@@ -346,6 +346,7 @@ export function createGithubService({
   credentialStore,
   ghAuthTokenProvider,
   githubRelaySecretReader,
+  getAccountAccessToken,
 }: {
   logger: Logger;
   projectRoot: string;
@@ -353,6 +354,7 @@ export function createGithubService({
   credentialStore?: SyncCredentialStore | null;
   ghAuthTokenProvider?: (() => GitHubCliAuthResult) | null;
   githubRelaySecretReader?: GitHubRelaySecretReader | null;
+  getAccountAccessToken?: (() => Promise<string | null>) | null;
 }) {
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
@@ -1064,11 +1066,15 @@ export function createGithubService({
     const name = args.name?.trim();
     const repo = owner && name ? { owner, name } : await detectRepo();
     const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
+    const accountAccessToken = getAccountAccessToken
+      ? await getAccountAccessToken().catch(() => null)
+      : null;
     return fetchGitHubAppInstallationStatus({
       repo,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh === true,
       githubAppUserToken,
+      accountAccessToken,
       auditLog: appUserAuth.auditLog,
     });
   };

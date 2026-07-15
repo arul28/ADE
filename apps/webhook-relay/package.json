@@ -8,8 +8,12 @@
     "deploy": "wrangler deploy",
     "d1:migrate:local": "wrangler d1 migrations apply ade-github-relay --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-github-relay --remote",
+    "build": "wrangler deploy --dry-run --outdir dist",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.0",

@@ -1,3 +1,5 @@
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+
 export type RelayEnv = {
   DB: D1Database;
   GITHUB_WEBHOOK_SECRET: string;
@@ -7,6 +9,9 @@ export type RelayEnv = {
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_API_BASE_URL?: string;
   LINEAR_API_BASE_URL?: string;
+  CLERK_JWKS_URL?: string;
+  CLERK_ISSUER?: string;
+  CLERK_OAUTH_CLIENT_ID?: string;
   /**
    * Signing secret of the ADE Linear OAuth application. OAuth-app webhooks
    * sign every workspace's deliveries with this one app-level secret (unlike
@@ -45,6 +50,23 @@ type LinearOrganizationRow = {
   webhook_secret: string;
 };
 
+type AccountMappingRow = {
+  account_id: string | null;
+};
+
+type AccountRepositoryRow = {
+  repository_full_name: string;
+  owner: string;
+  name: string;
+  installation_id: number | null;
+  repository_selection: string | null;
+  installed: number;
+};
+
+type AccountLinearOrganizationRow = {
+  org_id: string;
+};
+
 type LinearViewerOrganizationResult =
   | { authorized: true; organizationId: string }
   | { authorized: false; response: Response };
@@ -74,6 +96,7 @@ type AppRepositoryRow = {
   installed: number;
   last_seen_at: string;
   removed_at: string | null;
+  account_id: string | null;
 };
 
 type LatestHookConfigRow = {
@@ -119,9 +142,11 @@ const LINEAR_AUTH_CACHE_TTL_MS = 5 * 60_000;
 const MAX_LINEAR_AUTH_CACHE_ENTRIES = 1_000;
 const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
 const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
+const ACCOUNT_TOKEN_HEADER = "x-ade-account-token";
 const encoder = new TextEncoder();
 const linearOrganizationByTokenHash = new Map<string, { organizationId: string; expiresAt: number }>();
 const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
+const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -398,6 +423,98 @@ function readAuthorizationHeader(request: Request): string {
   return request.headers.get("authorization")?.trim() ?? "";
 }
 
+function getRemoteJwks(rawUrl: string): ReturnType<typeof createRemoteJWKSet> {
+  const url = new URL(rawUrl);
+  const cacheKey = url.toString();
+  const cached = remoteJwksByUrl.get(cacheKey);
+  if (cached) return cached;
+  const jwks = createRemoteJWKSet(url);
+  remoteJwksByUrl.set(cacheKey, jwks);
+  return jwks;
+}
+
+function audienceIncludes(audience: JWTPayload["aud"], expected: string): boolean {
+  return typeof audience === "string" ? audience === expected : Array.isArray(audience) && audience.includes(expected);
+}
+
+function isAllowedAccountToken(payload: JWTPayload, oauthClientId: string): boolean {
+  return audienceIncludes(payload.aud, oauthClientId) || payload.azp === oauthClientId;
+}
+
+function looksLikeJwt(value: string): boolean {
+  return value.split(".").length === 3;
+}
+
+function accountTokenCandidates(request: Request): string[] {
+  const explicit = request.headers.get(ACCOUNT_TOKEN_HEADER)?.trim().replace(/^Bearer\s+/i, "") ?? "";
+  const bearer = readBearerToken(request);
+  return [...new Set([explicit, bearer].filter((token) => token && looksLikeJwt(token)))];
+}
+
+export async function verifyAccountToken(token: string, env: RelayEnv): Promise<string> {
+  const issuer = env.CLERK_ISSUER?.trim() ?? "";
+  const jwksUrl = env.CLERK_JWKS_URL?.trim() ?? "";
+  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
+  if (!issuer || !jwksUrl || !oauthClientId) throw new Error("Clerk authentication is not configured");
+
+  const { payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
+    issuer,
+    algorithms: ["RS256"],
+    clockTolerance: 5,
+    requiredClaims: ["sub", "exp"],
+  });
+  if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
+  if (!isAllowedAccountToken(payload, oauthClientId)) throw new Error("Token audience is not allowed");
+  return payload.sub;
+}
+
+async function hasValidBearerAccountToken(request: Request, env: RelayEnv): Promise<boolean> {
+  const token = readBearerToken(request);
+  if (!looksLikeJwt(token)) return false;
+  try {
+    await verifyAccountToken(token, env);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function authenticateAccount(request: Request, env: RelayEnv): Promise<string | null> {
+  for (const token of accountTokenCandidates(request)) {
+    try {
+      return await verifyAccountToken(token, env);
+    } catch {
+      // Account auth is additive. An invalid or absent account credential must
+      // never suppress a successful legacy GitHub/Linear authorization path.
+    }
+  }
+  return null;
+}
+
+async function githubRepositoryAccountMatches(
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+  accountId: string,
+): Promise<boolean> {
+  const row = await env.DB
+    .prepare("select account_id from github_app_repositories where repository_key = ? limit 1")
+    .bind(`${repo.owner}/${repo.name}`.toLowerCase())
+    .first<AccountMappingRow>();
+  return row?.account_id === accountId;
+}
+
+async function linearOrganizationAccountMatches(
+  env: RelayEnv,
+  organizationId: string,
+  accountId: string,
+): Promise<boolean> {
+  const row = await env.DB
+    .prepare("select account_id from linear_organizations where org_id = ? limit 1")
+    .bind(organizationId)
+    .first<AccountMappingRow>();
+  return row?.account_id === accountId;
+}
+
 function linearGraphqlUrl(env: RelayEnv): string {
   const configured = env.LINEAR_API_BASE_URL?.trim() || "https://api.linear.app/graphql";
   const url = new URL(configured);
@@ -411,6 +528,12 @@ async function verifyLinearViewerOrganization(
 ): Promise<LinearViewerOrganizationResult> {
   const authorization = readAuthorizationHeader(request);
   if (!authorization) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "Linear authorization token is required" }, { status: 401 }),
+    };
+  }
+  if (await hasValidBearerAccountToken(request, env)) {
     return {
       authorized: false,
       response: json({ ok: false, error: "Linear authorization token is required" }, { status: 401 }),
@@ -502,6 +625,12 @@ async function assertGitHubRepoAuthorized(
 ): Promise<GitHubRepoAccessStatus> {
   const token = readBearerToken(request);
   if (!token) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "GitHub auth token is required" }, { status: 401 }),
+    };
+  }
+  if (await hasValidBearerAccountToken(request, env)) {
     return {
       authorized: false,
       response: json({ ok: false, error: "GitHub auth token is required" }, { status: 401 }),
@@ -787,6 +916,38 @@ async function upsertAppRepository(
     .run();
 }
 
+async function associateGitHubRepositoryWithAccount(
+  env: RelayEnv,
+  repositoryKey: string,
+  repositoryFullName: string,
+  accountId: string,
+): Promise<boolean> {
+  await env.DB
+    .prepare("update github_app_repositories set account_id = ?, unlinked_account_id = null where repository_key = ? and account_id is null and (unlinked_account_id is null or unlinked_account_id <> ?)")
+    .bind(accountId, repositoryKey, accountId)
+    .run();
+  const mapping = await env.DB
+    .prepare("select account_id from github_app_repositories where repository_key = ? limit 1")
+    .bind(repositoryKey)
+    .first<AccountMappingRow>();
+  if (mapping?.account_id !== accountId) return false;
+  await env.DB
+    .prepare(`
+      update github_events
+         set account_id = ?
+       where repository_full_name = ? collate nocase
+         and account_id is null
+         and exists (
+           select 1
+             from github_app_repositories
+            where repository_key = ? and account_id = ?
+         )
+    `)
+    .bind(accountId, repositoryFullName, repositoryKey, accountId)
+    .run();
+  return true;
+}
+
 function gitHubAppApiConfigured(env: RelayEnv): boolean {
   return Boolean(env.GITHUB_APP_ID?.trim() && env.GITHUB_APP_PRIVATE_KEY?.trim());
 }
@@ -1024,6 +1185,7 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
   if (!isRecord(payload)) return json({ ok: false, error: "payload must be an object" }, { status: 400 });
 
   const payloadJson = JSON.stringify(payload);
+  const repoFullName = repositoryFullName(payload);
   const eventId = githubDelivery || `sha256:${(await sha256Hex(`${githubEvent}:${payloadJson}`)).slice(0, 32)}`;
   const existing = await env.DB
     .prepare("select event_id from github_events where project_id = ? and event_id = ? limit 1")
@@ -1031,24 +1193,31 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
     .first<{ event_id: string }>();
   if (existing) return json({ ok: true, duplicate: true, eventId }, { status: 202 });
 
+  const accountMapping = repoFullName
+    ? await env.DB
+      .prepare("select account_id from github_app_repositories where repository_key = ? limit 1")
+      .bind(repoFullName.toLowerCase())
+      .first<AccountMappingRow>()
+    : null;
   const receivedAt = new Date().toISOString();
   await env.DB
     .prepare(`
       insert into github_events(
         project_id, event_id, github_event, github_delivery, repository_full_name,
-        installation_id, summary, payload_json, received_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        installation_id, summary, payload_json, received_at, account_id
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .bind(
       projectId,
       eventId,
       githubEvent,
       githubDelivery || null,
-      repositoryFullName(payload),
+      repoFullName,
       installationId(payload),
       summarizeGitHubEvent(githubEvent, payload),
       payloadJson,
       receivedAt,
+      accountMapping?.account_id ?? null,
     )
     .run();
 
@@ -1176,12 +1345,20 @@ async function handleListEvents(request: Request, env: RelayEnv, projectId: stri
 async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
   const auth = await assertGitHubRepoAuthorized(request, env, repo);
-  if (!auth.authorized) return auth.response;
+  let accountId: string | null = null;
+  if (!auth.authorized) {
+    accountId = await authenticateAccount(request, env);
+    if (!accountId || !await githubRepositoryAccountMatches(env, repo, accountId)) {
+      return auth.response;
+    }
+  }
 
   const url = new URL(request.url);
   const limit = parseLimit(url);
   const after = url.searchParams.get("after")?.trim() || "";
   const repoFullName = `${repo.owner}/${repo.name}`.toLowerCase();
+  const accountPredicate = accountId ? " and account_id = ?" : "";
+  const accountBinding = accountId ? [accountId] : [];
   let rows: GitHubEventRow[];
   let cursorExpired = false;
 
@@ -1193,17 +1370,17 @@ async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { own
           select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
                  summary, payload_json, received_at
             from github_events
-           where repository_full_name = ? collate nocase
+           where repository_full_name = ? collate nocase${accountPredicate}
              and rowid > ?
            order by rowid desc
            limit ?
         `)
-        .bind(repoFullName, sequenceCursor, limit)
+        .bind(repoFullName, ...accountBinding, sequenceCursor, limit)
         .all<GitHubEventRow>()).results ?? [];
     } else {
       const cursor = await env.DB
-        .prepare("select rowid as event_seq, event_id from github_events where repository_full_name = ? collate nocase and event_id = ? limit 1")
-        .bind(repoFullName, after)
+        .prepare(`select rowid as event_seq, event_id from github_events where repository_full_name = ? collate nocase${accountPredicate} and event_id = ? limit 1`)
+        .bind(repoFullName, ...accountBinding, after)
         .first<CursorRow>();
       if (cursor) {
         rows = (await env.DB
@@ -1211,12 +1388,12 @@ async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { own
             select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
                    summary, payload_json, received_at
               from github_events
-             where repository_full_name = ? collate nocase
+             where repository_full_name = ? collate nocase${accountPredicate}
                and rowid > ?
              order by rowid desc
              limit ?
           `)
-          .bind(repoFullName, cursor.event_seq, limit)
+          .bind(repoFullName, ...accountBinding, cursor.event_seq, limit)
           .all<GitHubEventRow>()).results ?? [];
       } else {
         cursorExpired = true;
@@ -1225,11 +1402,11 @@ async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { own
             select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
                    summary, payload_json, received_at
               from github_events
-             where repository_full_name = ? collate nocase
+             where repository_full_name = ? collate nocase${accountPredicate}
              order by rowid desc
              limit ?
           `)
-          .bind(repoFullName, limit)
+          .bind(repoFullName, ...accountBinding, limit)
           .all<GitHubEventRow>()).results ?? [];
       }
     }
@@ -1239,11 +1416,11 @@ async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { own
         select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
                summary, payload_json, received_at
           from github_events
-         where repository_full_name = ? collate nocase
+         where repository_full_name = ? collate nocase${accountPredicate}
          order by rowid desc
          limit ?
       `)
-      .bind(repoFullName, limit)
+      .bind(repoFullName, ...accountBinding, limit)
       .all<GitHubEventRow>()).results ?? [];
   }
 
@@ -1387,27 +1564,36 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
 
 async function handleRepoStatus(request: Request, env: RelayEnv, repo: { projectId: string | null; owner: string; name: string }): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
+  let accountId: string | null = null;
   if (repo.projectId) {
     const authError = await assertProjectRelayAuthorized(request, env, repo.projectId);
     if (authError) return authError;
+    accountId = await authenticateAccount(request, env);
   } else {
     const auth = await assertGitHubRepoAuthorized(request, env, repo);
-    if (!auth.authorized) return auth.response;
+    accountId = await authenticateAccount(request, env);
+    if (!auth.authorized && (!accountId || !await githubRepositoryAccountMatches(env, repo, accountId))) {
+      return auth.response;
+    }
   }
 
   const forceRefresh = new URL(request.url).searchParams.get("refresh") === "1";
   const key = `${repo.owner}/${repo.name}`.toLowerCase();
   const diagnostics = await readWebhookEventDiagnostics(env);
-  const row = await env.DB
+  let row = await env.DB
     .prepare(`
       select repository_full_name, installation_id, repository_selection,
-             installed, last_seen_at, removed_at
+             installed, last_seen_at, removed_at, account_id
         from github_app_repositories
        where repository_key = ?
        limit 1
     `)
     .bind(key)
     .first<AppRepositoryRow>();
+  if (accountId && row && row.account_id == null
+    && await associateGitHubRepositoryWithAccount(env, key, row.repository_full_name, accountId)) {
+    row = { ...row, account_id: accountId };
+  }
   const checkedAt = new Date().toISOString();
   const installedFromWebhook = row?.installed === 1 && !row.removed_at;
   if ((forceRefresh || !installedFromWebhook) && gitHubAppApiConfigured(env)) {
@@ -1425,6 +1611,9 @@ async function handleRepoStatus(request: Request, env: RelayEnv, repo: { project
         sourceEvent: "github_app_api",
         seenAt: checkedAt,
       });
+      if (accountId) {
+        await associateGitHubRepositoryWithAccount(env, key, fullName, accountId);
+      }
       return json({
         repo: { owner: repo.owner, name: repo.name, fullName },
         installed: true,
@@ -1582,6 +1771,7 @@ async function handleLinearOrganizationRegister(request: Request, env: RelayEnv)
   if (!auth.authorized) return auth.response;
   const authority = await verifyLinearWebhookAuthority(request, env);
   if (!authority.authorized) return authority.response;
+  const accountId = await authenticateAccount(request, env);
   if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_REGISTRATION_BODY_BYTES)) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
@@ -1608,14 +1798,42 @@ async function handleLinearOrganizationRegister(request: Request, env: RelayEnv)
   const now = new Date().toISOString();
   await env.DB
     .prepare(`
-      insert into linear_organizations(org_id, webhook_secret, registered_at, updated_at)
-      values (?, ?, ?, ?)
+      insert into linear_organizations(org_id, webhook_secret, registered_at, updated_at, account_id)
+      values (?, ?, ?, ?, ?)
       on conflict(org_id) do update set
         webhook_secret = excluded.webhook_secret,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        account_id = case
+          when excluded.account_id is null then linear_organizations.account_id
+          when linear_organizations.account_id is not null then linear_organizations.account_id
+          when linear_organizations.unlinked_account_id = excluded.account_id then null
+          else excluded.account_id
+        end,
+        unlinked_account_id = case
+          when excluded.account_id is null then linear_organizations.unlinked_account_id
+          when linear_organizations.account_id is not null then linear_organizations.unlinked_account_id
+          when linear_organizations.unlinked_account_id = excluded.account_id then linear_organizations.unlinked_account_id
+          else null
+        end
     `)
-    .bind(auth.organizationId, secret, now, now)
+    .bind(auth.organizationId, secret, now, now, accountId)
     .run();
+  if (accountId) {
+    await env.DB
+      .prepare(`
+        update linear_events
+           set account_id = ?
+         where org_id = ?
+           and account_id is null
+           and exists (
+             select 1
+               from linear_organizations
+              where org_id = ? and account_id = ?
+           )
+      `)
+      .bind(accountId, auth.organizationId, auth.organizationId, accountId)
+      .run();
+  }
 
   return json({ organizationId: auth.organizationId });
 }
@@ -1699,13 +1917,19 @@ async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Res
     .first<{ event_id: string }>();
   if (existing) return json({ ok: true, duplicate: true, eventId });
 
+  const accountMapping = organization
+    ? await env.DB
+      .prepare("select account_id from linear_organizations where org_id = ? limit 1")
+      .bind(organizationId)
+      .first<AccountMappingRow>()
+    : null;
   const receivedAt = new Date().toISOString();
   await env.DB
     .prepare(`
-      insert or ignore into linear_events(org_id, event_id, event_type, action, received_at, body)
-      values (?, ?, ?, ?, ?, ?)
+      insert or ignore into linear_events(org_id, event_id, event_type, action, received_at, body, account_id)
+      values (?, ?, ?, ?, ?, ?, ?)
     `)
-    .bind(organizationId, eventId, eventType, action, receivedAt, rawBody)
+    .bind(organizationId, eventId, eventType, action, receivedAt, rawBody, accountMapping?.account_id ?? null)
     .run();
   await pruneOldLinearEvents(env);
 
@@ -1736,19 +1960,31 @@ async function handleListLinearEvents(
 ): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
   const auth = await verifyLinearViewerOrganization(request, env);
-  if (!auth.authorized) return auth.response;
-  if (auth.organizationId !== organizationId) {
-    return json({ ok: false, error: "forbidden" }, { status: 403 });
+  let legacyError: Response | null = null;
+  let accountId: string | null = null;
+  if (!auth.authorized) {
+    legacyError = auth.response;
+  } else if (auth.organizationId !== organizationId) {
+    legacyError = json({ ok: false, error: "forbidden" }, { status: 403 });
+  } else {
+    // Membership alone must not expose the org-wide backlog: app-delivered
+    // events can include private-team payloads a plain member cannot see in
+    // Linear. Reads require the same webhook authority as registration.
+    const authority = await verifyLinearWebhookAuthority(request, env);
+    if (!authority.authorized) legacyError = authority.response;
   }
-  // Membership alone must not expose the org-wide backlog: app-delivered
-  // events can include private-team payloads a plain member cannot see in
-  // Linear. Reads require the same webhook authority as registration.
-  const authority = await verifyLinearWebhookAuthority(request, env);
-  if (!authority.authorized) return authority.response;
+  if (legacyError) {
+    accountId = await authenticateAccount(request, env);
+    if (!accountId || !await linearOrganizationAccountMatches(env, organizationId, accountId)) {
+      return legacyError;
+    }
+  }
 
   const url = new URL(request.url);
   const limit = parseLimit(url);
   const after = url.searchParams.get("after")?.trim() || "";
+  const accountPredicate = accountId ? " and account_id = ?" : "";
+  const accountBinding = accountId ? [accountId] : [];
   let rows: LinearEventRow[];
   let cursorExpired = false;
 
@@ -1763,27 +1999,27 @@ async function handleListLinearEvents(
         .prepare(`
           select rowid as event_seq, event_id, event_type, action, received_at, body
             from linear_events
-           where org_id = ? and rowid > ?
+           where org_id = ?${accountPredicate} and rowid > ?
            order by rowid asc
            limit ?
         `)
-        .bind(organizationId, sequenceCursor, limit)
+        .bind(organizationId, ...accountBinding, sequenceCursor, limit)
         .all<LinearEventRow>()).results ?? [];
     } else {
       const cursor = await env.DB
-        .prepare("select rowid as event_seq, event_id from linear_events where org_id = ? and event_id = ? limit 1")
-        .bind(organizationId, after)
+        .prepare(`select rowid as event_seq, event_id from linear_events where org_id = ?${accountPredicate} and event_id = ? limit 1`)
+        .bind(organizationId, ...accountBinding, after)
         .first<CursorRow>();
       if (cursor) {
         rows = (await env.DB
           .prepare(`
             select rowid as event_seq, event_id, event_type, action, received_at, body
               from linear_events
-             where org_id = ? and rowid > ?
+             where org_id = ?${accountPredicate} and rowid > ?
              order by rowid asc
              limit ?
           `)
-          .bind(organizationId, cursor.event_seq, limit)
+          .bind(organizationId, ...accountBinding, cursor.event_seq, limit)
           .all<LinearEventRow>()).results ?? [];
       } else {
         cursorExpired = true;
@@ -1791,11 +2027,11 @@ async function handleListLinearEvents(
           .prepare(`
             select rowid as event_seq, event_id, event_type, action, received_at, body
               from linear_events
-             where org_id = ?
+             where org_id = ?${accountPredicate}
              order by rowid desc
              limit ?
           `)
-          .bind(organizationId, limit)
+          .bind(organizationId, ...accountBinding, limit)
           .all<LinearEventRow>()).results ?? [];
       }
     }
@@ -1804,11 +2040,11 @@ async function handleListLinearEvents(
       .prepare(`
         select rowid as event_seq, event_id, event_type, action, received_at, body
           from linear_events
-         where org_id = ?
+         where org_id = ?${accountPredicate}
          order by rowid desc
          limit ?
       `)
-      .bind(organizationId, limit)
+      .bind(organizationId, ...accountBinding, limit)
       .all<LinearEventRow>()).results ?? [];
   }
 
@@ -1819,12 +2055,60 @@ async function handleListLinearEvents(
   });
 }
 
+async function handleAccountIntegrations(request: Request, env: RelayEnv): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "DELETE") return text("method not allowed", 405);
+  const accountId = await authenticateAccount(request, env);
+  if (!accountId) return json({ ok: false, error: "unauthorized" }, { status: 401 });
+
+  if (request.method === "DELETE") {
+    await env.DB.prepare("update github_app_repositories set unlinked_account_id = account_id, account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    await env.DB.prepare("update github_events set account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    await env.DB.prepare("update linear_organizations set unlinked_account_id = account_id, account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    await env.DB.prepare("update linear_events set account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    return json({ ok: true });
+  }
+
+  const repositories = (await env.DB.prepare(`
+    select repository_full_name, owner, name, installation_id,
+           repository_selection, installed
+      from github_app_repositories
+     where account_id = ?
+     order by repository_full_name collate nocase
+  `).bind(accountId).all<AccountRepositoryRow>()).results ?? [];
+  const linearOrganizations = (await env.DB.prepare(`
+    select org_id
+      from linear_organizations
+     where account_id = ?
+     order by org_id
+  `).bind(accountId).all<AccountLinearOrganizationRow>()).results ?? [];
+  return json({
+    repositories: repositories.map((row) => ({
+      owner: row.owner,
+      name: row.name,
+      fullName: row.repository_full_name,
+      installationId: row.installation_id,
+      repositorySelection: row.repository_selection,
+      installed: row.installed === 1,
+    })),
+    linearOrganizations: linearOrganizations.map((row) => ({ organizationId: row.org_id })),
+  });
+}
+
 export async function handleRequest(request: Request, env: RelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return json({ ok: true });
   }
 
+  if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
   if (url.pathname === "/linear/orgs/register") return await handleLinearOrganizationRegister(request, env);
   if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env);
   const linearOrganizationEvents = routeLinearOrganizationEvents(url.pathname);

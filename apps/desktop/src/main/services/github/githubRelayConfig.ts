@@ -19,6 +19,7 @@ export const GITHUB_RELAY_API_BASE_ENV_KEYS = ["ADE_GITHUB_RELAY_API_BASE_URL", 
 export const GITHUB_RELAY_PROJECT_ENV_KEYS = ["ADE_GITHUB_RELAY_REMOTE_PROJECT_ID", "GITHUB_RELAY_REMOTE_PROJECT_ID"] as const;
 export const GITHUB_RELAY_TOKEN_ENV_KEYS = ["ADE_GITHUB_RELAY_ACCESS_TOKEN", "GITHUB_RELAY_ACCESS_TOKEN"] as const;
 export const GITHUB_RELAY_PROJECT_TOKEN_PREFIX = "ade_proj_";
+export const ACCOUNT_RELAY_TOKEN_HEADER = "x-ade-account-token";
 const GITHUB_RELAY_PROJECT_TOKEN_CONTEXT = "ade-github-relay-project";
 
 export type GitHubRelaySecretReader = (ref: string) => string | null | undefined;
@@ -204,6 +205,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
   fetchImpl?: typeof fetch;
   forceRefresh?: boolean;
   githubAppUserToken?: string | null;
+  accountAccessToken?: string | null;
   auditLog?: GitHubRelayAuthAuditLog | null;
 }): Promise<GitHubAppInstallationStatus> {
   const config = readGitHubRelayConfig(args.secretReader);
@@ -225,6 +227,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
   try {
     const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
     const githubAppUserToken = args.githubAppUserToken?.trim();
+    const accountAccessToken = args.accountAccessToken?.trim();
     const legacyAuthToken = gitHubRelayAuthorizationToken(config);
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
     const url = useLegacyProjectRoute
@@ -233,15 +236,19 @@ export async function fetchGitHubAppInstallationStatus(args: {
     const hostedAuth = useLegacyProjectRoute
       ? null
       : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
-    if (hostedAuth && !hostedAuth.ok) {
+    if (hostedAuth && !hostedAuth.ok && !accountAccessToken) {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
         error: hostedAuth.error,
       });
     }
-    const authToken = useLegacyProjectRoute ? legacyAuthToken : hostedAuth?.token ?? null;
-    if (!authToken) {
+    const authToken = useLegacyProjectRoute
+      ? legacyAuthToken
+      : hostedAuth?.ok
+        ? hostedAuth.token
+        : null;
+    if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
@@ -260,7 +267,10 @@ export async function fetchGitHubAppInstallationStatus(args: {
       method: "GET",
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${authToken}`,
+        ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+        ...(accountAccessToken && !useLegacyProjectRoute
+          ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken }
+          : {}),
       },
     });
     const payload = await response.json().catch(() => ({}));

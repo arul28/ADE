@@ -70,7 +70,13 @@ function makeWebhook(id = "webhook-1") {
   };
 }
 
-function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch; adeApp?: boolean } = {}) {
+function createHarness(options: {
+  enabled?: boolean;
+  fetchImpl?: typeof fetch;
+  adeApp?: boolean;
+  linearToken?: string | null;
+  accountToken?: string | null;
+} = {}) {
   const db = new FakeDb();
   const credentials = new FakeCredentialStore();
   const cursorBySource = new Map<string, string | null>();
@@ -99,7 +105,8 @@ function createHarness(options: { enabled?: boolean; fetchImpl?: typeof fetch; a
     projectId: "project-1",
     credentialStore: credentials,
     getLinearClient: () => client,
-    getLinearAccessToken: () => "Bearer linear-oauth-token",
+    getLinearAccessToken: () => options.linearToken === undefined ? "Bearer linear-oauth-token" : options.linearToken,
+    ...(options.accountToken ? { getAccountAccessToken: async () => options.accountToken ?? null } : {}),
     cursorStore: {
       get: (source) => cursorBySource.get(source) ?? null,
       set: ({ source, cursor }) => cursorBySource.set(source, cursor),
@@ -179,6 +186,49 @@ describe("linearIngressService", () => {
     expect(harness.db.getJson(LINEAR_RELAY_ORGANIZATION_ID_REF)).toBe("org-1");
     expect(harness.db.getJson(LINEAR_RELAY_SECRET_REF)).toBe(LINEAR_WEBHOOK_SECRET_CREDENTIAL_KEY);
     expect(Array.from(harness.db.kv.values())).not.toContain(registeredSecret);
+  });
+
+  it("attaches the account credential alongside Linear auth on register and poll requests", async () => {
+    const seenPaths: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const headers = new Headers(init?.headers);
+      seenPaths.push(url.pathname);
+      expect(headers.get("authorization")).toBe("Bearer linear-oauth-token");
+      expect(headers.get("x-ade-account-token")).toBe("clerk-account-token");
+      if (url.pathname.endsWith("/register")) {
+        return new Response(JSON.stringify({ organizationId: "org-1" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ events: [], nextCursor: null, cursorExpired: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl, accountToken: "clerk-account-token" });
+
+    await harness.service.setup();
+    await harness.service.pollNow();
+
+    expect(seenPaths).toEqual([
+      "/linear/orgs/register",
+      "/linear/orgs/org-1/events",
+    ]);
+  });
+
+  it("polls a configured Linear relay with only the signed-in account credential", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBeNull();
+      expect(headers.get("x-ade-account-token")).toBe("clerk-account-token");
+      return new Response(JSON.stringify({ events: [], nextCursor: null, cursorExpired: false }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({
+      fetchImpl,
+      linearToken: null,
+      accountToken: "clerk-account-token",
+    });
+    configureReady(harness);
+
+    await harness.service.pollNow();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("reuses an existing relay webhook and re-registers the stored signing secret", async () => {
