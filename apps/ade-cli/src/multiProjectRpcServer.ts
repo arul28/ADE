@@ -771,6 +771,18 @@ export function createMultiProjectRpcRequestHandler(
           `account.${action} requires the cto role.`,
         );
       }
+      // `ade login` connects with autoRegisterProject:false, so the invoking
+      // project is never in projects.json. Register its root as an account-config
+      // source (WITHOUT projects.add) so startLogin can read that project's
+      // CLERK_* secrets; this preserves the "login does no projects.add" invariant.
+      if (action === "startLogin") {
+        const startArgs = isRecord(params.args) ? params.args : {};
+        const startProjectRoot =
+          typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";
+        if (startProjectRoot) {
+          registerAccountConfigProjectRoot(startProjectRoot);
+        }
+      }
       registerAccountProjects();
       return await callAccountAction({
         service: accountAuthService,

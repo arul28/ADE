@@ -17603,14 +17603,27 @@ async function runAccountLogin(
     return result;
   };
 
+  // Register the invoking project's root so the daemon can read this project's
+  // CLERK_* secrets when it starts the login. `ade login` connects with
+  // autoRegisterProject:false, so the config root is otherwise never registered
+  // and startLogin reports "unconfigured" even when the project has the secrets.
+  const { projectRoot } = resolveRoots(options);
+
+  // Track the pending loopback session so EVERY non-success exit (timeout, poll
+  // error, thrown error) cancels it in `finally`; a browser tab that completes
+  // after the CLI gave up must not silently exchange the code and sign the
+  // machine in later. Cleared on success so a completed login is never cancelled.
+  let pendingSessionId: string | null = null;
+
   try {
-    const start = await runAccountAction("startLogin");
+    const start = await runAccountAction("startLogin", { projectRoot });
     const sessionId = asString(start.sessionId);
     const authorizeUrl = asString(start.authorizeUrl);
     const expiresAt = asString(start.expiresAt);
     if (!sessionId || !authorizeUrl) {
       throw new CliExecutionError("ADE account login did not start.", { start });
     }
+    pendingSessionId = sessionId;
 
     const openResult = openUrlViaOs(authorizeUrl);
     process.stderr.write(
@@ -17632,15 +17645,6 @@ async function runAccountLogin(
     while (true) {
       if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
         process.stderr.write("ADE account sign-in timed out.\n");
-        // Cancel the pending loopback session so a browser tab that completes
-        // after this timeout cannot silently exchange the code and sign the
-        // machine in later. Best-effort: a cancel failure must not mask the
-        // timeout result, so swallow it and still report the timed-out status.
-        try {
-          await runAccountAction("cancelLogin", { sessionId });
-        } catch {
-          // The pending session may already be gone; the timeout is what matters.
-        }
         const status = await runAccountAction("status");
         return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
       }
@@ -17658,6 +17662,8 @@ async function runAccountLogin(
           ?? asString(authStatus.userId)
           ?? "ADE account";
         process.stderr.write(`Signed in as ${identity}\n`);
+        // Success: do not cancel the session we just completed.
+        pendingSessionId = null;
         return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 0 };
       }
       if (pollStatus === "pending") continue;
@@ -17666,6 +17672,16 @@ async function runAccountLogin(
       return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
     }
   } finally {
+    // Cancel the still-live loopback session on any non-success exit (timeout,
+    // poll error, thrown error). Best-effort and idempotent: a cancel failure
+    // must not mask the real result. Cleared to null on success above.
+    if (pendingSessionId) {
+      try {
+        await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
+      } catch {
+        // The pending session may already be gone; the exit result is what matters.
+      }
+    }
     await connection.close();
   }
 }

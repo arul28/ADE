@@ -144,6 +144,19 @@ function readPositiveNumber(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function isLoopbackIssuerHost(hostname: string): boolean {
+  // `new URL("http://[::1]/").hostname` returns "[::1]" (brackets included), so
+  // accept both bracketed and bare IPv6 loopback forms.
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    host.endsWith(".localhost")
+  );
+}
+
 function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
   const issuer = config.issuer.trim().replace(/\/+$/, "");
   const clientId = config.clientId.trim();
@@ -160,6 +173,12 @@ function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("CLERK_ISSUER must be a valid HTTP(S) URL.");
+  }
+  // Plaintext http exposes the authorization code / bearer tokens on the wire,
+  // so only permit it against a loopback/local-dev issuer; everything else must
+  // use https.
+  if (parsed.protocol === "http:" && !isLoopbackIssuerHost(parsed.hostname)) {
+    throw new Error("CLERK_ISSUER must use https (http is only allowed for localhost).");
   }
   return { issuer, clientId };
 }

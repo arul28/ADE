@@ -1555,6 +1555,7 @@ describe("runtime account actions", () => {
         name: null,
         expiresAt: null,
       })),
+      cancelLogin: vi.fn(),
       signOut: vi.fn(() => ({
         signedIn: false,
         userId: null,
@@ -1571,11 +1572,13 @@ describe("runtime account actions", () => {
       startLogin(): Promise<unknown>;
       pollLogin(args: { sessionId: string }): Promise<unknown>;
       status(): unknown;
+      cancelLogin(args: { sessionId?: string }): void;
       signOut(): unknown;
       getToken(): Promise<string>;
     };
 
     expect(listAllowedAdeActionNames("account", service as unknown as Record<string, unknown>)).toEqual([
+      "cancelLogin",
       "getToken",
       "pollLogin",
       "signOut",
@@ -1585,16 +1588,19 @@ describe("runtime account actions", () => {
     await service.startLogin();
     await service.pollLogin({ sessionId: "account-session" });
     service.status();
+    service.cancelLogin({ sessionId: "account-session" });
     service.signOut();
     await expect(service.getToken()).resolves.toBe("account-token");
 
     expect(accountAuthService.startLogin).toHaveBeenCalledTimes(1);
     expect(accountAuthService.pollLogin).toHaveBeenCalledWith("account-session");
     expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.cancelLogin).toHaveBeenCalledWith("account-session");
     expect(accountAuthService.signOut).toHaveBeenCalledTimes(1);
     expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
     expect(isCtoOnlyAdeAction("account", "startLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "pollLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "cancelLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "signOut")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "getToken")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "status")).toBe(false);

@@ -72,6 +72,39 @@ afterEach(() => {
   for (const service of activeServices.splice(0)) service.dispose();
 });
 
+describe("AccountAuthService CLERK_ISSUER scheme enforcement", () => {
+  function serviceForIssuer(issuer: string): AccountAuthService {
+    const service = createAccountAuthService({
+      credentialStore: new MemoryCredentialStore(),
+      getOAuthConfig: () => ({ issuer, clientId: "client-public" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomBytes: (size) => Buffer.alloc(size, 0x11),
+      randomUUID: () => "login-session-scheme",
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    return service;
+  }
+
+  it("rejects a non-loopback http issuer (plaintext would leak the code/token)", async () => {
+    await expect(serviceForIssuer("http://clerk.example.test").startLogin()).rejects.toThrow(
+      /https/i,
+    );
+  });
+
+  it("accepts an https issuer", async () => {
+    const start = await serviceForIssuer("https://clerk.example.test").startLogin();
+    expect(new URL(start.authorizeUrl).protocol).toBe("https:");
+  });
+
+  it("accepts an http://localhost issuer for local development", async () => {
+    const start = await serviceForIssuer("http://localhost:3000").startLogin();
+    const authorizeUrl = new URL(start.authorizeUrl);
+    expect(authorizeUrl.protocol).toBe("http:");
+    expect(authorizeUrl.host).toBe("localhost:3000");
+  });
+});
+
 describe("AccountAuthService OAuth PKCE login", () => {
   it("derives the S256 challenge and constructs the exact loopback authorize URL", async () => {
     const verifierBytes = Buffer.alloc(32, 0x11);

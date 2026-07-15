@@ -42,16 +42,23 @@ function resolveOAuthConfig(args: {
   env: NodeJS.ProcessEnv;
   projectRoots: Iterable<string>;
 }): AccountOAuthConfig {
-  let issuer: string | null = null;
-  let clientId: string | null = null;
+  // Resolve issuer+clientId as an ATOMIC pair. The first project root that
+  // yields either half wins the pair (filling only the missing half from env),
+  // so we never combine an issuer from project A with a clientId from project B.
   for (const projectRoot of args.projectRoots) {
-    issuer ??= readProjectSecret(projectRoot, "CLERK_ISSUER");
-    clientId ??= readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
-    if (issuer && clientId) break;
+    const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER");
+    const clientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
+    if (issuer || clientId) {
+      return {
+        issuer: issuer ?? args.env.CLERK_ISSUER?.trim() ?? "",
+        clientId: clientId ?? args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
+      };
+    }
   }
-  issuer ??= args.env.CLERK_ISSUER?.trim() || null;
-  clientId ??= args.env.CLERK_OAUTH_CLIENT_ID?.trim() || null;
-  return { issuer: issuer ?? "", clientId: clientId ?? "" };
+  return {
+    issuer: args.env.CLERK_ISSUER?.trim() || "",
+    clientId: args.env.CLERK_OAUTH_CLIENT_ID?.trim() || "",
+  };
 }
 
 export function getSharedAccountAuthService(args: {

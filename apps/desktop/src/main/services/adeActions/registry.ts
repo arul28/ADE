@@ -747,6 +747,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "no input",
       example: "ade auth status --text",
     },
+    cancelLogin: {
+      description: "Cancel a pending in-memory ADE account login session so a late browser callback cannot sign in.",
+      input: "object { sessionId: string }",
+      example: "ade actions run account.cancelLogin --input-json '{\"sessionId\":\"...\"}'",
+    },
     signOut: {
       description: "Clear the machine-owned ADE account session.",
       input: "no input",
