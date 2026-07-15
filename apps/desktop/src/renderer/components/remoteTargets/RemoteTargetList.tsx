@@ -9,6 +9,8 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import type {
+  AdeAccountMachine,
+  AdeAccountMachinesResult,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
@@ -24,6 +26,7 @@ import {
 import { ShareMachineCard } from "./ShareMachineCard";
 import { PairMachineForm } from "./PairMachineForm";
 import {
+  accountMachineSshRoutes,
   assignMachineSections,
   discoveredTargetInput,
   formatRemoteTargetError,
@@ -31,6 +34,7 @@ import {
 } from "./remoteMachineModel";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
+import { AccountMachineRow, accountMachineConnectHost } from "./AccountMachineRow";
 import {
   helperTextStyle,
   inlineDetailStyle,
@@ -46,6 +50,10 @@ type RemoteTargetListProps = {
   onRemoveRequested?: (
     target: RemoteRuntimeTarget,
   ) => boolean | Promise<boolean>;
+  /** Account-directory machines, merged into the sections alongside saved/discovered. */
+  accountMachines?: AdeAccountMachine[];
+  accountMachinesState?: AdeAccountMachinesResult["state"];
+  accountMachinesMessage?: string | null;
 };
 
 type ConnectTargetOptions = {
@@ -81,6 +89,9 @@ export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
   onRemoveRequested,
+  accountMachines,
+  accountMachinesState,
+  accountMachinesMessage,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -132,8 +143,9 @@ export function RemoteTargetList({
         statusById,
         connectedFallbackId: connected?.target.id ?? null,
         discoveredMachines,
+        accountMachines,
       }),
-    [targets, statusById, connected, discoveredMachines],
+    [targets, statusById, connected, discoveredMachines, accountMachines],
   );
 
   const loadTargets = useCallback(async () => {
@@ -427,6 +439,33 @@ export function RemoteTargetList({
     [saveTargetAndConnect],
   );
 
+  const connectAccountMachine = useCallback(
+    async (machine: AdeAccountMachine) => {
+      const hostInfo = accountMachineConnectHost(machine);
+      if (!hostInfo) return;
+      const input: RemoteRuntimeTargetInput = {
+        name: machine.name ?? hostInfo.host,
+        hostname: hostInfo.host.replace(/\.$/, ""),
+        sshUser: null,
+        // hostInfo.port is the ADE service port (lan/tailnet), not an SSH port —
+        // leave it null so the SSH transport falls back to its default (22).
+        port: null,
+        sshKeyPath: null,
+        routes: accountMachineSshRoutes(machine),
+      };
+      setBusyId(`account:${machine.machineKey}`);
+      setSelectedId(null);
+      setHostKeyTrust(null);
+      setError(null);
+      try {
+        await saveTargetAndConnect(input);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [saveTargetAndConnect],
+  );
+
   const onPaired = useCallback(
     async (targetId: string) => {
       await loadTargets();
@@ -524,33 +563,50 @@ export function RemoteTargetList({
     return (
       <div style={{ display: "grid", gap: 8 }}>
         <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
-        {rows.map((row) =>
-          row.kind === "saved" ? (
-            <SavedMachineRow
-              key={row.id}
-              row={row}
-              section={section}
-              selected={selectedId === row.target.id}
-              connected={connected}
-              busyId={busyId}
-              saving={saving}
-              formPrefill={formPrefill}
-              testOpen={testingId === row.target.id}
-              error={error}
-              hostKeyTrust={
-                selectedId === row.target.id ? selectedHostKeyTrust : null
-              }
-              trustingHostKey={trustingHostKey}
-              onConnect={(targetId) => void connectTarget(targetId)}
-              onDisconnect={(targetId) => void disconnectTarget(targetId)}
-              onToggleTest={toggleTest}
-              onToggleEdit={toggleEditForm}
-              onRemove={(targetId) => void removeTarget(targetId)}
-              onSaveAndConnect={saveAndConnect}
-              onTrustAndConnect={() => void trustAndConnect()}
-              onCancelHostKeyTrust={() => setHostKeyTrust(null)}
-            />
-          ) : (
+        {rows.map((row) => {
+          if (row.kind === "saved") {
+            return (
+              <SavedMachineRow
+                key={row.id}
+                row={row}
+                section={section}
+                selected={selectedId === row.target.id}
+                connected={connected}
+                busyId={busyId}
+                saving={saving}
+                formPrefill={formPrefill}
+                testOpen={testingId === row.target.id}
+                error={error}
+                hostKeyTrust={
+                  selectedId === row.target.id ? selectedHostKeyTrust : null
+                }
+                trustingHostKey={trustingHostKey}
+                onConnect={(targetId) => void connectTarget(targetId)}
+                onDisconnect={(targetId) => void disconnectTarget(targetId)}
+                onToggleTest={toggleTest}
+                onToggleEdit={toggleEditForm}
+                onRemove={(targetId) => void removeTarget(targetId)}
+                onSaveAndConnect={saveAndConnect}
+                onTrustAndConnect={() => void trustAndConnect()}
+                onCancelHostKeyTrust={() => setHostKeyTrust(null)}
+              />
+            );
+          }
+          if (row.kind === "account") {
+            return (
+              <AccountMachineRow
+                key={row.id}
+                row={row}
+                section={section}
+                busy={busyId != null}
+                connecting={busyId === row.id}
+                detailOpen={testingId === row.id}
+                onToggleDetail={toggleTest}
+                onConnect={(machine) => void connectAccountMachine(machine)}
+              />
+            );
+          }
+          return (
             <DiscoveredMachineRow
               key={row.id}
               machine={row.machine}
@@ -561,8 +617,8 @@ export function RemoteTargetList({
               onConnect={(machine) => void connectDiscoveredMachine(machine)}
               onToggleTest={toggleTest}
             />
-          ),
-        )}
+          );
+        })}
       </div>
     );
   }
@@ -726,6 +782,14 @@ export function RemoteTargetList({
         {renderSection("connected")}
         {renderSection("available")}
         {renderSection("unavailable")}
+
+        {accountMachinesState && accountMachinesState !== "ok" && accountMachinesState !== "signed_out" ? (
+          <div style={helperTextStyle}>
+            {accountMachinesState === "not_configured"
+              ? "Your account machine directory isn't live yet — saved and nearby machines still connect."
+              : (accountMachinesMessage ?? "Can't reach your account machines right now.")}
+          </div>
+        ) : null}
 
         {!loading && totalRows === 0 && !addMode && !loadingDiscovered ? (
           <div style={helperTextStyle}>

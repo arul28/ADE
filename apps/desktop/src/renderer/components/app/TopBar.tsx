@@ -11,10 +11,8 @@ import {
   ChatCircleDots,
   CircleNotch,
   DesktopTower,
-  DeviceMobile,
   Folder,
   FolderOpen,
-  Globe,
   Plus,
   Minus,
   Plugs,
@@ -28,7 +26,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
-import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
   ZOOM_LEVEL_KEY,
@@ -44,8 +41,6 @@ import { cn } from "../ui/cn";
 import { readStoredProjectRoute } from "./projectRouteStorage";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
-import { WEB_CLIENT_BASE_URL } from "../../../shared/webClientUrl";
 import type {
   ProcessRuntime,
   ProjectIcon,
@@ -58,13 +53,16 @@ import type {
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
-import { HeaderSheet, useDialogFocusTrap } from "./HeaderSheet";
+import { useDialogFocusTrap } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
-import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import { ConnectionsPanel } from "./ConnectionsPanel";
+import {
+  subscribeOpenConnectionsPanel,
+  type ConnectionsPanelTab,
+} from "../../lib/connectionsPanel";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -215,35 +213,6 @@ function isWebSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   return connectedWebClients(snapshot).length > 0;
 }
 
-function deriveWebClientTooltip(snapshot: SyncRoleSnapshot | null): string {
-  const clients = connectedWebClients(snapshot);
-  if (clients.length === 0) return "Pair a browser with this machine";
-  const first = clients[0];
-  const name = first.deviceName?.trim();
-  return name ? `${clients.length} connected · ${name}` : `${clients.length} connected`;
-}
-
-function deriveWebSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
-  if (!snapshot) return null;
-  if (snapshot.client.state === "error") return "Web client sync error";
-  if (snapshot.role === "brain") {
-    const count = connectedWebClients(snapshot).length;
-    if (count > 0) {
-      const machineName = snapshot.localDevice.name.trim() || "this machine";
-      return `${count} web client${count === 1 ? "" : "s"} connected to ${machineName}`;
-    }
-    return "Web client pairing ready";
-  }
-  if (snapshot.mode === "standalone") return "Web client pairing ready";
-  switch (snapshot.client.state) {
-    case "connected":
-      return `Linked to ${snapshot.currentBrain?.name ?? "host"}`;
-    case "connecting":
-      return "Connecting…";
-    default:
-      return "Web client sync offline";
-  }
-}
 
 const HEADER_STATUS_COMPACT_MAX_WIDTH_PX = 767;
 
@@ -532,28 +501,6 @@ function confirmProjectTabRemoval(projectName: string): boolean {
   return window.confirm(
     `Close "${label}" project tab?\n\nThis does not remove it from Recent Projects or delete any files on disk.`,
   );
-}
-
-function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
-  if (!snapshot) return null;
-  if (snapshot.client.state === "error") return "Phone sync error";
-  if (snapshot.role === "brain") {
-    const count = snapshot.connectedPeers.filter((peer) => peer.deviceType === "phone").length;
-    if (count > 0) {
-      const machineName = snapshot.localDevice.name.trim() || "this machine";
-      return `${count} phone${count === 1 ? "" : "s"} connected to ${machineName}`;
-    }
-    return "Phone sync ready";
-  }
-  if (snapshot.mode === "standalone") return "Phone sync ready";
-  switch (snapshot.client.state) {
-    case "connected":
-      return `Linked to ${snapshot.currentBrain?.name ?? "host"}`;
-    case "connecting":
-      return "Connecting…";
-    default:
-      return "Phone sync offline";
-  }
 }
 
 function ProjectTabIcon({
@@ -876,9 +823,11 @@ function ProjectTabIcon({
 
 export function TopBar({
   personalChatsRouteActive = false,
+  accountRouteActive = false,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
+  accountRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
@@ -915,8 +864,8 @@ export function TopBar({
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
     null,
   );
-  const [syncPanelOpen, setSyncPanelOpen] = useState<"phone" | "web" | null>(null);
-  const [remotePanelOpen, setRemotePanelOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [connectionsTab, setConnectionsTab] = useState<ConnectionsPanelTab>("machines");
   const {
     state: remoteDisconnectConfirmState,
     confirmAsync: confirmRemoteDisconnect,
@@ -936,23 +885,22 @@ export function TopBar({
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
-  const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
-  const webSyncPanelRef = useRef<HTMLDivElement | null>(null);
-  const remotePanelRef = useRef<HTMLDivElement | null>(null);
-  const closeSyncPanel = useCallback(() => setSyncPanelOpen(null), []);
-  const closeRemotePanel = useCallback(() => setRemotePanelOpen(false), []);
-  const handleRemotePanelKeyDown = useDialogFocusTrap(
-    remotePanelRef,
-    closeRemotePanel,
-    remotePanelOpen,
+  const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
+  const closeConnections = useCallback(() => setConnectionsOpen(false), []);
+  const openConnections = useCallback((tab: ConnectionsPanelTab = "machines") => {
+    setConnectionsTab(tab);
+    setConnectionsOpen(true);
+  }, []);
+  const handleConnectionsPanelKeyDown = useDialogFocusTrap(
+    connectionsPanelRef,
+    closeConnections,
+    connectionsOpen,
   );
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
-  const phoneSyncOpen = syncPanelOpen === "phone";
-  const webSyncOpen = syncPanelOpen === "web";
-  const chromePanelOccludesNativeBrowser = remotePanelOpen || syncPanelOpen !== null;
+  const chromePanelOccludesNativeBrowser = connectionsOpen;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -988,7 +936,6 @@ export function TopBar({
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const webConnected = isWebSyncConnected(syncSnapshot);
-  const webClientTooltip = deriveWebClientTooltip(syncSnapshot);
   const showSyncControl = projectHydrated === true;
   const syncStatusTargetKey =
     remoteBinding?.key ?? project?.rootPath ?? "machine";
@@ -1210,7 +1157,7 @@ export function TopBar({
     let disposeSyncEvents: (() => void) | null = null;
     if (!showSyncControl) {
       setSyncSnapshot(null);
-      setSyncPanelOpen(null);
+      setConnectionsOpen(false);
       return () => {
         cancelled = true;
       };
@@ -1252,7 +1199,7 @@ export function TopBar({
     };
     startupTimer = window.setTimeout(
       startSyncStatus,
-      phoneSyncOpen || webSyncOpen ? 0 : PHONE_SYNC_STARTUP_DELAY_MS,
+      connectionsOpen ? 0 : PHONE_SYNC_STARTUP_DELAY_MS,
     );
     window.addEventListener("focus", onFocus);
     return () => {
@@ -1267,7 +1214,15 @@ export function TopBar({
     // current state. With no project open, sync calls fall back to the
     // machine-level brain service. Focus and explicit drawer opens still
     // refresh immediately.
-  }, [phoneSyncOpen, webSyncOpen, showSyncControl, syncStatusTargetKey]);
+  }, [connectionsOpen, showSyncControl, syncStatusTargetKey]);
+
+  // Let other surfaces (e.g. the Account page) open the Connections panel to a
+  // specific tab.
+  useEffect(() => {
+    return subscribeOpenConnectionsPanel((tab) => {
+      openConnections(tab);
+    });
+  }, [openConnections]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
@@ -1339,21 +1294,21 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-    if (personalChatsRouteActive) onNavigate?.("/work");
-  }, [isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (personalChatsRouteActive || accountRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  // Clicking a project tab while the Chats machine tab is foreground must
-  // leave /chats, or ProjectTabHost's route replay (which skips personal chats
-  // routes) never surfaces the project. Navigate to the CURRENT binding's
-  // stored route so the route-cache effect writes that same value back instead
-  // of stamping /work over the project's remembered position.
-  const leavePersonalChatsRoute = useCallback(() => {
-    if (!personalChatsRouteActive) return;
+  // Clicking a project tab while either the personal-chats or account machine
+  // route is foreground must leave it, or ProjectTabHost's route replay never
+  // surfaces the project. Navigate to the CURRENT binding's stored route so the
+  // route-cache effect writes that same value back instead of stamping /work
+  // over the project's remembered position.
+  const leaveMachineRoute = useCallback(() => {
+    if (!personalChatsRouteActive && !accountRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1361,12 +1316,12 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
 
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
-      leavePersonalChatsRoute();
+      leaveMachineRoute();
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
@@ -1376,7 +1331,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      leavePersonalChatsRoute,
+      leaveMachineRoute,
       project?.rootPath,
       remoteBinding,
       switchProjectToPath,
@@ -1386,7 +1341,7 @@ export function TopBar({
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
-      leavePersonalChatsRoute();
+      leaveMachineRoute();
       if (remoteBinding?.key === binding.key) {
         cancelNewTab();
         return;
@@ -1396,7 +1351,7 @@ export function TopBar({
     [
       cancelNewTab,
       isProjectBusy,
-      leavePersonalChatsRoute,
+      leaveMachineRoute,
       remoteBinding?.key,
       switchRemoteProject,
     ],
@@ -1781,16 +1736,7 @@ export function TopBar({
     [],
   );
 
-  const syncLabel = deriveSyncLabel(syncSnapshot) ?? "Phone sync";
-  const webSyncLabel = deriveWebSyncLabel(syncSnapshot) ?? "Web client sync";
-  const openMobileTestFlight = useCallback(
-    () => openExternalUrl(ADE_MOBILE_TESTFLIGHT_URL),
-    [],
-  );
-  const openWebClient = useCallback(
-    () => openExternalUrl(WEB_CLIENT_BASE_URL),
-    [],
-  );
+  const anyConnectionActive = remoteConnected || syncConnected || webConnected;
 
   const renderHeaderStatusControls = useCallback(
     (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
@@ -1800,26 +1746,20 @@ export function TopBar({
         options?.onActivate?.();
       };
 
-      const remoteChip = (
+      const connectionsChip = (
         <ShellConnectionChip
           layout={menuLayout ? "menu-row" : "chip"}
-          label="Remote"
-          connected={remoteConnected}
-          title="Manage remote machines"
-          ariaExpanded={remotePanelOpen}
+          label="Connections"
+          connected={anyConnectionActive}
+          title="Machines, mobile, and web clients"
+          ariaExpanded={connectionsOpen}
           onClick={
             menuLayout
-              ? wrapActivate(() => {
-                setSyncPanelOpen(null);
-                setRemotePanelOpen(true);
-              })
-              : () => {
-                setSyncPanelOpen(null);
-                setRemotePanelOpen((open) => !open);
-              }
+              ? wrapActivate(() => openConnections("machines"))
+              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
           }
           icon={(
-            <DesktopTower
+            <Plugs
               size={12}
               weight="regular"
               className="shrink-0 opacity-85"
@@ -1827,62 +1767,6 @@ export function TopBar({
           )}
         />
       );
-
-      const mobileChip = showSyncControl ? (
-        <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
-          label="Mobile"
-          connected={syncConnected}
-          title="Connect a phone to this machine"
-          ariaExpanded={phoneSyncOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => {
-                setRemotePanelOpen(false);
-                setSyncPanelOpen("phone");
-              })
-              : () => {
-                setRemotePanelOpen(false);
-                setSyncPanelOpen((open) => open === "phone" ? null : "phone");
-              }
-          }
-          icon={(
-            <DeviceMobile
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
-        />
-      ) : null;
-
-      const webChip = showSyncControl && !webMode ? (
-        <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
-          label="Web"
-          connected={webConnected}
-          title={webClientTooltip}
-          ariaExpanded={webSyncOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => {
-                setRemotePanelOpen(false);
-                setSyncPanelOpen("web");
-              })
-              : () => {
-                setRemotePanelOpen(false);
-                setSyncPanelOpen((open) => open === "web" ? null : "web");
-              }
-          }
-          icon={(
-            <Globe
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
-        />
-      ) : null;
 
       if (menuLayout) {
         return (
@@ -1893,9 +1777,7 @@ export function TopBar({
               onMenuActivate={options?.onActivate}
               deferInitialRead={Boolean(remoteBinding)}
             />
-            {remoteChip}
-            {mobileChip}
-            {webChip}
+            {connectionsChip}
           </div>
         );
       }
@@ -1903,24 +1785,17 @@ export function TopBar({
       return (
         <>
           <LinearQuickViewButton />
-          {remoteChip}
-          {mobileChip}
-          {webChip}
+          {connectionsChip}
           <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>
       );
     },
     [
-      phoneSyncOpen,
-      webSyncOpen,
+      anyConnectionActive,
+      closeConnections,
+      connectionsOpen,
+      openConnections,
       remoteBinding,
-      remoteConnected,
-      remotePanelOpen,
-      showSyncControl,
-      syncConnected,
-      webMode,
-      webConnected,
-      webClientTooltip,
     ],
   );
 
@@ -2499,111 +2374,43 @@ export function TopBar({
             document.body,
           )
         : null}
-      {typeof document !== "undefined"
+      {typeof document !== "undefined" && connectionsOpen
         ? createPortal(
-            <>
-              {remotePanelOpen ? (
-                <div
-                  className="fixed inset-0 z-[120]"
-                  style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                  onClick={closeRemotePanel}
+            <div
+              className="fixed inset-0 z-[120]"
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              onClick={closeConnections}
+            >
+              <div
+                ref={connectionsPanelRef}
+                className={cn(
+                  "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(560px,calc(100vw-24px))]",
+                  "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+                )}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Connections"
+                tabIndex={-1}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={handleConnectionsPanelKeyDown}
+              >
+                <button
+                  type="button"
+                  className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
+                  data-variant="ghost"
+                  onClick={closeConnections}
+                  title="Close connections"
                 >
-                  <div
-                    ref={remotePanelRef}
-                    className={cn(
-                      "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(820px,calc(100vw-24px))] overflow-y-auto",
-                      "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-                    )}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Remote machines"
-                    tabIndex={-1}
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={handleRemotePanelKeyDown}
-                  >
-                    <button
-                      type="button"
-                      className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
-                      data-variant="ghost"
-                      onClick={closeRemotePanel}
-                      title="Close remote machines"
-                    >
-                      <X size={13} weight="regular" />
-                    </button>
-                    <div className="p-4 pr-12">
-                      <RemoteTargetList
-                        onDisconnectRequested={handleRemoteTargetDisconnectRequested}
-                        onRemoveRequested={handleRemoteTargetRemoveRequested}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              <HeaderSheet
-                open={phoneSyncOpen}
-                panelRef={phoneSyncPanelRef}
-                icon={
-                  <DeviceMobile
-                    size={16}
-                    weight="regular"
-                    className="shrink-0 opacity-85"
-                  />
-                }
-                title="Connect to the ADE mobile app"
-                subtitle={syncLabel}
-                headerActions={
-                  <button
-                    type="button"
-                    className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
-                    onClick={openMobileTestFlight}
-                    title="Download ADE Mobile from TestFlight"
-                  >
-                    <ArrowSquareOut size={12} weight="regular" />
-                    Download
-                  </button>
-                }
-                onClose={closeSyncPanel}
-                ariaLabelledBy="phone-sync-title"
-                closeTitle="Close phone sync"
-              >
-                <div className="p-4">
-                  <SyncDevicesSection variant="phone" />
-                </div>
-              </HeaderSheet>
-
-              <HeaderSheet
-                open={webSyncOpen}
-                panelRef={webSyncPanelRef}
-                icon={
-                  <Globe
-                    size={16}
-                    weight="regular"
-                    className="shrink-0 opacity-85"
-                  />
-                }
-                title="Web client"
-                subtitle={webSyncLabel}
-                headerActions={
-                  <button
-                    type="button"
-                    className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
-                    onClick={openWebClient}
-                    title="Open the ADE web client in your browser"
-                  >
-                    <ArrowSquareOut size={12} weight="regular" />
-                    Open in browser
-                  </button>
-                }
-                onClose={closeSyncPanel}
-                ariaLabelledBy="web-sync-title"
-                closeTitle="Close web client"
-              >
-                <div className="p-4">
-                  <SyncDevicesSection variant="web" />
-                </div>
-              </HeaderSheet>
-            </>,
+                  <X size={13} weight="regular" />
+                </button>
+                <ConnectionsPanel
+                  initialTab={connectionsTab}
+                  onClose={closeConnections}
+                  onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+                  onRemoveRequested={handleRemoteTargetRemoveRequested}
+                />
+              </div>
+            </div>,
             document.body,
           )
         : null}

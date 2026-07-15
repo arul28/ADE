@@ -186,6 +186,10 @@ import type {
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
+  AdeAccountStatus,
+  AdeAccountLoginStart,
+  AdeAccountLoginPoll,
+  AdeAccountMachinesResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -568,6 +572,7 @@ import {
 } from "../transcription/transcriptionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
+import { createAccountBridge } from "../account/accountBridge";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
@@ -1790,6 +1795,8 @@ export function registerIpc({
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
     [IPC.builtInBrowserShowPanel]: new Set(["url"]),
     [IPC.transcriptionTranscribe]: new Set(["pcm"]),
+    [IPC.accountPollLogin]: new Set(["sessionId"]),
+    [IPC.accountCancelLogin]: new Set(["sessionId"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1863,13 +1870,70 @@ export function registerIpc({
   });
 
   const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
-    if (channel !== IPC.transcriptionTranscribe) return result;
-    if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
-    return {
-      ...(result as Record<string, unknown>),
-      raw: "[redacted]",
-      cleaned: "[redacted]",
-    };
+    if (channel === IPC.transcriptionTranscribe) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+      return {
+        ...(result as Record<string, unknown>),
+        raw: "[redacted]",
+        cleaned: "[redacted]",
+      };
+    }
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+    const record = result as Record<string, unknown>;
+    if (channel === IPC.accountStartLogin) {
+      return {
+        ...record,
+        sessionId: "[redacted]",
+        authorizeUrl: "[redacted]",
+      };
+    }
+    if (
+      channel === IPC.accountStatus
+      || channel === IPC.accountCancelLogin
+      || channel === IPC.accountSignOut
+    ) {
+      return {
+        ...record,
+        userId: "[redacted]",
+        email: "[redacted]",
+        name: "[redacted]",
+        imageUrl: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountPollLogin) {
+      const authStatus = record.authStatus;
+      return {
+        ...record,
+        authStatus: authStatus && typeof authStatus === "object" && !Array.isArray(authStatus)
+          ? {
+              ...(authStatus as Record<string, unknown>),
+              userId: "[redacted]",
+              email: "[redacted]",
+              name: "[redacted]",
+              imageUrl: "[redacted]",
+            }
+          : authStatus,
+      };
+    }
+    if (channel === IPC.accountListMachines) {
+      return {
+        ...record,
+        machines: Array.isArray(record.machines)
+          ? record.machines.map((machine) => (
+              machine && typeof machine === "object" && !Array.isArray(machine)
+                ? {
+                    ...(machine as Record<string, unknown>),
+                    machineKey: "[redacted]",
+                    deviceId: "[redacted]",
+                    name: "[redacted]",
+                    reachableEndpoints: "[redacted]",
+                  }
+                : machine
+            ))
+          : record.machines,
+      };
+    }
+    return result;
   };
 
   const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {
@@ -8475,6 +8539,48 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.feedbackReporterService) return [];
     return ctx.feedbackReporterService.list();
+  });
+
+  // Machine-owned ADE account (Clerk identity, #815). The bridge owns the auth
+  // service in main and only ever exposes the token-free surface to the
+  // renderer — getToken is deliberately never wired here.
+  const accountBridge = createAccountBridge({
+    getProjectRoot: () => getCtx().project.rootPath ?? null,
+    logger: {
+      info: (message, meta) => getCtx().logger.info(message, meta),
+      warn: (message, meta) => getCtx().logger.warn(message, meta),
+    },
+  });
+
+  ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
+    return accountBridge.status();
+  });
+
+  ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
+    return accountBridge.startLogin();
+  });
+
+  ipcMain.handle(
+    IPC.accountPollLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
+      return accountBridge.pollLogin(arg?.sessionId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountCancelLogin,
+    async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
+      accountBridge.cancelLogin(arg?.sessionId ?? "");
+      return accountBridge.status();
+    },
+  );
+
+  ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
+    return accountBridge.signOut();
+  });
+
+  ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
+    return accountBridge.listMachines();
   });
 
   const ensurePrMutationContext = (): AppContextWith<"prService" | "prPollingService"> => {

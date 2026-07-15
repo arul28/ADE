@@ -91,6 +91,9 @@ const WorkspaceGraphPage = React.lazy(() =>
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
 );
+const AccountPage = React.lazy(() =>
+  import("../account/AccountPage").then((m) => ({ default: m.AccountPage }))
+);
 const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
@@ -691,6 +694,7 @@ function ProjectTabHost() {
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   const activeBinding = !showWelcome && activeProject?.rootPath
     ? bindingForProject(activeProject, activeProjectBinding)
@@ -734,7 +738,10 @@ function ProjectTabHost() {
   }, [activeSurfaceKey]);
 
   React.useEffect(() => {
-    if (isPersonalChatsRoute) return;
+    // Machine-level routes (personal chats, account) are not project surfaces;
+    // the route-restore below would otherwise clobber them with the active
+    // project's stored route on load.
+    if (isPersonalChatsRoute || isAccountRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -758,7 +765,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isAccountRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -871,7 +878,7 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  if (!isPersonalChatsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
         <RunPage />
@@ -907,7 +914,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isPersonalChatsRoute && surfaceKey === activeSurfaceKey}
+            active={!isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -919,6 +926,13 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <PersonalChatsPage standalone={showWelcome || !activeProject} />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isAccountRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <AccountPage />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}

@@ -1,5 +1,7 @@
 import { extractError } from "../../lib/format";
 import type {
+  AdeAccountMachine,
+  AdeAccountMachineEndpoint,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectionRoute,
   RemoteRuntimeConnectionStatus,
@@ -333,13 +335,136 @@ export type DiscoveredMachineRow = {
   unavailableReason: string | null;
 };
 
-export type MachineRow = SavedMachineRow | DiscoveredMachineRow;
+/**
+ * A machine known only through the account directory (#814 Worker) — not saved
+ * or discovered locally. Online rows can be adopted+connected via their best
+ * reachable endpoint; offline rows grey out with a last-seen + "why offline?".
+ */
+export type AccountMachineRow = {
+  kind: "account";
+  id: string;
+  machine: AdeAccountMachine;
+  /** The saved target this account machine maps to, if any (enables the doctor). */
+  matchedTargetId: string | null;
+};
+
+export type MachineRow = SavedMachineRow | DiscoveredMachineRow | AccountMachineRow;
 
 export type MachineSections = {
   connected: MachineRow[];
   available: MachineRow[];
   unavailable: MachineRow[];
 };
+
+/**
+ * The bare host/address for an account endpoint. Directory endpoints may carry
+ * either a plain `host` or a full `url` (e.g. https://100.92.14.3:8787); the SSH
+ * connect + dedupe paths need the hostname alone, never the whole URL string.
+ */
+export function accountEndpointHost(
+  endpoint: AdeAccountMachineEndpoint,
+): string | null {
+  const host = endpoint.host?.trim();
+  if (host) return host.replace(/\.$/, "");
+  const raw = endpoint.url?.trim();
+  if (!raw) return null;
+  try {
+    // URL.hostname wraps IPv6 in brackets; strip them for a usable SSH host.
+    return new URL(raw).hostname.replace(/^\[|\]$/g, "") || null;
+  } catch {
+    // Not a URL — accept a bare host (no scheme/slash/space) as-is.
+    return /^[^/\s]+$/.test(raw) ? raw.replace(/\.$/, "") : null;
+  }
+}
+
+/**
+ * Host identities advertised by an account machine's reachable endpoints, keyed
+ * at the default SSH port. The advertised endpoint port is the ADE service port
+ * (e.g. 8787), not an SSH port, so it is deliberately ignored when building the
+ * identity — otherwise an account machine would never dedupe against its saved
+ * SSH target or a discovered peer (both keyed at :22) and would surface as a
+ * duplicate row.
+ */
+export function accountMachineRouteIdentities(
+  machine: AdeAccountMachine,
+): Set<string> {
+  const identities = new Set<string>();
+  for (const endpoint of machine.reachableEndpoints) {
+    const host = accountEndpointHost(endpoint);
+    const identity = routeIdentity(host, null);
+    if (identity) identities.add(identity);
+  }
+  return identities;
+}
+
+/** True when an account machine advertises a directly-connectable (non-relay) endpoint. */
+export function accountMachineHasDirectRoute(machine: AdeAccountMachine): boolean {
+  return machine.reachableEndpoints.some(
+    (endpoint) => endpoint.kind !== "relay" && accountEndpointHost(endpoint) != null,
+  );
+}
+
+function endpointRank(kind: AdeAccountMachineEndpoint["kind"]): number {
+  return kind === "tailnet" ? 0 : kind === "lan" ? 1 : 2;
+}
+
+/**
+ * SSH fallback routes for an account machine: every non-relay endpoint as a
+ * host at the default SSH port (the advertised service port is not an SSH
+ * port). Ranked tailnet-first then lan, deduped by host, so the saved target
+ * keeps fallback candidates like a discovered machine does.
+ */
+export function accountMachineSshRoutes(
+  machine: AdeAccountMachine,
+): RemoteRuntimeTargetRoute[] {
+  const ranked = [...machine.reachableEndpoints].sort(
+    (a, b) => endpointRank(a.kind) - endpointRank(b.kind),
+  );
+  const routes: RemoteRuntimeTargetRoute[] = [];
+  const seen = new Set<string>();
+  for (const endpoint of ranked) {
+    if (endpoint.kind === "relay") continue;
+    const host = accountEndpointHost(endpoint);
+    if (!host) continue;
+    const key = host.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    routes.push({
+      hostname: host,
+      port: null,
+      source: endpoint.kind === "tailnet" ? "tailscale" : "bonjour",
+      lastSucceededAt: null,
+    });
+  }
+  return routes;
+}
+
+function intersects(a: Set<string>, b: Set<string>): boolean {
+  for (const value of a) {
+    if (b.has(value)) return true;
+  }
+  return false;
+}
+
+/** True when an account machine is the same host as a saved target. */
+export function accountMachineMatchesTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  const machineIds = accountMachineRouteIdentities(machine);
+  if (machineIds.size === 0) return false;
+  return intersects(machineIds, targetRouteIdentities(target));
+}
+
+/** True when an account machine is the same host as a locally-discovered machine. */
+export function accountMachineMatchesDiscovered(
+  machine: AdeAccountMachine,
+  discovered: RemoteRuntimeDiscoveredMachine,
+): boolean {
+  const machineIds = accountMachineRouteIdentities(machine);
+  if (machineIds.size === 0) return false;
+  return intersects(machineIds, discoveredMachineRouteIdentities(discovered));
+}
 
 /**
  * Splits saved targets and discovered machines into the CONNECTED / AVAILABLE /
@@ -353,8 +478,16 @@ export function assignMachineSections(args: {
   statusById: Map<string, RemoteRuntimeConnectionStatus>;
   connectedFallbackId: string | null;
   discoveredMachines: RemoteRuntimeDiscoveredMachine[];
+  /** Machines from the account directory, merged with saved/discovered. */
+  accountMachines?: AdeAccountMachine[];
 }): MachineSections {
-  const { targets, statusById, connectedFallbackId, discoveredMachines } = args;
+  const {
+    targets,
+    statusById,
+    connectedFallbackId,
+    discoveredMachines,
+    accountMachines = [],
+  } = args;
   const sections: MachineSections = {
     connected: [],
     available: [],
@@ -432,6 +565,41 @@ export function assignMachineSections(args: {
       machine,
       unavailableReason: null,
     });
+  }
+
+  // Account-directory machines are merged in as a third source. Any that already
+  // map to a saved target or a discovered machine are represented by that local
+  // row (no duplicate); the rest surface as their own rows — online in
+  // AVAILABLE, offline greyed in UNAVAILABLE.
+  for (const machine of accountMachines) {
+    const matchedTarget = targets.find((target) =>
+      accountMachineMatchesTarget(machine, target),
+    );
+    if (matchedTarget) {
+      // A saved target already owns this host; only annotate offline account
+      // machines whose target isn't otherwise flagged (rare) — otherwise skip.
+      continue;
+    }
+    if (
+      discoveredMachines.some((discovered) =>
+        accountMachineMatchesDiscovered(machine, discovered),
+      )
+    ) {
+      continue;
+    }
+    const row: AccountMachineRow = {
+      kind: "account",
+      id: `account:${machine.machineKey}`,
+      machine,
+      matchedTargetId: null,
+    };
+    // A relay-only online machine has no direct SSH route, so it must not sit in
+    // AVAILABLE as a dead (unconnectable) row.
+    if (machine.online && accountMachineHasDirectRoute(machine)) {
+      sections.available.push(row);
+    } else {
+      sections.unavailable.push(row);
+    }
   }
 
   return sections;
