@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleRequest, verifyCallerToken, type Env } from "../src/directory";
+import worker from "../src/index";
 
 type StoredMachine = {
   user_id: string;
@@ -170,6 +171,20 @@ class FakeD1Database {
       return 1;
     }
     if (normalized.includes("update device_authorizations")) {
+      if (normalized.includes("where expires_at <= ?")) {
+        const now = Number(values[0]);
+        let changes = 0;
+        for (const row of this.deviceRows) {
+          if (row.expires_at > now || (row.status !== "pending" && row.status !== "approved")) continue;
+          row.status = "expired";
+          row.code_verifier = null;
+          row.oauth_state_hash = null;
+          row.access_token = null;
+          row.refresh_token = null;
+          changes += 1;
+        }
+        return changes;
+      }
       if (normalized.includes("set code_verifier")) {
         const row = this.deviceRows.find((entry) =>
           entry.device_code === values[2]
@@ -222,6 +237,8 @@ class FakeD1Database {
         const row = this.deviceRows.find((entry) => entry.device_code === values[0]);
         if (!row || (normalized.includes("status = 'pending'") && row.status !== "pending")) return 0;
         row.status = "expired";
+        row.code_verifier = null;
+        row.oauth_state_hash = null;
         row.access_token = null;
         row.refresh_token = null;
         return 1;
@@ -532,6 +549,42 @@ describe("device authorization bridge", () => {
     expect(expired.status).toBe(400);
     expect(await expired.json()).toEqual({ error: "expired" });
     expect(env.DB.deviceRows[0]?.status).toBe("expired");
+  });
+
+  it("clears expired approved credentials from the scheduled worker without client polling", async () => {
+    const env = makeEnv();
+    const startedAt = Date.parse("2026-07-14T12:00:00.000Z");
+    await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => startedAt },
+    );
+    Object.assign(env.DB.deviceRows[0]!, {
+      status: "approved",
+      code_verifier: "temporary-pkce-verifier",
+      oauth_state_hash: "temporary-state-hash",
+      access_token: "abandoned-access-token",
+      refresh_token: "abandoned-refresh-token",
+    });
+    vi.spyOn(Date, "now").mockReturnValue(startedAt + 601_000);
+    let cleanup: Promise<unknown> | undefined;
+
+    await worker.scheduled(
+      {} as ScheduledEvent,
+      env,
+      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+    );
+    await cleanup;
+
+    expect(env.DB.deviceRows[0]).toMatchObject({
+      status: "expired",
+      code_verifier: null,
+      oauth_state_hash: null,
+      access_token: null,
+      refresh_token: null,
+    });
   });
 
   it("rate-limits user-code lookups on the hosted approval page", async () => {

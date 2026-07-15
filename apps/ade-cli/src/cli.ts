@@ -11614,8 +11614,9 @@ function buildCliPlan(
     };
   }
   if (primary === "account") {
-    const sub = firstPositional(args);
-    const mode = firstPositional(args);
+    const [sub, mode] = args.filter(
+      (arg) => arg !== "--" && !arg.startsWith("-"),
+    );
     if (sub !== "token" || mode !== "create") {
       throw new CliUsageError("account currently supports token create.");
     }

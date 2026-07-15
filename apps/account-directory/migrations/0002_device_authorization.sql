@@ -24,6 +24,9 @@ create index if not exists idx_device_authorizations_user_code
 create index if not exists idx_device_authorizations_state
   on device_authorizations(oauth_state_hash);
 
+create index if not exists idx_device_authorizations_expiry
+  on device_authorizations(status, expires_at);
+
 create table if not exists device_approval_rate_limits (
   client_hash text primary key,
   window_started_at integer not null,

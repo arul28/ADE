@@ -189,6 +189,19 @@ function changes(result: D1Result): number {
   return typeof result.meta?.changes === "number" ? result.meta.changes : 0;
 }
 
+export async function cleanupExpiredDeviceAuthorizations(
+  env: DeviceAuthorizationEnv,
+  now = Date.now(),
+): Promise<number> {
+  const result = await env.DB.prepare(`
+    update device_authorizations
+       set status = 'expired', code_verifier = null, oauth_state_hash = null,
+           access_token = null, refresh_token = null
+     where expires_at <= ? and status in ('pending', 'approved')
+  `).bind(now).run();
+  return changes(result);
+}
+
 async function findByDeviceCode(env: DeviceAuthorizationEnv, deviceCode: string): Promise<DeviceAuthorizationRow | null> {
   return env.DB.prepare("select * from device_authorizations where device_code = ?")
     .bind(deviceCode)
@@ -294,7 +307,12 @@ async function handleDeviceApproval(
   const row = await findByUserCode(env, userCode);
   if (!row) return approvalMessage("Code not found", "Check the code shown by ADE and try again.", 404);
   if (row.expires_at <= now || row.status === "expired") {
-    await env.DB.prepare("update device_authorizations set status = 'expired' where device_code = ? and status = 'pending'")
+    await env.DB.prepare(`
+      update device_authorizations
+         set status = 'expired', code_verifier = null, oauth_state_hash = null,
+             access_token = null, refresh_token = null
+       where device_code = ? and status in ('pending', 'approved')
+    `)
       .bind(row.device_code)
       .run();
     return approvalMessage("Code expired", "Return to ADE and start sign-in again.", 410);
@@ -360,7 +378,8 @@ async function handleDeviceCallback(
   if (row.expires_at <= now) {
     await env.DB.prepare(`
       update device_authorizations
-         set status = 'expired', code_verifier = null, oauth_state_hash = null
+         set status = 'expired', code_verifier = null, oauth_state_hash = null,
+             access_token = null, refresh_token = null
        where device_code = ?
     `)
       .bind(row.device_code)
@@ -466,7 +485,8 @@ async function handleDeviceToken(
   if (row.expires_at <= now || row.status === "expired") {
     await env.DB.prepare(`
       update device_authorizations
-         set status = 'expired', access_token = null, refresh_token = null
+         set status = 'expired', code_verifier = null, oauth_state_hash = null,
+             access_token = null, refresh_token = null
        where device_code = ? and status in ('pending', 'approved')
     `).bind(deviceCode).run();
     return json({ error: "expired" }, { status: 400 });
