@@ -106,10 +106,12 @@ host is restarting, or was blocked by a conflicting sync listener),
 `brainProjectActionsSyncHandler` answers immediately with a failed
 `command_result` carrying that code instead of silently dropping the
 command into a 30 s client timeout. The state is transient by
-definition, so controllers must treat it like a timeout: iOS marks it
-retryable and queueable (`isSyncHostUnavailableError`), and queued
-operations are preserved — not deleted — when a replay hits it during
-a host restart window.
+definition, so controllers treat it like a timeout: iOS marks it retryable
+(`isSyncHostUnavailableError`), and queued operations are preserved — not
+deleted — when a replay hits it during a host restart window. Queueable actions
+normally enter the offline queue, but an already-attempted live `chat.send` is
+the deliberate exception because its outcome is ambiguous; iOS restores the
+draft for a manual transcript-aware retry instead of risking a duplicate turn.
 
 Controllers read `SyncRemoteCommandDescriptor`s from the brain (via the
 `getSupportedActions` / `getDescriptors` surface) and gate UI
@@ -642,7 +644,10 @@ can be sensitive.
   (a plain new-turn send still returns just `{ ok: true }`; a steer queue
   already at its cap comes back `queued: false, reason: "queue_full"`). The extra fields are additive — older
   clients ignore them, and the phone uses them to reconcile the message it
-  echoed optimistically. Personal chat uses the same
+  echoed optimistically. If a live send times out or loses transport before the
+  acknowledgement arrives, the phone treats delivery as ambiguous: it does not
+  enqueue an automatic replay, restores the draft, and leaves transcript
+  reconciliation to show whether the host started the turn. Personal chat uses the same
   envelopes but sends `chatScope: "personal"`; that explicit discriminator
   resolves the hidden durable transcript and active-turn state without a
   `projectId`.

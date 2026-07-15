@@ -209,6 +209,13 @@ enum WorkNewSessionMode: String, CaseIterable, Identifiable {
   }
 }
 
+func workQueuedNewSessionConsumesOpeningDraft(_ mode: WorkNewSessionMode) -> Bool {
+  // CLI start is atomic: its queued payload already contains initialInput.
+  // Chat creation queues only the empty session, so its separate opener must
+  // remain in the composer until the real session materializes.
+  mode == .cli
+}
+
 /// Per-project "last explicitly chosen" Chat vs CLI interface for the new-session
 /// composers. Restored as the default when the composer opens so the choice
 /// survives app restarts, project switches, and launching a session — desktop
@@ -1065,6 +1072,8 @@ struct WorkNewChatScreen: View {
     // Lane is ready; the naming/creating banner is done — the composer + nav
     // spinner carry the remaining "starting session" state.
     autoCreateStatus = nil
+    var createdChatSummary: AgentChatSessionSummary?
+    var createdChatAttachments: [AgentChatFileRef] = []
 
     do {
       if sessionMode == .cli {
@@ -1148,6 +1157,8 @@ struct WorkNewChatScreen: View {
         targetProjectRootPath: targetScope.projectRootPath,
         pendingDisplayName: opener
       )
+      createdChatSummary = summary
+      createdChatAttachments = attachmentRefs
       if attachmentRefs.isEmpty {
         await onStarted(summary, opener, false, nil, [])
       } else {
@@ -1175,16 +1186,61 @@ struct WorkNewChatScreen: View {
       }
       busy = false
       return true
-    } catch is QueuedRemoteCommandError {
+    } catch let error as QueuedRemoteCommandError {
+      if workQueuedNewSessionConsumesOpeningDraft(sessionMode) {
+        // The queued CLI start already owns `initialInput`; restoring it would
+        // invite a duplicate command when the user submits again.
+        ADEHaptics.medium()
+        errorMessage = nil
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(
+            laneId: createdLaneId,
+            opener: opener,
+            fallbackName: autoCreatedFallbackName
+          )
+        }
+        busy = false
+        return true
+      }
       // Offline: the create was queued and a "Pending sync" row now stands in
-      // for it on the Work list. Dismiss cleanly — not an error — and keep the
-      // (existing) lane; the queued command drains on reconnect.
+      // for it on the Work list. The opener itself was not sent, so keep the
+      // lane and return false to preserve the exact draft and attachments.
       ADEHaptics.medium()
+      errorMessage = error.localizedDescription
       busy = false
-      return true
+      return false
+    } catch let error as AmbiguousChatCreationError {
+      // The host may already have created the session. Keep its lane and draft,
+      // and let the Work list reconcile before the user chooses to retry.
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      busy = false
+      return false
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      if let createdChatSummary {
+        // Session creation succeeded, so the opener failure is ambiguous: the
+        // host may already be running it. Keep the lane/session, open the chat,
+        // mark the optimistic echo failed, and restore the exact text into the
+        // mounted composer. Never auto-resend or delete the live lane.
+        await onStarted(
+          createdChatSummary,
+          opener,
+          true,
+          "failed",
+          createdChatAttachments
+        )
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(
+            laneId: createdLaneId,
+            opener: opener,
+            fallbackName: autoCreatedFallbackName
+          )
+        }
+        busy = false
+        return true
+      }
       // The session never launched into a lane we just minted — tear it back
       // down so an auto-create failure doesn't leave an orphaned empty lane.
       if let createdLaneId {

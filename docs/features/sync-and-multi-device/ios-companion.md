@@ -129,6 +129,8 @@ apps/ios/
 │   │   │                             # aggregate "agent runs" activity
 │   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
 │   │   │                               # quota snapshot + refresh state
+│   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, path-change,
+│   │   │                            # heartbeat-silence, and timeout policy
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
@@ -494,7 +496,8 @@ incoming changeset.
 
 ## Sync service
 
-Source: `apps/ios/ADE/Services/SyncService.swift`.
+Sources: `apps/ios/ADE/Services/SyncService.swift` and
+`apps/ios/ADE/Services/SyncRecoveryPolicy.swift`.
 
 ### Connection lifecycle
 
@@ -533,9 +536,12 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    relay kill-switch, and the phone clears its saved relay routes).
    When the ACTIVE connection is a relay route, the Settings connection
    header shows one quiet line: "Using ADE relay. For faster, more
-   stable sync, connect both devices with Tailscale." `reconnectIfPossible` is guarded so overlapping
-   wake-ups never stack TCP/WebSocket attempts, and a reconnect never
-   tears down an already-live connection. The socket declares the
+   stable sync, connect both devices with Tailscale." `reconnectIfPossible` is
+   the single connection-attempt owner: socket delegate failures, path changes,
+   foreground return, heartbeat silence, and failed liveness probes all
+   converge there. Overlapping wake-ups are coalesced, delayed path tasks carry
+   a connection-generation guard, and an automatic reconnect never tears down
+   an already-live connection. The socket declares the
    `chunkedEnvelopes` capability and sets a 32 MiB
    `maximumMessageSize` receive budget.
    An `auth_failed` hello rejection drops the saved pairing **only**
@@ -564,13 +570,19 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    in detached tasks (the SQLite connection is FULLMUTEX). The receive
    loop awaits frames in order, so application order is unchanged —
    the UI just never freezes under sync load.
-7. On transport disconnect: a fast exponential-backoff reconnect burst,
-   then an indefinite ~30 s slow-heartbeat retry loop. The phone never
-   permanently gives up — a paired machine that comes back minutes
-   later reconnects without the user touching anything. User-initiated
-   disconnects from Settings (including the connecting-state Cancel
-   button) cancel scheduled reconnect work and leave the phone in the
-   disconnected state until the user reconnects or pairs again.
+7. On transport disconnect: run a finite seven-attempt fast burst with
+   1 s -> 16 s exponential backoff and jitter. During that window the
+   connection health remains `connecting`, cached chat content stays mounted,
+   and the composer reports that the draft is safe. Exhausting the burst moves
+   the UI to `unreachable`, but an indefinite quiet 30-40 s heartbeat keeps
+   trying one route budget at a time. A paired machine that comes back minutes
+   later therefore reconnects without navigation or a user tap. A successful
+   hello restores the active project, chat and terminal subscriptions, tracked
+   lane presence, and pending safe operations without rebuilding the current
+   navigation stack. User-initiated disconnects from Settings (including the
+   connecting-state Cancel button) cancel scheduled reconnect work and leave
+   the phone in the disconnected state until the user reconnects or pairs
+   again.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
@@ -625,19 +637,22 @@ turns a raw response dict into either the `result` value or throws an
 
 - All synced state is available offline from the local DB.
 - Execution commands queue locally and replay on reconnect. Queueable commands
-  also enter the local queue when a send times out while the WebSocket still
-  appears connected; the phone keeps the same `commandId`, schedules a short
-  retry, and probes the transport instead of dropping the user's action. The
-  runtime deduplicates retried commands by `commandId` through a TTL'd cache +
-  persisted journal, so a replay returns the cached `command_ack` /
-  `command_result` instead of running twice.
+  normally also enter the local queue when a send times out while the WebSocket
+  still appears connected; the phone keeps the same `commandId` and probes the
+  transport instead of dropping the user's action. The runtime deduplicates
+  retried commands by `commandId` through a TTL'd cache + persisted journal, so
+  a replay returns the cached `command_ack` / `command_result` instead of
+  running twice. An attempted live `chat.send` is the exception: its outcome is
+  ambiguous, so iOS restores the draft for manual retry rather than enqueueing
+  an automatic replay that could duplicate a turn.
 - A `command_result` with `error.code: "host_unavailable"` (the brain-level
   ingress answering while the project sync host is restarting — see
   `remote-commands.md`) is treated exactly like a timeout, never like an
-  application rejection: `isSyncHostUnavailableError` makes it retryable and
-  queueable, and the queue-drain loop **keeps** a pending operation that hits
-  it so queued work survives host restarts instead of being deleted on
-  replay.
+  application rejection: `isSyncHostUnavailableError` makes it retryable, and
+  the queue-drain loop **keeps** a pending operation that hits it so queued work
+  survives host restarts instead of being deleted on replay. The same
+  attempted-live-chat exception applies here: preserve the draft instead of
+  creating a new queued replay after the host may already have started it.
 - **Offline chat creation shows a "Pending sync" row.** `chat.create` is
   not host-advertised as queueable while disconnected, so when the phone
   can't send a live request it explicitly enqueues the create with a
@@ -649,20 +664,22 @@ turns a raw response dict into either the `result` value or throws an
   Work list folds into its optimistic sessions so the new chat appears
   immediately; the row is not openable until the queued `chat.create`
   drains after reconnect and the real session id arrives, at which point
-  the pending snapshot is removed.
+  the pending snapshot is removed. The queued create contains only the empty
+  session; its separate opening prompt and attachments remain in the composer
+  and are not sent automatically after reconnect.
 - UI shows "pending sync" indicators for queued actions.
 
 ### Timeouts
 
 `SyncRequestTimeout.defaultTimeoutNanoseconds = 30_000_000_000` (30s).
 Timed-out requests throw with the message *"The machine took too long to
-respond. Reconnecting now."* Chat send commands (`chat.send` and the
-mobile CLI launchers) use an extended budget
+respond. Try again."* `chat.send` uses an extended budget
 `SyncRequestTimeout.chatSendTimeoutNanoseconds = 120_000_000_000` (120s)
-with the friendlier message *"The machine is still starting this chat
-turn. Live updates will keep syncing."* because warmup-heavy turns
-routinely outlast the 30 s default without indicating a transport
-failure.
+with the ambiguity-safe message *"ADE couldn't confirm whether this message
+started. Your draft was restored; check the transcript before sending
+again."* Warmup-heavy turns can outlast the 30 s default without indicating a
+transport failure, and a missing `command_result` does not prove the host
+failed to start the turn.
 
 A request timeout no longer unconditionally drops the connection. Inbound
 traffic on the WebSocket is timestamped via `lastInboundMessageAt`
@@ -676,9 +693,11 @@ phone keeps the connection and lets the user retry. Even when the
 connection has been silent for the full window, the phone does not
 tear down immediately: it fails the request, marks the connection
 load-strained, and runs an **active transport probe**
-(`verifyTransportAliveAfterRequestTimeout` — ping the host and wait
-briefly for any inbound traffic). Only a probe that hears nothing
-back triggers the normal transport-failure teardown. This avoids
+(`verifyTransportAliveAfterSilence` — ping the host and wait 5 s on an
+ordinary path, 8 s on an expensive path, or 12 s on a constrained path for any
+inbound traffic). Heartbeat silence uses the same coalesced probe, and only a
+probe that hears nothing back triggers the normal transport-failure teardown.
+This avoids
 cycling a healthy-but-slow connection (catalog/PR refreshes can take
 30 s+ on cellular) into a perpetual timeout→reconnect→re-request
 loop.
@@ -1438,16 +1457,26 @@ different machine's cached limits.
   command handlers on the runtime responsive; bulk operations should
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
-- **A request timeout is not the same as a dead connection.** The 30 s
-  `SyncRequestTimeout` never tears the socket down directly. If
+- **A request timeout is not the same as a dead connection.** The default 30 s
+  `SyncRequestTimeout` (120 s for `chat.send`) never tears the socket down
+  directly. If
   anything has arrived on the WebSocket within the 12 s
   `requestTimeoutReconnectSilenceSeconds` window (heartbeats, change
   batches, a result), the timeout surfaces to the caller and nothing
-  else happens. If the socket has been fully silent, the phone runs an
+  else happens. If the socket has been fully silent, the phone runs the shared
   active transport probe and tears down only when the probe also hears
-  nothing. New transport-affecting code should bump
+  nothing. The probe waits 5 s on ordinary paths, 8 s on expensive paths, and
+  12 s on constrained paths. Heartbeat silence enters the same probe instead
+  of opening a second recovery loop. New transport-affecting code should bump
   `lastInboundMessageAt` on inbound traffic and treat that timestamp
   as the source of truth for "is this connection actually alive".
+- **An attempted live chat send is never replayed automatically after an
+  ambiguous failure.** The runtime may have started the turn even when the
+  command result times out or the socket closes. iOS restores the exact text to
+  the mounted composer, marks any optimistic echo failed, and asks the user to
+  check the transcript before sending again. Messages composed while already
+  offline may still enter the existing queue with a stable `commandId`; this
+  special case applies only after a live `chat.send` was attempted.
 - **Connection UI must use `SyncConnectionHealth`, not the raw state.**
   `RemoteConnectionState.syncing` is just transport `connected` doing
   catchup work, and `RemoteConnectionState.error` carries failure text

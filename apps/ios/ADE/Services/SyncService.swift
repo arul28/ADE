@@ -177,7 +177,16 @@ func isSyncRequestTimeoutError(_ error: Error) -> Bool {
   return nsError.domain == "ADE" && nsError.code == 23
 }
 
-func syncShouldQueueCommandAfterSendFailure(error: Error, canSendLiveRequests: Bool, queueable: Bool) -> Bool {
+enum SyncAttemptedLiveFailurePolicy: Equatable {
+  case enqueueSafely
+  case preserveForManualRetry
+}
+
+func syncShouldQueueCommandAfterSendFailure(
+  error: Error,
+  canSendLiveRequests: Bool,
+  queueable: Bool
+) -> Bool {
   guard queueable else { return false }
   guard !isRemoteCommandApplicationError(error) else { return false }
   return !canSendLiveRequests || isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error)
@@ -282,8 +291,8 @@ enum SyncRequestTimeout {
   static let modelCatalogTimeoutNanoseconds: UInt64 = 6_000_000_000
   static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
   static let laneDeleteTimeoutNanoseconds: UInt64 = 240_000_000_000
-  static let message = "The machine took too long to respond. Reconnecting now."
-  static let chatSendMessage = "The machine is still starting this chat turn. Live updates will keep syncing."
+  static let message = "The machine took too long to respond. Try again."
+  static let chatSendMessage = "ADE couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
@@ -343,6 +352,9 @@ enum SyncSocketTiming {
   static let openTimeoutNanoseconds: UInt64 = 5_000_000_000
   static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
   static let requestTimeoutReconnectSilenceSeconds: TimeInterval = 12
+  static let transportProbeTimeoutNanoseconds: UInt64 = 5_000_000_000
+  static let expensiveTransportProbeTimeoutNanoseconds: UInt64 = 8_000_000_000
+  static let constrainedTransportProbeTimeoutNanoseconds: UInt64 = 12_000_000_000
 }
 
 enum SyncTailnetDiscoveryTiming {
@@ -1123,13 +1135,6 @@ func syncConnectionStateAfterTransportFailure(error: Error, fallback: RemoteConn
   syncIsMessageTooLongError(error) ? .error : fallback
 }
 
-func syncConnectionStateAfterRequestTimeout(
-  lastInboundMessageAt: TimeInterval?,
-  fallback: RemoteConnectionState
-) -> RemoteConnectionState {
-  lastInboundMessageAt == nil ? .connecting : fallback
-}
-
 func syncShouldPublishForegroundReconnectStarted(
   allowAutoReconnect: Bool,
   autoReconnectPausedByUser: Bool,
@@ -1384,7 +1389,40 @@ private final class SyncSocketSessionDelegate: NSObject, URLSessionWebSocketDele
   ) {
     guard let webSocketTask = task as? URLSessionWebSocketTask, let error else { return }
     Task { @MainActor [weak service] in
-      service?.handleSocketDidComplete(webSocketTask, error: error)
+      service?.handleSocketDidComplete(
+        webSocketTask,
+        error: error,
+        closeCodeRawValue: Int(webSocketTask.closeCode.rawValue)
+      )
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    webSocketTask: URLSessionWebSocketTask,
+    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+    reason: Data?
+  ) {
+    let reasonMessage = reason.flatMap { String(data: $0, encoding: .utf8) }
+    let message: String
+    if closeCode.rawValue == 4001 {
+      message = "The machine stopped responding. Reconnecting now."
+    } else if let reasonMessage, !reasonMessage.isEmpty {
+      message = reasonMessage
+    } else {
+      message = "The connection to the machine was interrupted. Reconnecting now."
+    }
+    let error = NSError(
+      domain: "ADE",
+      code: 24,
+      userInfo: [NSLocalizedDescriptionKey: message]
+    )
+    Task { @MainActor [weak service] in
+      service?.handleSocketDidComplete(
+        webSocketTask,
+        error: error,
+        closeCodeRawValue: Int(closeCode.rawValue)
+      )
     }
   }
 }
@@ -1528,6 +1566,31 @@ struct QueuedRemoteCommandError: LocalizedError {
 
   var errorDescription: String? {
     "That action is queued for this project and will run when the machine reconnects."
+  }
+}
+
+struct AmbiguousChatCreationError: LocalizedError {
+  let underlyingError: Error
+
+  var errorDescription: String? {
+    "ADE couldn't confirm whether the chat was created. Your draft was preserved; check the Work list before trying again."
+  }
+}
+
+func performLiveChatCreationWithoutReplay<T>(
+  request: () async throws -> T
+) async throws -> T {
+  do {
+    return try await request()
+  } catch is CancellationError {
+    throw CancellationError()
+  } catch {
+    guard !isRemoteCommandApplicationError(error) else { throw error }
+    // Once a live creation request is written, a transport failure or timeout
+    // cannot prove whether the host created the session. Replaying it later can
+    // duplicate a chat after the host's command ledger expires, so preserve the
+    // lane and draft and require the user to reconcile against the Work list.
+    throw AmbiguousChatCreationError(underlyingError: error)
   }
 }
 
@@ -1898,9 +1961,20 @@ final class SyncService: ObservableObject {
   private let pathMonitorQueue = DispatchQueue(label: "com.ade.sync.network-path")
   private let tailnetDiscovery = SyncTailnetProbe()
   private var socket: URLSessionWebSocketTask?
+  #if DEBUG
+  private var capturesOutboundEnvelopesForTesting = false
+  private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?)] = []
+  private var completesCapturedRefreshRequestsForTesting = false
+  #endif
+  private struct PendingRequestTimeoutPolicy {
+    let disconnectOnTimeout: Bool
+    let error: NSError
+  }
+
   private struct PendingRequest {
     let completion: (Result<Any, Error>) -> Void
     let timeoutTask: Task<Void, Never>
+    let timeoutPolicy: PendingRequestTimeoutPolicy
     /// Monotonic timestamp captured via `ProcessInfo.processInfo.systemUptime`
     /// — RTT calculations must not be skewed by user-initiated wall-clock
     /// adjustments (DST, NTP step, manual time changes).
@@ -3955,8 +4029,9 @@ final class SyncService: ObservableObject {
     if !userInitiated && automaticAddresses.isEmpty {
       if !autoReconnectAwaitingLiveDiscovery {
         syncConnectLog.info("reconnect skipped: waiting for a saved or live route")
+        autoReconnectAwaitingLiveDiscovery = true
+        scheduleSlowReconnectHeartbeat()
       }
-      autoReconnectAwaitingLiveDiscovery = true
       return
     }
     autoReconnectAwaitingLiveDiscovery = false
@@ -3986,7 +4061,7 @@ final class SyncService: ObservableObject {
         error,
         shouldScheduleRetry: !userInitiated,
         phase: userInitiated ? .failed : .disconnected,
-        connectionState: userInitiated ? .error : .disconnected
+        connectionState: userInitiated ? .error : .connecting
       )
     }
   }
@@ -3997,7 +4072,8 @@ final class SyncService: ObservableObject {
     lastError = nil
   }
 
-  private func refreshReducedSyncLoad() {
+  @discardableResult
+  private func updateReducedSyncLoad() -> Bool {
     let route = currentAddress
       ?? activeHostProfile?.lastSuccessfulAddress
       ?? activeHostProfile?.tailscaleAddress
@@ -4038,6 +4114,13 @@ final class SyncService: ObservableObject {
       syncChatLog.notice(
         "reduced_load_changed enabled=\(next, privacy: .public) route=\(route ?? "none", privacy: .public) poorSamples=\(self.poorConnectionSampleCount, privacy: .public) healthySamples=\(self.healthyConnectionSampleCount, privacy: .public) forced=\(forcedReduced, privacy: .public) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public)"
       )
+      return true
+    }
+    return false
+  }
+
+  private func refreshReducedSyncLoad() {
+    if updateReducedSyncLoad() {
       restoreChatEventSubscriptions()
     }
   }
@@ -4135,18 +4218,23 @@ final class SyncService: ObservableObject {
       "path_changed state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(snapshot), privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public) roamToTailnet=\(shouldRoamToTailnet, privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public)"
     )
 
-    if shouldRoamToTailnet {
+    switch syncNetworkPathRecoveryAction(
+      shouldRoamToTailnet: shouldRoamToTailnet,
+      isPathSatisfied: snapshot.isSatisfied,
+      hasLiveConnection: canSendLiveRequests()
+    ) {
+    case .scheduleForcedReset:
       scheduleNetworkPathReconnect(
         forceSocketReset: true,
         delayNanoseconds: snapshot.isSatisfied ? 250_000_000 : 750_000_000
       )
-      return
-    }
-
-    guard snapshot.isSatisfied else { return }
-
-    if !canSendLiveRequests() {
+    case .cancelScheduledReconnect:
+      networkPathReconnectTask?.cancel()
+      networkPathReconnectTask = nil
+    case .scheduleReconnect:
       scheduleNetworkPathReconnect(forceSocketReset: false)
+    case .none:
+      break
     }
   }
 
@@ -4154,14 +4242,27 @@ final class SyncService: ObservableObject {
     forceSocketReset: Bool,
     delayNanoseconds: UInt64 = 250_000_000
   ) {
+    let scheduledConnectionGeneration = connectionGeneration
     syncChatLog.notice(
-      "network_path_reconnect_scheduled forceReset=\(forceSocketReset, privacy: .public) delayNs=\(delayNanoseconds, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
+      "network_path_reconnect_scheduled forceReset=\(forceSocketReset, privacy: .public) delayNs=\(delayNanoseconds, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(scheduledConnectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
     )
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard let self, !Task.isCancelled else { return }
-      if forceSocketReset {
+      let action = syncScheduledPathReconnectAction(
+        forceSocketReset: forceSocketReset,
+        scheduledConnectionGeneration: scheduledConnectionGeneration,
+        currentConnectionGeneration: self.connectionGeneration,
+        hasLiveConnection: self.canSendLiveRequests()
+      )
+      if action == .skip {
+        syncChatLog.notice(
+          "network_path_reconnect_skipped_stale scheduledGeneration=\(scheduledConnectionGeneration, privacy: .public) currentGeneration=\(self.connectionGeneration, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
+        )
+        return
+      }
+      if action == .resetAndReconnect {
         syncChatLog.notice(
           "network_path_reconnect_forcing_reset state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
         )
@@ -4173,16 +4274,15 @@ final class SyncService: ObservableObject {
 
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
-    guard !reconnectConnectInFlight else { return }
     // Push registration + Live Activity token re-reporting are independent of
     // the connection branch below, so kick them off up front. They no-op when
     // no machine is paired.
     Task { await PushNotificationService.shared.enableIfPaired() }
     Task { await LiveActivityService.shared.handleForegroundTransition() }
+    guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       lastError = nil
       await restoreTrackedOpenLanesAfterReconnect()
-      restoreChatEventSubscriptions()
       await refreshRemoteProjectCatalog()
       try? await refreshLaneSnapshots()
       try? await refreshWorkSessions()
@@ -6735,13 +6835,17 @@ final class SyncService: ObservableObject {
       ))
       throw QueuedRemoteCommandError(action: "chat.create")
     }
-    return try await sendDecodableCommand(
-      action: "chat.create",
-      args: args,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
-      as: AgentChatSessionSummary.self
-    )
+    let commandId = makeRequestId()
+    return try await performLiveChatCreationWithoutReplay {
+      let response = try await performCommandRequest(
+        action: "chat.create",
+        args: args,
+        commandId: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      return try decode(response, as: AgentChatSessionSummary.self)
+    }
   }
 
   func launchChatSession(
@@ -6814,13 +6918,17 @@ final class SyncService: ObservableObject {
       throw QueuedRemoteCommandError(action: "chat.launch")
     }
 
-    return try await sendDecodableCommand(
-      action: "chat.launch",
-      args: args,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
-      as: AgentChatSessionSummary.self
-    )
+    let commandId = makeRequestId()
+    return try await performLiveChatCreationWithoutReplay {
+      let response = try await performCommandRequest(
+        action: "chat.launch",
+        args: args,
+        commandId: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      return try decode(response, as: AgentChatSessionSummary.self)
+    }
   }
 
   private func chatSessionCreateArgs(
@@ -7198,11 +7306,16 @@ final class SyncService: ObservableObject {
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
       args: args,
-      disconnectOnTimeout: false,
+      // A chat timeout is ambiguous: the host may have started the turn without
+      // returning the command result. Never auto-resend it. Do run the same
+      // health-gated liveness probe as other requests so a silent socket starts
+      // service-owned recovery while the composer restores the user's draft.
+      disconnectOnTimeout: true,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
       timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
       targetProjectId: targetProjectId ?? scope.projectId,
-      targetProjectRootPath: targetProjectRootPath ?? scope.rootPath
+      targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
     )
     return syncChatMessageDelivery(from: response)
   }
@@ -8955,7 +9068,18 @@ final class SyncService: ObservableObject {
   }
 
   private func reconnectDelay() -> UInt64 {
-    reconnectState.nextDelayNanoseconds()
+    syncJitteredReconnectDelayNanoseconds(
+      base: reconnectState.nextDelayNanoseconds(),
+      sample: Double.random(in: 0...1)
+    )
+  }
+
+  private func reconnectDelay(forCloseCodeRawValue closeCodeRawValue: Int?) -> UInt64 {
+    let jittered = syncJitteredReconnectDelayNanoseconds(
+      base: reconnectState.nextDelayNanoseconds(forCloseCodeRawValue: closeCodeRawValue),
+      sample: Double.random(in: 0...1)
+    )
+    return closeCodeRawValue == 4001 ? max(1_500_000_000, jittered) : jittered
   }
 
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
@@ -9551,6 +9675,28 @@ final class SyncService: ObservableObject {
     reconnectTask != nil || networkPathReconnectTask != nil
   }
 
+  func configureReconnectProfileForTesting(_ profile: HostConnectionProfile, token: String) {
+    saveProfile(profile)
+    keychain.saveToken(token, hostKey: profileStorageKey(profile))
+    allowAutoReconnect = true
+    setAutoReconnectPausedByUser(false)
+  }
+
+  func clearReconnectProfileForTesting(_ profile: HostConnectionProfile) {
+    keychain.clearToken(hostKey: profileStorageKey(profile))
+    saveProfile(nil)
+  }
+
+  func simulateAutomaticTransportFailureForTesting(
+    _ error: Error,
+    reconnectDelayNanoseconds: UInt64 = 60_000_000_000
+  ) {
+    beginAutomaticTransportRecovery(
+      error,
+      reconnectDelayNanoseconds: reconnectDelayNanoseconds
+    )
+  }
+
   func setActiveProjectForTesting(projectId: String?, rootPath: String?) {
     setActiveProjectId(projectId, rootPath: rootPath)
     resetOutboundCursorStateForActiveProject()
@@ -9630,6 +9776,113 @@ final class SyncService: ObservableObject {
         fallbackToActiveProjectScope: operation.fallbackToActiveProjectScope
       )
     }
+  }
+
+  func beginOutboundEnvelopeCaptureForTesting() {
+    capturedOutboundEnvelopesForTesting = []
+    capturesOutboundEnvelopesForTesting = true
+  }
+
+  func configureConnectedTransportForTesting() {
+    if socket == nil, let url = URL(string: "ws://127.0.0.1:8787") {
+      socket = socketSession.webSocketTask(with: url)
+    }
+    connectionState = .connected
+  }
+
+  func completeCapturedRefreshRequestsForTesting() {
+    completesCapturedRefreshRequestsForTesting = true
+  }
+
+  func resetOutboundEnvelopeCaptureForTesting() {
+    capturedOutboundEnvelopesForTesting = []
+  }
+
+  func capturedOutboundEnvelopeCountForTesting(type: String) -> Int {
+    capturedOutboundEnvelopesForTesting.filter { $0.type == type }.count
+  }
+
+  func capturedOutboundRequestIdsForTesting(type: String) -> [String] {
+    capturedOutboundEnvelopesForTesting.compactMap { envelope in
+      envelope.type == type ? envelope.requestId : nil
+    }
+  }
+
+  func firePendingRequestTimeoutForTesting(requestId: String) {
+    firePendingRequestTimeout(requestId: requestId)
+  }
+
+  func connectionGenerationForTesting() -> UInt64 {
+    connectionGeneration
+  }
+
+  func completeTransportProbeForTesting(
+    heardInboundTraffic: Bool,
+    error: NSError = NSError(
+      domain: NSURLErrorDomain,
+      code: NSURLErrorTimedOut,
+      userInfo: [NSLocalizedDescriptionKey: "Transport probe timed out."]
+    )
+  ) {
+    transportProbeTask?.cancel()
+    transportProbeTask = nil
+    let probeStartedAt = ProcessInfo.processInfo.systemUptime
+    lastInboundMessageAt = heardInboundTraffic ? probeStartedAt + 1 : nil
+    finishTransportProbe(
+      recoveryError: error,
+      trigger: "test",
+      generation: connectionGeneration,
+      probeStartedAt: probeStartedAt
+    )
+  }
+
+  func exhaustFastReconnectBudgetForTesting(_ error: Error) {
+    reconnectState.reset()
+    for _ in 0..<SyncReconnectState.maxAutomaticAttempts {
+      _ = reconnectState.nextDelayNanoseconds()
+    }
+    handleReconnectFailure(
+      error,
+      shouldScheduleRetry: true,
+      phase: .disconnected,
+      connectionState: .connecting
+    )
+  }
+
+  func endOutboundEnvelopeCaptureForTesting() {
+    capturesOutboundEnvelopesForTesting = false
+    capturedOutboundEnvelopesForTesting = []
+    completesCapturedRefreshRequestsForTesting = false
+  }
+
+  private func capturedRefreshResponseForTesting(type: String, payload: Any) -> Any? {
+    if type == "project_catalog_request" {
+      return ["projects": [Any]()] as [String: Any]
+    }
+    guard type == "command",
+          let payload = payload as? [String: Any],
+          let action = payload["action"] as? String
+    else { return nil }
+    let result: Any
+    switch action {
+    case "lanes.refreshSnapshots":
+      result = [
+        "refreshedCount": 0,
+        "lanes": [Any](),
+        "snapshots": [Any](),
+      ] as [String: Any]
+    case "work.listSessions":
+      result = [Any]()
+    case "prs.refresh":
+      result = [
+        "refreshedCount": 0,
+        "prs": [Any](),
+        "snapshots": [Any](),
+      ] as [String: Any]
+    default:
+      return nil
+    }
+    return ["ok": true, "result": result]
   }
   #endif
 
@@ -9764,7 +10017,10 @@ final class SyncService: ObservableObject {
       generation: connectAttemptGeneration
     )
     currentAddress = connectedHost
-    refreshReducedSyncLoad()
+    // The explicit post-hello restoration below owns the reconnect replay.
+    // Suppressing this incidental restoration prevents duplicate subscribe
+    // frames when the newly selected route changes reduced-load mode.
+    updateReducedSyncLoad()
     lastError = nil
     lastPairingErrorCode = nil
     markSyncActivity(force: true)
@@ -9893,14 +10149,13 @@ final class SyncService: ObservableObject {
             }
           } catch {
             if self.socket === task {
-              self.handleIncomingFailure(error, text: text)
+              self.handleIncomingFailure(error, text: text, task: task)
             }
             break
           }
         } catch {
           if self.socket === task {
             let closeCodeRawValue = Int(task.closeCode.rawValue)
-            let reconnectDelay = self.reconnectState.nextDelayNanoseconds(forCloseCodeRawValue: closeCodeRawValue)
             let failure: Error
             if closeCodeRawValue == 4001 {
               failure = NSError(
@@ -9911,11 +10166,10 @@ final class SyncService: ObservableObject {
             } else {
               failure = error
             }
-            self.handleTransportFailure(
-              failure,
-              phase: .disconnected,
-              connectionState: .connecting,
-              reconnectDelayNanoseconds: reconnectDelay
+            self.handleSocketFailure(
+              task,
+              error: failure,
+              closeCodeRawValue: closeCodeRawValue
             )
           }
           break
@@ -9924,7 +10178,11 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func handleIncomingFailure(_ error: Error, text: String) {
+  private func handleIncomingFailure(
+    _ error: Error,
+    text: String,
+    task: URLSessionWebSocketTask
+  ) {
     let type: String = {
       guard let data = text.data(using: .utf8),
             let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -9935,22 +10193,7 @@ final class SyncService: ObservableObject {
     syncConnectLog.error(
       "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
     )
-    let friendlyError = SyncUserFacingError.error(from: error)
-    // Tear the socket down before flipping reduced-load preferences. The
-    // restoreChatEventSubscriptions() side-effect inside refreshReducedSyncLoad
-    // would otherwise enqueue chat_subscribe frames on a socket that is about
-    // to be cancelled, surfacing as send-on-closed errors and orphaned subs.
-    teardownSocket(reason: friendlyError.localizedDescription)
-    markConnectionLoadStrained()
-    clearConnectTimingMetrics()
-    lastError = friendlyError.localizedDescription
-    connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: .disconnected)
-    setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
-    failPendingRequests(with: friendlyError)
-    // "Message too long" used to pause auto-reconnect permanently. With the
-    // raised socket receive budget and hosts chunking oversized envelopes it
-    // is an ordinary transport failure now — reconnect like any other drop.
-    scheduleReconnectIfNeeded(after: reconnectDelay())
+    handleSocketFailure(task, error: error)
   }
 
   private func handleIncoming(_ pre: SyncPreprocessedEnvelope) async throws {
@@ -10236,6 +10479,24 @@ final class SyncService: ObservableObject {
         try? await Task.sleep(nanoseconds: intervalNanoseconds)
         guard let self, !Task.isCancelled else { return }
         guard self.isCurrentConnectionGeneration(connectionGeneration), self.canSendLiveRequests() else { return }
+        let path = self.lastNetworkPathSnapshot
+        if syncShouldProbeTransportAfterHeartbeatSilence(
+          now: ProcessInfo.processInfo.systemUptime,
+          lastInboundMessageAt: self.lastInboundMessageAt,
+          heartbeatIntervalNanoseconds: intervalNanoseconds,
+          isExpensive: path?.isExpensive == true,
+          isConstrained: path?.isConstrained == true
+        ) {
+          self.verifyTransportAliveAfterSilence(
+            NSError(
+              domain: "ADE",
+              code: 24,
+              userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
+            ),
+            trigger: "heartbeat_silence"
+          )
+          continue
+        }
         self.sendEnvelope(type: "heartbeat", requestId: nil, payload: [
           "kind": "ping",
           "sentAt": ISO8601DateFormatter().string(from: Date()),
@@ -10375,14 +10636,12 @@ final class SyncService: ObservableObject {
   private func failPendingOutboundChangeset(_ message: String) {
     pendingOutboundChangeset = nil
     clearPendingOutboundChangesetForActiveProject()
-    handleTransportFailure(
+    beginAutomaticTransportRecovery(
       NSError(
         domain: "ADE",
         code: 27,
         userInfo: [NSLocalizedDescriptionKey: message]
-      ),
-      phase: .disconnected,
-      connectionState: .disconnected
+      )
     )
   }
 
@@ -10406,20 +10665,21 @@ final class SyncService: ObservableObject {
     send: () -> Void
   ) async throws -> Any {
     try await withCheckedThrowingContinuation { continuation in
+      let timeoutPolicy = PendingRequestTimeoutPolicy(
+        disconnectOnTimeout: disconnectOnTimeout,
+        error: SyncRequestTimeout.error(message: timeoutMessage)
+      )
       let timeoutTask = Task { @MainActor [weak self] in
         try? await Task.sleep(nanoseconds: timeoutNanoseconds)
         guard !Task.isCancelled else { return }
-        self?.handlePendingRequestTimeout(
-          requestId: requestId,
-          disconnectOnTimeout: disconnectOnTimeout,
-          timeoutError: SyncRequestTimeout.error(message: timeoutMessage)
-        )
+        self?.firePendingRequestTimeout(requestId: requestId)
       }
       pending[requestId] = PendingRequest(
         completion: { result in
           continuation.resume(with: result)
         },
         timeoutTask: timeoutTask,
+        timeoutPolicy: timeoutPolicy,
         startedAt: ProcessInfo.processInfo.systemUptime
       )
       send()
@@ -10427,6 +10687,17 @@ final class SyncService: ObservableObject {
   }
 
   private func sendEnvelope(type: String, requestId: String?, payload: Any) {
+    #if DEBUG
+    if capturesOutboundEnvelopesForTesting {
+      capturedOutboundEnvelopesForTesting.append((type: type, requestId: requestId))
+      if completesCapturedRefreshRequestsForTesting,
+         let requestId,
+         let response = capturedRefreshResponseForTesting(type: type, payload: payload) {
+        resolve(requestId: requestId, result: .success(response))
+      }
+      return
+    }
+    #endif
     guard let socket else { return }
     let sendSocket = socket
     guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return }
@@ -10464,10 +10735,7 @@ final class SyncService: ObservableObject {
     sendSocket.send(.string(text)) { error in
       if let error {
         Task { @MainActor in
-          guard shouldHandleSocketSendCompletionError(currentSocket: self.socket, callbackSocket: sendSocket) else {
-            return
-          }
-          self.handleTransportFailure(error)
+          self.handleSocketFailure(sendSocket, error: error)
         }
       }
     }
@@ -10496,11 +10764,13 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func resolveSocketOpen(_ task: URLSessionWebSocketTask, result: Result<Void, Error>) {
+  @discardableResult
+  private func resolveSocketOpen(_ task: URLSessionWebSocketTask, result: Result<Void, Error>) -> Bool {
     let taskIdentifier = task.taskIdentifier
     pendingSocketOpenTimeoutTasks.removeValue(forKey: taskIdentifier)?.cancel()
-    guard let continuation = pendingSocketOpen.removeValue(forKey: taskIdentifier) else { return }
+    guard let continuation = pendingSocketOpen.removeValue(forKey: taskIdentifier) else { return false }
     continuation.resume(with: result)
+    return true
   }
 
   fileprivate func handleSocketDidOpen(_ task: URLSessionWebSocketTask) {
@@ -10508,8 +10778,47 @@ final class SyncService: ObservableObject {
     resolveSocketOpen(task, result: .success(()))
   }
 
-  fileprivate func handleSocketDidComplete(_ task: URLSessionWebSocketTask, error: Error) {
-    resolveSocketOpen(task, result: .failure(error))
+  fileprivate func handleSocketDidComplete(
+    _ task: URLSessionWebSocketTask,
+    error: Error,
+    closeCodeRawValue: Int? = nil
+  ) {
+    let completedWhileOpening = resolveSocketOpen(task, result: .failure(error))
+    handleSocketFailure(
+      task,
+      error: error,
+      completedWhileOpening: completedWhileOpening,
+      closeCodeRawValue: closeCodeRawValue
+    )
+  }
+
+  private func handleSocketFailure(
+    _ task: URLSessionWebSocketTask,
+    error: Error,
+    completedWhileOpening: Bool = false,
+    closeCodeRawValue: Int? = nil
+  ) {
+    let action = syncSocketCompletionAction(
+      isCurrentSocket: shouldHandleSocketSendCompletionError(currentSocket: socket, callbackSocket: task),
+      completedWhileOpening: completedWhileOpening,
+      canSendLiveRequests: canSendLiveRequests(),
+      closeCodeRawValue: closeCodeRawValue
+    )
+    switch action {
+    case .ignore, .failOpening:
+      return
+    case .recoverTransport(let closeCodeRawValue):
+      beginAutomaticTransportRecovery(
+        error,
+        reconnectDelayNanoseconds: reconnectDelay(forCloseCodeRawValue: closeCodeRawValue)
+      )
+    case .failHandshake:
+      // The WebSocket opened but died during hello. Fail the hello request so
+      // the existing route walker can try its next ranked candidate; scheduling
+      // a second reconnect owner here would race that in-flight attempt.
+      teardownSocket(reason: error.localizedDescription)
+      failPendingRequests(with: error)
+    }
   }
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
@@ -10555,10 +10864,8 @@ final class SyncService: ObservableObject {
     connectionGeneration &+= 1
   }
 
-  private func handleTransportFailure(
+  private func beginAutomaticTransportRecovery(
     _ error: Error,
-    phase: SyncDomainPhase = .failed,
-    connectionState: RemoteConnectionState = .error,
     reconnectDelayNanoseconds: UInt64? = nil
   ) {
     let friendlyError = SyncUserFacingError.error(from: error)
@@ -10567,8 +10874,8 @@ final class SyncService: ObservableObject {
     markConnectionLoadStrained()
     clearConnectTimingMetrics()
     lastError = friendlyError.localizedDescription
-    self.connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: connectionState)
-    if phase == .failed || syncIsMessageTooLongError(error) {
+    connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: .connecting)
+    if syncIsMessageTooLongError(error) {
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
@@ -10579,19 +10886,21 @@ final class SyncService: ObservableObject {
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 
+  private func firePendingRequestTimeout(requestId: String) {
+    guard let timeoutPolicy = pending[requestId]?.timeoutPolicy else { return }
+    handlePendingRequestTimeout(requestId: requestId, policy: timeoutPolicy)
+  }
+
   private func handlePendingRequestTimeout(
     requestId: String,
-    disconnectOnTimeout: Bool = true,
-    timeoutError: NSError = SyncRequestTimeout.error()
+    policy: PendingRequestTimeoutPolicy
   ) {
-    guard pending[requestId] != nil else { return }
-    let shouldReconnect = disconnectOnTimeout
-      && syncShouldReconnectAfterRequestTimeout(
-        now: ProcessInfo.processInfo.systemUptime,
-        lastInboundMessageAt: lastInboundMessageAt
-      )
-    if disconnectOnTimeout,
-       shouldReconnect {
+    let recoveryAction = syncRequestTimeoutRecoveryAction(
+      disconnectOnTimeout: policy.disconnectOnTimeout,
+      now: ProcessInfo.processInfo.systemUptime,
+      lastInboundMessageAt: lastInboundMessageAt
+    )
+    if recoveryAction == .probeTransport {
       // A timed-out request plus a quiet inbound window does NOT prove the
       // socket is dead — the host may just be slow (catalog/PR refreshes can
       // take 30s+) while nothing else streams. Tearing down here put cellular
@@ -10599,81 +10908,79 @@ final class SyncService: ObservableObject {
       // request, then actively probe the transport; only a probe that hears
       // nothing back tears the socket down.
       markConnectionLoadStrained()
-      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: SyncRequestTimeout.error(
-        message: "The machine took too long to respond. Try again."
-      ))))
+      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: policy.error)))
       syncChatLog.notice(
         "request_timeout_probe_scheduled requestId=\(requestId, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
       )
-      verifyTransportAliveAfterRequestTimeout(timeoutError)
+      verifyTransportAliveAfterSilence(policy.error, trigger: "request_timeout")
     } else {
-      // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
-      // message says "Reconnecting now." That copy is only honest in the
-      // reconnect branch above. When we explicitly do *not* tear the socket
-      // down (either disconnectOnTimeout was false, or the socket has been
-      // hearing inbound traffic recently and we don't want to reconnect),
-      // surfacing that message lies to the user. Fall back to a non-reconnect
-      // timeout message in that branch.
-      let resolvedError: NSError
-      if disconnectOnTimeout {
-        resolvedError = SyncRequestTimeout.error(
-          message: "The machine took too long to respond. Try again."
-        )
-      } else {
-        resolvedError = timeoutError
-      }
+      // One slow request is local failure evidence, not socket failure
+      // evidence. The neutral timeout copy stays honest whether recent inbound
+      // traffic kept the socket up or this command opted out of recovery.
       markConnectionLoadStrained()
       syncChatLog.notice(
-        "request_timeout_resolved_without_reconnect requestId=\(requestId, privacy: .public) disconnectOnTimeout=\(disconnectOnTimeout, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+        "request_timeout_resolved_without_reconnect requestId=\(requestId, privacy: .public) disconnectOnTimeout=\(policy.disconnectOnTimeout, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
       )
-      resolve(requestId: requestId, result: .failure(resolvedError))
+      resolve(requestId: requestId, result: .failure(policy.error))
     }
   }
 
-  /// Active liveness check after a request timeout: ping the host and give it
-  /// a short window to send anything back. Inbound traffic (the pong, a
-  /// changeset, a status ping) proves the transport works and the socket is
-  /// kept; total silence means the connection is actually dead and the normal
-  /// transport-failure teardown runs. One probe at a time.
-  private func verifyTransportAliveAfterRequestTimeout(_ timeoutError: NSError) {
+  /// Shared liveness check for request timeouts and heartbeat silence. Inbound
+  /// traffic (the pong, a changeset, a status ping) proves the transport works;
+  /// total silence enters the single automatic recovery owner. One probe at a
+  /// time, guarded by the connection generation.
+  private func verifyTransportAliveAfterSilence(_ recoveryError: NSError, trigger: String) {
     guard transportProbeTask == nil, canSendLiveRequests() else {
       syncChatLog.notice(
-        "request_timeout_probe_skipped probeInFlight=\((self.transportProbeTask != nil), privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public)"
+        "transport_probe_skipped trigger=\(trigger, privacy: .public) probeInFlight=\((self.transportProbeTask != nil), privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public)"
       )
       return
     }
     let generation = connectionGeneration
     let probeStartedAt = ProcessInfo.processInfo.systemUptime
     syncChatLog.notice(
-      "request_timeout_probe_sent generation=\(generation, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+      "transport_probe_sent trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
     )
     sendEnvelope(type: "heartbeat", requestId: nil, payload: [
       "kind": "ping",
       "sentAt": ISO8601DateFormatter().string(from: Date()),
       "dbVersion": database.currentDbVersion(),
     ])
+    let probeTimeoutNanoseconds = syncTransportProbeTimeoutNanoseconds(
+      isExpensive: lastNetworkPathSnapshot?.isExpensive == true,
+      isConstrained: lastNetworkPathSnapshot?.isConstrained == true
+    )
     transportProbeTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      try? await Task.sleep(nanoseconds: probeTimeoutNanoseconds)
       guard let self else { return }
       self.transportProbeTask = nil
-      guard !Task.isCancelled, self.connectionGeneration == generation else { return }
-      if let lastInbound = self.lastInboundMessageAt, lastInbound > probeStartedAt {
-        syncChatLog.notice(
-          "request_timeout_probe_succeeded generation=\(generation, privacy: .public) lastInbound=\(lastInbound, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
-        )
-        return
-      }
-      syncChatLog.notice(
-        "request_timeout_probe_failed generation=\(generation, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
-      )
-      self.handleTransportFailure(
-        timeoutError,
-        connectionState: syncConnectionStateAfterRequestTimeout(
-          lastInboundMessageAt: self.lastInboundMessageAt,
-          fallback: .error
-        )
+      guard !Task.isCancelled else { return }
+      self.finishTransportProbe(
+        recoveryError: recoveryError,
+        trigger: trigger,
+        generation: generation,
+        probeStartedAt: probeStartedAt
       )
     }
+  }
+
+  private func finishTransportProbe(
+    recoveryError: NSError,
+    trigger: String,
+    generation: UInt64,
+    probeStartedAt: TimeInterval
+  ) {
+    guard connectionGeneration == generation else { return }
+    if let lastInbound = lastInboundMessageAt, lastInbound > probeStartedAt {
+      syncChatLog.notice(
+        "transport_probe_succeeded trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) lastInbound=\(lastInbound, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
+      )
+      return
+    }
+    syncChatLog.notice(
+      "transport_probe_failed trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
+    )
+    beginAutomaticTransportRecovery(recoveryError)
   }
 
   private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
@@ -11081,7 +11388,7 @@ final class SyncService: ObservableObject {
           connectionState = .error
         }
         if isSyncRequestTimeoutError(error) {
-          verifyTransportAliveAfterRequestTimeout(error as NSError)
+          verifyTransportAliveAfterSilence(error as NSError, trigger: "request_timeout")
           return stillLive
         }
         return false
@@ -11148,7 +11455,8 @@ final class SyncService: ObservableObject {
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    fallbackToActiveProjectScope: Bool = true
+    fallbackToActiveProjectScope: Bool = true,
+    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -11169,7 +11477,8 @@ final class SyncService: ObservableObject {
         )
       } catch {
         let stillLive = canSendLiveRequests()
-        if syncShouldQueueCommandAfterSendFailure(
+        if attemptedLiveFailurePolicy == .enqueueSafely,
+           syncShouldQueueCommandAfterSendFailure(
           error: error,
           canSendLiveRequests: stillLive,
           queueable: commandPolicy(for: action)?.queueable == true
@@ -11184,7 +11493,7 @@ final class SyncService: ObservableObject {
             fallbackToActiveProjectScope: fallbackToActiveProjectScope
           )
           if stillLive, isSyncRequestTimeoutError(error) {
-            verifyTransportAliveAfterRequestTimeout(error as NSError)
+            verifyTransportAliveAfterSilence(error as NSError, trigger: "request_timeout")
           }
           return ["queued": true]
         }
@@ -11966,7 +12275,7 @@ extension SyncService {
         ) {
           try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
           if stillLive, isSyncRequestTimeoutError(error) {
-            verifyTransportAliveAfterRequestTimeout(error as NSError)
+            verifyTransportAliveAfterSilence(error as NSError, trigger: "request_timeout")
           }
           return ["queued": true]
         }

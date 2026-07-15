@@ -164,6 +164,8 @@ struct WorkChatSessionView: View {
   let canSendMessages: Bool
   let sendWillQueue: Bool
   let sendWillQueueIsReconnect: Bool
+  let transportHealth: SyncTransportHealth
+  let composerDraftRestore: WorkChatComposerDraftRestore?
   var inputLockMessage: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
@@ -519,8 +521,11 @@ struct WorkChatSessionView: View {
     if sendWillQueueIsReconnect, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
     }
+    if transportHealth == .connecting {
+      return "Reconnecting… Your draft is safe."
+    }
     if !canSendMessages {
-      return "Reconnect to send messages."
+      return "Waiting for the machine before sending."
     }
     if pendingInputs.count == 1 {
       // The single request renders in the consolidated strip directly above the
@@ -562,10 +567,10 @@ struct WorkChatSessionView: View {
 
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
-    if let errorMessage, !hostUnreachable {
+    if let errorMessageSnapshot, !hostUnreachable {
       ADENoticeCard(
         title: "Chat error",
-        message: errorMessage,
+        message: errorMessageSnapshot,
         icon: "exclamationmark.triangle.fill",
         tint: ADEColor.danger,
         actionTitle: "Retry",
@@ -740,6 +745,7 @@ struct WorkChatSessionView: View {
         sending: sending && !sendWillQueue,
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
+        composerDraftRestore: composerDraftRestore,
         compact: compactComposer,
         // Show Stop while a live turn has current transcript activity. The
         // broader live hint can lag after `done`; this stricter gate keeps the
@@ -1646,6 +1652,7 @@ private struct WorkChatComposerCard: View {
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
+  let composerDraftRestore: WorkChatComposerDraftRestore?
   let compact: Bool
   /// True while the assistant is streaming a response. Swaps the Send button
   /// Desktop parity: red bordered stop control in the composer while a turn is
@@ -1673,6 +1680,7 @@ private struct WorkChatComposerCard: View {
       sending: sending,
       settingsMutationInFlight: settingsMutationInFlight,
       codexFastModeOverride: codexFastModeOverride,
+      composerDraftRestore: composerDraftRestore,
       compact: compact,
       showInterrupt: showInterrupt,
       interruptInFlight: interruptInFlight,
@@ -1710,6 +1718,7 @@ private struct WorkChatComposerDraftInput: View {
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
+  let composerDraftRestore: WorkChatComposerDraftRestore?
   let compact: Bool
   let showInterrupt: Bool
   let interruptInFlight: Bool
@@ -1855,6 +1864,9 @@ private struct WorkChatComposerDraftInput: View {
       }
     }
     .onAppear { configureSuggestionController() }
+    .task(id: composerDraftRestore?.id) {
+      draftState.applyRestore(composerDraftRestore)
+    }
     .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
   }
@@ -2105,9 +2117,20 @@ private struct WorkContextUsagePopover: View {
   }
 }
 
+struct WorkChatComposerDraftRestore: Equatable, Identifiable {
+  let id: UUID
+  let text: String
+
+  init(text: String, id: UUID = UUID()) {
+    self.id = id
+    self.text = text
+  }
+}
+
 final class WorkChatComposerDraftState: ObservableObject {
   @Published var text = ""
   @Published var isFocused = false
+  private var appliedRestoreId: UUID?
 
   var trimmedText: String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2134,6 +2157,12 @@ final class WorkChatComposerDraftState: ObservableObject {
       }
     }
     isFocused = true
+  }
+
+  func applyRestore(_ restore: WorkChatComposerDraftRestore?) {
+    guard let restore, appliedRestoreId != restore.id else { return }
+    appliedRestoreId = restore.id
+    restoreUnsentText(restore.text)
   }
 }
 

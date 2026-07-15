@@ -89,6 +89,15 @@ struct LinearQueuedAgentLaunchError: LocalizedError {
   var errorDescription: String? { underlying.errorDescription }
 }
 
+/// A live launch whose response was lost after dispatch. The lane must remain:
+/// the host may already be running the agent even though mobile cannot yet
+/// identify its session.
+struct LinearAmbiguousAgentLaunchError: LocalizedError {
+  let underlying: AmbiguousChatCreationError
+
+  var errorDescription: String? { underlying.errorDescription }
+}
+
 /// Create-lane → launch-agent → return, with lane rollback on a post-lane
 /// launch failure (desktop parity). This is the single-issue slice of the
 /// desktop `runBatchLaunch`.
@@ -118,6 +127,8 @@ func runLinearLaunch(
     return .session(laneId: laneId, sessionId: sessionId)
   } catch let queuedError as QueuedRemoteCommandError {
     throw LinearQueuedAgentLaunchError(underlying: queuedError)
+  } catch let ambiguousError as AmbiguousChatCreationError {
+    throw LinearAmbiguousAgentLaunchError(underlying: ambiguousError)
   } catch {
     // The agent never launched into the lane we just minted, so roll back the
     // empty lane. Queued offline launches keep the lane so the queue can drain.

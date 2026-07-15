@@ -822,6 +822,7 @@ struct HubInlineComposer: View {
       targetLaneId = selectedLaneId
       targetLaneName = lanesForPickedProject.first(where: { $0.id == selectedLaneId })?.name ?? selectedLaneId
     }
+    var createdChatAfterSessionCreation: HubCreatedChat?
 
     do {
       let isCli = sessionMode == .cli
@@ -874,6 +875,15 @@ struct HubInlineComposer: View {
           targetProjectRootPath: targetProjectRootPath
         )
         sessionId = summary.sessionId
+        createdChatAfterSessionCreation = HubCreatedChat(
+          projectId: targetProjectId,
+          projectRootPath: targetProjectRootPath,
+          projectName: project.displayName,
+          laneName: targetLaneName,
+          sessionId: summary.sessionId,
+          isCli: false,
+          provider: provider
+        )
         try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
           text: opener,
@@ -892,7 +902,7 @@ struct HubInlineComposer: View {
       ADEHaptics.success()
       busy = false
 
-      let created = HubCreatedChat(
+      let created = createdChatAfterSessionCreation ?? HubCreatedChat(
         projectId: targetProjectId,
         projectRootPath: targetProjectRootPath,
         projectName: project.displayName,
@@ -914,9 +924,59 @@ struct HubInlineComposer: View {
         )
       }
       return true
+    } catch let error as QueuedRemoteCommandError {
+      if workQueuedNewSessionConsumesOpeningDraft(sessionMode) {
+        // The queued CLI start already contains the opener as `initialInput`.
+        // Keep the cleared composer so a retry cannot duplicate that input.
+        ADEHaptics.medium()
+        errorMessage = nil
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(
+            laneId: createdLaneId,
+            opener: opener,
+            fallbackName: autoCreatedFallbackName,
+            targetProjectId: targetProjectId,
+            targetProjectRootPath: targetProjectRootPath
+          )
+        }
+        busy = false
+        return true
+      }
+      // The chat create itself is safely queued, but the opener was not sent.
+      // Keep the lane and return false so the hub preserves the exact draft and
+      // attachments until the pending session materializes after reconnect.
+      ADEHaptics.medium()
+      errorMessage = error.localizedDescription
+      busy = false
+      return false
+    } catch let error as AmbiguousChatCreationError {
+      // A live create may already have reached the host. Never delete its lane
+      // or retry blindly; preserve the draft while the Work list reconciles.
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      busy = false
+      return false
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      if let createdChatAfterSessionCreation {
+        // The session exists and the host may already have started the opener.
+        // Keep the lane/session, expose the chat through the hub toast, and
+        // return false so the inline composer restores the user's exact draft
+        // and attachments without auto-resending them.
+        onCreated(createdChatAfterSessionCreation)
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(
+            laneId: createdLaneId,
+            opener: opener,
+            fallbackName: autoCreatedFallbackName,
+            targetProjectId: targetProjectId,
+            targetProjectRootPath: targetProjectRootPath
+          )
+        }
+        busy = false
+        return false
+      }
       // The chat never launched into the lane we just minted — clean it up so
       // an auto-create failure doesn't leave an orphaned empty lane behind.
       if let createdLaneId {

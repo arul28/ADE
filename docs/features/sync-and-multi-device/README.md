@@ -1189,9 +1189,11 @@ feature is merged or because a deliberately isolated-port host is running.
   rows, plus rows for tables that no longer exist locally, before
   opening the apply transaction. A batch that contains only ignored
   tables is a no-op and preserves the local database version.
-- **Controller command queues replay on reconnect and on live-send
-  timeouts.** If the runtime advertises `chat.send` as queueable and the user
-  sends while the desktop is reconnecting, or the send request times out while
-  the socket still appears connected, the iOS app stores the command locally
-  with a queued delivery state and replays it with the same `commandId`. Do not
-  assume synchronous semantics from the phone side.
+- **Controller command queues replay on reconnect, but an attempted live chat
+  send is ambiguity-sensitive.** If the runtime advertises `chat.send` as
+  queueable and the user submits while already offline, iOS stores the command
+  locally and replays it with the same `commandId`. After a live `chat.send` was
+  attempted, however, a timeout or transport loss does not prove that the host
+  failed to start the turn. iOS therefore does not queue or resend that message:
+  it restores the draft and asks the user to check the transcript before a
+  manual retry. Do not assume synchronous semantics from the phone side.
