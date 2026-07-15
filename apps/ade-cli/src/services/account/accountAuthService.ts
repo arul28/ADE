@@ -111,6 +111,7 @@ type AccountAuthLogger = {
 
 type PendingLoginSession = {
   sessionId: string;
+  oauthConfig: AccountOAuthConfig;
   codeVerifier: string;
   oauthState: string;
   redirectUri: string;
@@ -704,7 +705,7 @@ export function createAccountAuthService(args: {
     session: PendingLoginSession,
     code: string,
   ): Promise<AccountSessionRecord> => {
-    const config = normalizeOAuthConfig(await args.getOAuthConfig());
+    const config = session.oauthConfig;
     const token = await postTokenForm({
       fetchImpl,
       tokenUrl: `${config.issuer}/oauth/token`,
@@ -716,7 +717,7 @@ export function createAccountAuthService(args: {
         redirect_uri: session.redirectUri,
       },
     });
-    return buildSessionRecord(token, null, "loopback");
+    return buildSessionRecord(token, null, "loopback", config);
   };
 
   const handleLoopbackRequest = async (
@@ -832,6 +833,7 @@ export function createAccountAuthService(args: {
     expiryTimer.unref?.();
     session = {
       sessionId,
+      oauthConfig: config,
       codeVerifier,
       oauthState,
       redirectUri,

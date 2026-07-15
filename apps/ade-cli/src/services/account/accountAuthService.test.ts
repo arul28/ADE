@@ -208,6 +208,10 @@ describe("AccountAuthService OAuth PKCE login", () => {
       userId: "user_123",
       email: "person@example.com",
       name: "Person Example",
+      oauthConfig: {
+        issuer: "https://clerk.example.test",
+        clientId: "client-public",
+      },
     });
     await expect(service.pollLogin(start.sessionId)).resolves.toEqual({
       status: "signed_in",
@@ -221,6 +225,96 @@ describe("AccountAuthService OAuth PKCE login", () => {
         source: "loopback",
       },
     });
+  });
+
+  it("pins loopback OAuth context across callback exchange, refresh, and token creation", async () => {
+    const store = new MemoryCredentialStore();
+    const configA = { issuer: "https://clerk-a.example.test/", clientId: " client-a " };
+    const configB = { issuer: "https://clerk-b.example.test", clientId: "client-b" };
+    let activeConfig = configA;
+    const getOAuthConfig = vi.fn(() => activeConfig);
+    const initialAccessToken = jwt({ sub: "config-a-user", version: 1 });
+    const refreshedAccessToken = jwt({ sub: "config-a-user", version: 2 });
+    const tokenRequests: Array<{ url: string; body: Record<string, string> }> = [];
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      tokenRequests.push({ url: input, body });
+      if (body.grant_type === "authorization_code") {
+        return jsonResponse({
+          access_token: initialAccessToken,
+          refresh_token: "config-a-refresh",
+          expires_in: 60,
+        });
+      }
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "config-a-refresh-rotated",
+        expires_in: 3600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig,
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomBytes: (size) => Buffer.alloc(size, 0x3a),
+      randomUUID: () => "login-session-pinned-config",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startLogin();
+    const authorizeUrl = new URL(start.authorizeUrl);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+    activeConfig = configB;
+
+    const callback = await fetch(
+      `${redirectUri}?code=config-a-code&state=${encodeURIComponent(state)}`,
+    );
+    expect(callback.status).toBe(200);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: initialAccessToken,
+      refreshToken: "config-a-refresh",
+      oauthConfig: {
+        issuer: "https://clerk-a.example.test",
+        clientId: "client-a",
+      },
+    });
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    const durable = await service.createToken();
+    const durablePayload = JSON.parse(Buffer.from(
+      durable.token.slice("ade_account_v1.".length),
+      "base64url",
+    ).toString("utf8"));
+
+    expect(tokenRequests).toEqual([
+      {
+        url: "https://clerk-a.example.test/oauth/token",
+        body: {
+          grant_type: "authorization_code",
+          code: "config-a-code",
+          code_verifier: Buffer.alloc(32, 0x3a).toString("base64url"),
+          client_id: "client-a",
+          redirect_uri: redirectUri,
+        },
+      },
+      {
+        url: "https://clerk-a.example.test/oauth/token",
+        body: {
+          grant_type: "refresh_token",
+          refresh_token: "config-a-refresh",
+          client_id: "client-a",
+        },
+      },
+    ]);
+    expect(durablePayload).toEqual({
+      version: 1,
+      refreshToken: "config-a-refresh-rotated",
+      issuer: "https://clerk-a.example.test",
+      clientId: "client-a",
+    });
+    expect(getOAuthConfig).toHaveBeenCalledTimes(1);
   });
 
   it("cancelLogin closes the loopback listener so a late completion cannot sign in", async () => {
