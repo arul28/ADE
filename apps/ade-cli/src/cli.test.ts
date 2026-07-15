@@ -2872,6 +2872,69 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("rejects an inherited expired ADE_ACCOUNT_TOKEN instead of reporting login success", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-env-token-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const requests: Array<{ method: string; params?: unknown }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          return {
+            domain: "account",
+            action: "status",
+            result: {
+              signedIn: false,
+              userId: null,
+              email: null,
+              name: null,
+              expiresAt: "2026-07-14T11:59:00.000Z",
+              source: "env-token",
+            },
+            statusHints: {},
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const previousToken = process.env.ADE_ACCOUNT_TOKEN;
+    const expiredToken = "expired-token-that-must-not-appear";
+
+    try {
+      process.env.ADE_ACCOUNT_TOKEN = expiredToken;
+      let caught: unknown;
+      try {
+        await runCli(["--socket", socketPath, "login", "--text"]);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe("ADE_ACCOUNT_TOKEN is expired or invalid.");
+      expect(JSON.stringify(caught)).not.toContain(expiredToken);
+      expect(requests.filter((request) => request.method === "account.call")).toEqual([
+        { method: "account.call", params: { action: "status", args: {} } },
+      ]);
+    } finally {
+      if (previousToken === undefined) delete process.env.ADE_ACCOUNT_TOKEN;
+      else process.env.ADE_ACCOUNT_TOKEN = previousToken;
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("keeps loopback login active when browser and device startup both fail", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-login-sock-"));
     const socketPath = path.join(root, "ade.sock");

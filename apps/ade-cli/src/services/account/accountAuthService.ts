@@ -528,12 +528,12 @@ export function createAccountAuthService(args: {
   const envCredentialStatus = (credential: string): AccountAuthStatus => {
     resetEnvSessionIfCredentialChanged(credential);
     if (envSession) return { ...toStatus(envSession), source: "env-token" };
-    const expiresAt = classifyEnvCredential(credential) === "access_token"
-      ? accessTokenExpiresAt(credential)
-      : null;
+    const isAccessToken = classifyEnvCredential(credential) === "access_token";
+    const expiresAt = isAccessToken ? accessTokenExpiresAt(credential) : null;
     const claims = expiresAt ? decodeAccountClaims(credential) : { userId: null, email: null, name: null };
+    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
-      signedIn: true,
+      signedIn: !isAccessToken || (Number.isFinite(expiresAtMs) && expiresAtMs > now()),
       userId: claims.userId,
       email: claims.email,
       name: claims.name,

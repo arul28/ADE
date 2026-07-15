@@ -131,6 +131,24 @@ class FakeD1Database {
       this.rows = this.rows.filter((row) => row.user_id !== userId || row.machine_key !== machineKey);
       return 1;
     }
+    if (normalized.includes("delete from device_authorizations")) {
+      const cutoff = Number(values[0]);
+      const before = this.deviceRows.length;
+      this.deviceRows = this.deviceRows.filter((row) =>
+        row.expires_at > cutoff || !["expired", "consumed", "error"].includes(row.status)
+      );
+      return before - this.deviceRows.length;
+    }
+    if (normalized.includes("delete from device_approval_rate_limits")) {
+      const cutoff = Number(values[0]);
+      let changes = 0;
+      for (const [clientHash, record] of this.approvalRateLimits) {
+        if (record.window_started_at > cutoff) continue;
+        this.approvalRateLimits.delete(clientHash);
+        changes += 1;
+      }
+      return changes;
+    }
     if (normalized.includes("insert into device_authorizations")) {
       const userCode = String(values[1]);
       if (this.deviceRows.some((row) => row.user_code === userCode)) {
@@ -585,6 +603,60 @@ describe("device authorization bridge", () => {
       access_token: null,
       refresh_token: null,
     });
+    expect(env.DB.approvalRateLimits.size).toBe(0);
+
+    vi.mocked(Date.now).mockReturnValue(startedAt + 4_201_000);
+    cleanup = undefined;
+    await worker.scheduled(
+      {} as ScheduledEvent,
+      env,
+      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+    );
+    await cleanup;
+    expect(env.DB.deviceRows).toHaveLength(0);
+  });
+
+  it("rate-limits device-code issuance separately from approval lookups", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const headers = {
+      "cf-connecting-ip": "203.0.113.8",
+      "content-type": "application/json",
+    };
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await handleRequest(
+        new Request("https://directory.test/device/code", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ device_secret: "daemon-device-secret-with-at-least-32-bytes" }),
+        }),
+        env,
+        { now: () => now },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const blocked = await handleRequest(
+      new Request("https://directory.test/device/code", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ device_secret: "daemon-device-secret-with-at-least-32-bytes" }),
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBe("60");
+    expect(env.DB.deviceRows).toHaveLength(10);
+
+    const approval = await handleRequest(
+      new Request("https://directory.test/device?user_code=ZZZZ-ZZZZ", {
+        headers: { "cf-connecting-ip": "203.0.113.8" },
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(approval.status).toBe(404);
   });
 
   it("rate-limits user-code lookups on the hosted approval page", async () => {

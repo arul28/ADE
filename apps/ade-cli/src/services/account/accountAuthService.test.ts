@@ -571,7 +571,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     activeServices.push(service);
 
     expect(service.getStatus()).toMatchObject({
-      signedIn: true,
+      signedIn: false,
       source: "env-token",
       expiresAt: "2026-07-14T11:59:00.000Z",
     });

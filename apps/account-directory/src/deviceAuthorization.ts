@@ -1,8 +1,10 @@
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
 const DEVICE_SLOW_DOWN_INCREMENT_SECONDS = 5;
-const APPROVAL_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEVICE_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
+const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export interface DeviceAuthorizationEnv {
@@ -193,13 +195,20 @@ export async function cleanupExpiredDeviceAuthorizations(
   env: DeviceAuthorizationEnv,
   now = Date.now(),
 ): Promise<number> {
-  const result = await env.DB.prepare(`
+  const expired = await env.DB.prepare(`
     update device_authorizations
        set status = 'expired', code_verifier = null, oauth_state_hash = null,
            access_token = null, refresh_token = null
      where expires_at <= ? and status in ('pending', 'approved')
   `).bind(now).run();
-  return changes(result);
+  const deletedAuthorizations = await env.DB.prepare(`
+    delete from device_authorizations
+     where expires_at <= ? and status in ('expired', 'consumed', 'error')
+  `).bind(now - DEVICE_AUTHORIZATION_RETENTION_MS).run();
+  const deletedRateLimits = await env.DB.prepare(`
+    delete from device_approval_rate_limits where window_started_at <= ?
+  `).bind(now - DEVICE_RATE_LIMIT_WINDOW_MS).run();
+  return changes(expired) + changes(deletedAuthorizations) + changes(deletedRateLimits);
 }
 
 async function findByDeviceCode(env: DeviceAuthorizationEnv, deviceCode: string): Promise<DeviceAuthorizationRow | null> {
@@ -214,15 +223,21 @@ async function findByUserCode(env: DeviceAuthorizationEnv, userCode: string): Pr
     .first<DeviceAuthorizationRow>();
 }
 
-async function checkApprovalRateLimit(request: Request, env: DeviceAuthorizationEnv, now: number): Promise<boolean> {
+async function checkDeviceRateLimit(
+  request: Request,
+  env: DeviceAuthorizationEnv,
+  now: number,
+  scope: "approval" | "issuance",
+  maxAttempts: number,
+): Promise<boolean> {
   const clientIdentity = request.headers.get("cf-connecting-ip")?.trim()
     || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || "unknown-client";
-  const clientHash = await sha256(clientIdentity);
+  const clientHash = await sha256(`${scope}:${clientIdentity}`);
   const existing = await env.DB.prepare("select window_started_at, attempts from device_approval_rate_limits where client_hash = ?")
     .bind(clientHash)
     .first<{ window_started_at: number; attempts: number }>();
-  if (!existing || now - existing.window_started_at >= APPROVAL_RATE_LIMIT_WINDOW_MS) {
+  if (!existing || now - existing.window_started_at >= DEVICE_RATE_LIMIT_WINDOW_MS) {
     await env.DB.prepare(`
       insert into device_approval_rate_limits (client_hash, window_started_at, attempts)
       values (?, ?, 1)
@@ -230,7 +245,7 @@ async function checkApprovalRateLimit(request: Request, env: DeviceAuthorization
     `).bind(clientHash, now).run();
     return true;
   }
-  if (existing.attempts >= APPROVAL_RATE_LIMIT_MAX_ATTEMPTS) return false;
+  if (existing.attempts >= maxAttempts) return false;
   await env.DB.prepare("update device_approval_rate_limits set attempts = attempts + 1 where client_hash = ?")
     .bind(clientHash)
     .run();
@@ -250,6 +265,12 @@ async function handleDeviceCode(
   }
 
   const now = options.now();
+  if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
+    return json(
+      { error: "rate_limited", error_description: "Too many device authorization requests. Try again shortly." },
+      { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
+    );
+  }
   const expiresAt = now + DEVICE_CODE_TTL_SECONDS * 1000;
   const deviceCode = bytesToBase64Url(options.randomBytes(32));
   const deviceSecretHash = await sha256(deviceSecret);
@@ -301,7 +322,7 @@ async function handleDeviceApproval(
   if (!userCode) return approvalForm("");
 
   const now = options.now();
-  if (!(await checkApprovalRateLimit(request, env, now))) {
+  if (!(await checkDeviceRateLimit(request, env, now, "approval", APPROVAL_RATE_LIMIT_MAX_ATTEMPTS))) {
     return approvalMessage("Try again shortly", "Too many device-code attempts were made from this browser.", 429);
   }
   const row = await findByUserCode(env, userCode);

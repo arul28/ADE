@@ -32,3 +32,6 @@ create table if not exists device_approval_rate_limits (
   window_started_at integer not null,
   attempts integer not null
 );
+
+create index if not exists idx_device_approval_rate_limits_window
+  on device_approval_rate_limits(window_started_at);

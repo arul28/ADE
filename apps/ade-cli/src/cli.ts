@@ -17822,9 +17822,16 @@ async function runAccountLogin(
     });
     if (mode === "env-token") {
       const status = await runAccountAction("status");
-      if (status.signedIn === true && asString(status.source) === "env-token") {
+      const source = asString(status.source);
+      if (status.signedIn === true && source === "env-token") {
         process.stderr.write("Using ADE_ACCOUNT_TOKEN; no interactive sign-in is required.\n");
         return { output: formatOutput(status, options, "account-auth"), exitCode: 0 };
+      }
+      if (source === "env-token") {
+        throw new CliExecutionError(
+          "ADE_ACCOUNT_TOKEN is expired or invalid.",
+          { nextAction: "Replace it with a current access token or durable refresh token, then restart the ADE brain." },
+        );
       }
       throw new CliExecutionError(
         "ADE_ACCOUNT_TOKEN is set in this shell, but the running ADE brain did not inherit it.",
