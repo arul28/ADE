@@ -88,6 +88,8 @@ export async function fetchAccountStatus(options?: { force?: boolean }): Promise
 
 /** Push a freshly-known status to every subscriber (after sign-in / sign-out). */
 export function publishAccountStatus(status: AdeAccountStatus): void {
+  fetchSerial += 1; // Supersede any in-flight status fetch so it cannot overwrite this.
+  inFlight = null;
   emit(status);
 }
 

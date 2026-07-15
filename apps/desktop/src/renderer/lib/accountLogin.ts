@@ -38,19 +38,19 @@ export function useAccountLogin(options?: {
   const [phase, setPhase] = useState<AccountLoginPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const cancelledRef = useRef(false);
+  const attemptRef = useRef(0);
   const onSignedInRef = useRef(options?.onSignedIn);
   onSignedInRef.current = options?.onSignedIn;
 
   useEffect(() => {
     return () => {
-      cancelledRef.current = true;
+      attemptRef.current += 1;
     };
   }, []);
 
   const cancel = useCallback(() => {
-    cancelledRef.current = true;
     const sessionId = sessionIdRef.current;
+    attemptRef.current += 1;
     if (sessionId) {
       void accountApi()?.cancelLogin({ sessionId }).catch(() => {});
     }
@@ -66,13 +66,13 @@ export function useAccountLogin(options?: {
       setError("Account sign-in isn't available on this build.");
       return;
     }
-    cancelledRef.current = false;
+    const attemptId = ++attemptRef.current;
     setError(null);
     setPhase("starting");
     let sessionId: string;
     try {
       const start = await api.startLogin();
-      if (cancelledRef.current) {
+      if (attemptRef.current !== attemptId) {
         void accountApi()?.cancelLogin({ sessionId: start.sessionId }).catch(() => {});
         return;
       }
@@ -80,7 +80,7 @@ export function useAccountLogin(options?: {
       sessionIdRef.current = sessionId;
       openExternalUrl(start.authorizeUrl);
     } catch (err) {
-      if (cancelledRef.current) return;
+      if (attemptRef.current !== attemptId) return;
       setPhase("error");
       setError(
         err instanceof Error ? err.message : "Couldn't start ADE account sign-in.",
@@ -90,16 +90,16 @@ export function useAccountLogin(options?: {
 
     setPhase("awaiting");
     for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
-      if (cancelledRef.current) return;
+      if (attemptRef.current !== attemptId) return;
       await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
-      if (cancelledRef.current) return;
+      if (attemptRef.current !== attemptId) return;
       let result: Awaited<ReturnType<NonNullable<typeof api>["pollLogin"]>>;
       try {
         result = await api.pollLogin({ sessionId });
       } catch {
         continue; // Transient IPC hiccup — keep polling until the TTL.
       }
-      if (cancelledRef.current) return;
+      if (attemptRef.current !== attemptId) return;
       if (result.status === "signed_in") {
         sessionIdRef.current = null;
         publishAccountStatus(result.authStatus);
@@ -120,7 +120,7 @@ export function useAccountLogin(options?: {
         return;
       }
     }
-    if (cancelledRef.current) return;
+    if (attemptRef.current !== attemptId) return;
     setPhase("error");
     setError("Sign-in timed out. Try again.");
   }, []);
