@@ -5,7 +5,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WebSocket } from "ws";
 import type { SyncDpopVerification } from "../../../../../ade-cli/src/services/sync/syncDpop";
-import { verifySyncDpopProof } from "../../../../../ade-cli/src/services/sync/syncDpop";
+import {
+  createSyncDpopNonceCache,
+  verifySyncDpopProof,
+} from "../../../../../ade-cli/src/services/sync/syncDpop";
 import type { SyncDpopProof } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
@@ -237,7 +240,8 @@ describe("DesktopPairedMachineStore", () => {
     process.env.ADE_HOME = adeHome;
     const openedEndpoints: string[] = [];
     const accountDpopVerdicts: SyncDpopVerification[] = [];
-    let accountHelloCount = 0;
+    let successfulHelloCount = 0;
+    const nonceCache = createSyncDpopNonceCache();
     const machine: AdeAccountMachine = {
       machineKey: "machine-account-1",
       deviceId: "host-account-1",
@@ -247,11 +251,12 @@ describe("DesktopPairedMachineStore", () => {
       online: true,
       lastSeenAt: Date.now(),
       reachableEndpoints: [
-        { kind: "relay", url: "ws://relay.example/connect/plaintext" },
-        { kind: "relay", url: "wss://relay.example/connect/machine-account-1?token=hostile" },
+        { kind: "relay", url: "ws://relay-one.example/connect/plaintext" },
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-account-1?token=hostile" },
         { kind: "lan", url: "wss://arbitrary.example/account" },
         { kind: "lan", host: "studio.local", port: 8787 },
-        { kind: "relay", url: "wss://relay.example/connect/machine-account-1" },
+        { kind: "relay", url: "wss://relay-one.example/connect/machine-account-1" },
+        { kind: "relay", url: "wss://relay-two.example/connect/machine-account-1" },
       ],
     };
     const createWebSocket = (endpoint: string) => {
@@ -259,7 +264,6 @@ describe("DesktopPairedMachineStore", () => {
       return new FakeWebSocket((text, ws) => {
         const envelope = parseSyncEnvelope(wsDataToText(text));
         if (envelope.type !== "hello") return;
-        accountHelloCount += 1;
         const payload = envelope.payload as {
           peer: unknown;
           auth: {
@@ -276,7 +280,17 @@ describe("DesktopPairedMachineStore", () => {
           deviceId: payload.auth.deviceId,
           secret: payload.auth.accountToken,
           proof: payload.auth.dpop,
+          checkAndRecordNonce: (nonce) => nonceCache.checkAndRecord(payload.auth.deviceId, nonce),
         }));
+        if (endpoint.includes("relay-one")) {
+          ws.receive(encodeSyncEnvelope({
+            type: "hello_error",
+            requestId: envelope.requestId,
+            payload: { code: "auth_failed", message: "Retry the next verified relay." },
+          }));
+          return;
+        }
+        successfulHelloCount += 1;
         ws.receive(encodeSyncEnvelope({
           type: "hello_ok",
           requestId: envelope.requestId,
@@ -293,9 +307,9 @@ describe("DesktopPairedMachineStore", () => {
             serverDbVersion: 0,
             heartbeatIntervalMs: 5_000,
             pollIntervalMs: 1_500,
-            cloudRelayWssUrl: "wss://relay.example/connect/machine-account-1",
+            cloudRelayWssUrl: "wss://relay-two.example/connect/machine-account-1",
             features: { rpcChannel: true, portForward: true },
-            ...(accountHelloCount === 1
+            ...(successfulHelloCount === 1
               ? {
                   accountPairing: {
                     deviceId: payload.auth.deviceId,
@@ -313,27 +327,42 @@ describe("DesktopPairedMachineStore", () => {
       machine,
       "clerk-access-token",
       "Web account client",
-      { pairingTimeoutMs: 2_000, createWebSocket, relayBaseUrls: ["https://relay.example"] },
+      {
+        pairingTimeoutMs: 2_000,
+        createWebSocket,
+        relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+      },
     );
     const reauthenticated = await store.pairWithAccountMachine(
       machine,
       "clerk-access-token",
       "Web account client",
-      { pairingTimeoutMs: 2_000, createWebSocket, relayBaseUrls: ["https://relay.example"] },
+      {
+        pairingTimeoutMs: 2_000,
+        createWebSocket,
+        relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+      },
     );
 
     expect(openedEndpoints).toEqual([
-      "wss://relay.example/connect/machine-account-1",
-      "wss://relay.example/connect/machine-account-1",
+      "wss://relay-one.example/connect/machine-account-1",
+      "wss://relay-two.example/connect/machine-account-1",
+      "wss://relay-one.example/connect/machine-account-1",
+      "wss://relay-two.example/connect/machine-account-1",
     ]);
-    expect(accountDpopVerdicts).toEqual([{ ok: true }, { ok: true }]);
+    expect(accountDpopVerdicts).toEqual([
+      { ok: true },
+      { ok: true },
+      { ok: true },
+      { ok: true },
+    ]);
     expect(adopted.secret).toBe("account-issued-paired-secret");
     expect(reauthenticated.secret).toBe("account-issued-paired-secret");
     expect(reauthenticated.deviceId).toBe(adopted.deviceId);
     expect(reauthenticated.dpopPublicKey).toBe(adopted.dpopPublicKey);
     expect(reauthenticated.endpoints).toContain("ws://studio.local:8787/");
     expect(reauthenticated.endpoints).not.toContain("wss://arbitrary.example/account");
-    expect(reauthenticated.endpoints).not.toContain("ws://relay.example/connect/plaintext");
+    expect(reauthenticated.endpoints).not.toContain("ws://relay-one.example/connect/plaintext");
     expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
   });
 });

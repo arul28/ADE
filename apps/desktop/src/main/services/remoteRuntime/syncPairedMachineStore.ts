@@ -547,16 +547,6 @@ export class DesktopPairedMachineStore {
       capabilities: [],
       ...(options.appVersion?.trim() ? { appVersion: options.appVersion.trim() } : {}),
     };
-    const hello: SyncHelloPayload = {
-      peer,
-      auth: {
-        kind: "account",
-        deviceId: localDeviceId,
-        accountToken,
-        dpop: createDesktopSyncDpopProof(proofCredentials),
-      },
-    };
-
     const failures: string[] = [];
     for (const endpoint of accountRelayEndpoints) {
       const connection = await openSyncEnvelopeConnection({
@@ -569,6 +559,15 @@ export class DesktopPairedMachineStore {
       });
       if (!connection) continue;
       try {
+        const hello: SyncHelloPayload = {
+          peer,
+          auth: {
+            kind: "account",
+            deviceId: localDeviceId,
+            accountToken,
+            dpop: createDesktopSyncDpopProof(proofCredentials),
+          },
+        };
         const requestId = `account-${randomUUID()}`;
         const response = waitForSyncEnvelope(
           connection,
