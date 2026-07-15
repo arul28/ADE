@@ -140,6 +140,11 @@ import {
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
+import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
+import {
+  getSharedAccountAuthService,
+  registerAccountConfigProjectRoot,
+} from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   ElectronSafeStorageCredentialStore,
@@ -2069,6 +2074,12 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    registerAccountConfigProjectRoot(projectRoot);
+    const accountAuthService = getSharedAccountAuthService({
+      projectRoots: () => [projectRoot],
+      logger,
+    });
+    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -2541,6 +2552,7 @@ app.whenReady().then(async () => {
       appDataDir: app.getPath("userData"),
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
+      getAccountAccessToken,
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -3167,6 +3179,7 @@ app.whenReady().then(async () => {
       onPrStateIngested: () => prPollingServiceRef?.poke(),
       secretService: automationSecretService,
       githubService,
+      getAccountAccessToken,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       // 30s halves worst-case webhook latency. Each poll is one request to
@@ -3190,6 +3203,7 @@ app.whenReady().then(async () => {
           credentialStore: linearCredentialStore,
           getLinearClient: () => linearClient,
           getLinearAccessToken: createLinearAccessTokenGetter(linearCredentialService),
+          getAccountAccessToken,
           cursorStore: createKvIngressCursorStore(db),
           hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
           isAdeAppConnection: () =>

@@ -5,6 +5,7 @@ import { linearIngressKindFromParts } from "../../../shared/types/linearSync";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { LinearWebhookSummary } from "../cto/linearClient";
+import { ACCOUNT_RELAY_TOKEN_HEADER } from "../github/githubRelayConfig";
 import {
   LINEAR_RELAY_LAST_ERROR_REF,
   LINEAR_RELAY_LAST_EVENT_AT_REF,
@@ -95,6 +96,7 @@ export type LinearIngressServiceDeps = {
   getLinearClient: () => LinearWebhookClient | null;
   /** Raw API key or an OAuth value already prefixed with `Bearer `. */
   getLinearAccessToken: () => string | null | Promise<string | null>;
+  getAccountAccessToken?: () => Promise<string | null>;
   cursorStore: LinearIngressCursorStore;
   /** Awaited before the cursor advances past the delivery. */
   dispatch: (record: LinearIngressEventRecord) => void | Promise<void>;
@@ -253,15 +255,23 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     return authorization;
   };
 
+  const readAccountAccessToken = async (): Promise<string | null> => {
+    return deps.getAccountAccessToken
+      ? await deps.getAccountAccessToken().catch(() => null)
+      : null;
+  };
+
   const registerOrganization = async (args: {
     relayBaseUrl: string;
     authorization: string;
     secret: string;
   }): Promise<string> => {
+    const accountAccessToken = await readAccountAccessToken();
     const response = await fetchImpl(`${args.relayBaseUrl}/linear/orgs/register`, {
       method: "POST",
       headers: {
         authorization: args.authorization,
+        ...(accountAccessToken ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken } : {}),
         "content-type": "application/json",
       },
       body: JSON.stringify({ secret: args.secret }),
@@ -426,7 +436,11 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       status = getStatus();
     }
     if (status.state !== "ready" || !status.organizationId) return;
-    const authorization = await requireAuthorization();
+    const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";
+    const accountAccessToken = await readAccountAccessToken();
+    if (!authorization && !accountAccessToken) {
+      throw new Error("Connect Linear before configuring webhook ingestion.");
+    }
 
     // Drain full pages within one tick so a backlog larger than one page is
     // delivered this poll instead of trickling out one page per interval.
@@ -436,7 +450,10 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       url.searchParams.set("limit", String(LINEAR_RELAY_PAGE_LIMIT));
       if (cursor) url.searchParams.set("after", cursor);
       const response = await fetchImpl(url, {
-        headers: { authorization },
+        headers: {
+          ...(authorization ? { authorization } : {}),
+          ...(accountAccessToken ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken } : {}),
+        },
         // pollInFlight only clears in `finally`; an unbounded hung request
         // would block scheduled and manual polls until restart.
         signal: AbortSignal.timeout(30_000),

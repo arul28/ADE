@@ -9,6 +9,7 @@ import type { AutomationSecretService } from "./automationSecretService";
 import type { createPrService } from "../prs/prService";
 import {
   createGitHubRelayAuthAuditLog,
+  ACCOUNT_RELAY_TOKEN_HEADER,
   gitHubRelayAuthorizationToken,
   readGitHubRelayConfig,
   resolveHostedGitHubRelayAuthToken,
@@ -52,6 +53,7 @@ type AutomationIngressServiceArgs = {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
   } | null;
+  getAccountAccessToken?: () => Promise<string | null>;
   listRules: () => AutomationRule[];
   // Cursor persistence fallback. REQUIRED when automationService is null —
   // without it the relay cursor would silently reset on every restart
@@ -496,9 +498,12 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   const pollGithubRelay = async () => {
     const config = buildGithubRelayConfig();
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
+    const accountAccessToken = args.getAccountAccessToken
+      ? await args.getAccountAccessToken().catch(() => null)
+      : null;
     // Skip before the "polling" status write so the "disabled" + auth-error
     // status reported at cooldown entry stays accurate for the whole window.
-    if (config.configured && !useLegacyProjectRoute && Date.now() < hostedAuthPendingUntilMs) return;
+    if (config.configured && !useLegacyProjectRoute && !accountAccessToken && Date.now() < hostedAuthPendingUntilMs) return;
     updateGithubRelayStatus({
       configured: config.configured,
       apiBaseUrl: config.apiBaseUrl,
@@ -533,31 +538,39 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         try {
           githubAppUserToken = (await args.githubService?.getAppUserTokenForRelay()) ?? null;
         } catch (error) {
-          hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
-          const message = error instanceof Error ? error.message : String(error);
-          if (!hostedAuthPendingLogged) {
-            hostedAuthPendingLogged = true;
-            args.logger.info("automations.github_relay_auth_pending", { error: message });
+          if (accountAccessToken) {
+            githubAppUserToken = null;
+          } else {
+            hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
+            const message = error instanceof Error ? error.message : String(error);
+            if (!hostedAuthPendingLogged) {
+              hostedAuthPendingLogged = true;
+              args.logger.info("automations.github_relay_auth_pending", { error: message });
+            }
+            updateGithubRelayStatus({
+              healthy: false,
+              status: "disabled",
+              lastPolledAt: new Date().toISOString(),
+              lastError: message,
+            });
+            return;
           }
-          updateGithubRelayStatus({
-            healthy: false,
-            status: "disabled",
-            lastPolledAt: new Date().toISOString(),
-            lastError: message,
-          });
-          return;
         }
       }
       const hostedAuth = useLegacyProjectRoute
         ? null
         : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
-      if (hostedAuth && !hostedAuth.ok) {
+      if (hostedAuth && !hostedAuth.ok && !accountAccessToken) {
         throw new Error(hostedAuth.error);
       }
       hostedAuthPendingUntilMs = 0;
       hostedAuthPendingLogged = false;
-      const authToken = useLegacyProjectRoute ? legacyAuthToken : hostedAuth?.token ?? null;
-      if (!authToken) {
+      const authToken = useLegacyProjectRoute
+        ? legacyAuthToken
+        : hostedAuth?.ok
+          ? hostedAuth.token
+          : null;
+      if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
         throw new Error("GitHub auth is required for relay polling.");
       }
       if (hostedAuth?.ok && repo) {
@@ -581,7 +594,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         {
           headers: {
             accept: "application/json",
-            authorization: `Bearer ${authToken}`,
+            ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+            ...(accountAccessToken ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken } : {}),
           },
           signal: controller.signal,
         }

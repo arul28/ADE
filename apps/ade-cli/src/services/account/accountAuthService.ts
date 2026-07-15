@@ -116,6 +116,20 @@ export type AccountActionDomainService = {
   getToken(): Promise<string>;
 };
 
+export async function getSignedInAccountAccessToken(
+  service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+): Promise<string | null> {
+  const status = service.getStatus();
+  if (!status.signedIn || !status.userId) return null;
+  try {
+    return (await service.getAccessToken()).trim() || null;
+  } catch {
+    // Relay account credentials are additive. An unavailable refresh must not
+    // block the independent GitHub, Linear, or ade_proj_ authorization path.
+    return null;
+  }
+}
+
 export const ACCOUNT_ACTION_NAMES = [
   "startLogin",
   "pollLogin",

@@ -124,6 +124,7 @@ type HeadlessLinearDeps = {
   conflictService: ReturnType<typeof createConflictService>;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
+  getAccountAccessToken?: () => Promise<string | null>;
 };
 
 type HeadlessLinearServices = {
@@ -438,6 +439,7 @@ export function createHeadlessGitHubService(
   options: {
     onStatusChanged?: (status: HeadlessGitHubStatus) => void;
     githubRelaySecretReader?: GitHubRelaySecretReader | null;
+    getAccountAccessToken?: (() => Promise<string | null>) | null;
   } = {},
 ): HeadlessGitHubService {
   const credentialStore = new EncryptedFileCredentialStore();
@@ -997,11 +999,15 @@ export function createHeadlessGitHubService(
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : detectGitHubRepo(projectRoot);
       const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
+      const accountAccessToken = options.getAccountAccessToken
+        ? await options.getAccountAccessToken().catch(() => null)
+        : null;
       return fetchGitHubAppInstallationStatus({
         repo,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh === true,
         githubAppUserToken,
+        accountAccessToken,
         auditLog: appUserAuth.auditLog,
       });
     },
@@ -1933,6 +1939,7 @@ export function createHeadlessLinearServices(
     {
       onStatusChanged: args.onGitHubStatusChanged,
       githubRelaySecretReader: (ref) => automationSecretService.getSecret(ref),
+      getAccountAccessToken: args.getAccountAccessToken,
     },
   );
   const linearClient = createLinearClientImpl({

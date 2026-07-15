@@ -5,6 +5,7 @@ import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
   createAccountAuthService,
   derivePkceChallenge,
+  getSignedInAccountAccessToken,
   type AccountAuthService,
   type AccountSessionRecord,
 } from "./accountAuthService";
@@ -408,5 +409,25 @@ describe("AccountAuthService refresh and sign-out", () => {
     expect(service.getStatus()).toMatchObject({ signedIn: true, email: "old@example.com" });
     expect(service.signOut()).toMatchObject({ signedIn: false, email: null });
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("returns an account relay token only for a usable signed-in account", async () => {
+    const getAccessToken = vi.fn(async () => "clerk-access-token");
+    await expect(getSignedInAccountAccessToken({
+      getStatus: () => ({ signedIn: true, userId: "user_1", email: null, name: null, expiresAt: null }),
+      getAccessToken,
+    })).resolves.toBe("clerk-access-token");
+    await expect(getSignedInAccountAccessToken({
+      getStatus: () => ({ signedIn: false, userId: null, email: null, name: null, expiresAt: null }),
+      getAccessToken,
+    })).resolves.toBeNull();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves legacy integration auth available when account token refresh fails", async () => {
+    await expect(getSignedInAccountAccessToken({
+      getStatus: () => ({ signedIn: true, userId: "user_1", email: null, name: null, expiresAt: null }),
+      getAccessToken: async () => { throw new Error("refresh failed"); },
+    })).resolves.toBeNull();
   });
 });

@@ -117,6 +117,7 @@ function makeService(options: {
   credentialStore?: MemoryCredentialStore;
   ghAuthTokenProvider?: () => { token: string | null; ghCliPath: string | null; ghAuthError: string | null };
   githubRelaySecretReader?: (ref: string) => string | null;
+  getAccountAccessToken?: () => Promise<string | null>;
 } = {}) {
   return createGithubService({
     logger: makeLogger(),
@@ -125,6 +126,7 @@ function makeService(options: {
     credentialStore: options.credentialStore as any,
     ghAuthTokenProvider: options.ghAuthTokenProvider,
     githubRelaySecretReader: options.githubRelaySecretReader,
+    getAccountAccessToken: options.getAccountAccessToken,
   });
 }
 
@@ -1340,6 +1342,33 @@ describe("githubService.getAppInstallationStatus", () => {
       error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("checks the hosted relay with only the signed-in account credential", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "selected",
+      checkedAt: "2026-06-30T00:00:01.000Z",
+    }));
+
+    const status = await makeService({
+      getAccountAccessToken: async () => "clerk-account-token",
+    }).getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status.installed).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/acme/repo/status",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          "x-ade-account-token": "clerk-account-token",
+        }),
+      }),
+    );
+    const headers = mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers.authorization).toBeUndefined();
   });
 
   it("checks the hosted relay with a GitHub App user token", async () => {

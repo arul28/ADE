@@ -454,6 +454,46 @@ describe("automationIngressService", () => {
     }));
   });
 
+  it("polls the hosted repo relay with only the signed-in account credential", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextCursor: null,
+    }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: () => null,
+        setIngressCursor: vi.fn(),
+        getIngressStatus: () => ({}),
+      } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => {
+          throw new Error("GitHub App user auth is absent on this machine.");
+        }),
+      },
+      getAccountAccessToken: vi.fn(async () => "clerk-account-token"),
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-ade-account-token": "clerk-account-token",
+        }),
+      }),
+    );
+    const headers = (fetchSpy.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(headers.authorization).toBeUndefined();
+  });
+
   it("polls the hosted repo relay with a GitHub App user token", async () => {
     const updates: Array<Record<string, unknown>> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
