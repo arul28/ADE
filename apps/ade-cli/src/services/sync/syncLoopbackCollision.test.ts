@@ -196,11 +196,17 @@ describe("sync loopback collision recovery", () => {
         });
         expect(publishedPorts()).not.toContain(foreign.port);
         expect(new Set(publishedPorts())).toEqual(new Set([resolvedPort!]));
-        await expect(probeAdeLoopbackListener(foreign.port)).resolves.toMatchObject({
+        await expect(probeAdeLoopbackListener(
+          foreign.port,
+          listener.getExpectedLoopbackNonce(),
+        )).resolves.toMatchObject({
           ok: false,
           statusCode: 404,
         });
-        await expect(probeAdeLoopbackListener(resolvedPort!)).resolves.toMatchObject({
+        await expect(probeAdeLoopbackListener(
+          resolvedPort!,
+          listener.getExpectedLoopbackNonce(),
+        )).resolves.toMatchObject({
           ok: true,
           statusCode: 426,
         });
@@ -229,12 +235,12 @@ describe("sync loopback collision recovery", () => {
     const firstProbe = new Promise<SyncLoopbackProbeResult>((resolve) => {
       releaseFirstProbe = resolve;
     });
-    const loopbackProbe = vi.fn(async (port: number) => {
+    const loopbackProbe = vi.fn(async (port: number, expectedNonce: string) => {
       if (firstProbePort == null) {
         firstProbePort = port;
         return await firstProbe;
       }
-      return await probeAdeLoopbackListener(port);
+      return await probeAdeLoopbackListener(port, expectedNonce);
     });
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1", loopbackProbe });
     const service = createService(db, projectRoot, { sharedSyncListener: listener });
@@ -251,6 +257,7 @@ describe("sync loopback collision recovery", () => {
         port: firstProbePort!,
         statusCode: 404,
         statusMessage: "Not Found",
+        markerValue: null,
         checkedAt: new Date().toISOString(),
         reason: "foreign loopback listener",
       });
@@ -351,11 +358,12 @@ describe("sync loopback collision recovery", () => {
     try {
       const adePort = await adeListener.ensureListening([0]);
 
-      const foreignResult = await probeAdeLoopbackListener(foreign.port);
+      const expectedNonce = adeListener.getExpectedLoopbackNonce();
+      const foreignResult = await probeAdeLoopbackListener(foreign.port, expectedNonce);
       expect(foreignResult).toMatchObject({ ok: false, statusCode: 426 });
-      expect(foreignResult.reason).toMatch(/did not present the ADE loopback marker/);
+      expect(foreignResult.reason).toMatch(/did not present a loopback identity/);
 
-      const adeResult = await probeAdeLoopbackListener(adePort);
+      const adeResult = await probeAdeLoopbackListener(adePort, expectedNonce);
       expect(adeResult).toMatchObject({ ok: true, statusCode: 426 });
     } finally {
       await adeListener.close();
@@ -368,7 +376,10 @@ describe("sync loopback collision recovery", () => {
   it("re-binds an ephemeral [0] listener onto a fresh port when the first resolved port is shadowed", async () => {
     const shadowedPorts: number[] = [];
     let shadowsRemaining = 1;
-    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => {
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> => {
       if (shadowsRemaining > 0) {
         shadowsRemaining -= 1;
         shadowedPorts.push(port);
@@ -377,13 +388,14 @@ describe("sync loopback collision recovery", () => {
           port,
           statusCode: 404,
           statusMessage: "Not Found",
+          markerValue: null,
           checkedAt: new Date().toISOString(),
           reason: "ephemeral loopback shadow",
         };
       }
       // Once past the injected shadow, run the REAL probe against the real ADE
       // listener (which now emits the marker), proving an end-to-end fresh bind.
-      return await probeAdeLoopbackListener(port);
+      return await probeAdeLoopbackListener(port, expectedNonce);
     });
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1", loopbackProbe });
     try {
@@ -406,6 +418,7 @@ describe("sync loopback collision recovery", () => {
       port,
       statusCode: 404,
       statusMessage: "Not Found",
+      markerValue: null,
       checkedAt: new Date().toISOString(),
       reason: "persistent loopback shadow",
     }));

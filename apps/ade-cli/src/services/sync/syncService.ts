@@ -188,7 +188,7 @@ type SyncServiceArgs = {
    */
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   /** Test seam for self-owned host startup; production uses the HTTP 426 probe. */
-  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";

@@ -1,18 +1,20 @@
+import crypto from "node:crypto";
 import http from "node:http";
 
 export const SYNC_LOOPBACK_PROBE_TIMEOUT_MS = 1_500;
 
 /**
- * Marker header ADE's sync WebSocket servers stamp on the 426 Upgrade Required
- * response they return for non-upgrade HTTP requests. A bare `ws` server (a
- * stale/foreign WebSocket process) also answers plain GETs with 426, so the
- * status code alone cannot distinguish ADE from any other WebSocket listener.
- * The probe additionally requires this marker before trusting a loopback
- * listener as ADE. Both production server construction sites
- * (syncHostService self-owned host, sharedSyncListener bindOnce) emit it.
+ * Identity header ADE's sync WebSocket servers stamp on the 426 Upgrade
+ * Required response they return for non-upgrade HTTP requests. Its value is a
+ * fresh per-listener nonce known to in-process validators. A bare `ws` server
+ * (or another ADE process) can also answer plain GETs with 426, but cannot
+ * present this listener instance's expected identity.
  */
 export const SYNC_LOOPBACK_ADE_MARKER_HEADER = "x-ade-sync-loopback";
-export const SYNC_LOOPBACK_ADE_MARKER_VALUE = "1";
+
+export function generateLoopbackNonce(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
 
 /**
  * Request handler for the http.Server that fronts an ADE sync WebSocketServer.
@@ -26,6 +28,7 @@ export const SYNC_LOOPBACK_ADE_MARKER_VALUE = "1";
 export function writeAdeLoopbackUpgradeResponse(
   _request: http.IncomingMessage,
   response: http.ServerResponse,
+  nonce: string,
 ): void {
   // Mirror `ws`'s built-in 426 handler exactly (Content-Type + Content-Length
   // only) and add the ADE marker. Do NOT send `Connection: Upgrade` /
@@ -37,7 +40,7 @@ export function writeAdeLoopbackUpgradeResponse(
   response.writeHead(426, {
     "Content-Type": "text/plain",
     "Content-Length": Buffer.byteLength(body),
-    [SYNC_LOOPBACK_ADE_MARKER_HEADER]: SYNC_LOOPBACK_ADE_MARKER_VALUE,
+    [SYNC_LOOPBACK_ADE_MARKER_HEADER]: nonce,
   });
   response.end(body);
 }
@@ -47,6 +50,7 @@ export type SyncLoopbackProbeResult = {
   port: number;
   statusCode: number | null;
   statusMessage: string | null;
+  markerValue: string | null;
   checkedAt: string;
   reason: string | null;
 };
@@ -85,6 +89,7 @@ export function isLoopbackShadowedError(error: unknown): error is LoopbackShadow
  */
 export async function probeAdeLoopbackListener(
   port: number,
+  expectedNonce: string,
   timeoutMs = SYNC_LOOPBACK_PROBE_TIMEOUT_MS,
 ): Promise<SyncLoopbackProbeResult> {
   const checkedAt = new Date().toISOString();
@@ -105,22 +110,27 @@ export async function probeAdeLoopbackListener(
       const statusCode = response.statusCode ?? null;
       const statusMessage = response.statusMessage ?? null;
       const rawMarker = response.headers[SYNC_LOOPBACK_ADE_MARKER_HEADER];
-      const markerValue = Array.isArray(rawMarker) ? rawMarker[0] : rawMarker;
-      const hasAdeMarker = markerValue === SYNC_LOOPBACK_ADE_MARKER_VALUE;
-      const statusOk = statusCode === 426
-        && (statusMessage == null || statusMessage.toLowerCase() === "upgrade required");
-      // A foreign/stale bare `ws` server also returns 426, so the status is
-      // necessary but not sufficient — the ADE marker must be present too.
-      const ok = statusOk && hasAdeMarker;
+      const observedMarker = Array.isArray(rawMarker) ? rawMarker[0] : rawMarker;
+      const markerValue = typeof observedMarker === "string" ? observedMarker : null;
+      const hasExpectedNonce = expectedNonce.length > 0 && markerValue === expectedNonce;
+      // A foreign/stale bare `ws` server and another ADE instance can both
+      // return 426. Only this process knows the identity it expects from the
+      // listener instance it just constructed.
+      const ok = statusCode === 426 && hasExpectedNonce;
       finish({
         ok,
         statusCode,
         statusMessage,
+        markerValue,
         reason: ok
           ? null
-          : !statusOk
+          : statusCode !== 426
             ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
-            : `The listener on 127.0.0.1:${port} returned 426 but did not present the ADE loopback marker (${SYNC_LOOPBACK_ADE_MARKER_HEADER}: ${SYNC_LOOPBACK_ADE_MARKER_VALUE}); it is not an ADE sync host.`,
+            : markerValue == null || markerValue.length === 0
+              ? `The listener on 127.0.0.1:${port} returned 426 but did not present a loopback identity in ${SYNC_LOOPBACK_ADE_MARKER_HEADER}.`
+              : expectedNonce.length === 0
+                ? `The listener on 127.0.0.1:${port} cannot be ADE-validated because the expected loopback identity is empty.`
+                : `The listener on 127.0.0.1:${port} returned 426 but presented a different loopback identity — another process owns 127.0.0.1:${port}.`,
       });
     });
     request.setTimeout(timeoutMs, () => {
@@ -131,6 +141,7 @@ export async function probeAdeLoopbackListener(
         ok: false,
         statusCode: null,
         statusMessage: null,
+        markerValue: null,
         reason: `ADE loopback probe failed on 127.0.0.1:${port}: ${error.message}`,
       });
     });
@@ -139,9 +150,10 @@ export async function probeAdeLoopbackListener(
 
 export async function assertAdeLoopbackListener(
   port: number,
-  probe: (port: number) => Promise<SyncLoopbackProbeResult> = probeAdeLoopbackListener,
+  expectedNonce: string,
+  probe: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult> = probeAdeLoopbackListener,
 ): Promise<SyncLoopbackProbeResult> {
-  const result = await probe(port);
+  const result = await probe(port, expectedNonce);
   if (!result.ok) {
     throw new LoopbackShadowedError(
       port,

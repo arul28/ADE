@@ -4,6 +4,7 @@ import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import {
   assertAdeLoopbackListener,
+  generateLoopbackNonce,
   isLoopbackShadowedError,
   probeAdeLoopbackListener,
   writeAdeLoopbackUpgradeResponse,
@@ -112,7 +113,10 @@ export type SharedSyncListener = {
   ensureListening(portCandidates: number[]): Promise<number>;
   getPort(): number | null;
   isListening(): boolean;
+  getExpectedLoopbackNonce(): string;
   getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
+  /** Force-check that loopback still reaches this exact listener instance. */
+  revalidateLoopback(): Promise<void>;
   /**
    * Install the connection handler for NEW sockets. Returns a detach function
    * that only clears the handler if it has not been superseded by a newer
@@ -198,13 +202,17 @@ export function createSharedSyncListener(options: {
   bindHost?: string;
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
-  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 } = {}): SharedSyncListener {
   const logger = options.logger ?? {};
   const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
   const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
+  // One identity per listener instance. Every candidate bind for this
+  // instance emits the same nonce, and only in-process validators receive the
+  // expected value they must compare against.
+  const expectedLoopbackNonce = generateLoopbackNonce();
 
   let server: WebSocketServer | null = null;
   // The http.Server fronting `server`. `ws` does not own/close an
@@ -223,6 +231,34 @@ export function createSharedSyncListener(options: {
     lastSuccessAt: null,
   };
   const parked = new Map<WebSocket, ParkedEntry>();
+
+  const validateLoopback = async (port: number): Promise<void> => {
+    try {
+      const result = await assertAdeLoopbackListener(
+        port,
+        expectedLoopbackNonce,
+        loopbackProbe,
+      );
+      loopbackValidationStatus = {
+        port,
+        loopbackAdeValidated: true,
+        lastFailureAt: loopbackValidationStatus.lastFailureAt,
+        reason: null,
+        lastSuccessAt: result.checkedAt,
+      };
+    } catch (error) {
+      if (isLoopbackShadowedError(error)) {
+        loopbackValidationStatus = {
+          port,
+          loopbackAdeValidated: false,
+          lastFailureAt: error.failedAt,
+          reason: error.message,
+          lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
+        };
+      }
+      throw error;
+    }
+  };
 
   const unpark = (entry: ParkedEntry): void => {
     clearTimeout(entry.expireTimer);
@@ -352,7 +388,9 @@ export function createSharedSyncListener(options: {
         await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
       }
       previousAttemptedPort = attemptedPort;
-      const candidateHttpServer = http.createServer(writeAdeLoopbackUpgradeResponse);
+      const candidateHttpServer = http.createServer((request, response) => {
+        writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
+      });
       const candidateServer = new WebSocketServer({
         server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
@@ -388,27 +426,11 @@ export function createSharedSyncListener(options: {
             const address = candidateServer.address();
             const port = typeof address === "object" && address ? address.port : attemptedPort;
             try {
-              const result = await assertAdeLoopbackListener(port, loopbackProbe);
+              await validateLoopback(port);
               cleanup();
-              loopbackValidationStatus = {
-                port,
-                loopbackAdeValidated: true,
-                lastFailureAt: loopbackValidationStatus.lastFailureAt,
-                reason: null,
-                lastSuccessAt: result.checkedAt,
-              };
               resolve(port);
             } catch (error) {
               cleanup();
-              if (isLoopbackShadowedError(error)) {
-                loopbackValidationStatus = {
-                  port,
-                  loopbackAdeValidated: false,
-                  lastFailureAt: error.failedAt,
-                  reason: error.message,
-                  lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
-                };
-              }
               reject(error instanceof Error ? error : new Error(String(error)));
             }
           };
@@ -486,8 +508,20 @@ export function createSharedSyncListener(options: {
       return server?.address() != null;
     },
 
+    getExpectedLoopbackNonce(): string {
+      return expectedLoopbackNonce;
+    },
+
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
       return { ...loopbackValidationStatus };
+    },
+
+    async revalidateLoopback(): Promise<void> {
+      const address = server?.address();
+      if (typeof address !== "object" || !address) {
+        throw new Error("The shared sync listener is not listening.");
+      }
+      await validateLoopback(address.port);
     },
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {

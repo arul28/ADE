@@ -1779,6 +1779,7 @@ describe("createSyncHostService LAN discovery", () => {
         port,
         statusCode: 404,
         statusMessage: "Not Found",
+        markerValue: null,
         checkedAt: new Date().toISOString(),
         reason: "foreign loopback listener",
       }),
@@ -1802,10 +1803,13 @@ describe("createSyncHostService LAN discovery", () => {
   it("re-validates the loopback listener before refreshLanDiscovery and skips (re)publish on a post-startup shadow", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     let probeOk = true;
-    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> =>
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> =>
       probeOk
-        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", checkedAt: new Date().toISOString(), reason: null }
-        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", checkedAt: new Date().toISOString(), reason: "shadow appeared after startup" });
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", markerValue: expectedNonce, checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", markerValue: null, checkedAt: new Date().toISOString(), reason: "shadow appeared after startup" });
     const host = createSyncHostService({
       ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
       port: 0,
@@ -1843,10 +1847,13 @@ describe("createSyncHostService LAN discovery", () => {
   it("re-validates the loopback listener before setDiscoveryEnabled(true) and skips publish on a post-startup shadow", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     let probeOk = true;
-    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> =>
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> =>
       probeOk
-        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", checkedAt: new Date().toISOString(), reason: null }
-        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", checkedAt: new Date().toISOString(), reason: "shadow appeared while disabled" });
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", markerValue: expectedNonce, checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", markerValue: null, checkedAt: new Date().toISOString(), reason: "shadow appeared while disabled" });
     const host = createSyncHostService({
       ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
       port: 0,
@@ -3184,6 +3191,69 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
       destroy: bonjourDestroyMock,
     }));
     publishMock.mockImplementation(() => ({ on: vi.fn(), stop: vi.fn() }));
+  });
+
+  it("force re-probes a shared listener at handoff and blocks discovery for a post-bind shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (
+      port: number,
+      expectedNonce: string,
+    ): Promise<SyncLoopbackProbeResult> => probeOk
+      ? {
+          ok: true,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: null,
+        }
+      : {
+          ok: false,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: "post-bind-shadow",
+          checkedAt: new Date().toISOString(),
+          reason: "post-bind shadow presented a different loopback identity",
+        });
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      loopbackProbe,
+    });
+    const boundPort = await listener.ensureListening([0]);
+    const bindProbeCalls = loopbackProbe.mock.calls.length;
+    probeOk = false;
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      sharedListener: listener,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await expect(host.waitUntilListening()).rejects.toThrow(/post-bind shadow/);
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(bindProbeCalls);
+      expect(loopbackProbe).toHaveBeenLastCalledWith(
+        boundPort,
+        listener.getExpectedLoopbackNonce(),
+      );
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port: boundPort,
+        loopbackAdeValidated: false,
+        reason: expect.stringMatching(/post-bind shadow/),
+      });
+      expect(host.getLoopbackValidationStatus()).toMatchObject({
+        port: boundPort,
+        loopbackAdeValidated: false,
+        reason: expect.stringMatching(/post-bind shadow/),
+      });
+      expect(publishMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
   });
 
   it("throws before discovery when the shared listener loopback is not ADE-validated", async () => {

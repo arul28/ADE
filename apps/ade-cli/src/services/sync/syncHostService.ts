@@ -147,6 +147,7 @@ import {
 } from "./sharedSyncListener";
 import {
   assertAdeLoopbackListener,
+  generateLoopbackNonce,
   isLoopbackShadowedError,
   probeAdeLoopbackListener,
   writeAdeLoopbackUpgradeResponse,
@@ -720,7 +721,7 @@ type SyncHostServiceArgs = {
    */
   getCloudRelayWssUrl?: () => string | null;
   /** Test seam; production always uses the HTTP 426 loopback probe. */
-  loopbackProbe?: (port: number) => Promise<SyncLoopbackProbeResult>;
+  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
 function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string | null {
@@ -1965,6 +1966,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
+    ?? generateLoopbackNonce();
   // Self-owned listener (desktop-embedded / standalone): only created when no
   // shared listener is injected. The brain injects a shared listener so the
   // websocket — and every connected phone — survives hosted-project switches.
@@ -1978,7 +1981,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // `address()`, so all existing event wiring below is preserved verbatim.
   const httpServer = sharedListener
     ? null
-    : http.createServer(writeAdeLoopbackUpgradeResponse);
+    : http.createServer((request, response) => {
+        writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
+      });
   const server = sharedListener
     ? null
     : new WebSocketServer({
@@ -2886,7 +2891,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && loopbackValidationStatus.loopbackAdeValidated
     ) return;
     try {
-      const result = await assertAdeLoopbackListener(port, loopbackProbe);
+      const result = await assertAdeLoopbackListener(
+        port,
+        expectedLoopbackNonce,
+        loopbackProbe,
+      );
       loopbackValidationStatus = {
         port,
         loopbackAdeValidated: true,
@@ -5392,7 +5401,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // ensureListening is idempotent and returns the existing port.
         const port = sharedListener!.getPort()
           ?? await sharedListener!.ensureListening([args.port ?? DEFAULT_SYNC_HOST_PORT]);
-        loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
+        try {
+          // A project-host handoff may happen long after the listener's bind
+          // probe. Force a fresh identity check before this host republishes
+          // LAN/Tailscale discovery for the shared port.
+          await sharedListener!.revalidateLoopback();
+        } finally {
+          loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
+        }
         if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
           throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
         }

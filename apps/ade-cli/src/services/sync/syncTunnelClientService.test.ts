@@ -91,17 +91,21 @@ describe("createSyncTunnelClientService", () => {
     });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(null, { status: 204 });
+    const expectedNonce = "c".repeat(32);
+    const loopbackProbe = vi.fn(async (port: number, receivedNonce: string) => ({
+      ok: false,
+      port,
+      statusCode: 426,
+      statusMessage: "Upgrade Required",
+      markerValue: "d".repeat(32),
+      checkedAt: new Date().toISOString(),
+      reason: `foreign listener does not match ${receivedNonce}`,
+    }));
     const service = createSyncTunnelClientService({
       getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
       configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
-      loopbackProbe: async (port) => ({
-        ok: false,
-        port,
-        statusCode: 404,
-        statusMessage: "Not Found",
-        checkedAt: new Date().toISOString(),
-        reason: "foreign listener returned 404",
-      }),
+      loopbackProbe,
     });
 
     try {
@@ -111,6 +115,7 @@ describe("createSyncTunnelClientService", () => {
       });
       expect(connections).toHaveLength(1);
       expect(connections[0]).toContain(`/host/${"a".repeat(32)}`);
+      expect(loopbackProbe).toHaveBeenCalledWith(8787, expectedNonce);
       expect(service.getStatus()).toMatchObject({
         connected: true,
         activeTunnels: 0,
