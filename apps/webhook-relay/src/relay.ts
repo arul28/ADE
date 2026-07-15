@@ -461,6 +461,7 @@ export async function verifyAccountToken(token: string, env: RelayEnv): Promise<
     issuer,
     algorithms: ["RS256"],
     clockTolerance: 5,
+    requiredClaims: ["sub", "exp"],
   });
   if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
   if (!isAllowedAccountToken(payload, oauthClientId)) throw new Error("Token audience is not allowed");

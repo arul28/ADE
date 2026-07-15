@@ -285,14 +285,15 @@ async function mintToken(
   sub: string,
   audience: string | null = OAUTH_CLIENT_ID,
   authorizedParty: string | null = audience,
+  expires = true,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   let token = new SignJWT(authorizedParty ? { azp: authorizedParty } : {})
     .setProtectedHeader({ alg: "RS256", kid: "account-test" })
     .setIssuer(ISSUER)
     .setSubject(sub)
-    .setIssuedAt(now)
-    .setExpirationTime(now + 600);
+    .setIssuedAt(now);
+  if (expires) token = token.setExpirationTime(now + 600);
   if (audience) token = token.setAudience(audience);
   return token.sign(signingKey);
 }
@@ -405,10 +406,12 @@ function request(pathname: string, args: {
 }
 
 describe("account integration re-keying", () => {
-  it("verifies the Clerk issuer, subject, and ADE client binding", async () => {
+  it("verifies the Clerk issuer, subject, expiry, and ADE client binding", async () => {
     const env = makeEnv();
     await expect(verifyAccountToken(await mintToken("user_1"), env)).resolves.toBe("user_1");
     await expect(verifyAccountToken(await mintToken("user_1", null, OAUTH_CLIENT_ID), env)).resolves.toBe("user_1");
+    await expect(verifyAccountToken(await mintToken("user_1", OAUTH_CLIENT_ID, OAUTH_CLIENT_ID, false), env))
+      .rejects.toThrow('missing required "exp" claim');
     await expect(verifyAccountToken(await mintToken("user_1", "wrong-client"), env)).rejects.toThrow(
       "Token audience is not allowed",
     );
