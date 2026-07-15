@@ -804,16 +804,24 @@ export function createSyncService(args: SyncServiceArgs) {
       // and a single EADDRINUSE would silently drift the host to port+1 —
       // stranding paired phones that saved the old port. Re-attempt the
       // preferred port for a few seconds before falling back to the scan.
+      // The preferred (fixed) port is re-attempted so a dying listener can free
+      // it. An ephemeral port (0) is ALSO re-attempted, but because each bind(0)
+      // resolves a fresh OS-assigned port a loopback shadow on the first port is
+      // escaped by re-binding. Both are bounded by PREFERRED_PORT_BIND_ATTEMPTS.
       const attemptPlan = portCandidates.flatMap((candidatePort, candidateIndex) =>
-        candidateIndex === 0
+        candidateIndex === 0 || candidatePort === 0
           ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
           : [candidatePort],
       );
       let previousAttemptedPort: number | null = null;
+      // Tracks RESOLVED shadowed ports; the literal 0 is never added so an
+      // ephemeral shadow does not short-circuit the remaining fresh-port binds.
       const shadowedPorts = new Set<number>();
       for (const attemptedPort of attemptPlan) {
-        if (shadowedPorts.has(attemptedPort)) continue;
-        if (previousAttemptedPort === attemptedPort) {
+        if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
+        // The retry delay lets a dying listener free a FIXED port; an ephemeral
+        // re-bind gets a fresh port immediately, so skip the delay for port 0.
+        if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
           await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
         }
         previousAttemptedPort = attemptedPort;
@@ -825,7 +833,7 @@ export function createSyncService(args: SyncServiceArgs) {
         } catch (error) {
           lastError = error;
           if (isLoopbackShadowedError(error)) {
-            shadowedPorts.add(attemptedPort);
+            shadowedPorts.add(attemptedPort === 0 ? error.port : attemptedPort);
             listenerValidationHistory = {
               ...listenerValidationHistory,
               lastFailureAt: error.failedAt,

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -148,6 +149,7 @@ import {
   assertAdeLoopbackListener,
   isLoopbackShadowedError,
   probeAdeLoopbackListener,
+  writeAdeLoopbackUpgradeResponse,
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
@@ -1966,13 +1968,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // Self-owned listener (desktop-embedded / standalone): only created when no
   // shared listener is injected. The brain injects a shared listener so the
   // websocket — and every connected phone — survives hosted-project switches.
+  //
+  // We front the WebSocketServer with an explicit http.Server so the non-upgrade
+  // 426 response carries the ADE loopback marker header. `ws`'s built-in `{port}`
+  // server owns an un-customizable 426 handler, which a bare/foreign `ws` process
+  // matches exactly — the marker is what lets the loopback probe tell ADE apart.
+  // Passing `server` (not `port`) means the WS upgrade path still works: `ws`
+  // re-emits the http server's `listening`/`error` events and delegates
+  // `address()`, so all existing event wiring below is preserved verbatim.
+  const httpServer = sharedListener
+    ? null
+    : http.createServer(writeAdeLoopbackUpgradeResponse);
   const server = sharedListener
     ? null
     : new WebSocketServer({
-        host: SYNC_HOST_BIND_HOST,
-        port: args.port ?? DEFAULT_SYNC_HOST_PORT,
+        server: httpServer!,
         maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES,
       });
+  httpServer?.listen(args.port ?? DEFAULT_SYNC_HOST_PORT, SYNC_HOST_BIND_HOST);
 
   let disposed = false;
   let startupError: Error | null = null;
@@ -2860,9 +2873,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const validateListeningPort = async (port: number): Promise<void> => {
+  const validateListeningPort = async (
+    port: number,
+    options?: { force?: boolean },
+  ): Promise<void> => {
+    // Re-publish paths pass force:true so a shadow that arose AFTER startup is
+    // caught before we (re)advertise the port; the startup path keeps the cheap
+    // short-circuit once a port is validated.
     if (
-      loopbackValidationStatus.port === port
+      !options?.force
+      && loopbackValidationStatus.port === port
       && loopbackValidationStatus.loopbackAdeValidated
     ) return;
     try {
@@ -5438,7 +5458,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
       const port = getListeningPort();
       if (port != null) {
-        void publishValidatedDiscovery(port, options).catch((error) => {
+        // Re-validate the loopback listener before republishing so a post-startup
+        // shadow cannot re-advertise a stale port. On failure validateListeningPort
+        // marks the route unvalidated and throws, so we skip the publish.
+        void (async () => {
+          await validateListeningPort(port, { force: true });
+          await publishValidatedDiscovery(port, options);
+        })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
             error: error instanceof Error ? error.message : String(error),
@@ -5466,8 +5492,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (port != null) {
-        publishLanDiscovery(port, { force: true });
-        publishTailnetDiscovery(port, { force: true });
+        // Re-enabling discovery must also re-validate the loopback listener so a
+        // shadow that appeared while discovery was off cannot be published.
+        void (async () => {
+          await validateListeningPort(port, { force: true });
+          publishLanDiscovery(port, { force: true });
+          publishTailnetDiscovery(port, { force: true });
+        })().catch((error) => {
+          args.logger.warn("sync_host.discovery_refresh_failed", {
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
     },
 
@@ -5692,12 +5728,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               // ignore
             }
           }
-          if (!server.address()) {
+          // Graceful close frames were sent to peers above. ws's close() for an
+          // externally-supplied http server resolves only after every client
+          // socket drains — a wedged socket would hang dispose — and it does NOT
+          // close the http server (which owns the port). So detach ws's
+          // listeners, then close the http server directly, forcing any lingering
+          // sockets so the port frees deterministically.
+          try {
+            server.close();
+          } catch {
+            // ignore: we free the port via the http server below
+          }
+          if (!httpServer || !httpServer.listening) {
             finish();
             return;
           }
           try {
-            server.close(() => finish());
+            httpServer.close(() => finish());
+            httpServer.closeAllConnections?.();
           } catch {
             finish();
           }

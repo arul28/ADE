@@ -1,3 +1,4 @@
+import http from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
@@ -5,6 +6,7 @@ import {
   assertAdeLoopbackListener,
   isLoopbackShadowedError,
   probeAdeLoopbackListener,
+  writeAdeLoopbackUpgradeResponse,
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
@@ -146,7 +148,10 @@ function isRetryableListenerBindError(error: unknown): boolean {
   return code === "EADDRINUSE" || code === "EACCES";
 }
 
-async function closeCandidateServer(candidateServer: WebSocketServer): Promise<void> {
+async function closeCandidateServer(
+  candidateServer: WebSocketServer,
+  candidateHttpServer: http.Server,
+): Promise<void> {
   for (const client of candidateServer.clients) {
     try {
       client.terminate();
@@ -154,9 +159,24 @@ async function closeCandidateServer(candidateServer: WebSocketServer): Promise<v
       // ignore cleanup failures on a rejected candidate
     }
   }
+  // Closing the WebSocketServer only detaches its listeners from the
+  // externally-supplied http server; the http server owns the port and must be
+  // closed explicitly so a rejected candidate does not leak the bind. ws's
+  // close() for an external server resolves only after every client drains, so
+  // close the http server directly (forcing lingering sockets) instead.
+  try {
+    candidateServer.close();
+  } catch {
+    // ignore
+  }
   await new Promise<void>((resolve) => {
+    if (!candidateHttpServer.listening) {
+      resolve();
+      return;
+    }
     try {
-      candidateServer.close(() => resolve());
+      candidateHttpServer.close(() => resolve());
+      candidateHttpServer.closeAllConnections?.();
     } catch {
       resolve();
     }
@@ -187,6 +207,9 @@ export function createSharedSyncListener(options: {
   const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
 
   let server: WebSocketServer | null = null;
+  // The http.Server fronting `server`. `ws` does not own/close an
+  // externally-supplied server, so we track it to free the port on close.
+  let httpServer: http.Server | null = null;
   let listeningPromise: Promise<number> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
@@ -304,26 +327,37 @@ export function createSharedSyncListener(options: {
 
   const bindOnce = async (portCandidates: number[]): Promise<number> => {
     const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
+    // A fixed preferred port is re-attempted so a dying listener can free it.
+    // An ephemeral port (0) is ALSO re-attempted, but for a different reason:
+    // each bind(0) yields a fresh OS-assigned port, so a loopback shadow on the
+    // first resolved port is escaped simply by re-binding. Both are bounded by
+    // PREFERRED_PORT_BIND_ATTEMPTS so a persistent shadow still terminates.
     const attemptPlan = candidates.flatMap((candidatePort, candidateIndex) =>
-      candidateIndex === 0 && candidatePort !== 0
+      (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
         ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
         : [candidatePort],
     );
     let lastError: unknown = null;
     let previousAttemptedPort: number | null = null;
+    // Tracks RESOLVED shadowed ports. For port 0 the literal 0 is never added
+    // (each re-bind resolves a different port), so a shadow on one ephemeral
+    // port does not short-circuit the remaining fresh-port attempts.
     const shadowedPorts = new Set<number>();
     for (const attemptedPort of attemptPlan) {
       if (closed) throw new Error("The shared sync listener has been closed.");
-      if (shadowedPorts.has(attemptedPort)) continue;
-      if (previousAttemptedPort === attemptedPort) {
+      if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
+      // The retry delay lets a dying listener free a FIXED port; an ephemeral
+      // re-bind gets a fresh port immediately, so skip the delay for port 0.
+      if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
         await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
       }
       previousAttemptedPort = attemptedPort;
+      const candidateHttpServer = http.createServer(writeAdeLoopbackUpgradeResponse);
       const candidateServer = new WebSocketServer({
-        host: bindHost,
-        port: attemptedPort,
+        server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
       });
+      candidateHttpServer.listen(attemptedPort, bindHost);
       // Install the handler before the validation RTT so a LAN peer that
       // arrives in that narrow window is parked/owned instead of orphaned.
       candidateServer.on("connection", (ws, request) => {
@@ -393,6 +427,7 @@ export function createSharedSyncListener(options: {
           candidateServer.on("error", onError);
         });
         server = candidateServer;
+        httpServer = candidateHttpServer;
         server.on("error", (error: unknown) => {
           logger.warn?.("sync_listener.server_error", {
             error: error instanceof Error ? error.message : String(error),
@@ -403,8 +438,12 @@ export function createSharedSyncListener(options: {
         return resolvedPort;
       } catch (error) {
         lastError = error;
-        await closeCandidateServer(candidateServer);
-        if (isLoopbackShadowedError(error)) shadowedPorts.add(attemptedPort);
+        await closeCandidateServer(candidateServer, candidateHttpServer);
+        // Record the RESOLVED port (not the literal 0) so an ephemeral shadow
+        // does not poison the remaining fresh-port re-binds.
+        if (isLoopbackShadowedError(error)) {
+          shadowedPorts.add(attemptedPort === 0 ? error.port : attemptedPort);
+        }
         const retryable = isRetryableListenerBindError(error)
           && (attemptedPort !== 0 || isLoopbackShadowedError(error));
         logger.warn?.(
@@ -507,24 +546,42 @@ export function createSharedSyncListener(options: {
       for (const entry of [...parked.values()]) {
         unpark(entry);
         try {
-          entry.snapshot.ws.close();
+          entry.snapshot.ws.terminate();
         } catch {
           // ignore close failures
         }
       }
       const current = server;
+      const currentHttp = httpServer;
       server = null;
+      httpServer = null;
       if (!current) return;
+      // Force-terminate every client. ws's close() for an EXTERNALLY-supplied
+      // http server resolves only after every client socket drains, so a single
+      // wedged socket would hang final shutdown; terminate side-steps that.
       for (const ws of current.clients) {
         try {
-          ws.close();
+          ws.terminate();
         } catch {
           // ignore close failures
         }
       }
+      try {
+        // Detach ws's listeners from the http server (external server: this does
+        // NOT close the http server, so we close it ourselves below).
+        current.close();
+      } catch {
+        // ignore
+      }
       await new Promise<void>((resolve) => {
+        if (!currentHttp || !currentHttp.listening) {
+          resolve();
+          return;
+        }
         try {
-          current.close(() => resolve());
+          currentHttp.close(() => resolve());
+          // Force any lingering upgraded/keep-alive sockets so close() cannot hang.
+          currentHttp.closeAllConnections?.();
         } catch {
           resolve();
         }

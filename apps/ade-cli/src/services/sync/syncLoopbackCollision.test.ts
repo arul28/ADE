@@ -105,6 +105,30 @@ async function bindForeignLegacyListener(): Promise<{ server: http.Server; port:
   throw new Error("No free legacy sync port was available for the collision test.");
 }
 
+async function bindForeignBare426Listener(): Promise<{ server: http.Server; port: number }> {
+  // A bare `ws`-style server answers plain GETs with 426 Upgrade Required but
+  // WITHOUT the ADE loopback marker header — exactly what the probe must reject.
+  for (let port = 8787; port <= 8800; port += 1) {
+    const server = http.createServer((_request, response) => {
+      const body = "Upgrade Required";
+      response.writeHead(426, {
+        "Content-Type": "text/plain",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      response.end(body);
+    });
+    try {
+      await listen(server, port, "127.0.0.1");
+      return { server, port };
+    } catch {
+      try {
+        server.close();
+      } catch {}
+    }
+  }
+  throw new Error("No free legacy sync port was available for the bare-426 test.");
+}
+
 async function findFreeLegacyPort(): Promise<number> {
   for (let port = 8787; port <= 8800; port += 1) {
     const server = http.createServer();
@@ -317,4 +341,83 @@ describe("sync loopback collision recovery", () => {
       }
     },
   );
+
+  // Finding #1: a bare `ws`-style 426 (no ADE marker) must be rejected, while the
+  // real ADE listener — whose 426 carries the marker — passes. Status code alone
+  // cannot tell ADE apart from any other WebSocket process.
+  it("rejects a foreign bare-426 listener without the ADE marker but accepts the real ADE listener", async () => {
+    const foreign = await bindForeignBare426Listener();
+    const adeListener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    try {
+      const adePort = await adeListener.ensureListening([0]);
+
+      const foreignResult = await probeAdeLoopbackListener(foreign.port);
+      expect(foreignResult).toMatchObject({ ok: false, statusCode: 426 });
+      expect(foreignResult.reason).toMatch(/did not present the ADE loopback marker/);
+
+      const adeResult = await probeAdeLoopbackListener(adePort);
+      expect(adeResult).toMatchObject({ ok: true, statusCode: 426 });
+    } finally {
+      await adeListener.close();
+      await close(foreign.server);
+    }
+  });
+
+  // Finding #3: an ephemeral [0] bind whose first resolved port is loopback-
+  // shadowed must re-bind to a fresh OS-assigned port and succeed.
+  it("re-binds an ephemeral [0] listener onto a fresh port when the first resolved port is shadowed", async () => {
+    const shadowedPorts: number[] = [];
+    let shadowsRemaining = 1;
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => {
+      if (shadowsRemaining > 0) {
+        shadowsRemaining -= 1;
+        shadowedPorts.push(port);
+        return {
+          ok: false,
+          port,
+          statusCode: 404,
+          statusMessage: "Not Found",
+          checkedAt: new Date().toISOString(),
+          reason: "ephemeral loopback shadow",
+        };
+      }
+      // Once past the injected shadow, run the REAL probe against the real ADE
+      // listener (which now emits the marker), proving an end-to-end fresh bind.
+      return await probeAdeLoopbackListener(port);
+    });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", loopbackProbe });
+    try {
+      const port = await listener.ensureListening([0]);
+      expect(shadowedPorts).toHaveLength(1);
+      expect(port).toBeGreaterThan(0);
+      expect(port).not.toBe(shadowedPorts[0]);
+      expect(listener.isListening()).toBe(true);
+      expect(listener.getLoopbackValidationStatus().loopbackAdeValidated).toBe(true);
+    } finally {
+      await listener.close();
+    }
+  }, 15_000);
+
+  // Finding #3 (bound): a persistently-shadowed ephemeral bind must still
+  // terminate with a failure rather than spin forever.
+  it("gives up an ephemeral [0] bind that is persistently loopback-shadowed", async () => {
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => ({
+      ok: false,
+      port,
+      statusCode: 404,
+      statusMessage: "Not Found",
+      checkedAt: new Date().toISOString(),
+      reason: "persistent loopback shadow",
+    }));
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", loopbackProbe });
+    try {
+      await expect(listener.ensureListening([0])).rejects.toThrow(/persistent loopback shadow/);
+      // Bounded: it must not probe forever.
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(1);
+      expect(loopbackProbe.mock.calls.length).toBeLessThanOrEqual(16);
+      expect(listener.isListening()).toBe(false);
+    } finally {
+      await listener.close();
+    }
+  }, 15_000);
 });

@@ -40,6 +40,7 @@ import {
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener } from "./sharedSyncListener";
+import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
@@ -1792,6 +1793,84 @@ describe("createSyncHostService LAN discovery", () => {
       expect(host.getTailnetDiscoveryStatus().updatedAt).toBeNull();
       expect(publishMock).not.toHaveBeenCalled();
       expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-validates the loopback listener before refreshLanDiscovery and skips (re)publish on a post-startup shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> =>
+      probeOk
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", checkedAt: new Date().toISOString(), reason: "shadow appeared after startup" });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await host.waitUntilListening();
+      expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(true);
+      const probeCallsAfterStartup = loopbackProbe.mock.calls.length;
+      const publishCallsAfterStartup = publishMock.mock.calls.length;
+      const spawnCallsAfterStartup = spawnMock.mock.calls.length;
+      const tailnetUpdatedAfterStartup = host.getTailnetDiscoveryStatus().updatedAt;
+
+      // A foreign listener shadows the loopback route AFTER startup.
+      probeOk = false;
+      host.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+
+      // The refresh forces a re-probe (bypassing the validated-port short-circuit)
+      // and, seeing the shadow, marks the route unvalidated and skips publishing.
+      await vi.waitFor(() =>
+        expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(false));
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(probeCallsAfterStartup);
+      expect(host.getLoopbackValidationStatus().reason).toMatch(/shadow appeared/);
+      // No new bonjour/tailnet advertisement for the stale port.
+      expect(publishMock.mock.calls.length).toBe(publishCallsAfterStartup);
+      expect(spawnMock.mock.calls.length).toBe(spawnCallsAfterStartup);
+      expect(host.getTailnetDiscoveryStatus().updatedAt).toBe(tailnetUpdatedAfterStartup);
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-validates the loopback listener before setDiscoveryEnabled(true) and skips publish on a post-startup shadow", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let probeOk = true;
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> =>
+      probeOk
+        ? { ok: true, port, statusCode: 426, statusMessage: "Upgrade Required", checkedAt: new Date().toISOString(), reason: null }
+        : { ok: false, port, statusCode: 404, statusMessage: "Not Found", checkedAt: new Date().toISOString(), reason: "shadow appeared while disabled" });
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      port: 0,
+      loopbackProbe,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+
+    try {
+      await host.waitUntilListening();
+      expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(true);
+      // Turn discovery off, then let a shadow take over the loopback route.
+      host.setDiscoveryEnabled(false);
+      const probeCallsBeforeReenable = loopbackProbe.mock.calls.length;
+      const publishCallsBeforeReenable = publishMock.mock.calls.length;
+      const spawnCallsBeforeReenable = spawnMock.mock.calls.length;
+
+      probeOk = false;
+      host.setDiscoveryEnabled(true);
+
+      // Re-enabling forces a fresh loopback check; the shadow blocks (re)publish.
+      await vi.waitFor(() =>
+        expect(host.getLoopbackValidationStatus().loopbackAdeValidated).toBe(false));
+      expect(loopbackProbe.mock.calls.length).toBeGreaterThan(probeCallsBeforeReenable);
+      expect(publishMock.mock.calls.length).toBe(publishCallsBeforeReenable);
+      expect(spawnMock.mock.calls.length).toBe(spawnCallsBeforeReenable);
     } finally {
       await host.dispose();
       cleanup();

@@ -2,6 +2,46 @@ import http from "node:http";
 
 export const SYNC_LOOPBACK_PROBE_TIMEOUT_MS = 1_500;
 
+/**
+ * Marker header ADE's sync WebSocket servers stamp on the 426 Upgrade Required
+ * response they return for non-upgrade HTTP requests. A bare `ws` server (a
+ * stale/foreign WebSocket process) also answers plain GETs with 426, so the
+ * status code alone cannot distinguish ADE from any other WebSocket listener.
+ * The probe additionally requires this marker before trusting a loopback
+ * listener as ADE. Both production server construction sites
+ * (syncHostService self-owned host, sharedSyncListener bindOnce) emit it.
+ */
+export const SYNC_LOOPBACK_ADE_MARKER_HEADER = "x-ade-sync-loopback";
+export const SYNC_LOOPBACK_ADE_MARKER_VALUE = "1";
+
+/**
+ * Request handler for the http.Server that fronts an ADE sync WebSocketServer.
+ * Non-upgrade HTTP requests get a 426 Upgrade Required carrying the ADE marker
+ * header so `probeAdeLoopbackListener` can distinguish an ADE listener from a
+ * bare/foreign `ws` process (which also answers plain GETs with a 426, but
+ * without the marker). The WebSocketServer, constructed with `{ server }`,
+ * intercepts `upgrade` requests before they reach this handler, so real sync
+ * clients still complete the websocket handshake unchanged.
+ */
+export function writeAdeLoopbackUpgradeResponse(
+  _request: http.IncomingMessage,
+  response: http.ServerResponse,
+): void {
+  // Mirror `ws`'s built-in 426 handler exactly (Content-Type + Content-Length
+  // only) and add the ADE marker. Do NOT send `Connection: Upgrade` /
+  // `Upgrade: websocket` on this NON-upgrade response: those confuse Node's http
+  // server socket state machine and make every other keep-alive request return
+  // 400, which would intermittently defeat the probe. The probe validates the
+  // status code and the marker, so no extra headers are required.
+  const body = "Upgrade Required";
+  response.writeHead(426, {
+    "Content-Type": "text/plain",
+    "Content-Length": Buffer.byteLength(body),
+    [SYNC_LOOPBACK_ADE_MARKER_HEADER]: SYNC_LOOPBACK_ADE_MARKER_VALUE,
+  });
+  response.end(body);
+}
+
 export type SyncLoopbackProbeResult = {
   ok: boolean;
   port: number;
@@ -64,15 +104,23 @@ export async function probeAdeLoopbackListener(
       response.resume();
       const statusCode = response.statusCode ?? null;
       const statusMessage = response.statusMessage ?? null;
-      const ok = statusCode === 426
+      const rawMarker = response.headers[SYNC_LOOPBACK_ADE_MARKER_HEADER];
+      const markerValue = Array.isArray(rawMarker) ? rawMarker[0] : rawMarker;
+      const hasAdeMarker = markerValue === SYNC_LOOPBACK_ADE_MARKER_VALUE;
+      const statusOk = statusCode === 426
         && (statusMessage == null || statusMessage.toLowerCase() === "upgrade required");
+      // A foreign/stale bare `ws` server also returns 426, so the status is
+      // necessary but not sufficient — the ADE marker must be present too.
+      const ok = statusOk && hasAdeMarker;
       finish({
         ok,
         statusCode,
         statusMessage,
         reason: ok
           ? null
-          : `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`,
+          : !statusOk
+            ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
+            : `The listener on 127.0.0.1:${port} returned 426 but did not present the ADE loopback marker (${SYNC_LOOPBACK_ADE_MARKER_HEADER}: ${SYNC_LOOPBACK_ADE_MARKER_VALUE}); it is not an ADE sync host.`,
       });
     });
     request.setTimeout(timeoutMs, () => {
