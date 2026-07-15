@@ -1548,6 +1548,21 @@ describe("runtime account actions", () => {
         authStatus: { signedIn: false, userId: null, email: null, name: null, expiresAt: null },
         sessionId,
       })),
+      startDeviceLogin: vi.fn(async () => ({
+        sessionId: "account-device-session",
+        userCode: "ABCD-EFGH",
+        verificationUri: "https://directory.example.test/device",
+        verificationUriComplete: "https://directory.example.test/device?user_code=ABCD-EFGH",
+        expiresAt: "2026-07-14T12:10:00.000Z",
+        intervalSec: 5,
+      })),
+      pollDeviceLogin: vi.fn(async (sessionId: string) => ({
+        status: "pending" as const,
+        message: null,
+        intervalSec: 5,
+        authStatus: { signedIn: false, userId: null, email: null, name: null, expiresAt: null },
+        sessionId,
+      })),
       getStatus: vi.fn(() => ({
         signedIn: false,
         userId: null,
@@ -1564,6 +1579,11 @@ describe("runtime account actions", () => {
         expiresAt: null,
       })),
       getAccessToken: vi.fn(async () => "account-token"),
+      createToken: vi.fn(() => ({
+        token: "account-refresh-token",
+        source: "refresh_token" as const,
+        guidance: "Set ADE_ACCOUNT_TOKEN.",
+      })),
       dispose: vi.fn(),
     };
     const service = getAdeActionDomainServices({
@@ -1571,38 +1591,57 @@ describe("runtime account actions", () => {
     } as never).account as {
       startLogin(): Promise<unknown>;
       pollLogin(args: { sessionId: string }): Promise<unknown>;
+      startDeviceLogin(): Promise<unknown>;
+      pollDeviceLogin(args: { sessionId: string }): Promise<unknown>;
       status(): unknown;
       cancelLogin(args: { sessionId?: string }): void;
       signOut(): unknown;
       getToken(): Promise<string>;
+      createToken(): { token: string; source: string; guidance: string };
     };
 
     expect(listAllowedAdeActionNames("account", service as unknown as Record<string, unknown>)).toEqual([
       "cancelLogin",
+      "createToken",
       "getToken",
+      "pollDeviceLogin",
       "pollLogin",
       "signOut",
+      "startDeviceLogin",
       "startLogin",
       "status",
     ]);
     await service.startLogin();
     await service.pollLogin({ sessionId: "account-session" });
+    await service.startDeviceLogin();
+    await service.pollDeviceLogin({ sessionId: "account-device-session" });
     service.status();
     service.cancelLogin({ sessionId: "account-session" });
     service.signOut();
     await expect(service.getToken()).resolves.toBe("account-token");
+    expect(service.createToken()).toEqual({
+      token: "account-refresh-token",
+      source: "refresh_token",
+      guidance: "Set ADE_ACCOUNT_TOKEN.",
+    });
 
     expect(accountAuthService.startLogin).toHaveBeenCalledTimes(1);
     expect(accountAuthService.pollLogin).toHaveBeenCalledWith("account-session");
+    expect(accountAuthService.startDeviceLogin).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.pollDeviceLogin).toHaveBeenCalledWith("account-device-session");
     expect(accountAuthService.getStatus).toHaveBeenCalledTimes(1);
     expect(accountAuthService.cancelLogin).toHaveBeenCalledWith("account-session");
     expect(accountAuthService.signOut).toHaveBeenCalledTimes(1);
     expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
+    expect(accountAuthService.createToken).toHaveBeenCalledTimes(1);
     expect(isCtoOnlyAdeAction("account", "startLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "pollLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "startDeviceLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "pollDeviceLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "cancelLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "signOut")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "getToken")).toBe(true);
+    expect(isCtoOnlyAdeAction("account", "createToken")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "status")).toBe(false);
   });
 });

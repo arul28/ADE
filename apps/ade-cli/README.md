@@ -269,7 +269,10 @@ ade brain status --text
 ade brain start
 ade brain stop
 ade brain restart
-ade auth status
+ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
+ade login --headless                      # print verification URL + user code
+ade auth status --text                    # account identity + loopback/device/env-token source
+ade account token create --text           # print a refresh token once for ADE_ACCOUNT_TOKEN
 ade doctor --json
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
@@ -416,9 +419,25 @@ Output modes are explicit: `--text` for human-readable summaries, `--json` (defa
 
 `--socket` requires a specific ADE local endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches to the brain when reachable and falls back to headless for commands that can run that way.
 
-## `ade auth` and `ade doctor`
+## ADE account auth and `ade doctor`
 
-ADE CLI auth is local project access, not a separate cloud login. `ade auth status` verifies that the current terminal can initialize an ADE runtime for the project. Provider credentials, GitHub tokens, Linear tokens, and computer-use policy are read from ADE project settings and the existing secure stores.
+ADE accounts are optional; local `ade code`, project, lane, and PIN workflows
+remain available while signed out. `ade login` uses Clerk OAuth with a local
+loopback callback when a browser is available. `--headless`, SSH sessions, and
+display-less Linux hosts use the account-directory device bridge instead: the
+CLI prints a verification URL and short code that can be completed in any
+browser. If opening the loopback URL fails, the CLI falls back to the same
+device flow.
+
+For non-interactive agents and CI, create a durable refresh credential once on
+an interactive machine with `ade account token create`, store it in a secret
+manager, and expose it as `ADE_ACCOUNT_TOKEN` to the ADE brain/runtime. Access
+tokens are used until their reported JWT expiry; opaque refresh tokens are
+exchanged in memory as needed. ADE never logs this environment value.
+
+Provider credentials, GitHub tokens, Linear tokens, and computer-use policy
+remain separate and are read from ADE project settings and their existing
+secure stores.
 
 `ade doctor` reports local-only readiness metadata by default:
 

@@ -8,6 +8,7 @@ const LOOPBACK_HOST = "127.0.0.1";
 const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
+const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const SUCCESS_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -51,7 +52,10 @@ export type AccountSessionRecord = {
   userId: string | null;
   email: string | null;
   name: string | null;
+  authSource?: Exclude<AccountAuthSource, "env-token" | null>;
 };
+
+export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
 
 export type AccountAuthStatus = {
   signedIn: boolean;
@@ -59,6 +63,7 @@ export type AccountAuthStatus = {
   email: string | null;
   name: string | null;
   expiresAt: string | null;
+  source?: AccountAuthSource;
 };
 
 export type AccountLoginStartResult = {
@@ -71,6 +76,28 @@ export type AccountLoginPollResult = {
   status: "pending" | "signed_in" | "expired" | "error";
   message: string | null;
   authStatus: AccountAuthStatus;
+};
+
+export type AccountDeviceLoginStartResult = {
+  sessionId: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  expiresAt: string;
+  intervalSec: number;
+};
+
+export type AccountDeviceLoginPollResult = {
+  status: "pending" | "slow_down" | "signed_in" | "expired" | "error";
+  message: string | null;
+  intervalSec: number | null;
+  authStatus: AccountAuthStatus;
+};
+
+export type AccountTokenCreateResult = {
+  token: string;
+  source: "refresh_token";
+  guidance: string;
 };
 
 type AccountAuthLogger = {
@@ -90,6 +117,14 @@ type PendingLoginSession = {
   message: string | null;
 };
 
+type PendingDeviceLoginSession = {
+  sessionId: string;
+  deviceCode: string;
+  deviceSecret: string;
+  expiresAtMs: number;
+  intervalSec: number;
+};
+
 type TokenResponse = {
   accessToken: string;
   refreshToken: string | null;
@@ -100,8 +135,11 @@ type TokenResponse = {
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
+  startDeviceLogin(): Promise<AccountDeviceLoginStartResult>;
+  pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   getAccessToken(): Promise<string>;
+  createToken(): AccountTokenCreateResult;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
   dispose(): void;
@@ -110,10 +148,13 @@ export type AccountAuthService = {
 export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
+  startDeviceLogin(): Promise<AccountDeviceLoginStartResult>;
+  pollDeviceLogin(args: { sessionId?: string }): Promise<AccountDeviceLoginPollResult>;
   status(): AccountAuthStatus;
   cancelLogin(args: { sessionId?: string }): void;
   signOut(): AccountAuthStatus;
   getToken(): Promise<string>;
+  createToken(): AccountTokenCreateResult;
 };
 
 export async function getSignedInAccountAccessToken(
@@ -133,10 +174,13 @@ export async function getSignedInAccountAccessToken(
 export const ACCOUNT_ACTION_NAMES = [
   "startLogin",
   "pollLogin",
+  "startDeviceLogin",
+  "pollDeviceLogin",
   "status",
   "cancelLogin",
   "signOut",
   "getToken",
+  "createToken",
 ] as const;
 
 type AccountActionName = (typeof ACCOUNT_ACTION_NAMES)[number];
@@ -156,6 +200,34 @@ function readPositiveNumber(value: unknown): number | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function readAuthSource(value: unknown): AccountSessionRecord["authSource"] {
+  return value === "device" ? "device" : value === "loopback" ? "loopback" : undefined;
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3 || !parts[1]) return null;
+    return asRecord(JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")));
+  } catch {
+    return null;
+  }
+}
+
+function accessTokenExpiresAt(token: string): string | null {
+  const payload = decodeJwtPayload(token);
+  const exp = payload?.exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) return null;
+  return new Date(Math.trunc(exp * 1000)).toISOString();
+}
+
+function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
+  const payload = decodeJwtPayload(token);
+  if (!payload) return "refresh_token";
+  const tokenUse = readNonEmptyString(payload.token_use ?? payload.typ ?? payload.type)?.toLowerCase();
+  return tokenUse?.includes("refresh") ? "refresh_token" : "access_token";
 }
 
 function isLoopbackIssuerHost(hostname: string): boolean {
@@ -195,6 +267,25 @@ function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
     throw new Error("CLERK_ISSUER must use https (http is only allowed for localhost).");
   }
   return { issuer, clientId };
+}
+
+function normalizeDeviceBridgeUrl(rawUrl: string): string {
+  const normalized = rawUrl.trim().replace(/\/+$/, "");
+  if (!normalized) {
+    throw new Error(
+      "ADE account device login is not configured. Set ADE_ACCOUNT_DIRECTORY_URL in ADE project secrets or the daemon environment.",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("ADE_ACCOUNT_DIRECTORY_URL must be a valid HTTP(S) URL.");
+  }
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackIssuerHost(parsed.hostname))) {
+    throw new Error("ADE_ACCOUNT_DIRECTORY_URL must use https (http is only allowed for localhost).");
+  }
+  return normalized;
 }
 
 export function derivePkceChallenge(codeVerifier: string): string {
@@ -258,9 +349,8 @@ function decodeAccountClaims(accessToken: string): {
   name: string | null;
 } {
   try {
-    const payload = accessToken.split(".")[1];
-    if (!payload) return { userId: null, email: null, name: null };
-    const claims = asRecord(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
+    const claims = decodeJwtPayload(accessToken);
+    if (!claims) return { userId: null, email: null, name: null };
     const givenName = readNonEmptyString(claims.given_name ?? claims.first_name);
     const familyName = readNonEmptyString(claims.family_name ?? claims.last_name);
     const derivedName = [givenName, familyName].filter(Boolean).join(" ") || null;
@@ -291,6 +381,7 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       userId: readNonEmptyString(parsed.userId),
       email: readNonEmptyString(parsed.email),
       name: readNonEmptyString(parsed.name),
+      authSource: readAuthSource(parsed.authSource),
     };
   } catch {
     return null;
@@ -337,6 +428,7 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
     email: record?.email ?? null,
     name: record?.name ?? null,
     expiresAt: record?.expiresAt ?? null,
+    source: record ? record.authSource ?? "loopback" : null,
   };
 }
 
@@ -346,10 +438,13 @@ export function createAccountActionDomainService(
   return {
     startLogin: () => service.startLogin(),
     pollLogin: (args) => service.pollLogin(readNonEmptyString(args?.sessionId) ?? ""),
+    startDeviceLogin: () => service.startDeviceLogin(),
+    pollDeviceLogin: (args) => service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? ""),
     status: () => service.getStatus(),
     cancelLogin: (args) => service.cancelLogin(readNonEmptyString(args?.sessionId) ?? ""),
     signOut: () => service.signOut(),
     getToken: () => service.getAccessToken(),
+    createToken: () => service.createToken(),
   };
 }
 
@@ -372,8 +467,12 @@ export async function callAccountAction(args: {
   let result: unknown;
   if (action === "pollLogin") {
     result = await domain.pollLogin({ sessionId: readNonEmptyString(actionArgs.sessionId) ?? undefined });
+  } else if (action === "pollDeviceLogin") {
+    result = await domain.pollDeviceLogin({ sessionId: readNonEmptyString(actionArgs.sessionId) ?? undefined });
   } else if (action === "startLogin") {
     result = await domain.startLogin();
+  } else if (action === "startDeviceLogin") {
+    result = await domain.startDeviceLogin();
   } else if (action === "status") {
     result = domain.status();
   } else if (action === "cancelLogin") {
@@ -381,8 +480,10 @@ export async function callAccountAction(args: {
     result = domain.status();
   } else if (action === "signOut") {
     result = domain.signOut();
-  } else {
+  } else if (action === "getToken") {
     result = await domain.getToken();
+  } else {
+    result = domain.createToken();
   }
   return { domain: "account", action: args.action, result, statusHints: {} };
 }
@@ -390,7 +491,9 @@ export async function callAccountAction(args: {
 export function createAccountAuthService(args: {
   credentialStore: SyncCredentialStore;
   getOAuthConfig: () => AccountOAuthConfig | Promise<AccountOAuthConfig>;
+  getDeviceBridgeUrl?: () => string | Promise<string>;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+  env?: NodeJS.ProcessEnv;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
   randomUUID?: () => string;
@@ -401,9 +504,42 @@ export function createAccountAuthService(args: {
   const randomBytes = args.randomBytes ?? nodeRandomBytes;
   const randomUUID = args.randomUUID ?? nodeRandomUUID;
   const logger = args.logger ?? { info: () => {}, warn: () => {} };
+  const env = args.env ?? process.env;
   const pendingSessions = new Map<string, PendingLoginSession>();
+  const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   let refreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let envRefreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let envSession: AccountSessionRecord | null = null;
+  let envSessionCredential: string | null = null;
+  let envRefreshToken: string | null = null;
   let authEpoch = 0;
+
+  const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
+
+  const resetEnvSessionIfCredentialChanged = (credential: string): void => {
+    if (envSessionCredential === credential) return;
+    envSessionCredential = credential;
+    envSession = null;
+    envRefreshInFlight = null;
+    envRefreshToken = credential;
+  };
+
+  const envCredentialStatus = (credential: string): AccountAuthStatus => {
+    resetEnvSessionIfCredentialChanged(credential);
+    if (envSession) return { ...toStatus(envSession), source: "env-token" };
+    const expiresAt = classifyEnvCredential(credential) === "access_token"
+      ? accessTokenExpiresAt(credential)
+      : null;
+    const claims = expiresAt ? decodeAccountClaims(credential) : { userId: null, email: null, name: null };
+    return {
+      signedIn: true,
+      userId: claims.userId,
+      email: claims.email,
+      name: claims.name,
+      expiresAt,
+      source: "env-token",
+    };
+  };
 
   const readSession = (): AccountSessionRecord | null => {
     try {
@@ -453,6 +589,7 @@ export function createAccountAuthService(args: {
   const buildSessionRecord = (
     token: TokenResponse,
     previous?: AccountSessionRecord | null,
+    authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
   ): AccountSessionRecord => {
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
@@ -465,6 +602,7 @@ export function createAccountAuthService(args: {
       userId: claims.userId ?? previous?.userId ?? null,
       email: claims.email ?? previous?.email ?? null,
       name: claims.name ?? previous?.name ?? null,
+      authSource,
     };
   };
 
@@ -484,7 +622,7 @@ export function createAccountAuthService(args: {
         redirect_uri: session.redirectUri,
       },
     });
-    return buildSessionRecord(token);
+    return buildSessionRecord(token, null, "loopback");
   };
 
   const handleLoopbackRequest = async (
@@ -546,6 +684,9 @@ export function createAccountAuthService(args: {
   };
 
   const startLogin = async (): Promise<AccountLoginStartResult> => {
+    if (readEnvCredential()) {
+      throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
+    }
     pruneFinishedSessions();
     while (pendingSessions.size >= MAX_PENDING_LOGIN_SESSIONS) {
       const oldestId = pendingSessions.keys().next().value as string | undefined;
@@ -652,9 +793,225 @@ export function createAccountAuthService(args: {
     };
   };
 
-  const getStatus = (): AccountAuthStatus => toStatus(readSession());
+  const resolveDeviceBridgeUrl = async (): Promise<string> => normalizeDeviceBridgeUrl(
+    args.getDeviceBridgeUrl
+      ? await args.getDeviceBridgeUrl()
+      : env.ADE_ACCOUNT_DIRECTORY_URL ?? "",
+  );
+
+  const startDeviceLogin = async (): Promise<AccountDeviceLoginStartResult> => {
+    if (readEnvCredential()) {
+      throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
+    }
+    for (const [sessionId, session] of pendingDeviceSessions) {
+      if (session.expiresAtMs <= now()) pendingDeviceSessions.delete(sessionId);
+    }
+    while (pendingDeviceSessions.size >= MAX_PENDING_LOGIN_SESSIONS) {
+      const oldestId = pendingDeviceSessions.keys().next().value as string | undefined;
+      if (!oldestId) break;
+      pendingDeviceSessions.delete(oldestId);
+    }
+    const deviceSecret = randomBytes(32).toString("base64url");
+    const bridgeUrl = await resolveDeviceBridgeUrl();
+    const response = await fetchImpl(`${bridgeUrl}/device/code`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ device_secret: deviceSecret }),
+    });
+    const payload = asRecord(await response.json().catch(() => ({})));
+    if (!response.ok) {
+      throw new Error(
+        readNonEmptyString(payload.error_description)
+          ?? readNonEmptyString(payload.error)
+          ?? `ADE account device login failed to start (${response.status}).`,
+      );
+    }
+    const deviceCode = readNonEmptyString(payload.device_code);
+    const userCode = readNonEmptyString(payload.user_code);
+    const verificationUri = readNonEmptyString(payload.verification_uri);
+    const expiresInSec = readPositiveNumber(payload.expires_in);
+    const intervalSec = readPositiveNumber(payload.interval) ?? 5;
+    if (!deviceCode || !userCode || !verificationUri || expiresInSec == null) {
+      throw new Error("ADE account device login response was missing required fields.");
+    }
+    const sessionId = randomUUID();
+    const expiresAtMs = now() + Math.trunc(expiresInSec * 1000);
+    pendingDeviceSessions.set(sessionId, {
+      sessionId,
+      deviceCode,
+      deviceSecret,
+      expiresAtMs,
+      intervalSec,
+    });
+    return {
+      sessionId,
+      userCode,
+      verificationUri,
+      verificationUriComplete: readNonEmptyString(payload.verification_uri_complete),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      intervalSec,
+    };
+  };
+
+  const pollDeviceLogin = async (sessionId: string): Promise<AccountDeviceLoginPollResult> => {
+    const normalizedSessionId = sessionId.trim();
+    const session = pendingDeviceSessions.get(normalizedSessionId);
+    if (!normalizedSessionId || !session) {
+      return {
+        status: "error",
+        message: normalizedSessionId
+          ? "ADE account device sign-in session was not found."
+          : "ADE account device sign-in session id is required.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    if (session.expiresAtMs <= now()) {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "expired",
+        message: "ADE account device sign-in expired.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+
+    const epochAtPoll = authEpoch;
+    const bridgeUrl = await resolveDeviceBridgeUrl();
+    const response = await fetchImpl(`${bridgeUrl}/device/token`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        device_code: session.deviceCode,
+        device_secret: session.deviceSecret,
+      }),
+    });
+    const payload = asRecord(await response.json().catch(() => ({})));
+    if (!response.ok) {
+      const errorCode = readNonEmptyString(payload.error);
+      const intervalSec = readPositiveNumber(payload.interval) ?? session.intervalSec;
+      if (errorCode === "authorization_pending" || errorCode === "slow_down") {
+        session.intervalSec = intervalSec;
+        return {
+          status: errorCode === "slow_down" ? "slow_down" : "pending",
+          message: null,
+          intervalSec,
+          authStatus: toStatus(readSession()),
+        };
+      }
+      pendingDeviceSessions.delete(normalizedSessionId);
+      if (errorCode === "expired" || errorCode === "expired_token") {
+        return {
+          status: "expired",
+          message: "ADE account device sign-in expired.",
+          intervalSec: null,
+          authStatus: toStatus(readSession()),
+        };
+      }
+      return {
+        status: "error",
+        message: readNonEmptyString(payload.error_description)
+          ?? (errorCode === "invalid_grant"
+            ? "ADE account device sign-in could not be redeemed."
+            : errorCode ?? `ADE account device token request failed (${response.status}).`),
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+
+    const accessToken = readNonEmptyString(payload.access_token);
+    const expiresInSec = readPositiveNumber(payload.expires_in);
+    if (!accessToken || expiresInSec == null) {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "error",
+        message: "ADE account device token response was missing required fields.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    if (
+      authEpoch !== epochAtPoll
+      || pendingDeviceSessions.get(normalizedSessionId) !== session
+      || session.expiresAtMs <= now()
+    ) {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "error",
+        message: "ADE account device sign-in was cancelled.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
+    const record = buildSessionRecord({
+      accessToken,
+      refreshToken: readNonEmptyString(payload.refresh_token),
+      tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
+      expiresInSec,
+    }, null, "device");
+    persistSession(record);
+    authEpoch += 1;
+    pendingDeviceSessions.delete(normalizedSessionId);
+    logger.info("account.device_login_completed");
+    return {
+      status: "signed_in",
+      message: null,
+      intervalSec: null,
+      authStatus: toStatus(record),
+    };
+  };
+
+  const getStatus = (): AccountAuthStatus => {
+    const envCredential = readEnvCredential();
+    return envCredential ? envCredentialStatus(envCredential) : toStatus(readSession());
+  };
 
   const getAccessToken = async (): Promise<string> => {
+    const envCredential = readEnvCredential();
+    if (envCredential) {
+      resetEnvSessionIfCredentialChanged(envCredential);
+      const directExpiresAt = accessTokenExpiresAt(envCredential);
+      if (classifyEnvCredential(envCredential) === "access_token") {
+        if (!directExpiresAt) {
+          throw new Error(
+            "ADE_ACCOUNT_TOKEN access token does not contain a usable expiration claim. Replace it with a current access token or a durable refresh token.",
+          );
+        }
+        const expiresAtMs = Date.parse(directExpiresAt);
+        if (expiresAtMs > now()) return envCredential;
+        throw new Error(
+          `ADE_ACCOUNT_TOKEN access token expired at ${directExpiresAt}. Replace it with a current access token or a durable refresh token.`,
+        );
+      }
+      if (envSession) {
+        const expiresAtMs = Date.parse(envSession.expiresAt);
+        if (Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
+          return envSession.accessToken;
+        }
+      }
+      if (!envRefreshInFlight) {
+        envRefreshInFlight = (async () => {
+          const config = normalizeOAuthConfig(await args.getOAuthConfig());
+          const token = await postTokenForm({
+            fetchImpl,
+            tokenUrl: `${config.issuer}/oauth/token`,
+            body: {
+              grant_type: "refresh_token",
+              refresh_token: envRefreshToken ?? envCredential,
+              client_id: config.clientId,
+            },
+          });
+          envRefreshToken = token.refreshToken ?? envRefreshToken ?? envCredential;
+          const refreshed = buildSessionRecord(token, envSession, "loopback");
+          envSession = refreshed;
+          return refreshed;
+        })().finally(() => {
+          envRefreshInFlight = null;
+        });
+      }
+      return (await envRefreshInFlight).accessToken;
+    }
+
     const record = readSession();
     if (!record?.accessToken) {
       throw new Error("ADE is not signed in. Run `ade login` to sign in.");
@@ -695,6 +1052,23 @@ export function createAccountAuthService(args: {
     return refreshed.accessToken;
   };
 
+  const createToken = (): AccountTokenCreateResult => {
+    if (readEnvCredential()) {
+      throw new Error(
+        "ADE is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.",
+      );
+    }
+    const record = readSession();
+    if (!record?.refreshToken) {
+      throw new Error("The current ADE account session has no refresh token. Run `ade login` again, then retry.");
+    }
+    return {
+      token: record.refreshToken,
+      source: "refresh_token",
+      guidance: "Set this secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. Store it in a secret manager; do not commit or log it.",
+    };
+  };
+
   // Cancel a single pending login (e.g. `ade login --max-wait` timed out) without
   // signing the machine out. This closes the loopback listener so a browser tab
   // that completes AFTER the CLI gave up can no longer exchange the code and
@@ -704,10 +1078,15 @@ export function createAccountAuthService(args: {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) return;
     const session = pendingSessions.get(normalizedSessionId);
-    if (!session) return;
-    finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
-    pendingSessions.delete(normalizedSessionId);
-    logger.info("account.login_cancelled");
+    if (session) {
+      finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+      pendingSessions.delete(normalizedSessionId);
+      logger.info("account.login_cancelled");
+      return;
+    }
+    if (pendingDeviceSessions.delete(normalizedSessionId)) {
+      logger.info("account.device_login_cancelled");
+    }
   };
 
   const signOut = (): AccountAuthStatus => {
@@ -717,8 +1096,9 @@ export function createAccountAuthService(args: {
       finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
     }
     pendingSessions.clear();
+    pendingDeviceSessions.clear();
     logger.info("account.signed_out");
-    return toStatus(null);
+    return getStatus();
   };
 
   const dispose = (): void => {
@@ -727,7 +1107,19 @@ export function createAccountAuthService(args: {
       closeServer(session.server);
     }
     pendingSessions.clear();
+    pendingDeviceSessions.clear();
   };
 
-  return { startLogin, pollLogin, getStatus, getAccessToken, cancelLogin, signOut, dispose };
+  return {
+    startLogin,
+    pollLogin,
+    startDeviceLogin,
+    pollDeviceLogin,
+    getStatus,
+    getAccessToken,
+    createToken,
+    cancelLogin,
+    signOut,
+    dispose,
+  };
 }

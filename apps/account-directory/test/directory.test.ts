@@ -17,6 +17,26 @@ type StoredMachine = {
   created_at: number | null;
 };
 
+type StoredDeviceAuthorization = {
+  device_code: string;
+  user_code: string;
+  device_secret_hash: string;
+  status: "pending" | "approved" | "consumed" | "expired" | "error";
+  code_verifier: string | null;
+  oauth_state_hash: string | null;
+  access_token: string | null;
+  refresh_token: string | null;
+  token_type: string | null;
+  expires_in: number | null;
+  error_message: string | null;
+  poll_interval_seconds: number;
+  last_polled_at: number | null;
+  created_at: number;
+  expires_at: number;
+  approved_at: number | null;
+  consumed_at: number | null;
+};
+
 class FakeD1Statement {
   private values: unknown[] = [];
 
@@ -38,14 +58,16 @@ class FakeD1Statement {
     return { results: this.db.all<T>(this.sql, this.values) };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.db.run(this.sql, this.values);
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    const changes = this.db.run(this.sql, this.values);
+    return { success: true, meta: { changes } };
   }
 }
 
 class FakeD1Database {
   rows: StoredMachine[] = [];
+  deviceRows: StoredDeviceAuthorization[] = [];
+  approvalRateLimits = new Map<string, { window_started_at: number; attempts: number }>();
 
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(sql, this);
@@ -53,9 +75,23 @@ class FakeD1Database {
 
   first<T>(sql: string, values: unknown[]): T | null {
     const normalized = sql.toLowerCase();
-    if (!normalized.includes("from machines")) return null;
-    const [userId, machineKey] = values;
-    return (this.rows.find((row) => row.user_id === userId && row.machine_key === machineKey) ?? null) as T | null;
+    if (normalized.includes("from machines")) {
+      const [userId, machineKey] = values;
+      return (this.rows.find((row) => row.user_id === userId && row.machine_key === machineKey) ?? null) as T | null;
+    }
+    if (normalized.includes("from device_authorizations")) {
+      const [value] = values;
+      const key = normalized.includes("where device_code")
+        ? "device_code"
+        : normalized.includes("where user_code")
+          ? "user_code"
+          : "oauth_state_hash";
+      return (this.deviceRows.find((row) => row[key] === value) ?? null) as T | null;
+    }
+    if (normalized.includes("from device_approval_rate_limits")) {
+      return (this.approvalRateLimits.get(String(values[0])) ?? null) as T | null;
+    }
+    return null;
   }
 
   all<T>(sql: string, values: unknown[]): T[] {
@@ -64,7 +100,7 @@ class FakeD1Database {
     return this.rows.filter((row) => row.user_id === userId) as T[];
   }
 
-  run(sql: string, values: unknown[]): void {
+  run(sql: string, values: unknown[]): number {
     const normalized = sql.toLowerCase();
     if (normalized.includes("insert into machines")) {
       const row: StoredMachine = {
@@ -87,12 +123,124 @@ class FakeD1Database {
       } else {
         this.rows.push(row);
       }
-      return;
+      return 1;
     }
     if (normalized.includes("delete from machines")) {
       const [userId, machineKey] = values;
       this.rows = this.rows.filter((row) => row.user_id !== userId || row.machine_key !== machineKey);
+      return 1;
     }
+    if (normalized.includes("insert into device_authorizations")) {
+      const userCode = String(values[1]);
+      if (this.deviceRows.some((row) => row.user_code === userCode)) {
+        throw new Error("UNIQUE constraint failed: device_authorizations.user_code");
+      }
+      this.deviceRows.push({
+        device_code: String(values[0]),
+        user_code: userCode,
+        device_secret_hash: String(values[2]),
+        status: "pending",
+        code_verifier: null,
+        oauth_state_hash: null,
+        access_token: null,
+        refresh_token: null,
+        token_type: null,
+        expires_in: null,
+        error_message: null,
+        poll_interval_seconds: Number(values[3]),
+        last_polled_at: null,
+        created_at: Number(values[4]),
+        expires_at: Number(values[5]),
+        approved_at: null,
+        consumed_at: null,
+      });
+      return 1;
+    }
+    if (normalized.includes("insert into device_approval_rate_limits")) {
+      this.approvalRateLimits.set(String(values[0]), {
+        window_started_at: Number(values[1]),
+        attempts: 1,
+      });
+      return 1;
+    }
+    if (normalized.includes("update device_approval_rate_limits")) {
+      const record = this.approvalRateLimits.get(String(values[0]));
+      if (!record) return 0;
+      record.attempts += 1;
+      return 1;
+    }
+    if (normalized.includes("update device_authorizations")) {
+      if (normalized.includes("set code_verifier")) {
+        const row = this.deviceRows.find((entry) =>
+          entry.device_code === values[2]
+          && entry.status === "pending"
+          && entry.expires_at > Number(values[3])
+        );
+        if (!row) return 0;
+        row.code_verifier = String(values[0]);
+        row.oauth_state_hash = String(values[1]);
+        return 1;
+      }
+      if (normalized.includes("set status = 'approved'")) {
+        const row = this.deviceRows.find((entry) =>
+          entry.device_code === values[5]
+          && entry.status === "pending"
+          && entry.expires_at > Number(values[6])
+        );
+        if (!row) return 0;
+        row.status = "approved";
+        row.access_token = String(values[0]);
+        row.refresh_token = values[1] == null ? null : String(values[1]);
+        row.token_type = String(values[2]);
+        row.expires_in = Number(values[3]);
+        row.approved_at = Number(values[4]);
+        row.code_verifier = null;
+        row.oauth_state_hash = null;
+        return 1;
+      }
+      if (normalized.includes("set status = 'consumed'")) {
+        const row = this.deviceRows.find((entry) =>
+          entry.device_code === values[1]
+          && entry.device_secret_hash === values[2]
+          && entry.status === "approved"
+        );
+        if (!row) return 0;
+        row.status = "consumed";
+        row.consumed_at = Number(values[0]);
+        row.access_token = null;
+        row.refresh_token = null;
+        return 1;
+      }
+      if (normalized.includes("set status = 'error'")) {
+        const row = this.deviceRows.find((entry) => entry.device_code === values[1] && entry.status === "pending");
+        if (!row) return 0;
+        row.status = "error";
+        row.error_message = String(values[0]);
+        return 1;
+      }
+      if (normalized.includes("set status = 'expired'")) {
+        const row = this.deviceRows.find((entry) => entry.device_code === values[0]);
+        if (!row || (normalized.includes("status = 'pending'") && row.status !== "pending")) return 0;
+        row.status = "expired";
+        row.access_token = null;
+        row.refresh_token = null;
+        return 1;
+      }
+      if (normalized.includes("set last_polled_at = ?, poll_interval_seconds = ?")) {
+        const row = this.deviceRows.find((entry) => entry.device_code === values[2]);
+        if (!row) return 0;
+        row.last_polled_at = Number(values[0]);
+        row.poll_interval_seconds = Number(values[1]);
+        return 1;
+      }
+      if (normalized.includes("set last_polled_at = ?")) {
+        const row = this.deviceRows.find((entry) => entry.device_code === values[1]);
+        if (!row) return 0;
+        row.last_polled_at = Number(values[0]);
+        return 1;
+      }
+    }
+    return 0;
   }
 }
 
@@ -239,6 +387,174 @@ describe("Clerk JWKS authentication", () => {
   it("returns 401 when the bearer token is absent", async () => {
     const response = await handleRequest(request("GET", "/account/machines"), makeEnv());
     expect(response.status).toBe(401);
+  });
+});
+
+describe("device authorization bridge", () => {
+  it("creates, approves with Clerk OAuth + PKCE, and one-time redeems a secret-bound device code", async () => {
+    const env = makeEnv();
+    let now = Date.parse("2026-07-14T12:00:00.000Z");
+    const deviceSecret = "daemon-device-secret-with-at-least-32-bytes";
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, { device_secret: deviceSecret }),
+      env,
+      { now: () => now },
+    );
+    expect(created.status).toBe(200);
+    const device = await created.json() as Record<string, unknown>;
+    expect(device).toMatchObject({
+      device_code: expect.any(String),
+      user_code: expect.stringMatching(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/),
+      verification_uri: "https://directory.test/device",
+      verification_uri_complete: expect.stringContaining("https://directory.test/device?user_code="),
+      expires_in: 600,
+      interval: 5,
+    });
+
+    const pending = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: deviceSecret,
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(pending.status).toBe(400);
+    expect(await pending.json()).toEqual({ error: "authorization_pending", interval: 5 });
+
+    const approval = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+    expect(approval.status).toBe(302);
+    const clerkAuthorizeUrl = new URL(approval.headers.get("location")!);
+    expect(clerkAuthorizeUrl.origin + clerkAuthorizeUrl.pathname).toBe(`${ISSUER}/oauth/authorize`);
+    expect(clerkAuthorizeUrl.searchParams.get("client_id")).toBe(OAUTH_CLIENT_ID);
+    expect(clerkAuthorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(clerkAuthorizeUrl.searchParams.get("redirect_uri")).toBe("https://directory.test/device/callback");
+    const state = clerkAuthorizeUrl.searchParams.get("state")!;
+    const duplicateApproval = await handleRequest(
+      new Request(String(device.verification_uri_complete)),
+      env,
+      { now: () => now },
+    );
+    expect(duplicateApproval.status).toBe(409);
+    expect(await duplicateApproval.text()).toContain("Sign-in already started");
+    const tokenExchange = vi.fn(async (_input: string, init?: RequestInit) => {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      expect(body).toMatchObject({
+        grant_type: "authorization_code",
+        code: "clerk-authorization-code",
+        client_id: OAUTH_CLIENT_ID,
+        redirect_uri: "https://directory.test/device/callback",
+      });
+      expect(body.code_verifier).toEqual(expect.any(String));
+      return new Response(JSON.stringify({
+        access_token: "approved-access-token",
+        refresh_token: "approved-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const callback = await handleRequest(
+      new Request(`https://directory.test/device/callback?code=clerk-authorization-code&state=${encodeURIComponent(state)}`),
+      env,
+      { now: () => now, fetchImpl: tokenExchange as typeof fetch },
+    );
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("Signed in to ADE");
+
+    const wrongSecret = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: "wrong-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(wrongSecret.status).toBe(401);
+    expect(await wrongSecret.json()).toEqual({ error: "invalid_grant" });
+
+    now += 6_000;
+    const redeemed = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: deviceSecret,
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(redeemed.status).toBe(200);
+    expect(await redeemed.json()).toEqual({
+      access_token: "approved-access-token",
+      refresh_token: "approved-refresh-token",
+      token_type: "Bearer",
+      expires_in: 3594,
+    });
+    expect(env.DB.deviceRows[0]).toMatchObject({
+      status: "consumed",
+      access_token: null,
+      refresh_token: null,
+    });
+
+    const replay = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: deviceSecret,
+      }),
+      env,
+      { now: () => now + 6_000 },
+    );
+    expect(replay.status).toBe(401);
+    expect(await replay.json()).toEqual({ error: "invalid_grant" });
+  });
+
+  it("returns expired for a device code after its short TTL", async () => {
+    const env = makeEnv();
+    const startedAt = Date.parse("2026-07-14T12:00:00.000Z");
+    const deviceSecret = "daemon-device-secret-with-at-least-32-bytes";
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, { device_secret: deviceSecret }),
+      env,
+      { now: () => startedAt },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const expired = await handleRequest(
+      request("POST", "/device/token", undefined, {
+        device_code: device.device_code,
+        device_secret: deviceSecret,
+      }),
+      env,
+      { now: () => startedAt + 601_000 },
+    );
+    expect(expired.status).toBe(400);
+    expect(await expired.json()).toEqual({ error: "expired" });
+    expect(env.DB.deviceRows[0]?.status).toBe("expired");
+  });
+
+  it("rate-limits user-code lookups on the hosted approval page", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await handleRequest(
+        new Request("https://directory.test/device?user_code=ABCD-EFGH", {
+          headers: { "cf-connecting-ip": "203.0.113.7" },
+        }),
+        env,
+        { now: () => now },
+      );
+      expect(response.status).toBe(404);
+    }
+    const blocked = await handleRequest(
+      new Request("https://directory.test/device?user_code=ABCD-EFGH", {
+        headers: { "cf-connecting-ip": "203.0.113.7" },
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(blocked.status).toBe(429);
   });
 });
 

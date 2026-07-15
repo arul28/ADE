@@ -748,8 +748,8 @@ export function createMultiProjectRpcRequestHandler(
           "account.call requires action.",
         );
       }
-      // Gate credential-bearing account actions (getToken/startLogin/pollLogin/
-      // signOut) to cto-role callers, mirroring the run_ade_action gate in
+      // Gate credential-bearing account actions (tokens plus interactive login
+      // start/poll/cancel/sign-out) to cto-role callers, mirroring the run_ade_action gate in
       // adeRpcServer. The caller's requested role (from ade/initialize identity)
       // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
       // honestly asserts a non-cto role cannot reach these actions. `status`
@@ -775,7 +775,7 @@ export function createMultiProjectRpcRequestHandler(
       // project is never in projects.json. Register its root as an account-config
       // source (WITHOUT projects.add) so startLogin can read that project's
       // CLERK_* secrets; this preserves the "login does no projects.add" invariant.
-      if (action === "startLogin") {
+      if (action === "startLogin" || action === "startDeviceLogin") {
         const startArgs = isRecord(params.args) ? params.args : {};
         const startProjectRoot =
           typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";

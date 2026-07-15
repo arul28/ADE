@@ -136,7 +136,16 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: ["startLogin", "pollLogin", "cancelLogin", "signOut", "getToken"],
+  account: [
+    "startLogin",
+    "pollLogin",
+    "startDeviceLogin",
+    "pollDeviceLogin",
+    "cancelLogin",
+    "signOut",
+    "getToken",
+    "createToken",
+  ],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
   cto_memory: ["updateMemory"],
@@ -183,7 +192,17 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
 }
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  account: ["startLogin", "pollLogin", "status", "cancelLogin", "signOut", "getToken"],
+  account: [
+    "startLogin",
+    "pollLogin",
+    "startDeviceLogin",
+    "pollDeviceLogin",
+    "status",
+    "cancelLogin",
+    "signOut",
+    "getToken",
+    "createToken",
+  ],
   lane: [
     "adoptAttached",
     "archive",
@@ -742,6 +761,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { sessionId: string }",
       example: "ade actions run account.pollLogin --input-json '{\"sessionId\":\"...\"}'",
     },
+    startDeviceLogin: {
+      description: "Start the machine-owned ADE account device authorization flow for headless sign-in.",
+      input: "no input",
+      example: "ade login --headless",
+    },
+    pollDeviceLogin: {
+      description: "Poll an in-memory ADE account device authorization session.",
+      input: "object { sessionId: string }",
+      example: "ade actions run account.pollDeviceLogin --input-json '{\"sessionId\":\"...\"}'",
+    },
     status: {
       description: "Read the machine-owned ADE account sign-in status without exposing tokens.",
       input: "no input",
@@ -760,6 +789,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
     getToken: {
       description: "Internal bearer-token accessor for ADE remote services; refreshes near expiry.",
       input: "no input",
+    },
+    createToken: {
+      description: "Return the current account refresh token once for ADE_ACCOUNT_TOKEN provisioning.",
+      input: "no input",
+      example: "ade account token create",
     },
   },
   project_secret: {

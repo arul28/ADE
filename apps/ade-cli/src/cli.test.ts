@@ -8,6 +8,7 @@ import {
   buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
+  detectAccountLoginMode,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatOutput,
@@ -152,6 +153,21 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["login", "--max-wait", "42"])).toEqual({
       kind: "account-login",
       maxWaitSec: 42,
+      explicitHeadless: false,
+    });
+    expect(buildCliPlan(["login", "--headless"])).toEqual({
+      kind: "account-login",
+      maxWaitSec: null,
+      explicitHeadless: true,
+    });
+    const tokenPlan = expectExecutePlan(buildCliPlan(["account", "token", "create"]));
+    expect(tokenPlan).toMatchObject({
+      label: "account token create",
+      formatter: "account-token",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [{ method: "account.call", params: { action: "createToken", args: {} } }],
     });
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
@@ -193,6 +209,50 @@ describe("ADE CLI", () => {
     }, inferFormatter(statusPlan))).toBe(
       "Not signed in — local use does not require an account.\n",
     );
+  });
+
+  it("auto-detects env-token, headless, SSH, browser-open failure, and browser-capable login modes", () => {
+    expect(detectAccountLoginMode({
+      env: { ADE_ACCOUNT_TOKEN: "secret" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("env-token");
+    expect(detectAccountLoginMode({
+      explicitHeadless: true,
+      env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("device");
+    expect(detectAccountLoginMode({
+      env: { SSH_CONNECTION: "host details", DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("device");
+    expect(detectAccountLoginMode({ env: {} as NodeJS.ProcessEnv, platform: "linux" }))
+      .toBe("device");
+    expect(detectAccountLoginMode({
+      browserOpenFailed: true,
+      env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("device");
+    expect(detectAccountLoginMode({
+      env: { DISPLAY: ":0" } as NodeJS.ProcessEnv,
+      platform: "linux",
+    })).toBe("loopback");
+    expect(detectAccountLoginMode({ env: {} as NodeJS.ProcessEnv, platform: "darwin" }))
+      .toBe("loopback");
+  });
+
+  it("formats account auth sources and durable-token provisioning guidance", () => {
+    expect(formatOutput({
+      signedIn: true,
+      email: "person@example.com",
+      source: "device",
+    }, { text: true } as any, "account-auth")).toBe("Signed in as person@example.com (device)\n");
+    const tokenOutput = formatOutput({
+      token: "refresh-token-once",
+      source: "refresh_token",
+    }, { text: true } as any, "account-token");
+    expect(tokenOutput.match(/refresh-token-once/g)).toHaveLength(1);
+    expect(tokenOutput).toContain("ADE_ACCOUNT_TOKEN");
+    expect(tokenOutput).toContain("secret manager");
   });
 
   it("parses global options without stealing command flags", () => {
