@@ -74,8 +74,10 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
+import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
+  "account",
   "lane",
   "git",
   "diff",
@@ -134,6 +136,7 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  account: ["startLogin", "pollLogin", "cancelLogin", "signOut", "getToken"],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
   cto_memory: ["updateMemory"],
@@ -180,6 +183,7 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
 }
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  account: ["startLogin", "pollLogin", "status", "cancelLogin", "signOut", "getToken"],
   lane: [
     "adoptAttached",
     "archive",
@@ -727,6 +731,37 @@ export type AdeActionInputContract = {
 };
 
 const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
+  account: {
+    startLogin: {
+      description: "Start the machine-owned ADE account OAuth PKCE login flow.",
+      input: "no input",
+      example: "ade login",
+    },
+    pollLogin: {
+      description: "Poll an in-memory ADE account login session.",
+      input: "object { sessionId: string }",
+      example: "ade actions run account.pollLogin --input-json '{\"sessionId\":\"...\"}'",
+    },
+    status: {
+      description: "Read the machine-owned ADE account sign-in status without exposing tokens.",
+      input: "no input",
+      example: "ade auth status --text",
+    },
+    cancelLogin: {
+      description: "Cancel a pending in-memory ADE account login session so a late browser callback cannot sign in.",
+      input: "object { sessionId: string }",
+      example: "ade actions run account.cancelLogin --input-json '{\"sessionId\":\"...\"}'",
+    },
+    signOut: {
+      description: "Clear the machine-owned ADE account session.",
+      input: "no input",
+      example: "ade logout",
+    },
+    getToken: {
+      description: "Internal bearer-token accessor for ADE remote services; refreshes near expiry.",
+      input: "no input",
+    },
+  },
   project_secret: {
     list: {
       description: "List ADE project secret names and metadata without revealing values.",
@@ -3089,6 +3124,9 @@ export function getAdeActionDomainServices(
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
   const automationsEnabled = areAutomationsEnabledForPackagedState(Boolean(runtime.isPackaged));
   return {
+    account: runtime.accountAuthService
+      ? toService(createAccountActionDomainService(runtime.accountAuthService))
+      : null,
     lane: toService(buildLaneDomainService(runtime)),
     git: toService(runtime.gitService),
     diff: toService(runtime.diffService),

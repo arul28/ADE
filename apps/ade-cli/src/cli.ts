@@ -160,6 +160,7 @@ type FormatterId =
   | "status"
   | "doctor"
   | "auth"
+  | "account-auth"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -232,6 +233,13 @@ type CliPlan =
       formatter?: FormatterId;
       preferHeadless?: boolean;
       machineOnly?: boolean;
+      machineAutoStart?: boolean;
+      /**
+       * Force the connection for this plan to assert a specific runtime role
+       * instead of the global CLI default. Used by `ade logout`, whose `signOut`
+       * account action is CTO-only, so it must connect as the machine operator.
+       */
+      connectRole?: GlobalOptions["role"];
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -266,7 +274,8 @@ type CliPlan =
       timeoutMs: number;
       pollIntervalMs: number;
     }
-  | { kind: "github-app-login"; maxWaitSec: number | null };
+  | { kind: "github-app-login"; maxWaitSec: number | null }
+  | { kind: "account-login"; maxWaitSec: number | null };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -511,7 +520,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
-    $ ade auth status                               Check local ADE CLI readiness
+    $ ade login [--max-wait <seconds>]              Sign in to the optional ADE account
+    $ ade logout                                    Sign out of the ADE account
+    $ ade auth status                               Show ADE account sign-in status
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
@@ -1019,6 +1030,20 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  auth: `${ADE_BANNER}
+  ADE Account
+
+  ADE accounts are optional. Signing in unlocks remote-machine and account
+  directory features; every local ADE workflow continues to work signed out.
+
+    $ ade login                    Open Clerk sign-in in the system browser
+    $ ade logout                   Clear the shared machine account session
+    $ ade auth status --text       Show the shared machine account status
+
+  Flags (login):
+    --max-wait <seconds>           Give up waiting before the five-minute OAuth
+                                   session expires.
+`,
   search: `${ADE_BANNER}
   ADE Search
 
@@ -3311,6 +3336,18 @@ function actionStep(
   return actionCallStep(key, "run_ade_action", { domain, action, args });
 }
 
+function accountActionStep(
+  key: string,
+  action: string,
+  args: JsonObject = {},
+): InvocationStep {
+  return {
+    key,
+    method: "account.call",
+    params: { action, args },
+  };
+}
+
 function actionArgsListStep(
   key: string,
   domain: string,
@@ -3357,6 +3394,13 @@ function buildActionRunStep(args: string[]): InvocationStep {
     const argsList = parseJson(argsListJson, "--args-list-json");
     if (!Array.isArray(argsList))
       throw new CliUsageError("--args-list-json must be a JSON array.");
+    if (domain === "account") {
+      if (action === "pollLogin" && typeof argsList[0] === "string") {
+        return accountActionStep("result", action, { sessionId: argsList[0] });
+      }
+      if (argsList.length === 0) return accountActionStep("result", action);
+      throw new CliUsageError("account actions accept object input; pollLogin also accepts [sessionId].");
+    }
     return actionCallStep("result", "run_ade_action", {
       domain,
       action,
@@ -3366,6 +3410,13 @@ function buildActionRunStep(args: string[]): InvocationStep {
 
   const scalarJson = readValue(args, ["--scalar-json", "--arg-value-json"]);
   if (scalarJson != null) {
+    if (domain === "account") {
+      const scalar = parseJson(scalarJson, "--scalar-json");
+      if (action === "pollLogin" && typeof scalar === "string") {
+        return accountActionStep("result", action, { sessionId: scalar });
+      }
+      throw new CliUsageError("Only account.pollLogin accepts scalar input.");
+    }
     return actionCallStep("result", "run_ade_action", {
       domain,
       action,
@@ -3375,6 +3426,12 @@ function buildActionRunStep(args: string[]): InvocationStep {
 
   const scalar = readValue(args, ["--scalar", "--arg-value"]);
   if (scalar != null) {
+    if (domain === "account") {
+      if (action === "pollLogin") {
+        return accountActionStep("result", action, { sessionId: scalar });
+      }
+      throw new CliUsageError("Only account.pollLogin accepts scalar input.");
+    }
     return actionCallStep("result", "run_ade_action", {
       domain,
       action,
@@ -3382,7 +3439,10 @@ function buildActionRunStep(args: string[]): InvocationStep {
     });
   }
 
-  return actionStep("result", domain, action, collectGenericObjectArgs(args));
+  const objectArgs = collectGenericObjectArgs(args);
+  return domain === "account"
+    ? accountActionStep("result", action, objectArgs)
+    : actionStep("result", domain, action, objectArgs);
 }
 
 function buildLanePlan(args: string[]): CliPlan {
@@ -11284,6 +11344,8 @@ function buildCliPlan(
     skills: "skill",
     gh: "github",
     create: "new",
+    login: "auth",
+    logout: "auth",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -11416,6 +11478,25 @@ function buildCliPlan(
       steps: [{ key: "ping", method: "ping" }],
     };
   }
+  if (primary === "login") {
+    const maxWaitSec = readIntOption(args, ["--max-wait", "--timeout-sec"]);
+    return {
+      kind: "account-login",
+      maxWaitSec: typeof maxWaitSec === "number" ? maxWaitSec : null,
+    };
+  }
+  if (primary === "logout") {
+    return {
+      kind: "execute",
+      label: "account logout",
+      formatter: "account-auth",
+      machineOnly: true,
+      machineAutoStart: true,
+      // signOut is a CTO-only account action; connect as the machine operator.
+      connectRole: "cto",
+      steps: [accountActionStep("result", "signOut")],
+    };
+  }
   if (primary === "doctor") {
     return {
       kind: "execute",
@@ -11439,14 +11520,10 @@ function buildCliPlan(
     return {
       kind: "execute",
       label: "auth status",
-      summary: "auth",
-      steps: [
-        { key: "actions", method: "ade/actions/list" },
-        {
-          ...actionStep("projectConfig", "project_config", "get"),
-          optional: true,
-        },
-      ],
+      formatter: "account-auth",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [accountActionStep("result", "status")],
     };
   }
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
@@ -12856,6 +12933,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "exit" ||
     method === "runtime/info" ||
     method === "machineInfo.get" ||
+    method.startsWith("account.") ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
     method.startsWith("personalChats.")
@@ -13177,7 +13255,7 @@ function withProjectId(
 
 async function createConnection(
   options: GlobalOptions,
-  args: { autoRegisterProject?: boolean } = {},
+  args: { autoRegisterProject?: boolean; machineRuntimeOnly?: boolean } = {},
 ): Promise<CliConnection> {
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
@@ -13230,6 +13308,7 @@ async function createConnection(
       try {
         socketClient?.close();
       } catch {}
+      if (args.machineRuntimeOnly) throw error;
       if (
         options.requireSocket &&
         !shouldAttemptDesktopSocketConnection(legacySocketPath)
@@ -17039,6 +17118,16 @@ function formatTextOutput(
         ["note", isRecord(value) ? value.note : null],
       ]);
     }
+    case "account-auth": {
+      if (!isRecord(value) || value.signedIn !== true) {
+        return "Not signed in — local use does not require an account.";
+      }
+      const identity = asString(value.email)
+        ?? asString(value.name)
+        ?? asString(value.userId)
+        ?? "ADE account";
+      return `Signed in as ${identity}`;
+    }
     case "projects-list":
       return formatProjectsList(value);
     case "linear-quick-view":
@@ -17473,6 +17562,131 @@ function graphWaitState(value: unknown): {
 }
 
 /**
+ * Interactive machine-account authorization. The daemon owns the loopback
+ * listener, PKCE verifier, token exchange, and credential persistence; the CLI
+ * only opens the returned URL and polls the daemon over one live connection.
+ */
+async function runAccountLogin(
+  plan: CliPlan & { kind: "account-login" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    // `ade login` drives the CTO-only account actions (startLogin/pollLogin),
+    // so it connects as the machine operator at cto role. This also ensures the
+    // machine brain it attaches to runs at defaultRole cto (the runtime-role
+    // mismatch check respawns an under-privileged brain), so the account gate
+    // resolves the caller to cto.
+    connection = await createConnection(
+      { ...options, headless: false, role: "cto" },
+      { autoRegisterProject: false, machineRuntimeOnly: true },
+    );
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize the ADE brain for account login.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction: "Start the machine ADE brain with `ade brain start`, then retry `ade login`.",
+      },
+    );
+  }
+
+  const runAccountAction = async (
+    action: string,
+    actionArgs: JsonObject = {},
+  ): Promise<JsonObject> => {
+    const raw = await connection.request("account.call", { action, args: actionArgs });
+    const result = unwrapActionEnvelope(raw);
+    if (!isRecord(result)) {
+      throw new CliExecutionError(`account.${action} returned an unexpected result.`, { action });
+    }
+    return result;
+  };
+
+  // Register the invoking project's root so the daemon can read this project's
+  // CLERK_* secrets when it starts the login. `ade login` connects with
+  // autoRegisterProject:false, so the config root is otherwise never registered
+  // and startLogin reports "unconfigured" even when the project has the secrets.
+  const { projectRoot } = resolveRoots(options);
+
+  // Track the pending loopback session so EVERY non-success exit (timeout, poll
+  // error, thrown error) cancels it in `finally`; a browser tab that completes
+  // after the CLI gave up must not silently exchange the code and sign the
+  // machine in later. Cleared on success so a completed login is never cancelled.
+  let pendingSessionId: string | null = null;
+
+  try {
+    const start = await runAccountAction("startLogin", { projectRoot });
+    const sessionId = asString(start.sessionId);
+    const authorizeUrl = asString(start.authorizeUrl);
+    const expiresAt = asString(start.expiresAt);
+    if (!sessionId || !authorizeUrl) {
+      throw new CliExecutionError("ADE account login did not start.", { start });
+    }
+    pendingSessionId = sessionId;
+
+    const openResult = openUrlViaOs(authorizeUrl);
+    process.stderr.write(
+      `\nSign in to ADE in your browser. If it did not open, visit:\n  ${authorizeUrl}\n\nWaiting for sign-in…\n`,
+    );
+    if (openResult.failed) {
+      process.stderr.write(`Could not open the browser automatically: ${openResult.message}\n`);
+    }
+
+    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    const maxWaitDeadlineMs = plan.maxWaitSec != null
+      ? Date.now() + plan.maxWaitSec * 1000
+      : Number.NaN;
+    const deadlineMs = Math.min(
+      Number.isFinite(expiresAtMs) ? expiresAtMs : Number.POSITIVE_INFINITY,
+      Number.isFinite(maxWaitDeadlineMs) ? maxWaitDeadlineMs : Number.POSITIVE_INFINITY,
+    );
+
+    while (true) {
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        process.stderr.write("ADE account sign-in timed out.\n");
+        const status = await runAccountAction("status");
+        return { output: formatOutput(status, options, "account-auth"), exitCode: 1 };
+      }
+      await sleep(
+        Number.isFinite(deadlineMs)
+          ? Math.min(500, Math.max(1, deadlineMs - Date.now()))
+          : 500,
+      );
+      const poll = await runAccountAction("pollLogin", { sessionId });
+      const pollStatus = asString(poll.status);
+      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+      if (pollStatus === "signed_in") {
+        const identity = asString(authStatus.email)
+          ?? asString(authStatus.name)
+          ?? asString(authStatus.userId)
+          ?? "ADE account";
+        process.stderr.write(`Signed in as ${identity}\n`);
+        // Success: do not cancel the session we just completed.
+        pendingSessionId = null;
+        return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 0 };
+      }
+      if (pollStatus === "pending") continue;
+      const message = asString(poll.message) ?? "ADE account sign-in failed.";
+      process.stderr.write(`${message}\n`);
+      return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 1 };
+    }
+  } finally {
+    // Cancel the still-live loopback session on any non-success exit (timeout,
+    // poll error, thrown error). Best-effort and idempotent: a cancel failure
+    // must not mask the real result. Cleared to null on success above.
+    if (pendingSessionId) {
+      try {
+        await runAccountAction("cancelLogin", { sessionId: pendingSessionId });
+      } catch {
+        // The pending session may already be gone; the exit result is what matters.
+      }
+    }
+    await connection.close();
+  }
+}
+
+/**
  * Interactive GitHub App (device-flow) authorization for headless / brain
  * setups that have no Settings panel. Device-auth session state lives in the
  * runtime process memory, so start-then-poll must happen over a single live
@@ -17687,15 +17901,27 @@ async function executePlan(
   options: GlobalOptions,
 ): Promise<unknown> {
   let connection: CliConnection;
-  const connectionOptions =
+  const baseConnectionOptions =
     plan.machineOnly
-      ? { ...options, headless: false, requireSocket: true }
+      ? {
+          ...options,
+          headless: false,
+          requireSocket: plan.machineAutoStart ? false : true,
+        }
       : plan.preferHeadless && !options.requireSocket
         ? { ...options, headless: true }
         : options;
+  // A plan may force a specific runtime role for its connection (e.g. `ade
+  // logout`, whose signOut account action is CTO-only). Honor it so the caller
+  // asserts the operator role and the machine account gate resolves to cto.
+  const connectionOptions =
+    plan.connectRole
+      ? { ...baseConnectionOptions, role: plan.connectRole }
+      : baseConnectionOptions;
   try {
     connection = await createConnection(connectionOptions, {
       autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),
+      machineRuntimeOnly: plan.machineAutoStart === true,
     });
   } catch (error) {
     const roots = resolveRoots(options);
@@ -17924,7 +18150,12 @@ async function runCli(
       output: formatOutput(plan.value, parsed.options, plan.formatter),
       exitCode: 0,
     };
-  if (plan.kind === "execute" && plan.machineOnly && parsed.options.headless) {
+  if (
+    plan.kind === "execute"
+    && plan.machineOnly
+    && !plan.machineAutoStart
+    && parsed.options.headless
+  ) {
     throw new CliUsageError(
       "Personal chats require the machine-owned ADE brain; remove --headless and run `ade brain start` if the brain is not already available.",
     );
@@ -18057,6 +18288,9 @@ async function runCli(
     }
     if (plan.kind === "ade-code") {
       return await runAdeCode(plan.rest, parsed.options);
+    }
+    if (plan.kind === "account-login") {
+      return await runAccountLogin(plan, parsed.options);
     }
     if (plan.kind === "github-app-login") {
       return await runGithubAppLogin(plan, parsed.options);

@@ -147,6 +147,11 @@ import {
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import type { AccountAuthService } from "./services/account/accountAuthService";
+import {
+  getSharedAccountAuthService,
+  registerAccountConfigProjectRoot,
+} from "./services/account/sharedAccountAuthService";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
@@ -244,6 +249,7 @@ export type AdeRuntime = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   processService?: ReturnType<typeof createProcessService> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
+  accountAuthService?: AccountAuthService | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
@@ -681,6 +687,11 @@ export async function createAdeRuntime(args: {
       logger,
     });
     const projectSecretService = createProjectSecretService(projectRoot);
+    registerAccountConfigProjectRoot(projectRoot);
+    const accountAuthService = getSharedAccountAuthService({
+      projectRoots: () => [projectRoot],
+      logger,
+    });
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1707,6 +1718,7 @@ export async function createAdeRuntime(args: {
     ctoMemoryService,
     adeProjectService,
     githubService: headlessLinearServices.githubService,
+    accountAuthService,
     linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,

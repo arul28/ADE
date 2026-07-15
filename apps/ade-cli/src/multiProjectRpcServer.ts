@@ -34,8 +34,20 @@ import {
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
-import { normalizeAdeRuntimeRole } from "./runtimeRoles";
+import {
+  callerHasRoleAtLeast,
+  isCtoOnlyAdeAction,
+} from "../../desktop/src/main/services/adeActions/registry";
+import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
+import {
+  callAccountAction,
+  type AccountAuthService,
+} from "./services/account/accountAuthService";
+import {
+  getSharedAccountAuthService,
+  registerAccountConfigProjectRoot,
+} from "./services/account/sharedAccountAuthService";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -56,6 +68,7 @@ export type MultiProjectRpcHandlerOptions = {
   disposeScopesOnDispose?: boolean;
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
+  accountAuthService?: AccountAuthService;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -65,6 +78,7 @@ const RUNTIME_METHODS = new Set([
   "shutdown",
   "exit",
   "runtime/info",
+  "account.call",
   "personalChats.call",
   "personalChats.streamEvents",
   "machineInfo.get",
@@ -425,11 +439,6 @@ function readLimit(value: unknown): number {
     : 100;
 }
 
-// The entrypoint cannot change during the process lifetime, so hash it once and
-// reuse the result. `undefined` means "not computed yet"; `null` is a cached
-// failure (missing/unreadable entrypoint) that must not retry on every call.
-let cachedRuntimeBuildHash: string | null | undefined;
-
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & {
@@ -437,6 +446,15 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const registerAccountProjects = (): void => {
+    for (const project of projectRegistry.list()) {
+      registerAccountConfigProjectRoot(project.rootPath);
+    }
+  };
+  registerAccountProjects();
+  const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
+    projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+  });
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? new PersonalChatScope();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
@@ -604,6 +622,13 @@ export function createMultiProjectRpcRequestHandler(
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
 
+  // The entrypoint cannot change during the process lifetime, so hash it once
+  // and reuse the result. Kept per-handler (not module-scoped) so tests that
+  // mutate `process.argv[1]` between handlers each recompute a fresh hash.
+  // `undefined` means "not computed yet"; `null` is a cached failure
+  // (missing/unreadable entrypoint) that must not retry on every call.
+  let cachedRuntimeBuildHash: string | null | undefined;
+
   const computeRuntimeBuildHash = (): string | null => {
     if (cachedRuntimeBuildHash !== undefined) return cachedRuntimeBuildHash;
     const entrypoint = process.argv[1];
@@ -674,6 +699,7 @@ export function createMultiProjectRpcRequestHandler(
             listMyGitHubRepos: true,
           },
           personalChats: personalChatScope.capabilities(),
+          account: true,
         },
       };
     }
@@ -712,6 +738,61 @@ export function createMultiProjectRpcRequestHandler(
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,
       };
+    }
+
+    if (method === "account.call") {
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!action) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "account.call requires action.",
+        );
+      }
+      // Gate credential-bearing account actions (getToken/startLogin/pollLogin/
+      // signOut) to cto-role callers, mirroring the run_ade_action gate in
+      // adeRpcServer. The caller's requested role (from ade/initialize identity)
+      // is clamped to the brain's ADE_DEFAULT_ROLE ceiling, so a subagent that
+      // honestly asserts a non-cto role cannot reach these actions. `status`
+      // stays open to any role.
+      const identityRecord =
+        isRecord(initializedParams) && isRecord(initializedParams.identity)
+          ? (initializedParams.identity as Record<string, unknown>)
+          : null;
+      const requestedRole = normalizeAdeRuntimeRole(
+        identityRecord ? identityRecord.role : null,
+      );
+      const callerRole = resolveSessionRole(
+        normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+        requestedRole,
+      );
+      if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(callerRole, "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          `account.${action} requires the cto role.`,
+        );
+      }
+      // `ade login` connects with autoRegisterProject:false, so the invoking
+      // project is never in projects.json. Register its root as an account-config
+      // source (WITHOUT projects.add) so startLogin can read that project's
+      // CLERK_* secrets; this preserves the "login does no projects.add" invariant.
+      if (action === "startLogin") {
+        const startArgs = isRecord(params.args) ? params.args : {};
+        const startProjectRoot =
+          typeof startArgs.projectRoot === "string" ? startArgs.projectRoot.trim() : "";
+        if (startProjectRoot) {
+          // Prioritize the invoking project's root so its CLERK_* secrets win
+          // over any project registered earlier in a multi-project brain.
+          registerAccountConfigProjectRoot(startProjectRoot, undefined, {
+            prioritize: true,
+          });
+        }
+      }
+      registerAccountProjects();
+      return await callAccountAction({
+        service: accountAuthService,
+        action,
+        actionArgs: isRecord(params.args) ? params.args : {},
+      });
     }
 
     if (method === "personalChats.call") {
