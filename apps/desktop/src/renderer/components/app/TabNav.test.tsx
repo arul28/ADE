@@ -68,16 +68,16 @@ describe("TabNav", () => {
     expect(links[links.indexOf(run) + 1]).toBe(review);
   });
 
-  it("opens the connected GitHub profile from the sidebar avatar", () => {
+  it("links the sidebar account avatar to the account page", () => {
     render(
       <MemoryRouter initialEntries={["/work"]}>
         <TabNav githubStatus={{ userLogin: "arul28" } as any} />
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open GitHub profile for arul28" }));
-
-    expect(globalThis.window.ade.app.openExternal).toHaveBeenCalledWith("https://github.com/arul28");
+    expect(screen.getByRole("link", { name: "Sign in to ADE" }).getAttribute("href")).toBe(
+      "/account",
+    );
   });
 
   it("keeps Chats available and active without a project", () => {

@@ -3,8 +3,10 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
 import { applyShellHeaderInset } from "../../lib/zoom";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -254,6 +256,20 @@ function renderChatsTopBar({
   };
 }
 
+function renderTopBarWithRouter() {
+  return render(
+    <MemoryRouter>
+      <TopBar />
+    </MemoryRouter>,
+  );
+}
+
+function getConnectionsControl() {
+  return screen.getByRole("button", {
+    name: /^Connections, (?:not )?connected$/,
+  });
+}
+
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
   const originalWebClientMode = globalThis.window.__adeWebClient;
@@ -388,12 +404,12 @@ describe("TopBar", () => {
     }
   });
 
-  it("shows phone sync before a project is open without immediate polling", async () => {
+  it("shows connections before a project is open without immediate polling", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 
     render(<TopBar />);
 
-    expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+    expect(getConnectionsControl().getAttribute("aria-expanded")).toBe("false");
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(globalThis.window.ade.project.listRecent).toHaveBeenCalled();
@@ -515,21 +531,24 @@ describe("TopBar", () => {
     expect(projectTab?.getAttribute("aria-current")).toBe("true");
   });
 
-  it("keeps the phone sync drawer open before a project is open", async () => {
+  it("keeps the mobile connections tab open before a project is open", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 
-    render(<TopBar />);
+    renderTopBarWithRouter();
 
-    const mobileButton = screen.getByTitle("Connect a phone to this machine");
-    fireEvent.click(mobileButton);
+    const connectionsButton = getConnectionsControl();
+    fireEvent.click(connectionsButton);
+    const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+    fireEvent.click(mobileTab);
 
     await act(async () => {
       await flushMicrotasks(2);
     });
 
-    expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
-    expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
-    expect(mobileButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("dialog", { name: "Connections" })).toBeTruthy();
+    expect(mobileTab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
+    expect(connectionsButton.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("does not render recent projects as tabs before a project is open", async () => {
@@ -578,7 +597,7 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
-  it("renders a remote project tab with mobile sync control without immediate polling", async () => {
+  it("renders a remote project tab with the connections control without immediate polling", async () => {
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
       .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
     useAppStore.setState({
@@ -601,8 +620,7 @@ describe("TopBar", () => {
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)")).toBeTruthy();
     expect(screen.getByText("Remote App")).toBeTruthy();
     expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remote, connected" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connections, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
 
@@ -628,19 +646,21 @@ describe("TopBar", () => {
     } as any);
 
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      expect(getConnectionsControl()).toBeTruthy();
       expect(getStatus).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
+      act(() => openConnectionsPanel("mobile"));
+      const mobileTab = screen.getByRole("tab", { name: "Mobile" });
       await act(async () => {
         vi.advanceTimersByTime(0);
         await flushMicrotasks(2);
       });
 
-      expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
-      expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+      expect(getConnectionsControl().getAttribute("aria-expanded")).toBe("true");
+      expect(mobileTab.getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
       expect(getStatus).toHaveBeenCalledWith({ includeTransferReadiness: false });
     } finally {
       vi.useRealTimers();
@@ -675,7 +695,7 @@ describe("TopBar", () => {
 
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Disconnected)")).toBeTruthy();
     expect(screen.getByLabelText("Disconnected: Mac Studio")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remote, not connected" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connections, not connected" })).toBeTruthy();
   });
 
   it("keeps local tabs visible when a remote project is active", async () => {
@@ -1064,25 +1084,26 @@ describe("TopBar", () => {
     });
   });
 
-  it("opens the phone sync drawer from the host status control", async () => {
+  it("opens mobile sync from the connections control", async () => {
     vi.useFakeTimers();
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      expect(getConnectionsControl()).toBeTruthy();
       expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
 
       await advancePhoneSyncStartupDelay();
-      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
+      const connectionsButton = screen.getByRole("button", { name: "Connections, connected" });
 
-      fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
+      fireEvent.click(connectionsButton);
+      const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+      fireEvent.click(mobileTab);
 
-      expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
-      expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
       expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
-      expect(screen.getByTitle("Connect a phone to this machine").getAttribute("aria-expanded")).toBe("true");
+      expect(mobileTab.getAttribute("aria-selected")).toBe("true");
+      expect(connectionsButton.getAttribute("aria-expanded")).toBe("true");
 
-      fireEvent.click(screen.getByTitle("Close phone sync"));
+      fireEvent.click(screen.getByTitle("Close connections"));
 
       expect(screen.queryByTestId("sync-devices-section")).toBeNull();
     } finally {
@@ -1090,29 +1111,27 @@ describe("TopBar", () => {
     }
   });
 
-  it("opens the web client drawer from the web status control", async () => {
+  it("opens web clients from the connections control", async () => {
     vi.useFakeTimers();
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
-      // Web chip is present alongside the mobile chip, disconnected until a
-      // browser peer shows up (mock snapshot only has a phone peer).
-      const webChip = screen.getByRole("button", { name: "Web, not connected" });
-      expect(webChip).toBeTruthy();
-      expect(webChip.getAttribute("title")).toBe("Pair a browser with this machine");
+      const connectionsButton = getConnectionsControl();
+      expect(connectionsButton.getAttribute("title")).toBe("Machines, mobile, and web clients");
 
       await advancePhoneSyncStartupDelay();
 
-      fireEvent.click(webChip);
+      fireEvent.click(screen.getByRole("button", { name: "Connections, connected" }));
+      const webTab = screen.getByRole("tab", { name: "Web client" });
+      fireEvent.click(webTab);
 
-      expect(screen.getByText("Web client")).toBeTruthy();
       const section = screen.getByTestId("sync-devices-section");
       expect(section.getAttribute("data-variant")).toBe("web");
       expect(section.closest("header")).toBeNull();
-      expect(screen.getByTitle("Open the ADE web client in your browser")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Web, not connected" }).getAttribute("aria-expanded")).toBe("true");
+      expect(webTab.getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByRole("dialog", { name: "Connections" })).toBeTruthy();
 
-      fireEvent.click(screen.getByTitle("Close web client"));
+      fireEvent.click(screen.getByTitle("Close connections"));
 
       expect(screen.queryByTestId("sync-devices-section")).toBeNull();
     } finally {
@@ -1120,7 +1139,7 @@ describe("TopBar", () => {
     }
   });
 
-  it("marks the web chip connected when a browser peer is present", async () => {
+  it("marks the connections control connected when a browser peer is present", async () => {
     vi.useFakeTimers();
     const getStatus = vi.fn().mockResolvedValue(
       makeSyncSnapshot({
@@ -1131,17 +1150,15 @@ describe("TopBar", () => {
     );
     globalThis.window.ade.sync.getStatus = getStatus as any;
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
       await advancePhoneSyncStartupDelay();
 
-      const webChip = screen.getByRole("button", { name: "Web, connected" });
-      expect(webChip).toBeTruthy();
-      expect(webChip.getAttribute("title")).toBe("1 connected · Chrome on MacBook Pro");
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
-      fireEvent.click(webChip);
-      const dialog = screen.getByTitle("Close web client").closest('[role="dialog"]');
-      expect(dialog?.textContent).toContain("1 web client connected to ADE Desktop");
+      const connectionsButton = screen.getByRole("button", { name: "Connections, connected" });
+      expect(connectionsButton.getAttribute("title")).toBe("Machines, mobile, and web clients");
+      fireEvent.click(connectionsButton);
+      fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
+      expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("web");
     } finally {
       vi.useRealTimers();
     }
@@ -1155,24 +1172,30 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: "Web, not connected" })).toBeNull();
   });
 
-  it("keeps the phone and web sync sheets mutually exclusive", () => {
-    render(<TopBar />);
+  it("switches between mobile and web within one connections panel", () => {
+    renderTopBarWithRouter();
 
-    fireEvent.click(screen.getByRole("button", { name: "Mobile, not connected" }));
-    expect(screen.getByTitle("Close phone sync")).toBeTruthy();
+    fireEvent.click(getConnectionsControl());
+    const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+    const webTab = screen.getByRole("tab", { name: "Web client" });
+    fireEvent.click(mobileTab);
+    expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
+    expect(mobileTab.getAttribute("aria-selected")).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
+    fireEvent.click(webTab);
 
-    expect(screen.queryByTitle("Close phone sync")).toBeNull();
-    expect(screen.getByTitle("Close web client")).toBeTruthy();
+    expect(mobileTab.getAttribute("aria-selected")).toBe("false");
+    expect(webTab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("web");
     expect(screen.getAllByTestId("sync-devices-section")).toHaveLength(1);
   });
 
   it("traps focus on the visible web clients summary", () => {
-    render(<TopBar />);
-    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
+    renderTopBarWithRouter();
+    fireEvent.click(getConnectionsControl());
+    fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
 
-    const first = screen.getByTitle("Open the ADE web client in your browser");
+    const first = screen.getByTitle("Close connections");
     const summary = screen.getByText("Web clients summary");
     summary.focus();
     fireEvent.keyDown(summary, { key: "Tab" });
@@ -1183,42 +1206,44 @@ describe("TopBar", () => {
     expect(document.activeElement).toBe(summary);
   });
 
-  it("closes the web sheet on Escape without disturbing chip state", () => {
-    render(<TopBar />);
+  it("closes the web tab on Escape without disturbing connection state", () => {
+    renderTopBarWithRouter();
 
-    fireEvent.click(screen.getByRole("button", { name: "Web, not connected" }));
-    const dialog = screen.getByTitle("Close web client").closest('[role="dialog"]');
-    expect(dialog).toBeTruthy();
+    const connectionsButton = getConnectionsControl();
+    fireEvent.click(connectionsButton);
+    fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
+    const dialog = screen.getByRole("dialog", { name: "Connections" });
 
-    fireEvent.keyDown(dialog as HTMLElement, { key: "Escape" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
 
     expect(screen.queryByTestId("sync-devices-section")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Web, not connected" }).getAttribute("aria-expanded"),
-    ).toBe("false");
+    expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
+    expect(connectionsButton.getAttribute("aria-expanded")).toBe("false");
+    expect(connectionsButton.getAttribute("aria-label")).toBe("Connections, not connected");
   });
 
-  it("occludes the native browser while the remote machines panel is open", async () => {
+  it("occludes the native browser while the connections machines tab is open", async () => {
     const events: string[] = [];
     const onStart = () => events.push("start");
     const onEnd = () => events.push("end");
     window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
     window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
-      fireEvent.click(await screen.findByTitle("Manage remote machines"));
+      fireEvent.click(getConnectionsControl());
 
       expect(
-        await screen.findByRole("dialog", { name: "Remote machines" }),
+        await screen.findByRole("dialog", { name: "Connections" }),
       ).toBeTruthy();
+      expect(screen.getByRole("tab", { name: "Machines" }).getAttribute("aria-selected")).toBe("true");
       await waitFor(() => expect(events).toEqual(["start"]));
 
-      fireEvent.click(screen.getByTitle("Close remote machines"));
+      fireEvent.click(screen.getByTitle("Close connections"));
 
       await waitFor(() =>
         expect(
-          screen.queryByRole("dialog", { name: "Remote machines" }),
+          screen.queryByRole("dialog", { name: "Connections" }),
         ).toBeNull(),
       );
       expect(events).toEqual(["start", "end"]);
@@ -1228,23 +1253,26 @@ describe("TopBar", () => {
     }
   });
 
-  it("occludes the native browser while the mobile panel is open", async () => {
+  it("occludes the native browser while the connections mobile tab is open", async () => {
     const events: string[] = [];
     const onStart = () => events.push("start");
     const onEnd = () => events.push("end");
     window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
     window.addEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, onEnd);
     try {
-      render(<TopBar />);
+      renderTopBarWithRouter();
 
-      fireEvent.click(await screen.findByTitle("Connect a phone to this machine"));
+      fireEvent.click(getConnectionsControl());
+      fireEvent.click(screen.getByRole("tab", { name: "Mobile" }));
 
-      expect(await screen.findByText("Connect to the ADE mobile app")).toBeTruthy();
+      expect(
+        (await screen.findByTestId("sync-devices-section")).getAttribute("data-variant"),
+      ).toBe("phone");
       await waitFor(() => expect(events).toEqual(["start"]));
 
-      fireEvent.click(screen.getByTitle("Close phone sync"));
+      fireEvent.click(screen.getByTitle("Close connections"));
 
-      await waitFor(() => expect(screen.queryByText("Connect to the ADE mobile app")).toBeNull());
+      await waitFor(() => expect(screen.queryByTestId("sync-devices-section")).toBeNull());
       expect(events).toEqual(["start", "end"]);
     } finally {
       window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
@@ -1252,7 +1280,7 @@ describe("TopBar", () => {
     }
   });
 
-  it("refreshes the phone sync label from global sync events", async () => {
+  it("refreshes the connections state from global sync events", async () => {
     vi.useFakeTimers();
     let syncEventHandler: ((event: any) => void) | null = null;
     const getStatus = vi.fn()
@@ -1269,7 +1297,7 @@ describe("TopBar", () => {
       render(<TopBar />);
 
       await advancePhoneSyncStartupDelay();
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Connections, not connected" })).toBeTruthy();
 
       await act(async () => {
         syncEventHandler?.({
@@ -1282,7 +1310,7 @@ describe("TopBar", () => {
         });
       });
 
-      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Connections, connected" })).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -1313,7 +1341,7 @@ describe("TopBar", () => {
     }
   });
 
-  it("refreshes phone sync status when the window regains focus", async () => {
+  it("refreshes connection status when the window regains focus", async () => {
     vi.useFakeTimers();
     const getStatus = vi.fn()
       .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }))
@@ -1328,14 +1356,14 @@ describe("TopBar", () => {
         await flushMicrotasks(2);
       });
 
-      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Connections, not connected" })).toBeTruthy();
 
       await act(async () => {
         window.dispatchEvent(new Event("focus"));
         await flushMicrotasks(2);
       });
 
-      expect(screen.getByRole("button", { name: "Mobile, connected" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Connections, connected" })).toBeTruthy();
       expect(getStatus).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
