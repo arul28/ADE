@@ -1,11 +1,13 @@
 import ClerkKit
 import Foundation
 
+/// Identifies which Clerk flow owns the pending email verification code.
 enum AccountEmailVerificationKind: Equatable {
   case signIn
   case signUp
 }
 
+/// Clerk operations used to start and finish either email authentication path.
 struct AccountEmailAuthActions {
   var startSignIn: @MainActor (String) async throws -> Void
   var startSignUp: @MainActor (String) async throws -> Void
@@ -13,6 +15,7 @@ struct AccountEmailAuthActions {
   var verifySignUp: @MainActor (String) async throws -> Void
 }
 
+/// Routes email authentication between returning-user sign-in and precise new-user fallback.
 @MainActor
 enum AccountEmailAuthFlow {
   private static let accountNotFoundCodes: Set<String> = [
@@ -20,15 +23,18 @@ enum AccountEmailAuthFlow {
     "invitation_account_not_exists",
   ]
 
+  /// Returns true only for Clerk errors that explicitly mean the identifier has no account.
   static func shouldBeginSignUp(after error: Error) -> Bool {
     guard let clerkError = error as? ClerkAPIError else { return false }
     return isAccountNotFoundCode(clerkError.code)
   }
 
+  /// Classifies Clerk's exact account-not-found error codes without broadening the fallback.
   static func isAccountNotFoundCode(_ code: String) -> Bool {
     accountNotFoundCodes.contains(code)
   }
 
+  /// Starts sign-in first, falling back to sign-up only when the supplied classifier allows it.
   static func sendCode(
     to email: String,
     actions: AccountEmailAuthActions,
@@ -44,6 +50,7 @@ enum AccountEmailAuthFlow {
     }
   }
 
+  /// Verifies the code against the same Clerk flow that issued it.
   static func verifyCode(
     _ code: String,
     kind: AccountEmailVerificationKind,
