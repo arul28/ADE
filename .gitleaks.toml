@@ -9,6 +9,14 @@ regexes = [
   # ships in the repo). Gitleaks' linear-client-secret rule cannot tell a
   # 32-hex client id from a client secret.
   '''e552c738cd63ea5967f08bbc9c09b54c''',
+  # Clerk *publishable* keys (pk_test_… / pk_live_…) are public by design —
+  # Clerk documents them as safe to embed in client apps and commit to source
+  # control (they identify the frontend instance; the real secret is the sk_…
+  # secret key, which never ships in this repo). The iOS app carries its
+  # publishable key in the Xcode build settings / Info.plist, which trips
+  # gitleaks' high-entropy generic-api-key rule. Only pk_ (publishable) keys
+  # are allowlisted here; sk_ (secret) keys remain caught.
+  '''pk_(test|live)_[A-Za-z0-9_-]+''',
 ]
 paths = [
   '''\.env\.example$''',

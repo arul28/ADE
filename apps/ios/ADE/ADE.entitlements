@@ -8,9 +8,14 @@
 	</array>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:ade-app.dev</string>
+		<string>webcredentials:coherent-foxhound-62.clerk.accounts.dev</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>

@@ -21,6 +21,13 @@ struct ConnectionSettingsView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 18) {
+          // ACCOUNT subsection: identity + account machines (directory Worker),
+          // shown above the local pairing so both routes to a machine read as
+          // one connections surface. Self-hides when no Clerk key is wired.
+          AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+
           // One "MACHINE" subsection: header → connection status card → pair
           // actions, so the whole machine area reads as a single group.
           VStack(alignment: .leading, spacing: 12) {
@@ -155,6 +162,18 @@ struct ConnectionSettingsView: View {
     case .webClient:
       SettingsWebClientPairSheet(syncService: syncService)
         .presentationDetents([.large])
+    }
+  }
+
+  /// Route a chosen account machine into the existing, vetted pairing/connect
+  /// flow. A direct host+port endpoint pre-fills the manual PIN entry (the same
+  /// path "Enter machine details" uses); a relay-only machine falls back to the
+  /// discover sheet so the user can pick a reachable route.
+  private func connectToAccountMachine(_ machine: AccountMachine) {
+    if let target = machine.directConnectTarget {
+      pinPreset = .manual(host: target.host, port: target.port)
+    } else {
+      presentedSheet = .discover
     }
   }
 
