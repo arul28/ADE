@@ -543,6 +543,15 @@ async function handleDeviceToken(
     return json({ error: "server_error" }, { status: 500 });
   }
 
+  let oauthIssuer: string;
+  try {
+    oauthIssuer = normalizeIssuer(env.CLERK_ISSUER);
+  } catch {
+    return json({ error: "server_error" }, { status: 500 });
+  }
+  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID.trim();
+  if (!oauthClientId) return json({ error: "server_error" }, { status: 500 });
+
   const approvedToken = {
     access_token: row.access_token,
     refresh_token: row.refresh_token,
@@ -550,6 +559,8 @@ async function handleDeviceToken(
     expires_in: row.approved_at == null
       ? row.expires_in
       : Math.max(1, Math.ceil((row.approved_at + row.expires_in * 1000 - now) / 1000)),
+    oauth_issuer: oauthIssuer,
+    oauth_client_id: oauthClientId,
   };
 
   const consumed = await env.DB.prepare(`

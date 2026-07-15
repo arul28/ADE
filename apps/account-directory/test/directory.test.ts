@@ -562,6 +562,8 @@ describe("device authorization bridge", () => {
       refresh_token: "approved-refresh-token",
       token_type: "Bearer",
       expires_in: 3594,
+      oauth_issuer: ISSUER,
+      oauth_client_id: OAUTH_CLIENT_ID,
     });
     expect(env.DB.deviceRows[0]).toMatchObject({
       status: "consumed",

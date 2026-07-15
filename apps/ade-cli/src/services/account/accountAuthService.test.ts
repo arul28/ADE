@@ -488,6 +488,125 @@ describe("AccountAuthService device authorization", () => {
     });
   });
 
+  it("persists bridge OAuth context for directory-only refresh and durable token creation", async () => {
+    const store = new MemoryCredentialStore();
+    let nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const initialAccessToken = jwt({ sub: "directory-only-user" });
+    const refreshedAccessToken = jwt({ sub: "directory-only-user", version: 2 });
+    const localConfig = vi.fn(() => {
+      throw new Error("local Clerk config must not be read");
+    });
+    const deviceFetch = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "directory-only-code",
+          user_code: "DIRY-ONLY",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: initialAccessToken,
+          refresh_token: "directory-refresh-initial",
+          expires_in: 60,
+          oauth_issuer: "https://public-clerk.example.test/",
+          oauth_client_id: "directory-public-client",
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: localConfig,
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      now: () => nowMs,
+      randomUUID: () => "directory-only-session",
+      fetchImpl: deviceFetch,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "signed_in",
+      authStatus: { userId: "directory-only-user", source: "device" },
+    });
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "directory-refresh-initial",
+      oauthConfig: {
+        issuer: "https://public-clerk.example.test",
+        clientId: "directory-public-client",
+      },
+    });
+
+    nowMs += 61_000;
+    const refreshFetch = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      expect(input).toBe("https://public-clerk.example.test/oauth/token");
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "directory-refresh-initial",
+        client_id: "directory-public-client",
+      });
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "directory-refresh-rotated",
+        expires_in: 3600,
+      });
+    });
+    const restartedService = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: localConfig,
+      now: () => nowMs,
+      fetchImpl: refreshFetch,
+    });
+    activeServices.push(restartedService);
+
+    await expect(restartedService.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    const durable = await restartedService.createToken();
+    const durablePayload = JSON.parse(Buffer.from(
+      durable.token.slice("ade_account_v1.".length),
+      "base64url",
+    ).toString("utf8"));
+    expect(durablePayload).toEqual({
+      version: 1,
+      refreshToken: "directory-refresh-rotated",
+      issuer: "https://public-clerk.example.test",
+      clientId: "directory-public-client",
+    });
+    expect(localConfig).not.toHaveBeenCalled();
+    expect(refreshFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed OAuth context in a successful bridge token response", async () => {
+    const store = new MemoryCredentialStore();
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => input.endsWith("/device/code")
+      ? jsonResponse({
+          device_code: "malformed-context-code",
+          user_code: "BADF-IELD",
+          verification_uri: "https://directory.example.test/device",
+          expires_in: 600,
+          interval: 5,
+        })
+      : jsonResponse({
+          access_token: jwt({ sub: "untrusted-context-user" }),
+          refresh_token: "untrusted-context-refresh",
+          expires_in: 3600,
+          oauth_issuer: "http://attacker.example.test",
+          oauth_client_id: "attacker-client",
+        }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://local.example.test", clientId: "local-client" }),
+      getDeviceBridgeUrl: () => "https://directory.example.test",
+      randomUUID: () => "malformed-context-session",
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    const start = await service.startDeviceLogin();
+    await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
+      status: "error",
+      message: "ADE account device token response included invalid OAuth context.",
+      authStatus: { signedIn: false },
+    });
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
   it("pins concurrent device sessions to the bridge that created each code", async () => {
     let activeBridge = "https://directory-a.example.test";
     const getDeviceBridgeUrl = vi.fn(() => activeBridge);

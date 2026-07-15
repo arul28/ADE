@@ -56,6 +56,7 @@ export type AccountSessionRecord = {
   name: string | null;
   authSource?: Exclude<AccountAuthSource, "env-token" | null>;
   suppressEnvCredential?: true;
+  oauthConfig?: AccountOAuthConfig;
 };
 
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
@@ -316,6 +317,20 @@ function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
   return { issuer, clientId };
 }
 
+function normalizeOptionalOAuthConfig(args: {
+  present: boolean;
+  issuer: unknown;
+  clientId: unknown;
+}): AccountOAuthConfig | null {
+  if (!args.present) return null;
+  const issuer = readNonEmptyString(args.issuer);
+  const clientId = readNonEmptyString(args.clientId);
+  if (!issuer || !clientId) {
+    throw new Error("ADE account OAuth context was incomplete.");
+  }
+  return normalizeOAuthConfig({ issuer, clientId });
+}
+
 function normalizeDeviceBridgeUrl(rawUrl: string): string {
   const normalized = rawUrl.trim().replace(/\/+$/, "");
   if (!normalized) {
@@ -419,6 +434,12 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
     const expiresAt = readNonEmptyString(parsed.expiresAt);
     const obtainedAt = readNonEmptyString(parsed.obtainedAt);
     if (!accessToken || !expiresAt || !obtainedAt) return null;
+    const storedOAuthConfig = asRecord(parsed.oauthConfig);
+    const oauthConfig = normalizeOptionalOAuthConfig({
+      present: Object.prototype.hasOwnProperty.call(parsed, "oauthConfig"),
+      issuer: storedOAuthConfig.issuer,
+      clientId: storedOAuthConfig.clientId,
+    });
     return {
       accessToken,
       refreshToken: readNonEmptyString(parsed.refreshToken),
@@ -430,6 +451,7 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       name: readNonEmptyString(parsed.name),
       authSource: readAuthSource(parsed.authSource),
       ...(parsed.suppressEnvCredential === true ? { suppressEnvCredential: true } : {}),
+      ...(oauthConfig ? { oauthConfig } : {}),
     };
   } catch {
     return null;
@@ -658,6 +680,7 @@ export function createAccountAuthService(args: {
     token: TokenResponse,
     previous?: AccountSessionRecord | null,
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
+    oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
   ): AccountSessionRecord => {
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
@@ -672,6 +695,7 @@ export function createAccountAuthService(args: {
       name: claims.name ?? previous?.name ?? null,
       authSource,
       ...(previous?.suppressEnvCredential ? { suppressEnvCredential: true } : {}),
+      ...(oauthConfig ? { oauthConfig } : {}),
     };
   };
 
@@ -1076,6 +1100,23 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
+    let oauthConfig: AccountOAuthConfig | null;
+    try {
+      oauthConfig = normalizeOptionalOAuthConfig({
+        present: Object.prototype.hasOwnProperty.call(payload, "oauth_issuer")
+          || Object.prototype.hasOwnProperty.call(payload, "oauth_client_id"),
+        issuer: payload.oauth_issuer,
+        clientId: payload.oauth_client_id,
+      });
+    } catch {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "error",
+        message: "ADE account device token response included invalid OAuth context.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
     if (
       authEpoch !== epochAtPoll
       || pendingDeviceSessions.get(normalizedSessionId) !== session
@@ -1094,7 +1135,7 @@ export function createAccountAuthService(args: {
       refreshToken: readNonEmptyString(payload.refresh_token),
       tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
       expiresInSec,
-    }, null, "device");
+    }, null, "device", oauthConfig);
     const record: AccountSessionRecord = session.suppressEnvCredential
       ? { ...baseRecord, suppressEnvCredential: true }
       : baseRecord;
@@ -1220,7 +1261,9 @@ export function createAccountAuthService(args: {
     const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
       refreshInFlight = (async () => {
-        const config = normalizeOAuthConfig(await args.getOAuthConfig());
+        const config = record.oauthConfig
+          ? normalizeOAuthConfig(record.oauthConfig)
+          : normalizeOAuthConfig(await args.getOAuthConfig());
         const token = await postTokenForm({
           fetchImpl,
           tokenUrl: `${config.issuer}/oauth/token`,
@@ -1255,7 +1298,9 @@ export function createAccountAuthService(args: {
     if (!record?.refreshToken) {
       throw new Error("The current ADE account session has no refresh token. Run `ade login` again, then retry.");
     }
-    const oauthConfig = normalizeOAuthConfig(await args.getOAuthConfig());
+    const oauthConfig = record.oauthConfig
+      ? normalizeOAuthConfig(record.oauthConfig)
+      : normalizeOAuthConfig(await args.getOAuthConfig());
     return {
       token: provisionedAccountToken({ refreshToken: record.refreshToken, oauthConfig }),
       source: "refresh_token",
