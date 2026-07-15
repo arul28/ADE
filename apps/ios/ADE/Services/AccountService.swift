@@ -44,6 +44,12 @@ struct AccountIdentity: Equatable {
   }
 }
 
+enum AccountAuthenticationOutcome: Equatable {
+  case newAccount
+  case returningUser
+  case unknown
+}
+
 /// Wraps ClerkKit behind the app's `ObservableObject` convention so SwiftUI
 /// surfaces observe published state instead of the `@Observable` `Clerk` type
 /// directly. Owns configuration, session restore, the sign-in/out operations,
@@ -75,11 +81,13 @@ final class AccountService: ObservableObject {
   @Published private(set) var identity: AccountIdentity?
   @Published private(set) var machines: [AccountMachine] = []
   @Published private(set) var machinesState: MachinesState = .idle
+  @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
   /// Transient, user-facing error from the last sign-in attempt.
   @Published var lastError: String?
 
   private var didConfigure = false
   private var eventTask: Task<Void, Never>?
+  private var emailVerificationKind: AccountEmailVerificationKind?
   private let directory = AccountDirectoryClient()
 
   var isConfigured: Bool { phase != .unconfigured }
@@ -143,24 +151,33 @@ final class AccountService: ObservableObject {
 
   // MARK: - Sign in
 
-  /// Start an email sign-in: creates the attempt and sends a one-time code.
+  /// Start an email sign-in-or-sign-up attempt and send a one-time code.
   func sendEmailCode(to email: String) async throws {
     let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.contains("@") else {
       throw AccountError.message("Enter a valid email address.")
     }
     lastError = nil
-    _ = try await Clerk.shared.auth.signInWithEmailCode(emailAddress: trimmed)
+    emailVerificationKind = nil
+    emailVerificationKind = try await AccountEmailAuthFlow.sendCode(
+      to: trimmed,
+      actions: emailAuthActions()
+    )
   }
 
-  /// Verify the emailed code, completing the sign-in when it matches.
+  /// Verify the emailed code against the attempt that sent it.
   func verifyEmailCode(_ code: String) async throws {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let signIn = Clerk.shared.auth.currentSignIn else {
-      throw AccountError.message("Start the email sign-in again.")
+    guard let emailVerificationKind else {
+      throw AccountError.message("Start the email verification again.")
     }
     lastError = nil
-    _ = try await signIn.verifyCode(trimmed)
+    try await AccountEmailAuthFlow.verifyCode(
+      trimmed,
+      kind: emailVerificationKind,
+      actions: emailAuthActions()
+    )
+    authenticationOutcome = emailVerificationKind == .signUp ? .newAccount : .returningUser
     syncFromClerk()
   }
 
@@ -168,7 +185,8 @@ final class AccountService: ObservableObject {
   /// supplies the presentation anchor and handles the redirect callback.
   func signInWithOAuth(_ provider: OAuthProvider) async throws {
     lastError = nil
-    _ = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
+    let result = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
+    authenticationOutcome = Self.outcome(from: result)
     syncFromClerk()
   }
 
@@ -177,7 +195,8 @@ final class AccountService: ObservableObject {
   /// and in a simulator signed into an Apple ID.
   func signInWithApple() async throws {
     lastError = nil
-    _ = try await Clerk.shared.auth.signInWithApple()
+    let result = try await Clerk.shared.auth.signInWithApple()
+    authenticationOutcome = Self.outcome(from: result)
     syncFromClerk()
   }
 
@@ -187,6 +206,8 @@ final class AccountService: ObservableObject {
     } catch {
       // Even if the network revoke fails, drop local state below.
     }
+    authenticationOutcome = .unknown
+    emailVerificationKind = nil
     syncFromClerk()
   }
 
@@ -230,6 +251,37 @@ final class AccountService: ObservableObject {
   }
 
   // MARK: - Identity mapping
+
+  private func emailAuthActions() -> AccountEmailAuthActions {
+    AccountEmailAuthActions(
+      startSignIn: { email in
+        _ = try await Clerk.shared.auth.signInWithEmailCode(emailAddress: email)
+      },
+      startSignUp: { email in
+        let signUp = try await Clerk.shared.auth.signUp(emailAddress: email)
+        _ = try await signUp.sendEmailCode()
+      },
+      verifySignIn: { code in
+        guard let signIn = Clerk.shared.auth.currentSignIn else {
+          throw AccountError.message("Start the email verification again.")
+        }
+        _ = try await signIn.verifyCode(code)
+      },
+      verifySignUp: { code in
+        guard let signUp = Clerk.shared.auth.currentSignUp else {
+          throw AccountError.message("Start the email verification again.")
+        }
+        _ = try await signUp.verifyEmailCode(code)
+      }
+    )
+  }
+
+  private static func outcome(from result: TransferFlowResult) -> AccountAuthenticationOutcome {
+    switch result {
+    case .signIn: return .returningUser
+    case .signUp: return .newAccount
+    }
+  }
 
   private static func identity(from user: User) -> AccountIdentity {
     let first = user.firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

@@ -1,8 +1,8 @@
 import ClerkKit
 import SwiftUI
 
-/// Native sign-in flow matching `ADEDesignSystem`. Covers email one-time-code,
-/// Sign in with Apple, Google, and GitHub. On success it presents the first-run
+/// Native account flow matching `ADEDesignSystem`. Covers email one-time-code,
+/// Apple, Google, and GitHub. On success it presents the first-run
 /// "here are your machines" step so a fresh login lands directly on connect.
 ///
 /// Structurally close to ClerkKit's `AuthView` (identifier-first, then a
@@ -60,11 +60,11 @@ struct AccountSignInView: View {
             Image(systemName: "xmark")
               .font(.system(size: 13, weight: .semibold))
           }
-          .accessibilityLabel(step == .machines ? "Done" : "Close sign in")
+          .accessibilityLabel(step == .machines ? "Done" : "Close")
         }
       }
       .onChange(of: account.phase) { _, newValue in
-        // A completed sign-in (from any provider) advances to the first-run
+        // A completed authentication (from any provider) advances to the
         // machines step.
         if newValue == .signedIn, step != .machines {
           step = .machines
@@ -107,16 +107,21 @@ struct AccountSignInView: View {
 
   private var headerTitle: String {
     switch step {
-    case .identifier: return "Sign in to ADE"
+    case .identifier: return "Continue to ADE"
     case .emailCode: return "Check your email"
-    case .machines: return "You're in"
+    case .machines:
+      switch account.authenticationOutcome {
+      case .newAccount: return "Your ADE account is ready"
+      case .returningUser: return "Welcome back"
+      case .unknown: return "You're in"
+      }
     }
   }
 
   private var headerSubtitle: String {
     switch step {
     case .identifier:
-      return "Reach your machines from anywhere and keep them in one account."
+      return "Choose a method below. If you're new, we'll create your account automatically."
     case .emailCode:
       return "Enter the 6-digit code we sent to \(email)."
     case .machines:
@@ -209,7 +214,7 @@ struct AccountSignInView: View {
       .adeInsetField()
 
       primaryButton(
-        title: "Verify & sign in",
+        title: "Verify code",
         isBusy: busy == .verify,
         disabled: code.trimmingCharacters(in: .whitespaces).count < 4
       ) {
@@ -225,6 +230,7 @@ struct AccountSignInView: View {
       }
       .font(.caption.weight(.medium))
       .foregroundStyle(ADEColor.textSecondary)
+      .frame(minHeight: 44)
 
       errorView
     }
