@@ -2,6 +2,8 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTPayload } from "jose"
 
 export type RelayEnv = {
   DB: D1Database;
+  /** One hibernating WebSocket fanout object per lowercased owner/repo. */
+  REPO_EVENTS: DurableObjectNamespace;
   GITHUB_WEBHOOK_SECRET: string;
   RELAY_ACCESS_TOKEN?: string;
   EVENT_RETENTION_DAYS?: string;
@@ -135,7 +137,7 @@ type GitHubAppApiStatus =
 
 const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 500;
-const DEFAULT_RETENTION_DAYS = 30;
+const DEFAULT_RETENTION_DAYS = 7;
 const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_LINEAR_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const MAX_LINEAR_REGISTRATION_BODY_BYTES = 16 * 1024;
@@ -143,12 +145,15 @@ const MAX_LINEAR_WEBHOOK_SECRET_LENGTH = 512;
 const LINEAR_WEBHOOK_REPLAY_WINDOW_MS = 60_000;
 const LINEAR_AUTH_CACHE_TTL_MS = 5 * 60_000;
 const MAX_LINEAR_AUTH_CACHE_ENTRIES = 1_000;
+const GITHUB_AUTH_CACHE_TTL_MS = 5 * 60_000;
+const MAX_GITHUB_AUTH_CACHE_ENTRIES = 1_000;
 const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
 const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
 const ACCOUNT_TOKEN_HEADER = "x-ade-account-token";
 const encoder = new TextEncoder();
 const linearOrganizationByTokenHash = new Map<string, { organizationId: string; expiresAt: number }>();
 const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
+const githubRepoAccessByTokenHashAndRepo = new Map<string, { repositoryId: number | null; expiresAt: number }>();
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 function json(value: unknown, init: ResponseInit = {}): Response {
@@ -381,6 +386,16 @@ function routeLinearOrganizationEvents(pathname: string): { organizationId: stri
 function routeRepoEvents(pathname: string): { owner: string; name: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "events") {
+    const owner = decodeURIComponent(parts[2] ?? "").trim();
+    const name = decodeURIComponent(parts[3] ?? "").trim();
+    if (owner && name) return { owner, name };
+  }
+  return null;
+}
+
+function routeRepoSubscription(pathname: string): { owner: string; name: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "subscribe") {
     const owner = decodeURIComponent(parts[2] ?? "").trim();
     const name = decodeURIComponent(parts[3] ?? "").trim();
     if (owner && name) return { owner, name };
@@ -657,6 +672,33 @@ async function assertProjectRelayAuthorized(request: Request, env: RelayEnv, pro
   return null;
 }
 
+function gitHubRepoAuthCacheKey(tokenHash: string, repo: { owner: string; name: string }): string {
+  return `${tokenHash}:${repo.owner}/${repo.name}`.toLowerCase();
+}
+
+function cacheGitHubRepoAccess(key: string, repositoryId: number | null): void {
+  githubRepoAccessByTokenHashAndRepo.set(key, {
+    repositoryId,
+    expiresAt: Date.now() + GITHUB_AUTH_CACHE_TTL_MS,
+  });
+  if (githubRepoAccessByTokenHashAndRepo.size <= MAX_GITHUB_AUTH_CACHE_ENTRIES) return;
+
+  const now = Date.now();
+  for (const [candidateKey, entry] of githubRepoAccessByTokenHashAndRepo) {
+    if (entry.expiresAt <= now) githubRepoAccessByTokenHashAndRepo.delete(candidateKey);
+  }
+  while (githubRepoAccessByTokenHashAndRepo.size > MAX_GITHUB_AUTH_CACHE_ENTRIES) {
+    const oldest = githubRepoAccessByTokenHashAndRepo.keys().next().value as string | undefined;
+    if (!oldest) break;
+    githubRepoAccessByTokenHashAndRepo.delete(oldest);
+  }
+}
+
+/** Keeps isolate-scoped cache state from leaking between unit tests. */
+export function clearGitHubRepoAuthCacheForTests(): void {
+  githubRepoAccessByTokenHashAndRepo.clear();
+}
+
 async function assertGitHubRepoAuthorized(
   request: Request,
   env: RelayEnv,
@@ -677,6 +719,20 @@ async function assertGitHubRepoAuthorized(
     };
   }
 
+  // Only the normal write-level read check is cached. Admin checks must always
+  // go back to GitHub so a previous push/write verdict cannot authorize webhook
+  // management. Cache keys contain a token digest, never the credential itself.
+  const cacheKey = level === "write"
+    ? gitHubRepoAuthCacheKey(await sha256Hex(token), repo)
+    : null;
+  if (cacheKey) {
+    const cached = githubRepoAccessByTokenHashAndRepo.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { authorized: true, repositoryId: cached.repositoryId };
+    }
+    if (cached) githubRepoAccessByTokenHashAndRepo.delete(cacheKey);
+  }
+
   const apiBaseUrl = (env.GITHUB_API_BASE_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
   const repoResponse = await fetchGitHubApiJson(
     apiBaseUrl,
@@ -687,7 +743,10 @@ async function assertGitHubRepoAuthorized(
     const repositoryId = readRepositoryId(repoResponse.payload);
     const permissions = readNested(repoResponse.payload, "permissions");
     if (permissions) {
-      if (repoPermissionsAllowAccess(permissions, level)) return { authorized: true, repositoryId };
+      if (repoPermissionsAllowAccess(permissions, level)) {
+        if (cacheKey) cacheGitHubRepoAccess(cacheKey, repositoryId);
+        return { authorized: true, repositoryId };
+      }
       return {
         authorized: false,
         response: insufficientRepoPermissionResponse(level),
@@ -695,7 +754,10 @@ async function assertGitHubRepoAuthorized(
     }
 
     const fallback = await fetchAuthenticatedUserRepoPermission(apiBaseUrl, token, repo, level);
-    if (fallback === "authorized") return { authorized: true, repositoryId };
+    if (fallback === "authorized") {
+      if (cacheKey) cacheGitHubRepoAccess(cacheKey, repositoryId);
+      return { authorized: true, repositoryId };
+    }
     return {
       authorized: false,
       response: insufficientRepoPermissionResponse(level),
@@ -1184,6 +1246,38 @@ function summarizeGitHubEvent(githubEvent: string, payload: Record<string, unkno
   ].filter(Boolean).join(" · ");
 }
 
+const SLIM_GITHUB_EVENT_TYPES = new Set(["check_run", "check_suite", "workflow_run", "status"]);
+
+/**
+ * Check-family payloads dominate storage, so remove only fields proven unused
+ * by ADE instead of maintaining a fragile allowlist. We retain `action`,
+ * `repository` (full_name/name/owner), `installation`, status sha/context/state,
+ * and every check_run/check_suite/workflow_run field including pull_requests,
+ * head_sha, status, conclusion, and name. prService uses those repo/PR/SHA
+ * references to project or invalidate PRs; automation ingress preserves the
+ * remaining raw event. Full payloads are kept for PRs, reviews, comments, and
+ * ping. For check-family events only, the avatar-heavy top-level actor/org
+ * duplicates are unused, and check_run.output is a large rendered report that
+ * clients never inspect.
+ */
+export function slimGitHubPayloadForStorage(
+  githubEvent: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!SLIM_GITHUB_EVENT_TYPES.has(githubEvent)) return payload;
+
+  const {
+    organization: _organization,
+    enterprise: _enterprise,
+    sender: _sender,
+    ...slimmed
+  } = payload;
+  if (githubEvent !== "check_run" || !isRecord(slimmed.check_run)) return slimmed;
+
+  const { output: _output, ...checkRun } = slimmed.check_run;
+  return { ...slimmed, check_run: checkRun };
+}
+
 async function pruneOldEvents(env: RelayEnv): Promise<void> {
   const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
   const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
@@ -1192,6 +1286,21 @@ async function pruneOldEvents(env: RelayEnv): Promise<void> {
     .prepare("delete from github_events where received_at < ?")
     .bind(cutoff)
     .run();
+}
+
+function repoEventsObject(env: RelayEnv, repoFullName: string): DurableObjectStub {
+  const id = env.REPO_EVENTS.idFromName(repoFullName.toLowerCase());
+  return env.REPO_EVENTS.get(id);
+}
+
+async function notifyRepoEvents(env: RelayEnv, repoFullName: string): Promise<void> {
+  const stub = repoEventsObject(env, repoFullName);
+  const response = await stub.fetch("https://repo-events.internal/notify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo: repoFullName }),
+  });
+  if (!response.ok) throw new Error(`Repo events Durable Object returned HTTP ${response.status}`);
 }
 
 async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: string): Promise<Response> {
@@ -1224,9 +1333,10 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
   }
   if (!isRecord(payload)) return json({ ok: false, error: "payload must be an object" }, { status: 400 });
 
-  const payloadJson = JSON.stringify(payload);
+  const rawPayloadJson = JSON.stringify(payload);
+  const payloadJson = JSON.stringify(slimGitHubPayloadForStorage(githubEvent, payload));
   const repoFullName = repositoryFullName(payload);
-  const eventId = githubDelivery || `sha256:${(await sha256Hex(`${githubEvent}:${payloadJson}`)).slice(0, 32)}`;
+  const eventId = githubDelivery || `sha256:${(await sha256Hex(`${githubEvent}:${rawPayloadJson}`)).slice(0, 32)}`;
   const existing = await env.DB
     .prepare("select event_id from github_events where project_id = ? and event_id = ? limit 1")
     .bind(projectId, eventId)
@@ -1260,6 +1370,20 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
       accountMapping?.account_id ?? null,
     )
     .run();
+
+  if (repoFullName) {
+    try {
+      await notifyRepoEvents(env, repoFullName);
+    } catch (error) {
+      // D1 is the source of truth and the caller's safety poll recovers a
+      // dropped wake-up. Never turn a committed delivery into a GitHub retry.
+      console.warn(JSON.stringify({
+        kind: "github_repo_notify_failed",
+        repoHash: (await sha256Hex(repoFullName)).slice(0, 12),
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
 
   await updateAppRepositoryStatus(env, githubEvent, payload, receivedAt);
 
@@ -1382,93 +1506,108 @@ async function handleListEvents(request: Request, env: RelayEnv, projectId: stri
   });
 }
 
+type RepoEventReadAuthorization =
+  | { authorized: true; accountId: string | null }
+  | { authorized: false; response: Response };
+
+async function authorizeRepoEventRead(
+  request: Request,
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+): Promise<RepoEventReadAuthorization> {
+  const auth = await assertGitHubRepoAuthorized(request, env, repo);
+  if (auth.authorized) return { authorized: true, accountId: null };
+
+  const accountId = await authenticateAccount(request, env);
+  if (!accountId || !await githubRepositoryAccountMatches(env, repo, accountId)) {
+    return { authorized: false, response: auth.response };
+  }
+  return { authorized: true, accountId };
+}
+
 async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
-  const auth = await assertGitHubRepoAuthorized(request, env, repo);
-  let accountId: string | null = null;
-  if (!auth.authorized) {
-    accountId = await authenticateAccount(request, env);
-    if (!accountId || !await githubRepositoryAccountMatches(env, repo, accountId)) {
-      return auth.response;
-    }
-  }
+  const authorization = await authorizeRepoEventRead(request, env, repo);
+  if (!authorization.authorized) return authorization.response;
+  const accountId = authorization.accountId;
 
   const url = new URL(request.url);
   const limit = parseLimit(url);
+  const ascending = url.searchParams.get("order")?.trim().toLowerCase() === "asc";
+  const order = ascending ? "asc" : "desc";
+  const queryLimit = ascending ? limit + 1 : limit;
   const after = url.searchParams.get("after")?.trim() || "";
   const repoFullName = `${repo.owner}/${repo.name}`.toLowerCase();
   const accountPredicate = accountId ? " and account_id = ?" : "";
   const accountBinding = accountId ? [accountId] : [];
-  let rows: GitHubEventRow[];
+  let afterSequence: number | null = null;
   let cursorExpired = false;
 
   if (after) {
     const sequenceCursor = parseSequenceCursor(after);
     if (sequenceCursor != null) {
-      rows = (await env.DB
-        .prepare(`
-          select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
-                 summary, payload_json, received_at
-            from github_events
-           where repository_full_name = ? collate nocase${accountPredicate}
-             and rowid > ?
-           order by rowid desc
-           limit ?
-        `)
-        .bind(repoFullName, ...accountBinding, sequenceCursor, limit)
-        .all<GitHubEventRow>()).results ?? [];
+      afterSequence = sequenceCursor;
     } else {
       const cursor = await env.DB
         .prepare(`select rowid as event_seq, event_id from github_events where repository_full_name = ? collate nocase${accountPredicate} and event_id = ? limit 1`)
         .bind(repoFullName, ...accountBinding, after)
         .first<CursorRow>();
       if (cursor) {
-        rows = (await env.DB
-          .prepare(`
-            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
-                   summary, payload_json, received_at
-              from github_events
-             where repository_full_name = ? collate nocase${accountPredicate}
-               and rowid > ?
-             order by rowid desc
-             limit ?
-          `)
-          .bind(repoFullName, ...accountBinding, cursor.event_seq, limit)
-          .all<GitHubEventRow>()).results ?? [];
+        afterSequence = cursor.event_seq;
       } else {
         cursorExpired = true;
-        rows = (await env.DB
-          .prepare(`
-            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
-                   summary, payload_json, received_at
-              from github_events
-             where repository_full_name = ? collate nocase${accountPredicate}
-             order by rowid desc
-             limit ?
-          `)
-          .bind(repoFullName, ...accountBinding, limit)
-          .all<GitHubEventRow>()).results ?? [];
       }
     }
-  } else {
-    rows = (await env.DB
-      .prepare(`
-        select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
-               summary, payload_json, received_at
-          from github_events
-         where repository_full_name = ? collate nocase${accountPredicate}
-         order by rowid desc
-         limit ?
-      `)
-      .bind(repoFullName, ...accountBinding, limit)
-      .all<GitHubEventRow>()).results ?? [];
   }
+
+  const cursorPredicate = afterSequence === null ? "" : " and rowid > ?";
+  let rows = (await env.DB
+    .prepare(`
+      select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+             summary, payload_json, received_at
+        from github_events
+       where repository_full_name = ? collate nocase${accountPredicate}${cursorPredicate}
+       order by rowid ${order}
+       limit ?
+    `)
+    .bind(
+      repoFullName,
+      ...accountBinding,
+      ...(afterSequence === null ? [] : [afterSequence]),
+      queryLimit,
+    )
+    .all<GitHubEventRow>()).results ?? [];
+
+  const hasMore = ascending && rows.length > limit;
+  if (hasMore) rows = rows.slice(0, limit);
 
   return json({
     events: rows.map(rowToEvent),
     nextCursor: nextCursorForRows(rows, after),
     cursorExpired,
+    ...(ascending ? { hasMore } : {}),
   });
+}
+
+async function handleRepoSubscription(
+  request: Request,
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return text("expected websocket", 426);
+  }
+  const authorization = await authorizeRepoEventRead(request, env, repo);
+  if (!authorization.authorized) return authorization.response;
+
+  const repoFullName = `${repo.owner}/${repo.name}`;
+  const stub = repoEventsObject(env, repoFullName);
+  return await stub.fetch(
+    new Request(`https://repo-events.internal/subscribe?repo=${encodeURIComponent(repoFullName)}`, {
+      headers: { upgrade: "websocket" },
+    }),
+  );
 }
 
 function githubApiBaseUrl(env: RelayEnv): string {
@@ -2159,6 +2298,9 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   const repoWebhookAdmin = routeRepoWebhookAdmin(url.pathname);
   if (repoWebhookAdmin?.action === "heal") return await handleWebhookHeal(request, env, repoWebhookAdmin);
   if (repoWebhookAdmin?.action === "deliveries") return await handleWebhookDeliveries(request, env, repoWebhookAdmin);
+
+  const repoSubscription = routeRepoSubscription(url.pathname);
+  if (repoSubscription) return await handleRepoSubscription(request, env, repoSubscription);
 
   const repoEvents = routeRepoEvents(url.pathname);
   if (repoEvents) return await handleListRepoEvents(request, env, repoEvents);
