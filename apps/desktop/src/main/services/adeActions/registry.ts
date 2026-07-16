@@ -147,6 +147,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "createToken",
     "listMachines",
     "pairMachine",
+    "deleteMachine",
   ],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
@@ -174,6 +175,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   analytics: ["setEnabled", "flush"],
   storage: ["cleanup"],
   search: ["rebuildIndex"],
+  project_secret: ["exportEnv"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -587,7 +589,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  project_secret: ["list", "get", "set", "delete"],
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",
@@ -837,6 +839,18 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Delete one ADE project secret.",
       input: "object { name: string, confirmName: string }",
       example: "ade secrets delete STRIPE_API_KEY",
+    },
+    previewEnvImport: {
+      description: "Parse bounded .env file content and mark variables that will replace existing ADE secrets.",
+      input: "object { fileName: string, content: string }",
+    },
+    importEnv: {
+      description: "Atomically create or replace selected ADE secrets parsed from a .env file.",
+      input: "object { secrets: Array<{ name: string, value: string }> }",
+    },
+    exportEnv: {
+      description: "Export every ADE project secret to a new ade-secrets.env file in this machine's Downloads folder.",
+      input: "no input",
     },
   },
   analytics: {

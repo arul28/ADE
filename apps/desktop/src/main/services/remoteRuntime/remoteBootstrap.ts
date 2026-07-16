@@ -1589,6 +1589,18 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
       addedAt: typeof record.addedAt === "number" ? record.addedAt : 0,
       lastOpenedAt: typeof record.lastOpenedAt === "number" ? record.lastOpenedAt : 0,
       gitOriginUrl: typeof record.gitOriginUrl === "string" ? record.gitOriginUrl : null,
+      catalogVisibility:
+        record.catalogVisibility === "recent" || record.catalogVisibility === "system"
+          ? record.catalogVisibility
+          : undefined,
+      registrationSource:
+        record.registrationSource === "desktop" ||
+        record.registrationSource === "mobile" ||
+        record.registrationSource === "cli-explicit" ||
+        record.registrationSource === "runtime-auto" ||
+        record.registrationSource === "test"
+          ? record.registrationSource
+          : undefined,
       icon: coerceProjectIcon(record.icon),
     }];
   });
@@ -1999,8 +2011,15 @@ export async function bootstrapRemoteRuntime(args: {
   }
 }
 
-export async function ensureRemoteProject(client: RuntimeRpcClient, rootPath: string): Promise<RemoteRuntimeProjectRecord> {
-  const project = await client.call("projects.add", { rootPath });
+export async function ensureRemoteProject(
+  client: RuntimeRpcClient,
+  rootPath: string,
+  registration: {
+    catalogVisibility: "recent" | "system";
+    registrationSource: "desktop" | "mobile" | "cli-explicit" | "runtime-auto" | "test";
+  } = { catalogVisibility: "system", registrationSource: "runtime-auto" },
+): Promise<RemoteRuntimeProjectRecord> {
+  const project = await client.call("projects.add", { rootPath, ...registration });
   const records = coerceProjects([project]);
   if (!records[0]) throw new Error("Remote ADE service did not return a project record.");
   return records[0];

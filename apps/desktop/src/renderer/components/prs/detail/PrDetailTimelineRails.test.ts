@@ -62,6 +62,21 @@ describe("buildTimelineEvents fold", () => {
     expect(railFp?.sha).toBe(fp && fp.type === "commit_push" ? fp.sha : "MISMATCH");
   });
 
+  it("pins the PR description to the top even when its createdAt is newer than later events", () => {
+    // An adopted/linked PR can carry a wrong (too-recent) createdAt; the
+    // description must still render first (GitHub parity), not sink below the
+    // force-push whose real timestamp is earlier.
+    const latePr = { id: "pr-1", createdAt: "2026-12-31T00:00:00Z", baseBranch: "main" } as unknown as PrWithConflicts;
+    const detail = {
+      body: "PR description",
+      author: { login: "octocat", avatarUrl: null },
+    } as unknown as Parameters<typeof buildTimelineEvents>[0]["detail"];
+    const events = buildTimelineEvents(foldArgs({ pr: latePr, detail, activity: [forcePush] }));
+    expect(events[0]?.type).toBe("description");
+    // The earlier-timestamped force-push is still present, just below.
+    expect(events.some((e) => e.type === "commit_push")).toBe(true);
+  });
+
   it("suppresses a bodyless 'commented' review but keeps one with a summary body", () => {
     const reviews: PrReview[] = [
       { reviewer: "bot", reviewerAvatarUrl: null, state: "commented", body: "   ", submittedAt: "2026-01-03T00:00:00Z" },

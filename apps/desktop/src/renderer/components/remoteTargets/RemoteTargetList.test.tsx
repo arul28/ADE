@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -28,6 +29,8 @@ const remoteRuntimeMock = {
   streamEvents: vi.fn(),
   checkLocalWork: vi.fn(),
   disconnect: vi.fn(),
+  setAutoConnect: vi.fn(),
+  onConnectionSnapshotChanged: vi.fn(),
   getLocalPairingInfo: vi.fn(),
   parsePairingInput: vi.fn(),
   pairWithMachine: vi.fn(),
@@ -45,9 +48,11 @@ const appMock = {
 
 const accountMock = {
   pairMachine: vi.fn(),
+  getLocalMachineIdentity: vi.fn(),
 };
 
 function installAdeMock(): void {
+  remoteRuntimeMock.onConnectionSnapshotChanged.mockReturnValue(() => {});
   remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValue({ state: "trusted" });
   remoteRuntimeMock.getLocalPairingInfo.mockResolvedValue({
     url: "https://ade-app.dev/pair#payload",
@@ -56,6 +61,7 @@ function installAdeMock(): void {
     relayAvailable: false,
   });
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
+  accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -67,7 +73,7 @@ function installAdeMock(): void {
   });
 }
 
-function openAddMode(label: "Find nearby Macs" | "Paste a pairing link"): void {
+function openAddMode(label: "Find nearby Macs" | "Add over SSH"): void {
   fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
 }
@@ -79,28 +85,6 @@ describe("RemoteTargetList", () => {
     vi.clearAllMocks();
     Reflect.deleteProperty(remoteRuntimeMock, "getConnectionSnapshot");
     Reflect.deleteProperty(window, "ade");
-  });
-
-  it("does not report copied pairing data when the clipboard bridge is unavailable", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
-      machines: [],
-      diagnostics: [],
-    });
-    installAdeMock();
-    Object.defineProperty(window.ade, "app", {
-      configurable: true,
-      value: {},
-    });
-
-    render(<RemoteTargetList />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Share" }));
-    const copyButton = await screen.findByRole("button", { name: "Copy code" });
-    fireEvent.click(copyButton);
-
-    expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {
@@ -344,6 +328,93 @@ describe("RemoteTargetList", () => {
       }),
     );
     expect(screen.getByText("Not connected")).toBeTruthy();
+  });
+
+  it("does not let an older event overwrite a local connection-setting snapshot", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+      autoConnect: false,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [{
+          target,
+          state: "idle",
+          arch: target.lastSeenArch,
+          version: target.runtimeBinaryVersion,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: null,
+          connectedAt: null,
+        }],
+        connectedCount: 0,
+        updatedAt: 10,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+    let emitSnapshot: ((snapshot: {
+      connections: Array<{
+        target: typeof target;
+        state: "idle";
+        arch: string;
+        version: string;
+        projects: never[];
+        lastError: null;
+        lastAttemptedAt: null;
+        connectedAt: null;
+      }>;
+      connectedCount: number;
+      updatedAt: number;
+    }) => void) | undefined;
+    remoteRuntimeMock.onConnectionSnapshotChanged.mockImplementation((listener) => {
+      emitSnapshot = listener;
+      return () => {};
+    });
+    const updatedTarget = { ...target, autoConnect: true };
+    remoteRuntimeMock.setAutoConnect.mockResolvedValue(updatedTarget);
+    vi.spyOn(Date, "now").mockReturnValue(20);
+
+    render(<RemoteTargetList />);
+
+    await screen.findByText("Mac Studio");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const checkbox = screen.getByRole("checkbox", {
+      name: /Reconnect automatically/,
+    }) as HTMLInputElement;
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(true));
+
+    act(() => {
+      emitSnapshot?.({
+        connections: [{
+          target,
+          state: "idle",
+          arch: target.lastSeenArch,
+          version: target.runtimeBinaryVersion,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: null,
+          connectedAt: null,
+        }],
+        connectedCount: 0,
+        updatedAt: 15,
+      });
+    });
+
+    expect(checkbox.checked).toBe(true);
   });
 
   it("does not disconnect when the disconnect confirmation callback rejects it", async () => {
@@ -938,90 +1009,6 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText(/df: \/: 100% used \(0 bytes free\)/)).toBeTruthy();
   });
 
-  it("validates a pairing link and pairs on the Pair tab", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
-      machines: [],
-      diagnostics: [],
-    });
-    remoteRuntimeMock.parsePairingInput
-      .mockRejectedValueOnce(
-        new Error("That doesn't look like a pairing code."),
-      )
-      .mockResolvedValue({
-        hostIdentity: {
-          deviceId: "d1",
-          siteId: "s1",
-          name: "Studio",
-          platform: "macOS",
-          deviceType: "desktop",
-        },
-        machineName: "Studio",
-        endpoints: ["wss://studio.example"],
-        requiresPin: true,
-      });
-    const savedTarget = {
-      id: "target-9",
-      name: "Studio",
-      hostname: "studio.example",
-      transport: "paired",
-      sshUser: null,
-      port: null,
-      sshKeyPath: null,
-      lastSeenArch: null,
-      runtimeBinaryVersion: null,
-      lastConnectedAt: null,
-    };
-    remoteRuntimeMock.pairWithMachine.mockResolvedValue({
-      targetId: "target-9",
-    });
-    remoteRuntimeMock.connect.mockResolvedValue({
-      target: savedTarget,
-      arch: "darwin-arm64",
-      version: "1.0.0",
-      projects: [],
-    });
-    installAdeMock();
-
-    render(<RemoteTargetList />);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Add machine" })).toBeTruthy(),
-    );
-    openAddMode("Paste a pairing link");
-
-    const input = screen.getByLabelText("Pairing link");
-    fireEvent.change(input, { target: { value: "nope" } });
-    await waitFor(() =>
-      expect(
-        screen.getByText("That doesn't look like a pairing code."),
-      ).toBeTruthy(),
-    );
-
-    fireEvent.change(input, {
-      target: { value: "https://ade-app.dev/pair#ok" },
-    });
-    await waitFor(() =>
-      expect(screen.getByText(/Studio ready to pair/)).toBeTruthy(),
-    );
-
-    fireEvent.change(screen.getByLabelText("6-digit code"), {
-      target: { value: "654321" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-
-    await waitFor(() =>
-      expect(remoteRuntimeMock.pairWithMachine).toHaveBeenCalledWith({
-        input: "https://ade-app.dev/pair#ok",
-        pin: "654321",
-        deviceName: "This Mac",
-      }),
-    );
-    await waitFor(() =>
-      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-9"),
-    );
-  });
-
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
@@ -1047,7 +1034,7 @@ describe("RemoteTargetList", () => {
         ),
       ).toBeTruthy(),
     );
-    expect(screen.getByText("No Macs yet. Choose Add machine, or Share to connect this Mac from another device.")).toBeTruthy();
+    expect(screen.getByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
   });
 
   it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
@@ -1127,6 +1114,58 @@ describe("RemoteTargetList", () => {
     );
   });
 
+  it("never lists this Mac as its own remote target (self-filter by machineKey or deviceId)", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+
+    const machines: AdeAccountMachine[] = [
+      {
+        machineKey: "local-mk", // matches getLocalMachineIdentity().machineKey
+        deviceId: "other-dev",
+        name: "This Very Mac",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+      {
+        machineKey: "reinstalled-mk",
+        deviceId: "local-dev", // matches getLocalMachineIdentity().deviceId (pre-reinstall row)
+        name: "This Mac Before Reinstall",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now() - 60_000,
+        online: false,
+      },
+      {
+        machineKey: "mk_other",
+        deviceId: "dev_other",
+        name: "Other Studio",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+    ];
+
+    render(
+      <RemoteTargetList
+        accountMachines={machines}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Other Studio")).toBeTruthy());
+    expect(accountMock.getLocalMachineIdentity).toHaveBeenCalled();
+    expect(screen.queryByText("This Very Mac")).toBeNull();
+    expect(screen.queryByText("This Mac Before Reinstall")).toBeNull();
+  });
+
   it("explains how to finish setup when an online account Mac has no ready route", () => {
     const machine: AdeAccountMachine = {
       machineKey: "studio",
@@ -1167,6 +1206,6 @@ describe("RemoteTargetList", () => {
       />,
     );
     expect(screen.getByText("Finish setup on the other Mac")).toBeTruthy();
-    expect(screen.getByText(/turn on Connect from anywhere/i)).toBeTruthy();
+    expect(screen.getByText(/it appears here automatically/i)).toBeTruthy();
   });
 });

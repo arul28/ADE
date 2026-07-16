@@ -60,6 +60,14 @@ final class PushNotificationService: ObservableObject {
 
     // MARK: - Enablement
 
+    /// Refreshes the local system authorization snapshot without prompting or
+    /// registering. Settings surfaces call this on appearance so a permission
+    /// changed in the iOS Settings app cannot leave the published UI stale.
+    func refreshNotificationSettings() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        permissionStatus = settings.authorizationStatus
+    }
+
     /// Request notification authorization (full prompt, not provisional) and
     /// register for remote notifications — but only when a machine is paired.
     /// Safe to call repeatedly (pairing success, every foreground); it no-ops

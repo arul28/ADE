@@ -1,7 +1,8 @@
 import React from "react";
-import { Check, Copy, Eye, EyeSlash, Key, Plus, Trash, X } from "@phosphor-icons/react";
-import type { ProjectSecretSummary, ProjectSecretsListResult } from "../../../shared/types";
+import { Check, Copy, DownloadSimple, Eye, EyeSlash, Key, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import type { ProjectSecretSummary, ProjectSecretsImportPreview, ProjectSecretsListResult } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
 import { SettingsSectionShell } from "./settingsSectionUi";
 
 const inputStyle: React.CSSProperties = {
@@ -78,6 +79,13 @@ export function SecretsSection() {
   const [confirmDeleteName, setConfirmDeleteName] = React.useState<string | null>(null);
   const [busyName, setBusyName] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [choosingImport, setChoosingImport] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
+  const [importError, setImportError] = React.useState<string | null>(null);
+  const [exporting, setExporting] = React.useState(false);
+  const [confirmingExport, setConfirmingExport] = React.useState(false);
+  const [importPreview, setImportPreview] = React.useState<ProjectSecretsImportPreview | null>(null);
+  const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const copyResetTimerRef = React.useRef<number | null>(null);
@@ -219,6 +227,79 @@ export function SecretsSection() {
     }
   };
 
+  const chooseEnvFile = async () => {
+    setChoosingImport(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const preview = await window.ade.projectSecrets.chooseEnvFile();
+      if (!preview) return;
+      setImportPreview(preview);
+      setImportError(null);
+      setSelectedImportNames(new Set(preview.secrets.map((secret) => secret.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChoosingImport(false);
+    }
+  };
+
+  const importSelectedSecrets = async () => {
+    if (!importPreview || selectedImportNames.size === 0) return;
+    setImporting(true);
+    setImportError(null);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await window.ade.projectSecrets.importEnv({
+        secrets: importPreview.secrets
+          .filter((secret) => selectedImportNames.has(secret.name))
+          .map(({ name: secretName, value: secretValue }) => ({ name: secretName, value: secretValue })),
+      });
+      const total = result.imported.length + result.replaced.length;
+      const changedNames = [...result.imported, ...result.replaced];
+      setVisibleNames((current) => {
+        const next = { ...current };
+        for (const changedName of changedNames) delete next[changedName];
+        return next;
+      });
+      setRevealedValues((current) => {
+        const next = { ...current };
+        for (const changedName of changedNames) delete next[changedName];
+        return next;
+      });
+      setImportPreview(null);
+      setSelectedImportNames(new Set());
+      setMessage(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);
+      await load();
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const exportSecrets = async () => {
+    if (!confirmingExport) {
+      setConfirmingExport(true);
+      setMessage(null);
+      setError(null);
+      return;
+    }
+    setConfirmingExport(false);
+    setExporting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await window.ade.projectSecrets.exportEnv();
+      setMessage(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on the active machine.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const secrets = snapshot?.secrets ?? [];
 
   return (
@@ -229,6 +310,31 @@ export function SecretsSection() {
       brandColor="#2563eb"
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.5 }}>
+            Import reads a file from this Mac. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              disabled={choosingImport}
+              onClick={() => void chooseEnvFile()}
+              style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: choosingImport ? "not-allowed" : "pointer", opacity: choosingImport ? 0.55 : 1 }}
+            >
+              <UploadSimple size={14} />
+              {choosingImport ? "Opening…" : "Import .env"}
+            </button>
+            <button
+              type="button"
+              disabled={exporting || secrets.length === 0}
+              onClick={() => void exportSecrets()}
+              style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
+            >
+              <DownloadSimple size={14} />
+              {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
+            </button>
+          </div>
+        </div>
         <form
           onSubmit={handleSave}
           style={{
@@ -419,6 +525,22 @@ export function SecretsSection() {
           )}
         </div>
       </div>
+      {importPreview && (
+        <SecretsImportEnvModal
+          preview={importPreview}
+          selectedNames={selectedImportNames}
+          importing={importing}
+          error={importError}
+          onSelectionChange={setSelectedImportNames}
+          onClose={() => {
+            if (importing) return;
+            setImportPreview(null);
+            setImportError(null);
+            setSelectedImportNames(new Set());
+          }}
+          onSave={() => void importSelectedSecrets()}
+        />
+      )}
     </SettingsSectionShell>
   );
 }

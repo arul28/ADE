@@ -404,7 +404,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);
       setLoading(false);
-      if (options.live && cached) {
+      if (options.live && cached && !cached.unmapped) {
         const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
         if (!requestIsCurrent()) return;
         setCurrentPr(refreshed);
@@ -449,6 +449,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const enrichedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!pr) {
+      enrichedKeyRef.current = null;
+      setChecks(null);
+      setReviews(null);
+      setStatus(null);
+      return;
+    }
+    if (pr.unmapped) {
       enrichedKeyRef.current = null;
       setChecks(null);
       setReviews(null);

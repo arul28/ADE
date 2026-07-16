@@ -22,6 +22,7 @@ import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
+import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import {
   handoffLaunchMatchesQuery,
   handoffLaunchStatusMessage,
@@ -144,6 +145,7 @@ function StickyGroupHeader({
   subLabel,
   prBadge = null,
   variant = "default",
+  busyLabel = null,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -160,6 +162,8 @@ function StickyGroupHeader({
   prBadge?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
   variant?: "default" | "lane";
+  /** Disables the lane group and overlays lifecycle progress. */
+  busyLabel?: string | null;
 }) {
   if (count === 0) return null;
   const isLane = variant === "lane";
@@ -178,6 +182,7 @@ function StickyGroupHeader({
           className={cn(
             "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-lg px-3 py-2 transition-colors backdrop-blur-xl select-none",
             laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+            busyLabel && "opacity-70",
           )}
           style={{
             background: laneTint.background,
@@ -185,12 +190,14 @@ function StickyGroupHeader({
             boxShadow: "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
           }}
           data-section-id={sectionId}
+          aria-busy={busyLabel ? "true" : undefined}
         >
           <button
             type="button"
             className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
             onClick={onToggleCollapsed}
             onContextMenu={onContextMenu}
+            disabled={Boolean(busyLabel)}
           >
             {collapsed ? (
               <CaretRight size={12} className="shrink-0 text-muted-fg/35" />
@@ -225,6 +232,12 @@ function StickyGroupHeader({
               {count}
             </span>
           </div>
+          {busyLabel ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-lg bg-bg/75 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
+              <CircleNotch size={12} className="animate-spin" />
+              {busyLabel}
+            </div>
+          ) : null}
         </div>
       ) : (
       <button
@@ -273,7 +286,7 @@ function StickyGroupHeader({
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             style={{ overflow: "hidden" }}
           >
-            <div className={cn("space-y-px pb-0.5", isLane && "mt-1 pl-2.5")}>
+            <div className={cn("space-y-px pb-0.5", isLane && "mt-1 pl-2.5", busyLabel && "pointer-events-none opacity-50")}>
               {children}
             </div>
           </motion.div>
@@ -425,6 +438,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 }) {
   const navigate = useNavigate();
   const prsByLaneId = useLanePrsByLaneId();
+  const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
@@ -649,6 +663,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         }}
         compact={options?.compact}
         gridBadge={gridBadgeFor(session.id)}
+        disabledReason={deleteProgressByLaneId[session.laneId]
+          ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
+          : null}
       />
     );
     if (!isFirst) return card;
@@ -773,6 +790,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             onOpen={() => navigate(`/prs?tab=normal&prId=${encodeURIComponent(primaryPr.id)}`)}
           />
         ) : null;
+        const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
         return (
           <StickyGroupHeader
             key={lane.id}
@@ -785,8 +803,11 @@ export const SessionListPane = React.memo(function SessionListPane({
             collapsed={collapsed}
             accentColor={laneAccent}
             prBadge={prBadge}
-            onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
-            onContextMenu={(e) => triggerLaneContextMenu(lane.id, e)}
+            busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+            onToggleCollapsed={() => {
+              if (!deleteProgress) toggleWorkLaneCollapsed(lane.id);
+            }}
+            onContextMenu={deleteProgress ? undefined : (e) => triggerLaneContextMenu(lane.id, e)}
           >
             {renderHandoffCards(laneHandoffJobs)}
             {renderCards(list)}

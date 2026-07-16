@@ -5,6 +5,20 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPO_EVENTS",
+        "class_name": "RepoEventsDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RepoEventsDurableObject"]
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

@@ -260,6 +260,30 @@ describe("ChatPrPane", () => {
     expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("renders a projection-only PR without calling row-based refresh or enrichment APIs", async () => {
+    const projectedPr = makePr({
+      id: "gh:o/r#404",
+      unmapped: true,
+      githubPrNumber: 404,
+      title: "Externally opened PR",
+      updatedAt: "2026-07-16T12:00:00.000Z",
+    });
+    const refresh = vi.fn().mockResolvedValue([]);
+    installAde({
+      getForLane: vi.fn().mockResolvedValue(projectedPr),
+      refresh,
+    });
+
+    renderPane();
+
+    expect(await screen.findByText("Externally opened PR")).toBeTruthy();
+    expect(screen.getByText("PR #404")).toBeTruthy();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(window.ade.prs.getChecks).not.toHaveBeenCalled();
+    expect(window.ade.prs.getReviews).not.toHaveBeenCalled();
+    expect(window.ade.prs.getStatus).not.toHaveBeenCalled();
+  });
+
   it("ignores stale live refresh results after switching lanes", async () => {
     const laneOnePr = makePr({
       id: "pr-lane-1",

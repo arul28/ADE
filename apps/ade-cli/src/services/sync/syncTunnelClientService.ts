@@ -22,7 +22,6 @@ type Logger = {
 };
 
 export type SyncTunnelClientStatus = {
-  enabled: boolean;
   accountLeaseValid?: boolean;
   connected: boolean;
   activeTunnels: number;
@@ -38,6 +37,8 @@ export type SyncTunnelClientStatus = {
 export type SyncTunnelClientService = {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /** Re-probe the active shared listener without opening a Relay pipe. */
+  validateCurrentBridge(): Promise<boolean>;
   getStatus(): SyncTunnelClientStatus;
   dispose(): Promise<void>;
 };
@@ -105,11 +106,11 @@ function nowSeconds(): string {
 }
 
 /**
- * Brain-side tunnel client. When enabled, keeps a signed control WebSocket open
- * to the relay; for each `{t:"open", id}` it opens a dedicated pipe socket to
- * the relay and a local socket to the sync server, then pipes bytes 1:1. The
- * sync protocol passes through untouched. The control socket reconnects with
- * jittered exponential backoff.
+ * Brain-side tunnel client. While the sync host and account lease are valid,
+ * keeps a signed control WebSocket open to the relay; for each `{t:"open", id}`
+ * it opens a dedicated pipe socket to the relay and a local socket to the sync
+ * server, then pipes bytes 1:1. The sync protocol passes through untouched.
+ * The control socket reconnects with jittered exponential backoff.
  */
 export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncTunnelClientService {
   const log = args.logger ?? {};
@@ -128,6 +129,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let validatedLoopbackNonce: string | null = null;
   let lastFailureAt: string | null = null;
   let lastSuccessAt: string | null = null;
+  let bridgeValidationInFlight: Promise<boolean> | null = null;
   let claimed = false;
   const tunnels = new Set<Tunnel>();
   const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
@@ -216,6 +218,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         lastError = null;
         lastSuccessAt = new Date().toISOString();
         log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
+        void validateCurrentBridge();
       });
       socket.on("message", (raw: RawData) => {
         const message = parseControlMessage(rawToText(raw));
@@ -235,55 +238,91 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
-  const openTunnel = async (id: MachineIdentity, connectionId: string): Promise<void> => {
+  const runBridgeValidation = async (): Promise<boolean> => {
     if (!accountSignedIn()) {
       recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
-      return;
+      return false;
     }
     const port = args.getSyncPort();
     if (port == null) {
       recordFailure("Relay bridge refused because the ADE sync listener is not bound.");
-      log.warn?.("sync_tunnel.no_sync_port", { connectionId });
-      return;
+      log.warn?.("sync_tunnel.no_sync_port");
+      return false;
     }
     const expectedLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
     if (!expectedLoopbackNonce) {
       validatedPort = null;
       validatedLoopbackNonce = null;
       recordFailure("Relay bridge refused because the ADE sync listener identity is unavailable.");
-      log.warn?.("sync_tunnel.no_loopback_identity", { connectionId, port });
-      return;
+      log.warn?.("sync_tunnel.no_loopback_identity", { port });
+      return false;
     }
-    let loopbackCheckedAt: string;
     try {
       const result = await assertAdeLoopbackListener(
         port,
         expectedLoopbackNonce,
         loopbackProbe,
       );
-      loopbackCheckedAt = result.checkedAt;
+      if (stopped || !accountSignedIn()) {
+        validatedPort = null;
+        validatedLoopbackNonce = null;
+        if (!stopped) recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
+        return false;
+      }
+      if (
+        args.getSyncPort() !== port
+        || (args.getExpectedLoopbackNonce?.() ?? null) !== expectedLoopbackNonce
+      ) {
+        validatedPort = null;
+        validatedLoopbackNonce = null;
+        recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
+        return false;
+      }
+      validatedPort = port;
+      validatedLoopbackNonce = expectedLoopbackNonce;
+      lastError = null;
+      lastSuccessAt = result.checkedAt;
+      log.debug?.("sync_tunnel.bridge_validated", { port });
+      return true;
     } catch (error) {
       validatedPort = null;
       validatedLoopbackNonce = null;
       const reason = `Relay bridge refused because 127.0.0.1:${port} is not the ADE sync listener: ${error instanceof Error ? error.message : String(error)}`;
       recordFailure(reason);
       log.warn?.("sync_tunnel.loopback_validation_failed", {
-        connectionId,
         port,
         error: reason,
       });
+      return false;
+    }
+  };
+
+  const validateCurrentBridge = (): Promise<boolean> => {
+    if (stopped) return Promise.resolve(false);
+    if (bridgeValidationInFlight) return bridgeValidationInFlight;
+    const current = runBridgeValidation()
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        recordFailure(reason);
+        log.warn?.("sync_tunnel.bridge_validation_failed", { error: reason });
+        return false;
+      })
+      .finally(() => {
+        if (bridgeValidationInFlight === current) bridgeValidationInFlight = null;
+      });
+    bridgeValidationInFlight = current;
+    return current;
+  };
+
+  const openTunnel = async (id: MachineIdentity, connectionId: string): Promise<void> => {
+    // Keep validation on every inbound open as defense in depth even though
+    // control-open and listener-ready lifecycle events validate proactively.
+    if (!await validateCurrentBridge()) return;
+    const port = validatedPort;
+    if (port == null || args.getSyncPort() !== port) {
+      recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
       return;
     }
-    if (!accountSignedIn()) {
-      validatedPort = null;
-      validatedLoopbackNonce = null;
-      recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
-      return;
-    }
-    validatedPort = port;
-    validatedLoopbackNonce = expectedLoopbackNonce;
-    lastError = null;
-    lastSuccessAt = loopbackCheckedAt;
     const relayBridgeProof = args.getRelayBridgeProof();
     if (!relayBridgeProof) {
       validatedPort = null;
@@ -374,7 +413,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const reconcileAccountEligibility = (): void => {
-    if (stopped || !started || !args.configStore.isEnabled()) return;
+    if (stopped || !started) return;
     if (!accountSignedIn()) {
       clearReconnect();
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
@@ -416,10 +455,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (started) return;
       started = true;
       stopped = false;
-      if (!args.configStore.isEnabled()) {
-        log.info?.("sync_tunnel.disabled");
-        return;
-      }
       accountStatusTimer = setInterval(
         () => { void refreshAccountLease(); },
         args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
@@ -440,22 +475,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       closeRelayConnections();
     },
 
+    validateCurrentBridge,
+
     getStatus(): SyncTunnelClientStatus {
       const { machineKey } = identity();
       const currentPort = args.getSyncPort();
       const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
       const eligible = accountSignedIn();
-      const enabled = args.configStore.isEnabled();
       return {
-        enabled,
         accountLeaseValid: eligible,
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,
-        lastError: !enabled
-          ? null
-          : eligible
-            ? lastError
-            : RELAY_SIGN_IN_REQUIRED_MESSAGE,
+        lastError: eligible ? lastError : RELAY_SIGN_IN_REQUIRED_MESSAGE,
         relayBridgeValidated: eligible
           && currentPort != null
           && currentLoopbackNonce != null

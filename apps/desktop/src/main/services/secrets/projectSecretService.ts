@@ -1,16 +1,28 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../../../shared/types/projectSecrets";
 import { nowIso } from "../shared/utils";
+import {
+  formatProjectSecretEnv,
+  parseProjectSecretEnv,
+  PROJECT_SECRET_ENV_MAX_BYTES,
+  PROJECT_SECRET_ENV_MAX_ENTRIES,
+} from "./projectSecretEnv";
 
 type ProjectSecretIndexEntry = {
   createdAt: string;
@@ -88,7 +100,7 @@ function sortSummaries(entries: Record<string, ProjectSecretIndexEntry>): Projec
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function createProjectSecretService(projectRoot: string) {
+export function createProjectSecretService(projectRoot: string, options: { downloadsDir?: string } = {}) {
   const layout = resolveAdeLayout(projectRoot);
   const credentialsPath = path.join(layout.secretsDir, STORE_FILE);
   const store = new EncryptedFileCredentialStore({
@@ -100,6 +112,47 @@ export function createProjectSecretService(projectRoot: string) {
   const readIndex = (): ProjectSecretIndex => {
     if (!fs.existsSync(credentialsPath)) return { version: 1, entries: {} };
     return parseIndex(store.getSync(INDEX_KEY));
+  };
+
+  const writeSecrets = (secrets: Array<{ name: string; value: string }>): ProjectSecretsImportResult => {
+    if (secrets.length === 0) throw new Error("Select at least one secret to import.");
+    if (secrets.length > PROJECT_SECRET_ENV_MAX_ENTRIES) {
+      throw new Error(`Select no more than ${PROJECT_SECRET_ENV_MAX_ENTRIES} secrets to import.`);
+    }
+    const normalized = secrets.map((secret) => {
+      const name = normalizeSecretName(secret?.name);
+      const value = typeof secret?.value === "string" ? secret.value : "";
+      if (!value.length) throw new Error(`Secret value is required for '${name}'.`);
+      return { name, value };
+    });
+    const payloadBytes = normalized.reduce(
+      (total, secret) => total + Buffer.byteLength(secret.name, "utf8") + Buffer.byteLength(secret.value, "utf8"),
+      0,
+    );
+    if (payloadBytes > PROJECT_SECRET_ENV_MAX_BYTES) {
+      throw new Error("The selected secrets are larger than 1 MB.");
+    }
+    if (new Set(normalized.map((secret) => secret.name)).size !== normalized.length) {
+      throw new Error("Each imported secret name must be unique.");
+    }
+    const imported: string[] = [];
+    const replaced: string[] = [];
+    const now = nowIso();
+    store.updateSync((values) => {
+      const index = parseIndex(values[INDEX_KEY] ?? null);
+      for (const secret of normalized) {
+        const previous = index.entries[secret.name];
+        (previous ? replaced : imported).push(secret.name);
+        values[valueKey(secret.name)] = secret.value;
+        index.entries[secret.name] = {
+          createdAt: previous?.createdAt ?? now,
+          updatedAt: now,
+          valueLength: secret.value.length,
+        };
+      }
+      values[INDEX_KEY] = serializeIndex(index);
+    });
+    return { imported, replaced };
   };
 
   return {
@@ -151,6 +204,47 @@ export function createProjectSecretService(projectRoot: string) {
       });
       if (!entry) throw new Error("Failed to save ADE secret.");
       return toSummary(name, entry);
+    },
+
+    previewEnvImport(args: ProjectSecretEnvFile): ProjectSecretsImportPreview {
+      const fileName = path.basename(typeof args?.fileName === "string" ? args.fileName.trim() : "") || ".env";
+      const content = typeof args?.content === "string" ? args.content : "";
+      const existing = readIndex().entries;
+      return {
+        fileName,
+        secrets: parseProjectSecretEnv(content).map((secret) => ({
+          ...secret,
+          exists: Boolean(existing[secret.name]),
+        })),
+      };
+    },
+
+    importEnv(args: ProjectSecretsImportArgs): ProjectSecretsImportResult {
+      return writeSecrets(Array.isArray(args?.secrets) ? args.secrets : []);
+    },
+
+    exportEnv(): ProjectSecretsExportResult {
+      let secrets: Array<{ name: string; value: string }> = [];
+      if (fs.existsSync(credentialsPath)) {
+        store.updateSync((values) => {
+          const index = parseIndex(values[INDEX_KEY] ?? null);
+          secrets = sortSummaries(index.entries).map(({ name }) => {
+            const value = values[valueKey(name)];
+            if (value == null) throw new Error(`ADE secret '${name}' was not found.`);
+            return { name, value };
+          });
+          return false;
+        });
+      }
+      const downloadsDir = options.downloadsDir ?? path.join(os.homedir(), "Downloads");
+      fs.mkdirSync(downloadsDir, { recursive: true, mode: 0o700 });
+      let filePath = path.join(downloadsDir, "ade-secrets.env");
+      for (let suffix = 1; fs.existsSync(filePath) && suffix < 1_000; suffix += 1) {
+        filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
+      }
+      if (fs.existsSync(filePath)) throw new Error("Could not find an unused filename in Downloads.");
+      fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      return { filePath, secretCount: secrets.length };
     },
 
     delete(args: ProjectSecretDeleteArgs): { deleted: boolean; name: string } {

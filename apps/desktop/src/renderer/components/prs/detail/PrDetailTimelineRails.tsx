@@ -534,7 +534,16 @@ export function buildTimelineEvents(args: {
     });
   }
 
-  return stableSortByTs(events);
+  // Pin the description to the top regardless of timestamp integrity. Adopted/
+  // linked PRs can carry a wrong `createdAt`, which would otherwise sink the
+  // description below later activity; GitHub always renders it first.
+  const sorted = stableSortByTs(events);
+  const descIndex = sorted.findIndex((event) => event.type === "description");
+  if (descIndex > 0) {
+    const [description] = sorted.splice(descIndex, 1);
+    sorted.unshift(description!);
+  }
+  return sorted;
 }
 
 export function buildCommitRailCommits(

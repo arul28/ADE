@@ -191,9 +191,11 @@ vi.mock("../../state/appStore", () => ({
     selectedLaneId: string;
     project: { rootPath: string } | null;
     projectBinding: typeof workMocks.projectBinding;
+    laneDeleteProgressByLaneId: Record<string, never>;
   }) => T): T =>
     selector({
       selectedLaneId: "lane-primary",
+      laneDeleteProgressByLaneId: {},
       projectBinding: workMocks.projectBinding,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
@@ -209,6 +211,10 @@ vi.mock("../../state/appStore", () => ({
 
 vi.mock("./useWorkSessions", () => ({
   useWorkSessions: () => workMocks.currentWork,
+}));
+
+vi.mock("./useWorkLaneDeleteProgress", () => ({
+  useWorkLaneDeleteProgress: () => undefined,
 }));
 
 vi.mock("../ui/PaneTilingLayout", () => ({

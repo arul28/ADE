@@ -269,7 +269,13 @@ Renderer surfaces:
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
-  draggable column separator.
+  draggable column separator. `useWorkLaneDeleteProgress` subscribes to
+  lane-delete events while Work is active, hydrates any backend deletion
+  already in flight, and refreshes both the lightweight lane list and the
+  uncached Work session list when deletion finishes. The active lane's work
+  surface is covered by a non-interactive deletion overlay until that refresh
+  succeeds; failed refreshes retry twice with bounded backoff before clearing
+  the overlay and surfacing a sticky error toast.
 - `apps/desktop/src/renderer/components/terminals/importSessions/` —
   desktop two-stage import browser/details flow and bridge contract. It lists
   external sessions by provider/search, counts meaningful user prompts, shows
@@ -339,7 +345,10 @@ Renderer surfaces:
   auto-fit grid and the embedded lane selector can fill its parent.
   Lane group headers expose the same lane context menu used by the Work
   tab so color, manage, split, and batch actions stay reachable without
-  leaving the session list. The bottom Add Lane button opens
+  leaving the session list. A lane with shared delete progress is dimmed and
+  interaction-blocked: its lane-group header shows the deletion status, and
+  every session card for that lane is disabled in lane, status, and time
+  organization modes. The bottom Add Lane button opens
   `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
   be created from Work without navigating away; once the lane record
   exists, env setup continues detached and failures surface as a sticky
@@ -356,7 +365,10 @@ Renderer surfaces:
   the card's lane is mid background AI auto-naming it swaps the preview
   line for an "Auto-naming lane underway…" status and warm-highlights the
   title when it changes (subscribes to `laneNamingStore.ts`). Sessions
-  carrying `importedFrom` provenance render an `Imported` badge.
+  carrying `importedFrom` provenance render an `Imported` badge. The optional
+  `disabledReason` blocks selection, dragging, and the context menu while
+  rendering a centered progress overlay; Work uses it for sessions whose lane
+  is being deleted.
 - `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
@@ -386,8 +398,24 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
   — shared Work-tab lane context menu hook. It portals `LaneContextMenu`
   over lane bands, lane chips, collapsed lane pills, and grouped session
-  headers, running inline actions in place and routing modal-bearing lane
-  actions through `/lanes?action=...`.
+  headers. Color/copy/reveal actions run inline, and **Manage lane** opens
+  `WorkManageLaneDialogHost` in the same portal without changing the Work
+  route or active session. Split, batch-manage, and the direct attached-lane
+  adopt action still use `/lanes?action=...` deeplinks.
+- `apps/desktop/src/renderer/components/terminals/WorkManageLaneDialogHost.tsx`
+  — single-lane Work host for the shared `ManageLaneDialog`. It coordinates
+  appearance/stack refreshes, archive, the attached-lane adoption confirmation,
+  and delete while preserving the Work route. Delete closes the dialog
+  immediately and seeds optimistic shared delete progress before dispatching
+  the background lane teardown; an immediate dispatch failure clears only the
+  matching optimistic record and surfaces a sticky toast.
+- `apps/desktop/src/renderer/components/terminals/useWorkLaneDeleteProgress.ts`
+  — Work-owned lane deletion synchronizer. It consumes `lanes.delete.event`,
+  uses `lanes.onLifecycleEvent` as a completion/invalidation fallback, and
+  calls `lanes.listDeleteProgress()` on activation so tab switches do not hide
+  an in-flight delete. Terminal progress triggers uncached lane/session
+  refreshes with bounded retry; failed/cancelled deletes and cleanup warnings
+  are surfaced through shared toasts.
 - `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx` —
   shared single-row Work surface header chrome used by both embedded
   chats and tracked agent CLI terminals. It owns the title, lane chip,

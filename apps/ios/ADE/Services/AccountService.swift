@@ -286,25 +286,42 @@ final class AccountService: ObservableObject {
   func verifyEmailCode(_ code: String) async throws {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let emailVerificationKind else {
+      ProductAnalytics.shared.captureSignInOutcome(.failed)
       throw AccountError.message("Start the email verification again.")
     }
     lastError = nil
-    try await AccountEmailAuthFlow.verifyCode(
-      trimmed,
-      kind: emailVerificationKind,
-      actions: emailAuthActions()
-    )
-    authenticationOutcome = emailVerificationKind == .signUp ? .newAccount : .returningUser
-    finishInteractiveSignIn()
+    do {
+      try await AccountEmailAuthFlow.verifyCode(
+        trimmed,
+        kind: emailVerificationKind,
+        actions: emailAuthActions()
+      )
+      authenticationOutcome = emailVerificationKind == .signUp ? .newAccount : .returningUser
+      finishInteractiveSignIn()
+      ProductAnalytics.shared.captureSignInOutcome(
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+      )
+    } catch {
+      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      throw error
+    }
   }
 
   /// OAuth sign-in via the system web session (Google / GitHub). ClerkKit
   /// supplies the presentation anchor and handles the redirect callback.
   func signInWithOAuth(_ provider: OAuthProvider) async throws {
     lastError = nil
-    let result = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
-    authenticationOutcome = Self.outcome(from: result)
-    finishInteractiveSignIn()
+    do {
+      let result = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
+      authenticationOutcome = Self.outcome(from: result)
+      finishInteractiveSignIn()
+      ProductAnalytics.shared.captureSignInOutcome(
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+      )
+    } catch {
+      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      throw error
+    }
   }
 
   /// Native Sign in with Apple. Requires the Sign-in-with-Apple capability and
@@ -312,9 +329,17 @@ final class AccountService: ObservableObject {
   /// and in a simulator signed into an Apple ID.
   func signInWithApple() async throws {
     lastError = nil
-    let result = try await Clerk.shared.auth.signInWithApple()
-    authenticationOutcome = Self.outcome(from: result)
-    finishInteractiveSignIn()
+    do {
+      let result = try await Clerk.shared.auth.signInWithApple()
+      authenticationOutcome = Self.outcome(from: result)
+      finishInteractiveSignIn()
+      ProductAnalytics.shared.captureSignInOutcome(
+        authenticationOutcome == .newAccount ? .newAccount : .returningUser
+      )
+    } catch {
+      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      throw error
+    }
   }
 
   func signOut() async {

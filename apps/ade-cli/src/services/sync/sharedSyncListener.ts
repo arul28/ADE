@@ -127,6 +127,8 @@ export type SharedSyncListener = {
   getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
   /** Force-check that loopback still reaches this exact listener instance. */
   revalidateLoopback(): Promise<void>;
+  /** Subscribe to successful initial and explicit loopback validations. */
+  onLoopbackValidated(handler: () => void): () => void;
   /**
    * Install the connection handler for NEW sockets. Returns a detach function
    * that only clears the handler if it has not been superseded by a newer
@@ -249,6 +251,7 @@ export function createSharedSyncListener(options: {
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
+  const loopbackValidatedHandlers = new Set<() => void>();
   let loopbackValidationStatus: SyncLoopbackValidationStatus = {
     port: null,
     loopbackAdeValidated: false,
@@ -257,6 +260,18 @@ export function createSharedSyncListener(options: {
     lastSuccessAt: null,
   };
   const parked = new Map<WebSocket, ParkedEntry>();
+
+  const notifyLoopbackValidated = (): void => {
+    for (const next of loopbackValidatedHandlers) {
+      try {
+        next();
+      } catch (error) {
+        logger.warn?.("sync_listener.validation_handler_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
 
   const validateLoopback = async (port: number): Promise<void> => {
     try {
@@ -526,7 +541,9 @@ export function createSharedSyncListener(options: {
           throw error;
         });
       }
-      return await listeningPromise;
+      const port = await listeningPromise;
+      notifyLoopbackValidated();
+      return port;
     },
 
     getPort(): number | null {
@@ -556,6 +573,14 @@ export function createSharedSyncListener(options: {
         throw new Error("The shared sync listener is not listening.");
       }
       await validateLoopback(address.port);
+      notifyLoopbackValidated();
+    },
+
+    onLoopbackValidated(nextHandler: () => void): () => void {
+      loopbackValidatedHandlers.add(nextHandler);
+      return () => {
+        loopbackValidatedHandlers.delete(nextHandler);
+      };
     },
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
@@ -608,6 +633,7 @@ export function createSharedSyncListener(options: {
       closed = true;
       handler = null;
       fallbackHandler = null;
+      loopbackValidatedHandlers.clear();
       if (listeningPromise) {
         await listeningPromise.catch(() => {});
       }

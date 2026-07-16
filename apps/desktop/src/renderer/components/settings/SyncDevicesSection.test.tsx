@@ -1,14 +1,28 @@
 /* @vitest-environment jsdom */
 
-import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SyncDevicesSection } from "./SyncDevicesSection";
-import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { parsePairingQrUrl } from "../../../shared/pairingQr";
+import type {
+  SyncDeviceRuntimeState,
+  SyncRoleSnapshot,
+} from "../../../shared/types";
+import {
+  PhoneConnectionsTab,
+  ThisMacCard,
+  WebConnectionsTab,
+  type SyncConnections,
+} from "./SyncDevicesSection";
+
+vi.mock("qrcode.react", () => ({
+  QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
+    <svg data-testid="pairing-qr" data-value={value} aria-label={title} />
+  ),
+}));
 
 const originalAde = (globalThis.window as any)?.ade;
 
-function makeHostSnapshot(overrides: Record<string, unknown> = {}) {
+function makeStatus(overrides: Partial<SyncRoleSnapshot> = {}): SyncRoleSnapshot {
   return {
     mode: "brain",
     role: "brain",
@@ -55,205 +69,276 @@ function makeHostSnapshot(overrides: Record<string, unknown> = {}) {
       error: null,
       stderr: null,
     },
-    client: { state: "disconnected" },
-    transferReadiness: { ready: true, blockers: [], survivableState: [] },
+    routeHealth: {
+      listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      accountDirectory: {
+        state: "published",
+        skipReason: null,
+        directoryOrigin: "https://directory.example",
+        lastAttemptAt: 1_752_600_000_000,
+        lastSuccessAt: 1_752_600_000_000,
+        lastHttpStatus: 200,
+        lastHttpReason: null,
+        reachableEndpointCount: 1,
+      },
+    },
+    client: { state: "disconnected" } as SyncRoleSnapshot["client"],
+    transferReadiness: { ready: true, blockers: [], survivableState: [] } as SyncRoleSnapshot["transferReadiness"],
     survivableStateText: "",
     blockingStateText: "",
     ...overrides,
-  };
+  } as SyncRoleSnapshot;
 }
 
-function installAdeMock(snapshot: Record<string, unknown>) {
-  const setPin = vi.fn(async (pin: string) => ({
-    ...snapshot,
-    pairingPin: pin,
-    pairingPinConfigured: true,
-  }));
-  const writeClipboardText = vi.fn(async (_text: string) => undefined);
-  (globalThis.window as any).ade = {
-    app: { writeClipboardText },
-    sync: {
-      getStatus: vi.fn(async () => snapshot),
-      listDevices: vi.fn(async () => []),
-      getCloudRelayStatus: vi.fn(async () => null),
-      onEvent: vi.fn(() => () => {}),
-      setPin,
-      generatePin: vi.fn(async () => snapshot),
-      clearPin: vi.fn(async () => undefined),
-      setCloudRelayEnabled: vi.fn(async () => null),
-      setRuntimeName: vi.fn(async () => undefined),
-      clearRuntimeName: vi.fn(async () => undefined),
-      updateLocalDevice: vi.fn(async () => undefined),
-      forgetDevice: vi.fn(async () => undefined),
-      refreshDiscovery: vi.fn(async () => snapshot),
-    },
-  };
-  return { setPin, writeClipboardText };
+function device(overrides: Partial<SyncDeviceRuntimeState> = {}): SyncDeviceRuntimeState {
+  return {
+    deviceId: "phone-1",
+    name: "Arul iPhone",
+    platform: "iOS",
+    deviceType: "phone",
+    connectionState: "connected",
+    isLocal: false,
+    latencyMs: 12,
+    lastSeenAt: "2026-04-22T00:00:00.000Z",
+    ...overrides,
+  } as SyncDeviceRuntimeState;
 }
 
-describe("SyncDevicesSection", () => {
+function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
+  return {
+    status: makeStatus(),
+    devices: [],
+    loading: false,
+    busy: false,
+    notice: null,
+    error: null,
+    setPinValue: vi.fn(async () => {}),
+    generatePin: vi.fn(),
+    clearPin: vi.fn(),
+    saveRuntimeName: vi.fn(),
+    forgetDevice: vi.fn(),
+    retryInitialLoad: vi.fn(),
+    ...overrides,
+  } as SyncConnections;
+}
+
+const autoConfirm = async () => true;
+
+describe("ThisMacCard", () => {
   afterEach(() => {
     cleanup();
-    vi.useRealTimers();
     vi.restoreAllMocks();
-    if (originalAde === undefined) {
-      delete (globalThis.window as any).ade;
-    } else {
-      (globalThis.window as any).ade = originalAde;
-    }
+    if (originalAde === undefined) delete (globalThis.window as any).ade;
+    else (globalThis.window as any).ade = originalAde;
   });
 
-  it("web variant shows the hidden-PIN generate control and calls setPin with a 6-digit PIN", async () => {
-    const { setPin } = installAdeMock(makeHostSnapshot());
-    vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
-      (array as Uint32Array)[0] = 0;
-      return array;
-    });
-    render(<SyncDevicesSection variant="web" />);
-
-    const generate = await screen.findByRole("button", { name: "Generate new PIN" });
-    expect(generate).toBeTruthy();
-    expect(screen.getByText("Existing PIN still pairs if you know it.")).toBeTruthy();
-    // Hidden PIN renders masked digits, never a real value.
-    expect(screen.getByText("••••••")).toBeTruthy();
-
-    fireEvent.click(generate);
-
-    await waitFor(() => expect(setPin).toHaveBeenCalledTimes(1));
-    const pinArg = setPin.mock.calls[0][0];
-    expect(pinArg).toMatch(/^\d{6}$/);
-    expect(pinArg).toBe("000000");
+  it("shows the account state line for a signed-in Mac", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    expect(screen.getByText("Studio")).toBeTruthy();
+    expect(screen.getByText("Connected to your ADE account · 1 route published")).toBeTruthy();
+    expect(screen.getByText("Ready to accept connections")).toBeTruthy();
   });
 
-  it("web variant renders the web clients list but not phone pairing", async () => {
-    installAdeMock(makeHostSnapshot());
-    render(<SyncDevicesSection variant="web" />);
+  it("surfaces when desktop sign-in and brain publication disagree", () => {
+    const status = makeStatus();
+    status.routeHealth.accountDirectory = {
+      ...status.routeHealth.accountDirectory,
+      state: "account_signed_out",
+      skipReason: "The ADE brain is signed out of the ADE account.",
+      lastHttpStatus: null,
+    };
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    expect(await screen.findByText("Web client")).toBeTruthy();
-    expect(screen.getByText("Web clients")).toBeTruthy();
-    expect(screen.queryByText("Pair a phone")).toBeNull();
-    expect(screen.queryByText("Phones")).toBeNull();
+    expect(screen.getByText(
+      "Signed in, but this Mac is not published · The ADE brain is signed out of the ADE account.",
+    )).toBeTruthy();
   });
 
-  it("phone variant renders phone pairing but not the web client card", async () => {
-    installAdeMock(makeHostSnapshot());
-    render(<SyncDevicesSection variant="phone" />);
-
-    expect(await screen.findByText("Connect a phone")).toBeTruthy();
-    expect(screen.getByText("Phones")).toBeTruthy();
-    expect(screen.queryByText("Web client")).toBeNull();
-    expect(screen.queryByText("Web clients")).toBeNull();
+  it("explains nearby fallback when signed out", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn={false} />);
+    expect(
+      screen.getByText("Not signed in — nearby devices can still connect with the pairing code"),
+    ).toBeTruthy();
   });
 
-  it("shows Copied feedback after copying a visible pairing code", async () => {
-    const { writeClipboardText } = installAdeMock(makeHostSnapshot({ pairingPin: "123456" }));
+  it("prompts to set a pairing code and generates one", () => {
+    const generatePin = vi.fn();
     render(
-      <React.StrictMode>
-        <SyncDevicesSection variant="web" />
-      </React.StrictMode>,
+      <ThisMacCard
+        sync={makeSync({ status: makeStatus({ pairingPinConfigured: false }), generatePin })}
+        accountSignedIn
+      />,
     );
+    expect(screen.getByText("Set a pairing code below so new devices can connect")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Generate code" }));
+    expect(generatePin).toHaveBeenCalledTimes(1);
+  });
 
-    const copy = await screen.findByRole("button", { name: "Copy code" });
-    fireEvent.click(copy);
-
+  it("shows a visible pairing code with a working copy button", async () => {
+    const writeClipboardText = vi.fn(async () => {});
+    (globalThis.window as any).ade = { app: { writeClipboardText } };
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: makeStatus({ pairingPin: "123456" }) })}
+        accountSignedIn
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith("123456"));
-    expect(await screen.findByText("Copied")).toBeTruthy();
   });
 
-  it("keeps web status scoped to browser peers", async () => {
-    installAdeMock(makeHostSnapshot({
-      connectedPeers: [
-        { deviceId: "phone-1", deviceName: "Phone", platform: "iOS", deviceType: "phone" },
-      ],
-    }));
-    render(<SyncDevicesSection variant="web" />);
-
-    expect(await screen.findByText("Ready - no web clients connected")).toBeTruthy();
-    expect(screen.queryByText("Connected")).toBeNull();
-  });
-
-  it("keeps the default all variant unchanged", async () => {
-    installAdeMock(makeHostSnapshot());
-    render(<SyncDevicesSection />);
-
-    expect(await screen.findByText("Connect a phone")).toBeTruthy();
-    expect(screen.getByText("Web client")).toBeTruthy();
-    expect(screen.getByText("Phones")).toBeTruthy();
-    expect(screen.getByText("Web clients")).toBeTruthy();
-  });
-
-  it("closes only the enlarged QR on Escape", async () => {
-    const parentEscape = vi.fn();
-    installAdeMock(makeHostSnapshot());
+  it("offers regenerate + remove for a configured-but-hidden code", () => {
+    const generatePin = vi.fn();
+    const clearPin = vi.fn();
     render(
-      <div onKeyDown={(event) => {
-        if (event.key === "Escape") parentEscape();
-      }}>
-        <SyncDevicesSection variant="web" />
-      </div>,
+      <ThisMacCard
+        sync={makeSync({ status: makeStatus({ pairingPin: null, pairingPinConfigured: true }), generatePin, clearPin })}
+        accountSignedIn
+      />,
     );
-
-    fireEvent.click(await screen.findByTitle("Click to enlarge"));
-    const dialog = await screen.findByRole("dialog", { name: "Web client pairing QR code" });
-    expect(dialog.closest("body")).toBe(document.body);
-
-    fireEvent.keyDown(dialog, { key: "Escape" });
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Web client pairing QR code" })).toBeNull();
-    });
-    expect(parentEscape).not.toHaveBeenCalled();
-    expect(screen.getByText("Web client")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Generate new code" }));
+    expect(generatePin).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(clearPin).toHaveBeenCalledTimes(1);
   });
 
-  it("restarts copy feedback timers on repeated copies", async () => {
-    installAdeMock(makeHostSnapshot({ pairingPin: "123456" }));
-    render(<SyncDevicesSection variant="web" />);
-    const copy = await screen.findByRole("button", { name: "Copy code" });
-
-    vi.useFakeTimers();
-    await act(async () => {
-      fireEvent.click(copy);
-      await Promise.resolve();
+  it("labels this Mac with a chip and lists reachable routes plus the build line", async () => {
+    (globalThis.window as any).ade = {
+      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform: "darwin" })) },
+    };
+    const status = makeStatus({
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        accountDirectory: makeStatus().routeHealth.accountDirectory,
+      },
     });
-    expect(screen.getByText("Copied")).toBeTruthy();
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    act(() => vi.advanceTimersByTime(1_000));
-    await act(async () => {
-      fireEvent.click(copy);
-      await Promise.resolve();
-    });
-    act(() => vi.advanceTimersByTime(600));
-
-    expect(screen.getByText("Copied")).toBeTruthy();
+    expect(screen.getByText("This Mac")).toBeTruthy();
+    expect(screen.getByText("Reachable via Wi-Fi · Tailscale · Relay")).toBeTruthy();
+    expect(await screen.findByText("ADE 1.2.28 · macOS")).toBeTruthy();
   });
 
-  it("explains how to recover when a local release build is not installed", async () => {
-    installAdeMock(makeHostSnapshot());
-    const getStatus = globalThis.window.ade.sync.getStatus as ReturnType<typeof vi.fn>;
-    getStatus.mockRejectedValue(new Error(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE));
+  it("omits unknown routes and only advertises the ones that are up", () => {
+    const status = makeStatus({
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
+        // Relay control connected but bridge not yet validated → not reachable.
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        accountDirectory: makeStatus().routeHealth.accountDirectory,
+      },
+    });
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    render(<SyncDevicesSection variant="web" />);
-
-    expect(await screen.findByText("Couldn't load connection details")).toBeTruthy();
-    expect(screen.getByText("Install this ADE build in Applications, reopen it, then try again.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.getByText("Reachable via Wi-Fi")).toBeTruthy();
+    expect(screen.queryByText(/Tailscale/)).toBeNull();
+    expect(screen.queryByText(/Relay/)).toBeNull();
   });
 
-  it("distinguishes a missing project from an unavailable sync service", async () => {
-    installAdeMock(makeHostSnapshot());
-    const getStatus = globalThis.window.ade.sync.getStatus as ReturnType<typeof vi.fn>;
-    getStatus.mockRejectedValue(new Error("Sync service is not available."));
+  it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    expect(screen.queryByText("Connect a phone")).toBeNull();
+    expect(screen.queryByText("Scan to pair")).toBeNull();
+  });
+});
 
-    const { rerender } = render(<SyncDevicesSection variant="web" />);
+describe("PhoneConnectionsTab", () => {
+  afterEach(() => cleanup());
 
-    expect(await screen.findByText("Restart ADE, then try again.")).toBeTruthy();
-    expect(screen.queryByText("Open a project in ADE, then try again.")).toBeNull();
+  it.each([true, false])(
+    "includes pinConfigured=%s in the desktop pairing QR",
+    (pairingPinConfigured) => {
+      const status = makeStatus({ pairingPinConfigured });
+      render(
+        <PhoneConnectionsTab
+          sync={makeSync({ status })}
+          confirmRevoke={vi.fn(autoConfirm)}
+        />,
+      );
 
-    getStatus.mockRejectedValue(new Error("Sync service is not available. Register a project first."));
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    rerender(<SyncDevicesSection variant="web" />);
+      const qrValue = screen.getByTestId("pairing-qr").getAttribute("data-value") ?? "";
+      expect(parsePairingQrUrl(qrValue)?.pinConfigured).toBe(pairingPinConfigured);
+    },
+  );
 
-    expect(await screen.findByText("Open a project in ADE, then try again.")).toBeTruthy();
+  it("lists paired phones and revokes after confirmation", async () => {
+    const forgetDevice = vi.fn();
+    const confirmRevoke = vi.fn(autoConfirm);
+    render(
+      <PhoneConnectionsTab
+        sync={makeSync({ devices: [device()], forgetDevice })}
+        confirmRevoke={confirmRevoke}
+      />,
+    );
+    expect(screen.getByText("Arul iPhone")).toBeTruthy();
+    expect(
+      screen.getByText("Sign in to ADE on your iPhone — this Mac appears automatically."),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(confirmRevoke).toHaveBeenCalled());
+    await waitFor(() => expect(forgetDevice).toHaveBeenCalled());
+  });
+
+  it("does not revoke when the confirmation is declined", async () => {
+    const forgetDevice = vi.fn();
+    render(
+      <PhoneConnectionsTab
+        sync={makeSync({ devices: [device()], forgetDevice })}
+        confirmRevoke={vi.fn(async () => false)}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => {});
+    expect(forgetDevice).not.toHaveBeenCalled();
+  });
+});
+
+describe("WebConnectionsTab", () => {
+  afterEach(() => cleanup());
+
+  it("offers the browser launcher when signed in", () => {
+    render(
+      <WebConnectionsTab sync={makeSync()} accountSignedIn confirmRevoke={vi.fn(autoConfirm)} />,
+    );
+    expect(screen.getByRole("button", { name: /Open ADE in browser/ })).toBeTruthy();
+    expect(screen.queryByText("Sign in to use the web client")).toBeNull();
+  });
+
+  it("prompts to sign in when signed out", () => {
+    const onAccountRequested = vi.fn();
+    render(
+      <WebConnectionsTab
+        sync={makeSync()}
+        accountSignedIn={false}
+        confirmRevoke={vi.fn(autoConfirm)}
+        onAccountRequested={onAccountRequested}
+      />,
+    );
+    const signIn = screen.getByRole("button", { name: "Sign in to use the web client" });
+    fireEvent.click(signIn);
+    expect(onAccountRequested).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists connected browsers and revokes after confirmation", async () => {
+    const forgetDevice = vi.fn();
+    render(
+      <WebConnectionsTab
+        sync={makeSync({
+          devices: [device({ deviceId: "browser-1", name: "Chrome", deviceType: "browser" })],
+          forgetDevice,
+        })}
+        accountSignedIn
+        confirmRevoke={vi.fn(autoConfirm)}
+      />,
+    );
+    expect(screen.getByText("Chrome")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(forgetDevice).toHaveBeenCalled());
   });
 });

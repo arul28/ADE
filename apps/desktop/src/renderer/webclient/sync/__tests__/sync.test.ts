@@ -503,44 +503,6 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("keeps a signed-out secure direct pairing local", async () => {
-    const storage = new MemoryStorage();
-    const script = createSocketFactory((socket, envelope) => {
-      if (envelope.type === "pairing_request") {
-        expect(envelope.payload).not.toMatchObject({ relayAccountToken: expect.anything() });
-        socket.serverSend({
-          type: "pairing_result",
-          requestId: envelope.requestId,
-          payload: {
-            ok: true,
-            deviceId: (envelope.payload as { peer: SyncPeerMetadata }).peer.deviceId,
-            secret: "direct-secret",
-          },
-        });
-      }
-      if (envelope.type === "hello") {
-        expect(envelope.payload).not.toMatchObject({ auth: { relayAccountToken: expect.anything() } });
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
-      }
-    });
-    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-
-    const environment = await client.pair({
-      payload: pairingPayload,
-      pin: "123456",
-      deviceName: "ADE Browser",
-      directWssEndpoint: "wss://studio.example.test:8787",
-    });
-
-    expect(script.sockets[0]?.url).toBe("wss://studio.example.test:8787");
-    expect(environment.accountOwnerUserId).toBeNull();
-    expect(environment.explicitWssEndpoints).toContain("wss://studio.example.test:8787");
-    client.disconnect();
-    await client.connect(environment.envId);
-    expect(script.sockets[1]?.url).toBe("wss://studio.example.test:8787");
-    client.dispose();
-  });
-
   it("turns a Relay account rejection into sign-in guidance without deleting the pairing", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage, { addressCandidates: [] });
@@ -775,53 +737,6 @@ describe("browser sync connection and client", () => {
       endpoint: directEndpoint,
       relayAccess: signedInRelayAccess,
     })).toBeNull();
-  });
-
-  it("pairs, sends a paired DPoP hello, persists the environment, and connects", async () => {
-    const storage = new MemoryStorage();
-    await makeEnvironment(storage, { accountOwnerUserId: "account-user-1" });
-    const sequence: string[] = [];
-    const script = createSocketFactory((socket, envelope) => {
-      sequence.push(envelope.type);
-      if (envelope.type === "pairing_request") {
-        expect(envelope.payload).toMatchObject({
-          code: "123456",
-          relayAccountToken: "relay-account-token",
-        });
-        socket.serverSend({
-          type: "pairing_result",
-          requestId: envelope.requestId,
-          payload: {
-            ok: true,
-            deviceId: (envelope.payload as { peer: SyncPeerMetadata }).peer.deviceId,
-            secret: "paired-secret",
-          },
-        });
-      }
-      if (envelope.type === "hello") {
-        const payload = envelope.payload as { auth: { kind: string; dpop?: unknown; relayAccountToken?: string } };
-        expect(payload.auth.kind).toBe("paired");
-        expect(payload.auth.dpop).toBeTruthy();
-        expect(payload.auth.relayAccountToken).toBe("relay-account-token");
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
-      }
-    });
-    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-
-    const environment = await client.pair({
-      payload: pairingPayload,
-      pin: "123456",
-      deviceName: "ADE Browser",
-      relayAccess: signedInRelayAccess,
-    });
-
-    expect(sequence).toEqual(["pairing_request", "hello"]);
-    expect(environment.secret).toBe("paired-secret");
-    expect(environment.accountOwnerUserId).toBeNull();
-    expect(environment.lastGoodEndpoint).toBe("wss://relay.example/connect/machine-key");
-    expect(await new WebClientEnvStore(storage).getSelectedEnvId()).toBe(environment.envId);
-    expect(client.getStatus().state).toBe("connected");
-    client.dispose();
   });
 
   it("refreshes DPoP per account relay and reconnects with the paired secret on current endpoints", async () => {

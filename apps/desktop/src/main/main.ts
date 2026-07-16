@@ -1139,7 +1139,10 @@ app.whenReady().then(async () => {
   const machineAdeLayout = resolveMachineAdeLayout();
   const startupState = normalizeStartupProjectState({
     saved,
-    additionalRecentProjects: readMachineRegistryRecentProjects(machineAdeLayout),
+    additionalRecentProjects: readMachineRegistryRecentProjects(
+      machineAdeLayout,
+      saved.recentProjects ?? [],
+    ),
     isLikelyRepoRoot,
     normalizeProjectPath,
   });
@@ -1344,6 +1347,17 @@ app.whenReady().then(async () => {
       }
     },
   });
+  const mirrorDesktopRecentProjectToMachineCatalog = (rootPath: string): void => {
+    void localRuntimePool.ensureProject(rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    }).catch((error) => {
+      localRuntimeLogger.warn("local_runtime.recent_project_mirror_failed", {
+        rootPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
   if (shouldAttemptRuntimeServiceInstall) {
     void localRuntimePool.installServiceBestEffort({
       forceRestart: machineTrustResetRestartRequired,
@@ -3938,6 +3952,9 @@ app.whenReady().then(async () => {
       },
     );
     writeGlobalState(globalStatePath, state);
+    if (recordRecent !== false && userSelectedProject) {
+      mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
+    }
 
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
     const rpcRuntime = {
@@ -4822,6 +4839,10 @@ app.whenReady().then(async () => {
   async function mobileProjectSummaryForRoot(rootPath: string | null | undefined): Promise<SyncMobileProjectSummary> {
     const normalizedRoot = await resolveMobileSyncProjectRoot(rootPath);
     const ctx = await ensureProjectContextForMobileSync(normalizedRoot);
+    await localRuntimePool.ensureProject(normalizedRoot, {
+      catalogVisibility: "recent",
+      registrationSource: "mobile",
+    });
     return await mobileProjectSummaryForContext(
       ctx,
       recentProjectInspectionForRoot(normalizedRoot),
@@ -4918,6 +4939,18 @@ app.whenReady().then(async () => {
         ? undefined
         : state.lastProjectRoot,
     });
+    try {
+      await localRuntimePool.setProjectCatalogVisibility(
+        rootToForget,
+        "system",
+        "mobile",
+      );
+    } catch (error) {
+      console.warn("sync.mobile_project_forget_registry_failed", {
+        rootPath: rootToForget,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (projectContexts.has(rootToForget)) {
       const rootToClose = rootToForget;
       const closeTimer = setTimeout(() => {
@@ -5144,6 +5177,9 @@ app.whenReady().then(async () => {
     );
     delete state.lastRemoteProjectBinding;
     writeGlobalState(globalStatePath, state);
+    if (options.recordRecent !== false) {
+      mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
+    }
   };
 
   const projectOpenLogger = createFileLogger(

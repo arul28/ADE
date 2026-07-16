@@ -19,6 +19,10 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
         "ade_mobile_app_opened",
         "ade_mobile_screen_viewed",
         "ade_mobile_feature_used",
+        "ade_mobile_sign_in_outcome",
+        "ade_mobile_machine_adoption_outcome",
+        "ade_mobile_pairing_outcome",
+        "ade_mobile_quick_connect_used",
         "ade_mobile_error",
         "ade_mobile_analytics_budget",
       ])
@@ -26,20 +30,20 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(ADEAnalyticsOutcome.failed.rawValue, "failure")
   }
 
-  func testAnalyticsRequiresConsentAndOptOutStopsCaptureImmediately() {
+  func testAnalyticsDefaultsOnAndIgnoresLegacyOptOutPreference() {
     let (analytics, sink, _) = makeAnalytics(preference: nil)
 
-    XCTAssertFalse(analytics.isEnabled)
-    XCTAssertTrue(analytics.shouldRequestConsent)
-    analytics.captureScreen(.work)
-    analytics.setEnabled(true)
+    XCTAssertTrue(analytics.isEnabled)
     XCTAssertFalse(analytics.shouldRequestConsent)
     analytics.captureScreen(.work)
     analytics.setEnabled(false)
     analytics.captureScreen(.lanes)
 
-    XCTAssertEqual(sink.events.map(\.name), ["ade_mobile_screen_viewed"])
-    XCTAssertEqual(sink.enabledStates, [true, false])
+    XCTAssertEqual(sink.events.map(\.name), [
+      "ade_mobile_screen_viewed",
+      "ade_mobile_screen_viewed",
+    ])
+    XCTAssertEqual(sink.enabledStates, [true])
   }
 
   func testAppOpenedHasStrictPerEventDailyLimit() {
@@ -189,6 +193,68 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       "error",
     ])
     XCTAssertTrue(forbiddenKeys.isDisjoint(with: event.properties.keys))
+  }
+
+  func testOutcomeEventsUseClosedCoarseEnumsOnly() {
+    let (analytics, sink, _) = makeAnalytics()
+
+    analytics.captureSignInOutcome(.returningUser)
+    analytics.captureMachineAdoptionOutcome(.adopted)
+    analytics.capturePairingOutcome(.pinNotSet)
+    analytics.captureQuickConnect(.pairedMachine)
+
+    XCTAssertEqual(sink.events.map(\.name), [
+      "ade_mobile_sign_in_outcome",
+      "ade_mobile_machine_adoption_outcome",
+      "ade_mobile_pairing_outcome",
+      "ade_mobile_quick_connect_used",
+    ])
+    XCTAssertEqual(sink.events[0].properties["outcome"] as? String, "returning_user")
+    XCTAssertEqual(sink.events[1].properties["outcome"] as? String, "adopted")
+    XCTAssertEqual(sink.events[2].properties["outcome"] as? String, "pin_not_set")
+    XCTAssertEqual(sink.events[3].properties["source"] as? String, "paired_machine")
+    for event in sink.events {
+      XCTAssertTrue(Set(event.properties.keys).isSubset(of: Set([
+        "surface",
+        "platform",
+        "outcome",
+        "source",
+        "$process_person_profile",
+        "$geoip_disable",
+      ])))
+    }
+  }
+
+  func testOutcomeSanitizerRejectsArbitraryValuesAndDropsExtraFields() throws {
+    let defaults = makeDefaults()
+    let factory = ProductAnalyticsTestTransportFactory()
+    let sink = DirectPostHogProductAnalyticsSink(
+      defaults: defaults,
+      transportFactory: { factory.make() }
+    )
+    sink.configure(projectToken: "phc_public_123", host: nil, enabled: true)
+
+    sink.capture(event: "ade_mobile_sign_in_outcome", properties: [
+      "outcome": "person@example.com",
+    ])
+    XCTAssertTrue(factory.transports.isEmpty)
+
+    sink.capture(event: "ade_mobile_quick_connect_used", properties: [
+      "source": "account_machine",
+      "machine_name": "Personal Mac",
+    ])
+    let request = try XCTUnwrap(factory.transports.first?.requests.first)
+    let body = try XCTUnwrap(request.httpBody)
+    let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let properties = try XCTUnwrap(payload["properties"] as? [String: Any])
+    XCTAssertEqual(Set(properties.keys), Set([
+      "source",
+      "surface",
+      "platform",
+      "$process_person_profile",
+      "$geoip_disable",
+    ]))
+    XCTAssertNil(properties["machine_name"])
   }
 
   func testErrorsUseNormalizedSchemaAndAreAlwaysRecoverable() throws {

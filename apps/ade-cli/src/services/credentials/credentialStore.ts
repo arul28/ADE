@@ -10,10 +10,18 @@ export interface CredentialStore {
   delete(key: string): Promise<void>;
 }
 
+export type CredentialStoreReadState = "available" | "missing" | "unreadable";
+
 export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
   setSync(key: string, value: string): void;
   deleteSync(key: string): void;
+  /** Atomically update the complete synchronous store when supported. */
+  updateSync?(updater: (values: Record<string, string>) => boolean | void): void;
+  /** Best-effort cross-process notification that persisted credentials changed. */
+  onDidChange?(listener: () => void): () => void;
+  /** Result of the most recent synchronous credential-file read. */
+  getLastReadState?(): CredentialStoreReadState;
 };
 
 type StoredCredentialEnvelope = {
@@ -45,6 +53,7 @@ const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n")
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
+const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
 
 type CredentialLockMetadata = {
@@ -111,6 +120,72 @@ function defaultLockPath(credentialsPath: string): string {
 
 function isSamePath(left: string, right: string): boolean {
   return path.resolve(left) === path.resolve(right);
+}
+
+type CredentialFileStatSnapshot = {
+  ino: number;
+  mtimeMs: number;
+  size: number;
+} | null;
+
+function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSnapshot | undefined {
+  try {
+    const stat = fs.statSync(filePath);
+    return { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch (error: unknown) {
+    if (isEnoent(error)) return null;
+    return undefined;
+  }
+}
+
+function isSameCredentialFileStat(
+  left: CredentialFileStatSnapshot,
+  right: CredentialFileStatSnapshot,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.ino === right.ino
+    && left.mtimeMs === right.mtimeMs
+    && left.size === right.size;
+}
+
+class CredentialFileStatWatcher {
+  private previous: CredentialFileStatSnapshot | undefined;
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(
+    private readonly filePath: string,
+    private readonly listener: () => void,
+    private readonly intervalMs: number | null,
+  ) {}
+
+  start(): void {
+    this.previous = readCredentialFileStatSnapshot(this.filePath);
+    if (this.intervalMs === null) return;
+    this.timer = setInterval(() => this.checkNow(), this.intervalMs);
+    this.timer.unref();
+  }
+
+  checkNow(): void {
+    const current = readCredentialFileStatSnapshot(this.filePath);
+    if (current === undefined) return;
+    if (this.previous === undefined) {
+      this.previous = current;
+      return;
+    }
+    if (isSameCredentialFileStat(current, this.previous)) return;
+    this.previous = current;
+    try {
+      this.listener();
+    } catch {
+      // Credential observers are best-effort; one subscriber must not stop
+      // the watcher or prevent sibling subscribers from seeing the change.
+    }
+  }
+
+  dispose(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
 }
 
 function parseLockMetadata(raw: string): CredentialLockMetadata {
@@ -439,6 +514,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly machineKeyPath: string;
   private readonly lockPath: string;
   private readonly keyMaterialProvider: () => Buffer | null;
+  private readonly credentialChangePollIntervalMs: number | null;
+  private readonly credentialFileWatchers = new Set<CredentialFileStatWatcher>();
+  private lastReadState: CredentialStoreReadState = "missing";
 
   constructor(args: {
     secretsDir?: string;
@@ -446,12 +524,23 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     machineKeyPath?: string;
     lockPath?: string;
     keyMaterialProvider?: () => Buffer | null;
+    /** Set to null when tests drive checkForChangesNow() explicitly. */
+    credentialChangePollIntervalMs?: number | null;
   } = {}) {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
     this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
+    this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
+      ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
+      : args.credentialChangePollIntervalMs;
+    if (
+      this.credentialChangePollIntervalMs !== null
+      && this.credentialChangePollIntervalMs <= 0
+    ) {
+      throw new Error("Credential change poll interval must be positive.");
+    }
   }
 
   async get(key: string): Promise<string | null> {
@@ -469,6 +558,10 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
     return this.readAll({ allowRewrite: false })[normalized] ?? null;
+  }
+
+  getLastReadState(): CredentialStoreReadState {
+    return this.lastReadState;
   }
 
   setSync(key: string, value: string): void {
@@ -495,6 +588,28 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     });
   }
 
+  onDidChange(listener: () => void): () => void {
+    ensureDirMode700(path.dirname(this.credentialsPath));
+    const watcher = new CredentialFileStatWatcher(
+      this.credentialsPath,
+      listener,
+      this.credentialChangePollIntervalMs,
+    );
+    this.credentialFileWatchers.add(watcher);
+    watcher.start();
+    return () => {
+      watcher.dispose();
+      this.credentialFileWatchers.delete(watcher);
+    };
+  }
+
+  /** Runs the same stat comparison as the production poller without waiting. */
+  checkForChangesNow(): void {
+    for (const watcher of this.credentialFileWatchers) {
+      watcher.checkNow();
+    }
+  }
+
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
     this.withLock(() => {
       const values = this.readAll({ allowRewrite: true });
@@ -510,18 +625,28 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   private readAll(args: { allowRewrite: boolean }): Record<string, string> {
+    const credentialsExist = fs.existsSync(this.credentialsPath);
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
     if (!key.equals(machineKey)) {
       try {
-        return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+        const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+        this.lastReadState = credentialsExist ? "available" : "missing";
+        return values;
       } catch {
         // Only the genuine legacy machine-key ciphertext should trigger a rewrite.
         // If the legacy decrypt ALSO fails (true key rotation/corruption), propagate
         // the error so the ciphertext is preserved instead of being overwritten with
         // an empty store.
-        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        let values: Record<string, string>;
+        try {
+          values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        } catch (error) {
+          this.lastReadState = "unreadable";
+          throw error;
+        }
+        this.lastReadState = credentialsExist ? "available" : "missing";
         if (args.allowRewrite) {
           try {
             this.writeAll(values);
@@ -532,7 +657,17 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         return values;
       }
     }
-    return deserializeStore(raw, machineKey, { emptyOnDecryptFailure: true });
+    try {
+      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+      this.lastReadState = credentialsExist ? "available" : "missing";
+      return values;
+    } catch (error) {
+      // Preserve the historical fail-closed empty read while exposing why the
+      // account record could not be obtained to publisher health.
+      this.lastReadState = "unreadable";
+      if (args.allowRewrite) throw error;
+      return {};
+    }
   }
 
   private writeAll(values: Record<string, string>): void {
@@ -621,6 +756,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       if (!(normalized in values)) return;
       delete values[normalized];
       this.writeAll(values);
+    });
+  }
+
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    this.withLock(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      const shouldWrite = updater(values);
+      if (shouldWrite !== false) this.writeAll(values);
     });
   }
 

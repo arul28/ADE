@@ -109,7 +109,13 @@ function seedDatabase(): void {
 
 const projectRegistry = {
   list: () => [
-    { projectId: PROJECT_ID, rootPath: projectRoot, displayName: "Test", lastOpenedAt: 1_700_000_000_000 },
+    {
+      projectId: PROJECT_ID,
+      rootPath: projectRoot,
+      displayName: "Test",
+      lastOpenedAt: 1_700_000_000_000,
+      catalogVisibility: "recent" as const,
+    },
   ],
 };
 
@@ -139,6 +145,40 @@ afterEach(() => {
 });
 
 describe("buildRosterSnapshot", () => {
+  it("includes the system host but excludes other system projects", async () => {
+    const hostProjectId = "project_system_host";
+    const registry = {
+      list: () => [
+        ...projectRegistry.list(),
+        {
+          projectId: hostProjectId,
+          rootPath: projectRoot,
+          displayName: "System host",
+          lastOpenedAt: 1_800_000_000_000,
+          catalogVisibility: "system" as const,
+        },
+        {
+          projectId: "project_system_other",
+          rootPath: projectRoot,
+          displayName: "Other system project",
+          lastOpenedAt: 1_900_000_000_000,
+          catalogVisibility: "system" as const,
+        },
+      ],
+    };
+
+    const projects = await buildRosterSnapshot({
+      projectRegistry: registry,
+      scopeRegistry: unbootedScopes,
+      hostProjectId,
+    });
+
+    expect(projects.map((project) => project.projectId)).toEqual([
+      hostProjectId,
+      PROJECT_ID,
+    ]);
+  });
+
   it("maps lanes and chats from disk for an un-booted project", async () => {
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     expect(projects).toHaveLength(1);
@@ -245,7 +285,13 @@ describe("buildRosterSnapshot", () => {
     const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-roster-empty-"));
     try {
       const registry = {
-        list: () => [{ projectId: "project_empty", rootPath: emptyRoot, displayName: "Empty", lastOpenedAt: 0 }],
+        list: () => [{
+          projectId: "project_empty",
+          rootPath: emptyRoot,
+          displayName: "Empty",
+          lastOpenedAt: 0,
+          catalogVisibility: "recent" as const,
+        }],
       };
       const projects = await buildRosterSnapshot({ projectRegistry: registry, scopeRegistry: unbootedScopes });
       expect(projects).toHaveLength(1);

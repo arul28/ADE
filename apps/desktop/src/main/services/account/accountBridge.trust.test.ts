@@ -8,6 +8,7 @@ import {
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_CLERK_ISSUER,
   fetchAccountMachines,
+  MAX_ACCOUNT_DIRECTORY_ERROR_BYTES,
   MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES,
   officialAccountDirectoryUrlForIssuer,
   parseAccountMachinesPayload,
@@ -24,9 +25,13 @@ const accountStatus = vi.hoisted(() => ({
   name: null,
   expiresAt: null,
   source: null,
+  provider: null as "github" | null,
+  imageUrl: null as string | null,
 }));
 const pollLogin = vi.hoisted(() => vi.fn());
 const signOut = vi.hoisted(() => vi.fn());
+const deleteMachine = vi.hoisted(() => vi.fn());
+const listMachines = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
@@ -47,11 +52,15 @@ vi.mock(
   () => ({
     AccountMachineDirectoryService: class {
       async listMachines() {
-        return { state: "ok", machines: [], message: null };
+        return listMachines();
       }
 
       async pairMachine() {
         throw new Error("not used");
+      }
+
+      async deleteMachine(machineKey: string) {
+        return deleteMachine(machineKey);
       }
     },
   }),
@@ -235,10 +244,15 @@ describe("shared account directory trust boundary", () => {
       accessToken: "top-secret-bearer",
       fetchImpl: async (input, init) => {
         calls.push({ input: String(input), init });
-        return new Response(null, { status: 401 });
+        return new Response(JSON.stringify({ error: "token expired" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
       },
     });
     expect(result.state).toBe("auth_expired");
+    expect(result.message).toContain("Reason: token expired");
+    expect(result.message).not.toContain("top-secret-bearer");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.input).toBe("https://directory.example/account/machines");
     expect(calls[0]?.input).not.toContain("top-secret-bearer");
@@ -248,6 +262,50 @@ describe("shared account directory trust boundary", () => {
       redirect: "error",
     });
     expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe("Bearer top-secret-bearer");
+  });
+
+  it("does not consume or surface an oversized directory auth-error body", async () => {
+    let cancelled = false;
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "top-secret-bearer",
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("x".repeat(MAX_ACCOUNT_DIRECTORY_ERROR_BYTES + 1)));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }), { status: 401 }),
+    });
+
+    expect(result).toEqual({
+      state: "auth_expired",
+      machines: [],
+      message: "Your ADE account session expired. Sign in again.",
+    });
+    expect(cancelled).toBe(true);
+    expect(result.message).not.toContain("top-secret-bearer");
+  });
+
+  it("maps directory authentication configuration failures to availability, not auth expiry", async () => {
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "valid-account-token",
+      fetchImpl: async () => new Response(
+        JSON.stringify({ error: "authentication unavailable" }),
+        {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    });
+
+    expect(result).toEqual({
+      state: "unavailable",
+      machines: [],
+      message: "Machine directory returned 503.",
+    });
   });
 
   it("rejects a streamed directory response before it can grow without bound", async () => {
@@ -310,8 +368,12 @@ describe("desktop account machine lifecycle", () => {
   beforeEach(() => {
     accountStatus.signedIn = false;
     accountStatus.userId = null;
+    accountStatus.provider = null;
+    accountStatus.imageUrl = null;
     pollLogin.mockReset();
     signOut.mockReset().mockReturnValue({ ...accountStatus });
+    deleteMachine.mockReset();
+    listMachines.mockReset().mockResolvedValue({ state: "ok", machines: [], message: null });
   });
 
   it("keeps status pure and reconciles only authoritative auth transitions", async () => {
@@ -342,5 +404,49 @@ describe("desktop account machine lifecycle", () => {
 
     bridge.signOut();
     expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+  });
+
+  it("surfaces enriched profile fields and wires account machine removal", async () => {
+    accountStatus.signedIn = true;
+    accountStatus.userId = "account-a";
+    accountStatus.provider = "github";
+    accountStatus.imageUrl = "https://images.example/account-a.png";
+    deleteMachine.mockResolvedValue({ ok: true, machineKey: "machine-a" });
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+
+    expect(bridge.status()).toMatchObject({
+      provider: "github",
+      imageUrl: "https://images.example/account-a.png",
+    });
+    await expect(bridge.removeMachine("machine-a")).resolves.toEqual({
+      ok: true,
+      machineKey: "machine-a",
+    });
+    expect(deleteMachine).toHaveBeenCalledWith("machine-a");
+  });
+
+  it("preserves a classified directory auth failure for the desktop surface", async () => {
+    listMachines.mockResolvedValue({
+      state: "auth_expired",
+      machines: [],
+      message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid issuer",
+    });
+    const reconcileAccountOwnership = vi.fn(() => ({
+      removedTargetIds: [],
+      removedCredentialHostIds: [],
+    }));
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({
+      getProjectRoot: () => null,
+      reconcileAccountOwnership,
+    });
+
+    await expect(bridge.listMachines()).resolves.toMatchObject({
+      state: "auth_expired",
+      message: expect.stringContaining("Reason: invalid issuer"),
+    });
+    expect(reconcileAccountOwnership).toHaveBeenCalledWith(null);
+    expect(listMachines).toHaveBeenCalledOnce();
   });
 });

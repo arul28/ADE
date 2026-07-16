@@ -366,7 +366,7 @@ type SyncRemoteCommandServiceArgs = {
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   /** Issues a short-lived one-time grant for the desktop runtime channels. */
   issueRuntimeHostPairingGrant?: () => string;
-  /** Effective relay kill-switch state for the machine-level cloud tunnel. */
+  /** Whether the account-gated machine relay is currently available. */
   isCloudRelayEnabled?: () => boolean;
   logger: Logger;
 };
@@ -4075,7 +4075,7 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
       const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
         candidate.kind === "relay" && candidate.host.trim().length > 0);
       return {
-        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo, pinConfigured })),
         code: code ?? null,
         pinConfigured,
         machineName: connectInfo.hostIdentity.name,
@@ -4110,6 +4110,7 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
         pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({
           connectInfo,
           runtimeHostGrant: issueGrant(),
+          pinConfigured,
         })),
         code: code ?? null,
         pinConfigured,

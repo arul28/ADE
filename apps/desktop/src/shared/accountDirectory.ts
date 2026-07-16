@@ -12,6 +12,7 @@ const MAX_ENDPOINTS_PER_MACHINE = 16;
 const MAX_ID_CHARS = 512;
 const MAX_LABEL_CHARS = 256;
 export const MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const MAX_ACCOUNT_DIRECTORY_ERROR_BYTES = 512;
 
 export const DEFAULT_ADE_TUNNEL_RELAY_URL =
   "https://ade-tunnel-relay.arulsharma1028.workers.dev";
@@ -235,6 +236,59 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
+function shortHttpReason(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized && normalized.length <= MAX_LABEL_CHARS ? normalized : null;
+}
+
+/**
+ * Consume only a tiny error response. Directory failures are surfaced to users
+ * and health diagnostics, so never use Response.text() on an untrusted body.
+ */
+export async function readAccountDirectoryHttpReason(response: Response): Promise<string | null> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ACCOUNT_DIRECTORY_ERROR_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!response.body) return null;
+
+  const reader = response.body.getReader();
+  const bytes: number[] = [];
+  let oversized = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (bytes.length + value.byteLength > MAX_ACCOUNT_DIRECTORY_ERROR_BYTES) {
+        oversized = true;
+        await reader.cancel();
+        break;
+      }
+      bytes.push(...value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (oversized || bytes.length === 0) return null;
+
+  const text = new TextDecoder("utf-8").decode(Uint8Array.from(bytes)).trim();
+  if (!text) return null;
+  try {
+    const payload = JSON.parse(text) as unknown;
+    if (isRecord(payload)) {
+      return shortHttpReason(payload.error) ?? shortHttpReason(payload.message);
+    }
+  } catch {
+    // Plain-text 403 responses are also useful if they stay within the bound.
+  }
+  return shortHttpReason(text);
+}
+
 export async function fetchAccountMachines(args: {
   baseUrl: string | null | undefined;
   accessToken: string;
@@ -277,10 +331,13 @@ export async function fetchAccountMachines(args: {
       signal: controller.signal,
     });
     if (response.status === 401 || response.status === 403) {
+      const reason = await readAccountDirectoryHttpReason(response).catch(() => null);
       return {
         state: "auth_expired",
         machines: [],
-        message: "Your ADE account session expired. Sign in again.",
+        message: reason
+          ? `The machine directory rejected your ADE account session. Sign in again. Reason: ${reason}`
+          : "Your ADE account session expired. Sign in again.",
       };
     }
     if (!response.ok) {

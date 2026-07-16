@@ -6,6 +6,11 @@ type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
 };
 
+type PrewarmRecentScopesOptions = {
+  excludeProjectId?: ProjectId | null;
+  limit?: number;
+};
+
 export class ProjectScope {
   readonly registryProjectId: ProjectId;
   readonly record: ProjectRecord;
@@ -30,6 +35,9 @@ export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
+  private syncHostTransitionDepth = 0;
+  private prewarmStarted = false;
+  private disposed = false;
   private readonly remoteCommandExecutor = {
     execute: async (payload: SyncCommandPayload): Promise<unknown> => {
       return await this.executeRemoteCommand(payload);
@@ -62,7 +70,10 @@ export class ProjectScopeRegistry {
     return this.scopes.get(projectId) ?? null;
   }
 
-  async get(projectId: ProjectId): Promise<ProjectScope> {
+  async get(
+    projectId: ProjectId,
+    options: { touch?: boolean } = {},
+  ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
 
@@ -72,7 +83,9 @@ export class ProjectScopeRegistry {
     }
 
     const pending = (async () => {
-      this.projectRegistry.touch(projectId);
+      if (options.touch ?? true) {
+        this.projectRegistry.touch(projectId);
+      }
       const syncRuntime = this.buildSyncRuntimeOptions(
         projectId,
         this.syncHostProjectId === projectId,
@@ -119,8 +132,48 @@ export class ProjectScopeRegistry {
   }
 
   async disposeAll(): Promise<void> {
+    this.disposed = true;
     const projectIds = [...this.scopes.keys()];
     await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
+  }
+
+  /**
+   * One-shot background warm-up for at most two MRU project scopes. Warming
+   * never changes registry recency and never starts while a sync-host switch
+   * is active; the active host is already warm and should be excluded by the
+   * startup hook.
+   */
+  async prewarmRecentScopes(
+    options: PrewarmRecentScopesOptions = {},
+  ): Promise<ProjectId[]> {
+    if (this.prewarmStarted || this.disposed || this.syncHostTransitionDepth > 0) {
+      return [];
+    }
+    this.prewarmStarted = true;
+    const limit = Math.min(2, Math.max(0, Math.trunc(options.limit ?? 2)));
+    const candidates = this.projectRegistry
+      .list()
+      .filter((record) => record.catalogVisibility === "recent")
+      .filter((record) => record.projectId !== options.excludeProjectId)
+      .filter((record) => !this.scopes.has(record.projectId))
+      .sort((left, right) => {
+        const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
+        return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
+      })
+      .slice(0, limit);
+
+    const warmed: ProjectId[] = [];
+    for (const record of candidates) {
+      if (this.disposed || this.syncHostTransitionDepth > 0) break;
+      try {
+        await this.get(record.projectId, { touch: false });
+        warmed.push(record.projectId);
+      } catch {
+        // Prewarming is opportunistic. A later real project open retries get()
+        // normally and surfaces its own actionable error.
+      }
+    }
+    return warmed;
   }
 
   async ensureSyncHost(
@@ -128,6 +181,10 @@ export class ProjectScopeRegistry {
     options?: SwitchSyncHostOptions,
   ): Promise<ProjectScope | null> {
     return projectId ? this.switchSyncHost(projectId, options) : this.resolveActiveSyncHost();
+  }
+
+  getActiveSyncHostProjectId(): ProjectId | null {
+    return this.syncHostProjectId;
   }
 
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {
@@ -156,42 +213,47 @@ export class ProjectScopeRegistry {
     options: SwitchSyncHostOptions = {},
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
-    const previousHostId = this.syncHostProjectId;
-    const deactivatePreviousHost = options.deactivatePreviousHost ?? true;
-    if (previousHostId && previousHostId !== projectId && deactivatePreviousHost) {
-      await this.configureCachedSyncHost(previousHostId, false);
-    }
-    this.syncHostProjectId = projectId;
+    this.syncHostTransitionDepth += 1;
     try {
-      const scope = await this.get(projectId);
-      await this.configureSyncHost(scope, true);
-      return scope;
-    } catch (error) {
-      // A failing get() already nulls syncHostProjectId, so check for both.
-      if (this.syncHostProjectId === projectId) {
-        this.syncHostProjectId = deactivatePreviousHost ? null : previousHostId;
+      const previousHostId = this.syncHostProjectId;
+      const deactivatePreviousHost = options.deactivatePreviousHost ?? true;
+      if (previousHostId && previousHostId !== projectId && deactivatePreviousHost) {
+        await this.configureCachedSyncHost(previousHostId, false);
       }
-      if (
-        this.syncHostProjectId == null
-        && deactivatePreviousHost
-        && previousHostId
-        && previousHostId !== projectId
-      ) {
-        // The previous host was already stopped. With a brain-level shared
-        // sync listener that leaves NO host owning the socket: reconnecting
-        // phones would park until the grace close (4002), forever, since
-        // nothing else restarts a host. Restore the known-good previous
-        // host before surfacing the failure.
-        try {
-          const previousScope = await this.get(previousHostId);
-          await this.configureSyncHost(previousScope, true);
-          this.syncHostProjectId = previousHostId;
-        } catch {
-          // Leave syncHostProjectId null; resolveActiveSyncHost() (e.g. the
-          // next prepareProjectConnection) is the remaining recovery path.
+      this.syncHostProjectId = projectId;
+      try {
+        const scope = await this.get(projectId);
+        await this.configureSyncHost(scope, true);
+        return scope;
+      } catch (error) {
+        // A failing get() already nulls syncHostProjectId, so check for both.
+        if (this.syncHostProjectId === projectId) {
+          this.syncHostProjectId = deactivatePreviousHost ? null : previousHostId;
         }
+        if (
+          this.syncHostProjectId == null
+          && deactivatePreviousHost
+          && previousHostId
+          && previousHostId !== projectId
+        ) {
+          // The previous host was already stopped. With a brain-level shared
+          // sync listener that leaves NO host owning the socket: reconnecting
+          // phones would park until the grace close (4002), forever, since
+          // nothing else restarts a host. Restore the known-good previous
+          // host before surfacing the failure.
+          try {
+            const previousScope = await this.get(previousHostId);
+            await this.configureSyncHost(previousScope, true);
+            this.syncHostProjectId = previousHostId;
+          } catch {
+            // Leave syncHostProjectId null; resolveActiveSyncHost() (e.g. the
+            // next prepareProjectConnection) is the remaining recovery path.
+          }
+        }
+        throw error;
       }
-      throw error;
+    } finally {
+      this.syncHostTransitionDepth = Math.max(0, this.syncHostTransitionDepth - 1);
     }
   }
 

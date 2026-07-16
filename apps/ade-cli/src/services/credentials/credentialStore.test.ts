@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -44,6 +44,44 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
   });
 
+  it("notifies another service instance when the credential file changes", () => {
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      credentialChangePollIntervalMs: null,
+    });
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    let changes = 0;
+    const unsubscribe = reader.onDidChange(() => {
+      changes += 1;
+    });
+
+    writer.setSync("account.session.v1", "session");
+    reader.checkForChangesNow();
+
+    expect(changes).toBe(1);
+    reader.checkForChangesNow();
+    expect(changes).toBe(1);
+    unsubscribe();
+  });
+
+  it("isolates change-listener failures so sibling subscribers still run", () => {
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      credentialChangePollIntervalMs: null,
+    });
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const sibling = vi.fn();
+    reader.onDidChange(() => {
+      throw new Error("subscriber failed");
+    });
+    reader.onDidChange(sibling);
+
+    writer.setSync("account.session.v1", "session");
+
+    expect(() => reader.checkForChangesNow()).not.toThrow();
+    expect(sibling).toHaveBeenCalledTimes(1);
+  });
+
   it("creates the secrets directory and files with private permissions", async () => {
     if (process.platform === "win32") return;
     const secretsDir = path.join(tempDir, "secrets");
@@ -56,15 +94,18 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.statSync(path.join(secretsDir, "credentials.json.enc")).mode & 0o777).toBe(0o600);
   });
 
-  it("recovers from a replaced first-run machine key by treating the encrypted map as empty", () => {
+  it("fails closed and preserves ciphertext after the machine key is replaced", () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 
     store.setSync("agent.token", "secret");
+    const credentialPath = path.join(tempDir, "credentials.json.enc");
+    const ciphertext = fs.readFileSync(credentialPath, "utf8");
     fs.writeFileSync(path.join(tempDir, ".machine-key"), `${Buffer.alloc(32, 1).toString("base64")}\n`);
 
     expect(store.getSync("agent.token")).toBeNull();
-    store.setSync("agent.other", "next-secret");
-    expect(store.getSync("agent.other")).toBe("next-secret");
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(() => store.setSync("agent.other", "next-secret")).toThrow();
+    expect(fs.readFileSync(credentialPath, "utf8")).toBe(ciphertext);
   });
 
   it("preserves concurrent writes from separate processes on first run", async () => {

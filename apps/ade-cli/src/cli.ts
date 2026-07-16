@@ -72,15 +72,17 @@ import {
   validateLaunchProfilePermissionMode,
   type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
-import type {
-  SyncMobileProjectSummary,
-  SyncPairingConnectInfo,
-  SyncProjectForgetRequestPayload,
-  SyncProjectForgetResultPayload,
-  SyncProjectOpenRequestPayload,
-  SyncProjectSwitchRequestPayload,
-  SyncProjectSwitchResultPayload,
-  SyncRoleSnapshot,
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncMobileProjectSummary,
+  type SyncAccountDirectoryHealth,
+  type SyncPairingConnectInfo,
+  type SyncProjectForgetRequestPayload,
+  type SyncProjectForgetResultPayload,
+  type SyncProjectOpenRequestPayload,
+  type SyncProjectSwitchRequestPayload,
+  type SyncProjectSwitchResultPayload,
+  type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types/sync";
 import {
   isCurrentProcessDescendantOfPid,
@@ -221,6 +223,7 @@ type FormatterId =
   | "external-sessions"
   | "storage-snapshot"
   | "storage-compress"
+  | "sync-status"
   | "sync-web";
 
 type ChatWaitTarget =
@@ -13235,6 +13238,18 @@ export function shouldAutoRegisterProjectForPlan(
   return plan.steps.some((step) => !isMachineRuntimeScopedMethod(step.method));
 }
 
+export function automaticProjectRegistrationParams(rootPath: string): {
+  rootPath: string;
+  catalogVisibility: "system";
+  registrationSource: "runtime-auto";
+} {
+  return {
+    rootPath,
+    catalogVisibility: "system",
+    registrationSource: "runtime-auto",
+  };
+}
+
 function buildMachinesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") {
@@ -13286,9 +13301,6 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
-  ade sync relay status             Internet route for devices signed into the same ADE account
-  ade sync relay enable
-  ade sync relay disable            Kill-switch: never route sync through the relay
   ade sync security status          Machine sync security posture (require-DPoP)
   ade sync security require-dpop <on|off>
   ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
@@ -13311,6 +13323,7 @@ Usage:
     return {
       kind: "execute",
       label: "sync status",
+      formatter: "sync-status",
       steps: [
         {
           key: "result",
@@ -13427,45 +13440,6 @@ Usage:
       steps: [{ key: "result", method: "sync.setRuntimeName", params: { name } }],
     };
   }
-  if (sub === "relay") {
-    // Cloud relay toggle. Headless brains have no desktop Settings popover, so
-    // the CLI is the only surface for enabling the tunnel phones dial into.
-    const action = firstPositional(args) ?? "status";
-    if (action === "status" || action === "show" || action === "get") {
-      return {
-        kind: "execute",
-        label: "sync relay status",
-        steps: [{ key: "result", method: "sync.getCloudRelayStatus" }],
-      };
-    }
-    if (action === "enable" || action === "on") {
-      return {
-        kind: "execute",
-        label: "sync relay enable",
-        steps: [
-          {
-            key: "result",
-            method: "sync.setCloudRelayEnabled",
-            params: { enabled: true },
-          },
-        ],
-      };
-    }
-    if (action === "disable" || action === "off") {
-      return {
-        kind: "execute",
-        label: "sync relay disable",
-        steps: [
-          {
-            key: "result",
-            method: "sync.setCloudRelayEnabled",
-            params: { enabled: false },
-          },
-        ],
-      };
-    }
-    throw new CliUsageError(`Unsupported sync relay action: ${action}`);
-  }
   if (sub === "security") {
     // Machine-level sync security posture. Today the only knob is require-DPoP,
     // otherwise reachable solely via ADE_SYNC_REQUIRE_DPOP; headless operators
@@ -13535,7 +13509,15 @@ function buildProjectsPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "projects add",
       formatter: "projects-list",
-      steps: [{ key: "result", method: "projects.add", params: { rootPath } }],
+      steps: [{
+        key: "result",
+        method: "projects.add",
+        params: {
+          rootPath,
+          catalogVisibility: "recent",
+          registrationSource: "cli-explicit",
+        },
+      }],
     };
   }
   if (sub === "remove" || sub === "rm" || sub === "delete") {
@@ -13634,9 +13616,10 @@ async function createConnection(
         close: () => socketClient?.close(),
       };
       if (autoRegisterProject) {
-        const registered = await connection.request("projects.add", {
-          rootPath: roots.projectRoot,
-        });
+        const registered = await connection.request(
+          "projects.add",
+          automaticProjectRegistrationParams(roots.projectRoot),
+        );
         const registeredProjectId = isRecord(registered)
           ? asString(registered.projectId)
           : null;
@@ -14735,6 +14718,19 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   }
 }
 
+export function includeHostProjectInCatalog<T extends { projectId: string }>(
+  recentProjects: T[],
+  hostProject: T | null,
+): T[] {
+  if (
+    !hostProject ||
+    recentProjects.some((project) => project.projectId === hostProject.projectId)
+  ) {
+    return recentProjects;
+  }
+  return [...recentProjects, hostProject];
+}
+
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -14808,6 +14804,10 @@ async function runServe(
     try {
       preferredSyncProjectId = projectRegistry.add(
         path.resolve(preferredSyncProjectRoot),
+        {
+          catalogVisibility: "system",
+          registrationSource: "runtime-auto",
+        },
       ).projectId;
     } catch (error) {
       process.stderr.write(
@@ -14898,7 +14898,10 @@ async function runServe(
   const registerHeadlessMobileProject = async (
     rootPath: string,
   ): Promise<SyncMobileProjectSummary> => {
-    const record = projectRegistry.add(rootPath);
+    const record = projectRegistry.add(rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "mobile",
+    });
     return await mobileProjectSummaryForHeadlessRecord(record);
   };
   const openHeadlessMobileProject = async (
@@ -14991,8 +14994,12 @@ async function runServe(
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
     listProjects: async () => ({
-      projects: projectRegistry
-        .list()
+      projects: includeHostProjectInCatalog(
+        projectRegistry.listRecent(),
+        preferredSyncProjectId
+          ? projectRegistry.get(preferredSyncProjectId)
+          : null,
+      )
         .map((record) =>
           toMobileProjectSummary(record, {
             isAvailable: fs.existsSync(record.rootPath),
@@ -15127,6 +15134,12 @@ async function runServe(
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
   });
+  let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
+    accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
+      "sync_disabled",
+      "Account-directory publishing has not started.",
+    );
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -15137,8 +15150,7 @@ async function runServe(
       pinPath: path.join(layout.secretsDir, "sync-pin.json"),
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
-      getCloudRelayWssUrl: () =>
-        machineCloudRelayStore.isEnabled() ? machineCloudRelayStore.getRelayWssUrl() : null,
+      getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
     }),
   );
@@ -15153,6 +15165,7 @@ async function runServe(
       appVersion: VERSION,
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
+      getAccountDirectoryHealth,
       projectCatalogProvider: machineProjectCatalogProvider,
       // All-projects chat roster (mobile hub). Closes over `scopeRegistry`,
       // which is assigned by this very `new ProjectScopeRegistry(...)` call —
@@ -15177,7 +15190,6 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
-  let accountMachinePublisher: AccountMachinePublisherService | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -15197,20 +15209,33 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      getAccountDirectoryHealth,
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   const startSyncHost = async () => {
+    let activeScope: Awaited<
+      ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
+    >;
     if (preferredSyncProjectId) {
-      return await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+    } else {
+      activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
-    const activeScope = await scopeRegistry.resolveActiveSyncHost();
-    if (activeScope) return activeScope;
-    if (sharedSyncListener) {
+    if (!activeScope && sharedSyncListener) {
       await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
     }
-    return null;
+    if (activeScope) {
+      const prewarmTimer = setImmediate(() => {
+        void scopeRegistry.prewarmRecentScopes({
+          excludeProjectId: activeScope?.registryProjectId,
+          limit: 2,
+        });
+      });
+      prewarmTimer.unref?.();
+    }
+    return activeScope ?? null;
   };
   const disposeServeResources = async () => {
     accountMachinePublisher?.dispose();
@@ -15350,10 +15375,18 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
-    const accountProjectRoots = () => projectRegistry.list().map((record) => record.rootPath);
+    // Match the active sync-host/desktop project priority so a project Clerk
+    // issuer cannot send the brain to a different directory Worker.
+    const accountProjectRoots = () => {
+      const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      if (!activeProjectId) return [];
+      const activeProject = projectRegistry.get(activeProjectId);
+      return activeProject ? [activeProject.rootPath] : [];
+    };
     accountMachinePublisher = createBrainAccountMachinePublisherService({
       secretsDir: layout.secretsDir,
       projectRoots: accountProjectRoots,
+      isSyncEnabled: () => syncEnabled,
       logger: headlessProjectLogger,
       getSnapshot: async () => {
         const activeScope = await scopeRegistry.resolveActiveSyncHost();
@@ -15554,7 +15587,10 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()));
+  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+    catalogVisibility: "recent",
+    registrationSource: "cli-explicit",
+  });
   return {
     project,
     registryPath: registry.path,
@@ -15871,6 +15907,93 @@ function isSyncWebPairingCliOutput(value: unknown): value is SyncWebPairingCliOu
   );
 }
 
+function formatSyncStatus(value: unknown): string {
+  const snapshot = isRecord(value) ? value : {};
+  const routeHealth = isRecord(snapshot.routeHealth) ? snapshot.routeHealth : {};
+  const listener = isRecord(routeHealth.listener) ? routeHealth.listener : {};
+  const tailscale = isRecord(routeHealth.tailscale) ? routeHealth.tailscale : {};
+  const relay = isRecord(routeHealth.relay) ? routeHealth.relay : {};
+  const accountDirectory = isRecord(routeHealth.accountDirectory)
+    ? routeHealth.accountDirectory
+    : {};
+  const accountParts = [asString(accountDirectory.state) ?? "unavailable"];
+  const reachableEndpointCount = typeof accountDirectory.reachableEndpointCount === "number"
+    ? accountDirectory.reachableEndpointCount
+    : null;
+  if (reachableEndpointCount != null) {
+    accountParts.push(`${reachableEndpointCount} reachable endpoint${reachableEndpointCount === 1 ? "" : "s"}`);
+  }
+  if (typeof accountDirectory.lastHttpStatus === "number") {
+    accountParts.push(`HTTP ${accountDirectory.lastHttpStatus}`);
+  }
+  const origin = asString(accountDirectory.directoryOrigin);
+  if (origin) accountParts.push(origin);
+  const skipReason = asString(accountDirectory.skipReason);
+  let lastAttempt: string | null = null;
+  if (
+    typeof accountDirectory.lastAttemptAt === "number"
+    && Number.isFinite(accountDirectory.lastAttemptAt)
+  ) {
+    lastAttempt = new Date(accountDirectory.lastAttemptAt).toISOString();
+  }
+  const lastSuccess = typeof accountDirectory.lastSuccessAt === "number"
+    && Number.isFinite(accountDirectory.lastSuccessAt)
+    ? new Date(accountDirectory.lastSuccessAt).toISOString()
+    : null;
+
+  const peers = Array.isArray(snapshot.connectedPeers)
+    ? snapshot.connectedPeers.length
+    : null;
+  const listenerState = listener.listenerBound === true
+    ? listener.loopbackAdeValidated === true
+      ? `ready${typeof listener.port === "number" ? ` on ${listener.port}` : ""}`
+      : asString(listener.reason) ?? "bound but not validated"
+    : asString(listener.reason) ?? "not bound";
+  const tailscaleState = tailscale.tailscaleReachable === true
+    ? "reachable"
+    : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
+  const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
+    ? "reachable"
+    : asString(relay.reason) ?? (relay.enabled === true ? "not reachable" : "disabled");
+  const transferReadiness = isRecord(snapshot.transferReadiness)
+    ? snapshot.transferReadiness
+    : null;
+  const transferBlockers = Array.isArray(transferReadiness?.blockers)
+    ? transferReadiness.blockers.filter(isRecord)
+    : [];
+  const transferState = transferReadiness?.ready === true
+    ? "ready"
+    : transferReadiness
+      ? transferBlockers.length > 0
+        ? `blocked by ${transferBlockers.length} active item${transferBlockers.length === 1 ? "" : "s"}`
+        : "not ready"
+      : null;
+  const transferRows: Array<[string, unknown]> = transferBlockers.map((blocker, index) => {
+    const label = asString(blocker.label) ?? asString(blocker.kind) ?? `blocker ${index + 1}`;
+    const detail = asString(blocker.detail);
+    return [`transfer blocker ${index + 1}`, detail ? `${label}: ${detail}` : label];
+  });
+
+  return renderKeyValues("ADE sync status", [
+    ["mode", snapshot.mode],
+    ["role", snapshot.role],
+    ["runtime role", snapshot.runtimeRole],
+    ["runtime name", snapshot.runtimeName],
+    ["connected peers", peers],
+    ["listener", listenerState],
+    ["tailscale", tailscaleState],
+    ["relay", relayState],
+    ["account directory", accountParts.join(" · ")],
+    ["directory reason", skipReason],
+    ["directory attempt", lastAttempt],
+    ["directory success", lastSuccess],
+    ["transfer readiness", transferState],
+    ...transferRows,
+    ["survivable state", snapshot.survivableStateText],
+    ["blocking state", snapshot.blockingStateText],
+  ]);
+}
+
 function formatSyncWebPairing(value: unknown): string {
   const info = isSyncWebPairingCliOutput(value)
     ? value
@@ -15905,8 +16028,7 @@ function formatSyncWebPairing(value: unknown): string {
     ...codeLines,
     "",
     nextStep,
-    "Off your LAN or tailnet? Turn on the relay so the browser can reach this machine:",
-    "  ade sync relay enable",
+    "Off your LAN or tailnet? Sign in to ADE so the browser can reach this machine through the relay.",
   ].join("\n");
 }
 
@@ -17297,11 +17419,12 @@ function formatProjectsList(value: unknown): string {
       ? [value]
       : firstArray(value, ["projects", "items"]);
   return renderTable(
-    ["project", "name", "path", "git origin", "last opened"],
+    ["project", "name", "path", "visibility", "git origin", "last opened"],
     projects.map((project) => [
       project.projectId,
       project.displayName,
       project.rootPath,
+      project.catalogVisibility === "system" ? "system" : "recent",
       project.gitOriginUrl,
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()
@@ -17399,7 +17522,9 @@ function formatAccountMachines(value: unknown): string {
     return "Not signed in — run `ade login`. Local, PIN, and explicit remote paths still work.";
   }
   if (state === "auth_expired") {
-    return "ADE account session expired — run `ade login` again. Local and explicit remote paths still work.";
+    const message = asString(result.message)
+      ?? "ADE account session expired — run `ade login` again.";
+    return `${message} Local and explicit remote paths still work.`;
   }
   if (state !== "ok") {
     return asString(result.message) ?? "The ADE account machine directory is unavailable.";
@@ -17656,6 +17781,8 @@ function formatTextOutput(
       return formatSearchStatus(value);
     case "external-sessions":
       return formatExternalSessions(value);
+    case "sync-status":
+      return formatSyncStatus(value);
     case "sync-web":
       return formatSyncWebPairing(value);
     case "storage-snapshot":

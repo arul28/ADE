@@ -12,6 +12,7 @@ const selectLane = vi.fn();
 const setWorkViewState = vi.fn();
 
 let capturedLaneContextMenuProps: Record<string, unknown> | null = null;
+let capturedManageLaneHostProps: Record<string, unknown> | null = null;
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -62,9 +63,17 @@ vi.mock("../lanes/LaneContextMenu", () => ({
   },
 }));
 
+vi.mock("./WorkManageLaneDialogHost", () => ({
+  WorkManageLaneDialogHost: (props: Record<string, unknown>) => {
+    capturedManageLaneHostProps = props;
+    return props.laneId ? <div data-testid="work-manage-lane-dialog" /> : null;
+  },
+}));
+
 afterEach(() => {
   cleanup();
   capturedLaneContextMenuProps = null;
+  capturedManageLaneHostProps = null;
   navigate.mockReset();
   selectLane.mockReset();
   setWorkViewState.mockReset();
@@ -104,5 +113,28 @@ describe("useWorkLaneContextMenu", () => {
     });
     expect(selectLane).toHaveBeenCalledWith("lane-remote");
     expect(navigate).toHaveBeenCalledWith("/work");
+  });
+
+  it("opens lane management in Work without navigating to the Lanes tab", () => {
+    const { result } = renderHook(() => useWorkLaneContextMenu(), {
+      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
+    });
+
+    act(() => {
+      result.current.trigger("lane-remote", {
+        preventDefault: vi.fn(),
+        clientX: 12,
+        clientY: 34,
+      });
+    });
+    const view = render(<>{result.current.menu}</>);
+    const onManage = capturedLaneContextMenuProps?.onManage as (laneId: string) => void;
+
+    act(() => onManage("lane-remote"));
+    view.rerender(<>{result.current.menu}</>);
+
+    expect(capturedManageLaneHostProps?.laneId).toBe("lane-remote");
+    expect(view.getByTestId("work-manage-lane-dialog")).toBeTruthy();
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

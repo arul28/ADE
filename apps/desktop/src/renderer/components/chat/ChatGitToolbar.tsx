@@ -152,7 +152,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (!requestIsCurrent()) return null;
       setLinkedPr(pr);
       setPrLoaded(true);
-      if (options.live && pr) {
+      if (options.live && pr && !pr.unmapped) {
         try {
           const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot });
           if (!requestIsCurrent()) return null;
@@ -259,7 +259,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // Fetch live check details when the PR menu opens. Lazy: only fetched while
   // the menu is open so closed-state idles cost zero.
   useEffect(() => {
-    if (!prMenuOpen || !linkedPr) return;
+    if (!prMenuOpen || !linkedPr || linkedPr.unmapped) return;
     let cancelled = false;
     setPrChecksLoading(true);
     window.ade.prs.getChecks(linkedPr.id)

@@ -43,7 +43,7 @@ import type {
   PrReview,
   PrReviewThread,
 } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReviewThreadCard } from "./PrReviewThreadCard";
@@ -1118,12 +1118,13 @@ function TimelineRowContent({
       // GitHub and avoiding a near-empty duplicate of the thread card.
       const reviewHasBody = Boolean(event.body && event.body.trim());
       if (event.isBot && reviewHasBody) {
+        // Render collapsed by default — a late Greptile/Copilot/codex review with
+        // a large body should not dump its full summary at the end of the thread.
         return near ? (
           <PrBotReviewCard
             review={buildPrReviewFromEvent(event)}
             repoOwner={repoOwner}
             repoName={repoName}
-            defaultOpen
           />
         ) : (
           <BodySkeleton height={96} />
@@ -1167,7 +1168,10 @@ function TimelineRowContent({
       ) : (
         <BodySkeleton height={140} />
       );
-    case "issue_comment":
+    case "issue_comment": {
+      // A bot-authored issue comment (e.g. ADE's "## ADE review" summary) can be
+      // huge; collapse long ones so they don't wall off the end of the thread.
+      const collapseBotComment = Boolean(event.isBot && event.body && isLongBotCommentBody(event.body));
       return (
         <Card
           author={event.author}
@@ -1175,14 +1179,19 @@ function TimelineRowContent({
           ts={event.timestamp}
         >
           {near && event.body ? (
-            <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-              {event.body}
-            </PrMarkdown>
+            collapseBotComment ? (
+              <CollapsibleCommentBody body={event.body} repoOwner={repoOwner} repoName={repoName} />
+            ) : (
+              <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
+                {event.body}
+              </PrMarkdown>
+            )
           ) : (
             <BodySkeleton />
           )}
         </Card>
       );
+    }
     case "check_update":
       return (
         <InlineRow icon={<CheckIconForConclusion conclusion={event.conclusion} status={event.status} />}>
@@ -1972,6 +1981,70 @@ function BodySkeleton({ height = 72 }: { height?: number }) {
         border: `1px dashed ${COLORS.border}`,
       }}
     />
+  );
+}
+
+const COLLAPSED_BOT_COMMENT_MAX_HEIGHT = 220;
+
+// Roughly a dozen rendered lines. Also treats a very long single block as long so
+// a wall of prose with few newlines still collapses.
+function isLongBotCommentBody(body: string): boolean {
+  return body.split(/\r?\n/).length > 12 || body.length > 900;
+}
+
+// Collapsed-by-default markdown body with an expand affordance, reusing the same
+// collapse idiom as PrBotReviewCard (no new visual style) so a long bot comment
+// shows a clamped preview instead of a wall of text.
+function CollapsibleCommentBody({
+  body,
+  repoOwner,
+  repoName,
+}: {
+  body: string;
+  repoOwner: string;
+  repoName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        style={{
+          position: "relative",
+          maxHeight: open ? undefined : COLLAPSED_BOT_COMMENT_MAX_HEIGHT,
+          overflow: "hidden",
+        }}
+      >
+        <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
+          {body}
+        </PrMarkdown>
+        {open ? null : (
+          <div
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: "auto 0 0 0",
+              height: 48,
+              background: `linear-gradient(to bottom, transparent, ${COLORS.threadCard})`,
+            }}
+          />
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex items-center gap-1 self-start text-[11px] transition-colors"
+        style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
+      >
+        <CaretRight
+          size={11}
+          weight="bold"
+          className="transition-transform"
+          style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
+        />
+        {open ? "Show less" : "Show more"}
+      </button>
+    </div>
   );
 }
 

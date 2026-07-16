@@ -12,7 +12,7 @@ import {
   signRelayHmacHex,
 } from "./syncCloudRelayStore";
 
-describe("syncCloudRelayStore enablement default", () => {
+describe("syncCloudRelayStore", () => {
   let dir: string;
   let filePath: string;
 
@@ -25,43 +25,40 @@ describe("syncCloudRelayStore enablement default", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("defaults to enabled on first run (no file)", () => {
+  it("mints an identity on first run", () => {
     const store = createSyncCloudRelayStore({ filePath });
-    expect(store.isEnabled()).toBe(true);
+    expect(store.getMachineIdentity()).toMatchObject({
+      machineKey: expect.stringMatching(/^[a-f0-9]{32}$/),
+      secret: expect.stringMatching(/^[a-f0-9]{48}$/),
+    });
   });
 
-  it("treats a legacy file without the enabled field as enabled", () => {
+  it("preserves a legacy identity without kill-switch fields", () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const { machineKey, secret } = seeded.getMachineIdentity();
     fs.writeFileSync(filePath, `${JSON.stringify({ machineKey, secret })}\n`);
     const store = createSyncCloudRelayStore({ filePath });
-    expect(store.isEnabled()).toBe(true);
     expect(store.getMachineIdentity().machineKey).toBe(machineKey);
   });
 
-  it("migrates a legacy implicit enabled:false (no user marker) to enabled", () => {
-    // Pre-default-on builds persisted `enabled: false` on first run without any
-    // user action. Those files must read as enabled after the flip; only a
-    // marker-stamped false (setEnabled) is a real kill-switch choice.
+  it("ignores and drops legacy kill-switch fields", () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const { machineKey, secret } = seeded.getMachineIdentity();
-    fs.writeFileSync(filePath, `${JSON.stringify({ enabled: false, machineKey, secret })}\n`);
-    expect(createSyncCloudRelayStore({ filePath }).isEnabled()).toBe(true);
-  });
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      enabled: false,
+      enabledSetByUser: true,
+      machineKey,
+      secret,
+      relayUrl: "https://relay.example.com",
+    })}\n`);
 
-  it("preserves an explicit kill-switch false across reads", () => {
-    const store = createSyncCloudRelayStore({ filePath });
-    store.setEnabled(false);
-    expect(createSyncCloudRelayStore({ filePath }).isEnabled()).toBe(false);
-    store.setEnabled(true);
-    expect(createSyncCloudRelayStore({ filePath }).isEnabled()).toBe(true);
-  });
-
-  it("keeps the explicit kill-switch false when other settings rewrite the file", () => {
-    const store = createSyncCloudRelayStore({ filePath });
-    store.setEnabled(false);
-    store.setRelayUrl("http://127.0.0.1:8787");
-    expect(createSyncCloudRelayStore({ filePath }).isEnabled()).toBe(false);
+    const config = createSyncCloudRelayStore({ filePath }).getConfig();
+    expect(config).toEqual({
+      machineKey,
+      secret,
+      relayUrl: "https://relay.example.com",
+    });
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(config);
   });
 
   it("mints a stable identity and persists the file chmod 600", () => {
@@ -75,10 +72,8 @@ describe("syncCloudRelayStore enablement default", () => {
     }
   });
 
-  it("toggles enabled and exposes the connect url", () => {
+  it("exposes the connect url", () => {
     const store = createSyncCloudRelayStore({ filePath });
-    expect(store.setEnabled(true).enabled).toBe(true);
-    expect(store.isEnabled()).toBe(true);
     const { machineKey } = store.getMachineIdentity();
     expect(store.getRelayWssUrl()).toBe(
       `wss://ade-tunnel-relay.arulsharma1028.workers.dev/connect/${machineKey}`,

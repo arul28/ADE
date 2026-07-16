@@ -1,0 +1,29 @@
+---
+title: "v1.2.28"
+description: "Release notes for ADE v1.2.28 - July 16, 2026"
+---
+
+v1.2.28 rebuilds accounts and connections around four simple ideas: your ADE account, a pairing code, a QR code, and SSH for advanced setups. Sign in and your machines find each other — everything else got out of the way.
+
+---
+
+## Desktop and CLI
+
+- **Connecting is simpler.** Sign in on two Macs and they can reach each other from anywhere. On the same network, pair a nearby Mac with its 6-digit code — no account needed. SSH remains the advanced path.
+- **ADE Relay follows your sign-in.** The separate "Connect from anywhere" toggle is gone; relay connectivity is available whenever the machine is signed in, and direct Wi-Fi or Tailscale routes are always preferred. Machines that previously disabled the relay are re-enabled by this release.
+- **The account page grew up.** A responsive layout with your name, email, and real profile picture; your Macs listed with this Mac pinned first; a Remove-from-account action; a single Manage connections button; and a clear, confirmed sign-out that says exactly what it does.
+- **Connections panel, reorganized.** A persistent "This Mac" card now owns the pairing code and the phone QR code, with Machines, Phone, and Web tabs below. Your own Mac no longer shows up as a machine you could connect to, and connected phones and browsers can be revoked with confirmation.
+- **Pairing links and manual address entry are gone.** The QR code carries everything a phone needs; nearby Macs are discovered automatically. Fewer concepts, fewer wrong turns.
+
+## Web client
+
+- **Sign in, open, done.** The hosted web client now uses your ADE account exclusively — no PIN pairing, no setup codes. Browsers you've connected are listed on the Mac and can be signed out remotely.
+
+## iOS
+
+- Connecting your iPhone now leads with signing in — your Macs appear automatically, with QR scanning and nearby discovery as the local options.
+- Pairing-link paste and manual address entry were removed, and signing out asks for confirmation with plain language about what stays connected.
+
+## Security notes
+
+- The relay carries traffic only between devices signed in to the same account, and direct routes are always tried first. End-to-end encryption of relay traffic is planned; until then the relay remains a trusted-operator path.
