@@ -25,6 +25,7 @@ import {
   resolveRoots,
   runCli,
   startHeadlessRpcSocketServer,
+  startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
   shouldBlockManualMachineRuntimeSpawn,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -32,6 +33,8 @@ import {
   summarizeExecution,
   unwrapToolResult,
 } from "./cli";
+import { generateRpcAuthToken } from "./rpcAuth";
+import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
@@ -660,6 +663,51 @@ describe("ADE CLI", () => {
       createHandler: () => (async () => ({})) as never,
     });
     expect(stop).toBeNull();
+  });
+
+  it("requires the per-boot bearer token on the headless TCP RPC listener", async () => {
+    const { url, stop } = await startHeadlessRpcTcpServer({
+      createHandler: () => (async () => ({ pong: true })) as never,
+    });
+    try {
+      const parsed = new URL(url);
+      const token = parsed.searchParams.get("token");
+      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+      // (a) no token → policy denied, handler never reached.
+      const tokenless = await JsonRpcClient.connect(
+        `tcp://${parsed.hostname}:${parsed.port}`,
+      );
+      try {
+        await expect(tokenless.request("ping")).rejects.toThrow(
+          /authentication failed/i,
+        );
+      } finally {
+        tokenless.close();
+      }
+
+      // (b) wrong token of the right shape → still denied.
+      const wrongUrl = new URL(url);
+      wrongUrl.searchParams.set("token", generateRpcAuthToken());
+      const wrongToken = await JsonRpcClient.connect(wrongUrl.href);
+      try {
+        await expect(wrongToken.request("ping")).rejects.toThrow(
+          /authentication failed/i,
+        );
+      } finally {
+        wrongToken.close();
+      }
+
+      // (c) the URL as emitted (token included) → request succeeds.
+      const authed = await JsonRpcClient.connect(url);
+      try {
+        await expect(authed.request("ping")).resolves.toEqual({ pong: true });
+      } finally {
+        authed.close();
+      }
+    } finally {
+      stop();
+    }
   });
 
   it("recognizes the hidden PTY host worker entrypoint", () => {
