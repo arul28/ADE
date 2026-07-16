@@ -17313,11 +17313,12 @@ function formatProjectsList(value: unknown): string {
       ? [value]
       : firstArray(value, ["projects", "items"]);
   return renderTable(
-    ["project", "name", "path", "git origin", "last opened"],
+    ["project", "name", "path", "visibility", "git origin", "last opened"],
     projects.map((project) => [
       project.projectId,
       project.displayName,
       project.rootPath,
+      project.catalogVisibility === "system" ? "system" : "recent",
       project.gitOriginUrl,
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()

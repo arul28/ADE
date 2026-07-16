@@ -51,6 +51,39 @@ type ProjectRecord = {
   projectId: string;
 };
 
+export type ProjectCatalogRegistration = {
+  catalogVisibility: "recent" | "system";
+  registrationSource:
+    | "desktop"
+    | "mobile"
+    | "cli-explicit"
+    | "runtime-auto"
+    | "test";
+};
+
+/**
+ * Attaches performed for background or non-interactive reasons — the
+ * `--print-state` smoke test, health probes — register the project as a hidden
+ * "system" row so they never pollute the phone's project catalog and roster.
+ */
+export const AUTO_PROJECT_REGISTRATION: ProjectCatalogRegistration = {
+  catalogVisibility: "system",
+  registrationSource: "runtime-auto",
+};
+
+/**
+ * An interactive `ade code` launch is an explicit "I'm working in this project
+ * on this machine" action — the terminal equivalent of opening the project in
+ * the desktop app — so the project is promoted to a "recent" catalog row and
+ * shows up on the phone. The daemon's `add()` never demotes an existing recent
+ * row, so it is safe to send this on every attach within a live session
+ * (initial connect and reconnect probes alike).
+ */
+export const INTERACTIVE_PROJECT_REGISTRATION: ProjectCatalogRegistration = {
+  catalogVisibility: "recent",
+  registrationSource: "cli-explicit",
+};
+
 type EmbeddedRuntime = {
   dispose: () => void;
   agentChatService?: {
@@ -681,6 +714,7 @@ async function connectAttachedSocket(args: {
   project: ProjectLaunchContext;
   shutdownOnStale?: boolean;
   skipRuntimeCompatibilityCheck?: boolean;
+  projectRegistration?: ProjectCatalogRegistration;
 }): Promise<AdeCodeConnection> {
   let client: JsonRpcClient | null = await JsonRpcClient.connect(
     args.socketPath,
@@ -710,10 +744,11 @@ async function connectAttachedSocket(args: {
     let request = rawRequest;
     const multiProjectRuntime = isMultiProjectRuntime(initializeResult);
     if (multiProjectRuntime) {
+      const registration = args.projectRegistration ?? AUTO_PROJECT_REGISTRATION;
       const project = await rawRequest<ProjectRecord>("projects.add", {
         rootPath: args.project.projectRoot,
-        catalogVisibility: "system",
-        registrationSource: "runtime-auto",
+        catalogVisibility: registration.catalogVisibility,
+        registrationSource: registration.registrationSource,
       });
       const projectId =
         typeof project.projectId === "string" &&
@@ -843,6 +878,7 @@ async function connectAttachedSocketWithRetry(args: {
   delayMs: number;
   shutdownOnStale?: boolean;
   skipRuntimeCompatibilityCheck?: boolean;
+  projectRegistration?: ProjectCatalogRegistration;
 }): Promise<AdeCodeConnection> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < Math.max(1, args.attempts); attempt += 1) {
@@ -852,6 +888,7 @@ async function connectAttachedSocketWithRetry(args: {
         project: args.project,
         shutdownOnStale: args.shutdownOnStale,
         skipRuntimeCompatibilityCheck: args.skipRuntimeCompatibilityCheck,
+        projectRegistration: args.projectRegistration,
       });
     } catch (error) {
       lastError = error;
@@ -880,7 +917,16 @@ export async function connectToAde(args: {
   socketPath?: string | null;
   preferServiceRepair?: boolean;
   remote?: boolean;
+  /**
+   * How to register this project in the machine catalog when attaching to a
+   * multi-project daemon. Defaults to the hidden "system" row; interactive
+   * `ade code` launches pass INTERACTIVE_PROJECT_REGISTRATION so the project
+   * surfaces on the phone. Ignored for embedded runtimes (no catalog).
+   */
+  projectRegistration?: ProjectCatalogRegistration;
 }): Promise<AdeCodeConnection> {
+  const projectRegistration =
+    args.projectRegistration ?? AUTO_PROJECT_REGISTRATION;
   const layout = resolveAdeLayout(args.project.projectRoot);
   const explicitSocketPath =
     args.socketPath?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null;
@@ -903,6 +949,7 @@ export async function connectToAde(args: {
         attempts: 1,
         delayMs: 0,
         skipRuntimeCompatibilityCheck: args.remote === true,
+        projectRegistration,
       });
     } catch (error) {
       const message = errorMessage(error);
@@ -927,6 +974,7 @@ export async function connectToAde(args: {
         attempts,
         delayMs: DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS,
         shutdownOnStale: true,
+        projectRegistration,
       });
     const repairService = async (): Promise<AdeCodeConnection | null> => {
       if (!preferServiceRepair) return null;
@@ -977,6 +1025,7 @@ export async function connectToAde(args: {
             project: args.project,
             attempts: 1,
             delayMs: 0,
+            projectRegistration,
           });
         } catch (projectError) {
           if (args.requireSocket) {

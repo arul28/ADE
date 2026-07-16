@@ -21,6 +21,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../connection", () => ({
   connectToAde: mocks.connectToAde,
+  INTERACTIVE_PROJECT_REGISTRATION: {
+    catalogVisibility: "recent",
+    registrationSource: "cli-explicit",
+  },
 }));
 
 vi.mock("../heartbeat", () => ({

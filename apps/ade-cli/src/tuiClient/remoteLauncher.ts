@@ -1005,11 +1005,14 @@ async function listProjects(client: RemoteRpcClientLike): Promise<RemoteRuntimeP
 }
 
 async function ensureProject(client: RemoteRpcClientLike, query: string): Promise<RemoteRuntimeProjectRecord> {
+  // The user explicitly selected this project for a remote session, so it is
+  // a real workspace on that machine — same semantic as an interactive local
+  // `ade code` attach (add() never demotes an existing recent row).
   const raw = await withTimeout(
     client.request("projects.add", {
       rootPath: query,
-      catalogVisibility: "system",
-      registrationSource: "runtime-auto",
+      catalogVisibility: "recent",
+      registrationSource: "cli-explicit",
     }),
     REMOTE_RPC_TIMEOUT_MS,
     `Timed out registering remote project ${query}.`,

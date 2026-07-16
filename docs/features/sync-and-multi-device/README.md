@@ -196,9 +196,21 @@ Runtime support files outside `services/sync/`:
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
   validated LAN/Tailscale/relay routes, coalesces overlapping work, and sends
-  the account bearer only to the trusted HTTPS directory origin. A 30-second
-  heartbeat keeps the Worker row inside its 90-second online window without
-  turning sync retries or status polling into product analytics.
+  the account bearer only to the trusted HTTPS directory origin. The published
+  machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
+  build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
+  stable build (or an already-suffixed name) is left untouched, so the same
+  physical Mac running two channels shows as two distinguishable directory rows.
+  A LAN endpoint is only emitted for an address candidate whose `kind` is `lan`;
+  because `syncPairingConnectInfo.buildAddressCandidates` now classifies the
+  saved `lastHost` as `lan`/`tailscale` when it matches the current address set
+  (instead of the opaque `saved` kind that was silently dropped from the
+  directory), a machine's LAN routes publish correctly. The `relay` endpoint is
+  gated on `routeHealth.relay.relayBridgeValidated`, which the tunnel client now
+  sets proactively (see `syncTunnelClientService.ts`) so the relay route appears
+  in the directory without waiting for an external client to open the first
+  tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
+  window without turning sync retries or status polling into product analytics.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, response decoding, route allowlisting, machine selection, and paired
   endpoint validation shared by desktop, the brain, ADE Code, and hosted web.
@@ -218,7 +230,18 @@ Runtime support files outside `services/sync/`:
   remote desktop or mobile catalog setup just to inline artwork.
   `projects.getHandoffStoragePreflight` checks the destination parent path,
   write access, target collision, free space, and destination-local Git access
-  before the desktop offers to clone a missing handoff repository.
+  before the desktop offers to clone a missing handoff repository. `projects.add`
+  / `create` / `clone` and the new `projects.setCatalogVisibility` accept a
+  registration intent (`catalogVisibility: "recent" | "system"` +
+  `registrationSource`) so the caller declares whether a project should show in
+  the phone catalog and roster; unspecified callers default to
+  `SYSTEM_PROJECT_REGISTRATION`. The registry file (`projectRegistry.ts`) is now
+  **version 2** — records carry `catalogVisibility` and `registrationSource`,
+  and a one-time v1→v2 upgrade seeds `"recent"` for roots that match the
+  desktop's recent-project list (passed in as `legacyRecentProjectRoots`) or are
+  an existing Git checkout, marking everything else `"system"`; `add()` upgrades
+  a `"system"` row to `"recent"` on an explicit recent registration but never
+  demotes.
 - `apps/ade-cli/src/services/personalChats/personalChatScope.ts` — lazy
   machine-owned personal runtime injected into both sync ingress paths. It
   validates personal session ownership and exposes the durable transcript path
@@ -354,7 +377,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (`SyncRosterProject[]`) consumed by the Hub: agent chats, their attached
   shell rows, and **standalone CLI (tracked terminal) sessions — live and
   ended** (`run-shell` infrastructure rows are excluded, mirroring
-  `isRunOwnedSession` on desktop/iOS). Opens each project's
+  `isRunOwnedSession` on desktop/iOS). The roster is built only from projects
+  whose registry `catalogVisibility` is `"recent"`, **plus the host's own
+  project** (matched by `hostProjectId`) which is always included even if it is
+  a `"system"`-visibility entry — so the machine you are actively hosting never
+  vanishes from its own Hub while runtime-auto system projects stay out of the
+  feed. Opens each project's
   `<root>/.ade/ade.db` **read-only** with `node:sqlite` (no cr-sqlite, no
   runtime boot — the same cheap cross-project read pattern as
   `recentProjectSummary.ts`) and merges cached `chat-sessions/*.json`, so an
@@ -556,7 +584,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   LAN/tailnet can dial the machine through the relay. Sign-out or lease loss
   closes the control socket and active pipes. The normal ADE sync
   hello/pairing then runs inside that pipe. TLS terminates at the relay, so the
-  relay can inspect the handshake and subsequent sync traffic.
+  relay can inspect the handshake and subsequent sync traffic. Bridge
+  validation is **proactive**: `validateCurrentBridge()` re-probes the
+  loopback sync listener (matching port + identity nonce) whenever the control
+  socket opens and whenever the shared listener reports a fresh loopback
+  validation (`sharedSyncListener.onLoopbackValidated`, wired in
+  `bootstrap.ts`), coalescing overlapping probes through a single in-flight
+  promise. This flips `relayBridgeValidated` — and therefore directory relay
+  publication — true as soon as the listener is confirmed, so the earlier
+  "bridge not validated against the sync port" state self-heals instead of
+  waiting for an inbound client to open the first tunnel. `openTunnel` still
+  re-validates on every inbound open as defense in depth and refuses the pipe
+  if the sync port changed mid-validation.
 
 Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
 Live Activity pipeline (`pushPublisherService.ts`,
@@ -696,6 +735,16 @@ Project catalog snapshots are also chunked
 `maxProjectCatalogChunkBytes = 192 KB`) so a runtime with many projects
 streams the catalog in `project_catalog_chunk` envelopes.
 
+To make the next switch land faster, `ProjectScopeRegistry.prewarmRecentScopes`
+does a one-shot background warm-up of at most two most-recently-used project
+scopes after startup. Prewarming calls `get(projectId, { touch: false })` so it
+never rewrites registry recency, excludes the already-warm active host, and is
+suppressed while a sync-host switch is in flight (`syncHostTransitionDepth > 0`)
+or after disposal; a failed prewarm is swallowed so a later real open retries
+`get()` normally and surfaces its own error. The sync-host switch itself is now
+wrapped in a `syncHostTransitionDepth` guard so overlapping prepares/switches
+don't race the prewarm or each other.
+
 ## Scope enforcement
 
 `syncRemoteCommandService.register(action, policy, handler, scope)`
@@ -803,15 +852,28 @@ is not supported.
   a web server. It carries
   machine identity, port, and address candidates (plus the cloud-relay
   `relayUrl` when the host is signed in) — it never embeds a pairing code or expiry, so
-  the phone still needs the PIN manually. Newer payload versions parse
-  leniently: the iOS scanner (`PairingQrPayload.swift`) accepts any
-  version ≥ 3 as long as the fields it understands are present.
+  the phone still needs the PIN manually. It may also carry an additive optional
+  `pinConfigured` Boolean (`PairingQrPayload` in
+  `apps/desktop/src/shared/pairingQr.ts`, mirrored by `PairingQrPayload.swift`):
+  a hint that the host already has a pairing PIN set, so the scanner can steer a
+  no-PIN host toward the generate-a-PIN step instead of a dead-end PIN prompt.
+  The hint is advisory only — the live `pairing_result` (`pin_not_set`) stays
+  authoritative if the PIN changes after the QR was minted. Newer payload
+  versions parse leniently: the iOS scanner accepts any version ≥ 3 as long as
+  the fields it understands are present, and both codecs treat a non-Boolean
+  `pinConfigured` as absent.
 - **Address candidates**: the runtime advertises LAN IPs, the saved
-  `lastHost` (when it matches the current set), the Tailscale IP,
+  `lastHost`, the Tailscale IP,
   `127.0.0.1`, and — while the host has a current ADE account lease — a
   `relay`-kind candidate carrying a full
   `wss://…/connect/<machineKey>` URL. `SyncAddressCandidateKind` is
-  `lan | saved | tailscale | loopback | relay`; iOS treats relay as an
+  `lan | saved | tailscale | loopback | relay`, but the saved `lastHost` is now
+  emitted with the **kind it actually is**: `buildAddressCandidates` classifies
+  it as `lan` when it matches a current LAN IP, `tailscale` when it matches the
+  Tailscale IP or DNS name, and only falls back to the opaque `saved` kind for a
+  host that no longer matches the live address set. This is what lets the account
+  directory publish a LAN-backed saved host as a real LAN endpoint. iOS treats
+  relay as an
   automatic fallback after direct LAN/Tailscale routes and promotes it when the phone has no Tailscale
   tunnel (see the transport race in `ios-companion.md`). Already-paired
   phones also learn the relay URL from `hello_ok` / `brain_status`

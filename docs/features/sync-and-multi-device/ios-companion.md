@@ -221,6 +221,9 @@ apps/ios/
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
 │   │   │                            # ADERootTabBarHiddenPreferenceKey),
+│   │   │                            # MachineRowView (shared Mac row used by the
+│   │   │                            #   Settings account/machines lists and the
+│   │   │                            #   Hub quick-connect home; .row / .card looks),
 │   │   │                            # haptics, ADEMobilePrimitives (incl.
 │   │   │                            # ADEOptionButton for selection rows),
 │   │   │                            # dictation mic, recording pill, global
@@ -229,7 +232,10 @@ apps/ios/
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
 │   │   │                            # HubComponents (project/lane/chat cards,
-│   │   │                            #   HubNoMachineState), HubComposerDrawer
+│   │   │                            #   HubNoMachineState), HubQuickConnect
+│   │   │                            #   (HubQuickConnectSection — one-tap connect
+│   │   │                            #   cards for online account/paired machines
+│   │   │                            #   on the no-machine home), HubComposerDrawer
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
@@ -319,7 +325,11 @@ apps/ios/
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView, SettingsPairingSection,
+│   │   ├── Settings/                # ConnectionSettingsView (account card →
+│   │   │                            #   connection status → machines list → ways
+│   │   │                            #   to add one), SettingsMachinesSection
+│   │   │                            #   (reachable-machine list: top 3 + See all),
+│   │   │                            # SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
 │   │   │                            #   scanner),
 │   │   │                            # SettingsConnectionHeader,
@@ -327,8 +337,11 @@ apps/ios/
 │   │   │                            #   full usage limits + refresh section,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
-│   │   │                            # SettingsVoiceInputSection, SSHPairingView
-│   │   │                            #   + view model/state
+│   │   │                            # SSHPairingView + view model/state
+│   │   │                            #   — SettingsVoiceInputSection and
+│   │   │                            #   SettingsAnalyticsSection were removed
+│   │   │                            #   (analytics is default-on; dictation has
+│   │   │                            #   no settings panel)
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
@@ -820,10 +833,18 @@ yet arrived in the catchup batch.
    URL carrying machine identity, port, and address candidates — never a
    pairing code) or discovers the machine on the network, then types the same
    PIN the user set. The smart URL is internal QR wire encoding for the system
-   camera / App Clip, not a user-facing link.
+   camera / App Clip, not a user-facing link. The payload may carry an additive
+   `pinConfigured` Boolean (`PairingQrPayload.pinConfigured`): when it is
+   `false` the host has no PIN set yet, so the phone can point the user at the
+   generate-a-PIN step on the **This Mac** card instead of a PIN prompt that
+   could only fail. A `nil` hint means the QR came from an older host and the
+   phone falls back to the live handshake result.
 3. Phone sends a `pairing_request` envelope with the PIN. The runtime's
    `syncPairingStore.pairPeer` validates against `syncPinStore`; the
-   failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`.
+   failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`. The
+   `pinConfigured` hint is advisory only — a host whose PIN was cleared after
+   the QR was minted still answers `pin_not_set` at pairing time, and that live
+   result wins.
 4. On success the runtime persists a per-device record and returns a
    secret. The phone stores it in Keychain and subsequent connections
    authenticate with the paired secret, not the PIN.
@@ -1212,6 +1233,32 @@ terminal subscriptions bound to the previous project's session ids
 are dropped. Without this reset, the phone would resubscribe to stale
 ids after reconnect and either leak foreign chat events into the new
 project view or collide with newly-assigned session ids on the runtime.
+
+The switch is engineered to feel instant rather than blanking to a spinner:
+
+- **The catalog stays mounted.** `HubScreen` only falls back to
+  `HubConnectingCard` when there is genuinely nothing to show yet
+  (`!canShowProjects && hubProjectPresentations.isEmpty`). While a switch is in
+  flight the project list keeps rendering: the tapped row shows its own inline
+  spinner (`presentation.isSwitching`) and every other row is disabled and dimmed
+  to `0.55` opacity (`syncService.isProjectSwitching`), so the list never swaps
+  to a full-screen connecting state.
+- **Fast-path reconnect.** After the happy-eyeballs race, `SyncService` pins a
+  proven `lastSuccessfulAddress` + port to the front of the ranked endpoint list
+  when it is the first raced address, so the broader kind/health ranking can't
+  undo a fresh probe win. `hello_ok` is treated as the barrier: restorative
+  post-hello work (`restoreTrackedOpenLanesAfterReconnect`,
+  `refreshRemoteProjectCatalog`) is moved off the critical path into
+  `schedulePostHelloWork` so it no longer holds the reconnect caller — and
+  therefore the Hub transition — while those network refreshes run. Phase timing
+  is traced through `logProjectSwitchPhase` (`ADE_SYNC_TRACE project_switch`).
+- **Runtime prewarm.** The machine runtime opportunistically warms up to two
+  most-recently-used project scopes in the background after startup (see the
+  sync README's `prewarmRecentScopes`), so the scope the phone switches into is
+  frequently already open on the host.
+
+A successful quick-connect from the no-machine home fires a brief success beat
+(`ConnectSuccessBeat` + haptic) via `HubScreen.triggerConnectBeat`.
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the runtime
