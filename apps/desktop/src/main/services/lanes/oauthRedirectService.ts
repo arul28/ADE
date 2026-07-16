@@ -608,9 +608,9 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
 
   function detectProvider(location: URL): string | undefined {
     const host = location.hostname.toLowerCase();
-    if (host.includes("google.")) return "Google";
+    if (host === "google.com" || host.endsWith(".google.com")) return "Google";
     if (host === "github.com" || host.endsWith(".github.com")) return "GitHub";
-    if (host.includes("auth0.com")) return "Auth0";
+    if (host === "auth0.com" || host.endsWith(".auth0.com")) return "Auth0";
     return undefined;
   }
 
