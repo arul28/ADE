@@ -117,6 +117,12 @@ apps/ios/
 │   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
+│   │   ├── AccountService.swift     # Clerk-backed optional account identity,
+│   │   │                            # transferable social auth outcomes, and
+│   │   │                            # account-directory machine lookup
+│   │   ├── AccountEmailAuthFlow.swift # identifier-first email sign-in-or-up:
+│   │   │                              # precise account-not-found fallback and
+│   │   │                              # matching attempt verification
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # paired device secret storage
 │   │   ├── DpopKeyService.swift     # Secure Enclave P-256 key + signed
@@ -265,6 +271,9 @@ apps/ios/
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SettingsVoiceInputSection
+│   │   ├── Account/                 # AccountSignInView and account connection
+│   │   │                            # cards; account access is optional and
+│   │   │                            # does not gate direct machine pairing
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
@@ -277,6 +286,8 @@ apps/ios/
 │                                    # presentation for active agent runs
 └── ADETests/
     ├── ADETests.swift
+    ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
+    │                                   # sign-up fallback, exact error codes
     └── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
 ```
 

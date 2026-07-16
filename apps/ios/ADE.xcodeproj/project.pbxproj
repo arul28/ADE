@@ -178,6 +178,8 @@
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
 		AD0000000000000000000B03 /* AccountSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A03 /* AccountSignInView.swift */; };
 		AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A04 /* AccountConnectionsSection.swift */; };
+		AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */; };
+		AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */; };
 		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
 		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
@@ -452,6 +454,8 @@
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A03 /* AccountSignInView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountSignInView.swift; path = ADE/Views/Account/AccountSignInView.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A04 /* AccountConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountConnectionsSection.swift; path = ADE/Views/Account/AccountConnectionsSection.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountEmailAuthFlow.swift; path = ADE/Services/AccountEmailAuthFlow.swift; sourceTree = "<group>"; };
+		AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountEmailAuthFlowTests.swift; path = ADETests/AccountEmailAuthFlowTests.swift; sourceTree = "<group>"; };
 		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
@@ -833,6 +837,7 @@
 				AF00000000000000000000A2 /* PairingQrPayload.swift */,
 				AC1000000000000000000006 /* ClipPairingHandoff.swift */,
 				AD0000000000000000000A01 /* AccountService.swift */,
+				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
@@ -981,6 +986,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
@@ -1340,6 +1346,7 @@
 				F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */,
 				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
+				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
 				AD0000000000000000000B03 /* AccountSignInView.swift in Sources */,
 				AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */,
@@ -1454,6 +1461,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */,
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,

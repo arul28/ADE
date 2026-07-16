@@ -123,7 +123,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     accountStatus.name?.trim() ||
     accountStatus.email?.trim() ||
     githubLogin ||
-    (accountStatus.signedIn ? "Account" : "Sign in");
+    (accountStatus.signedIn ? "Account" : "Continue");
   const accountRouteActive =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
 
@@ -333,7 +333,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         </SmartTooltip>
 
         {/* Account avatar — provider-aware image → monogram, routes to /account.
-            Always present so sign-in stays discoverable from the sidebar. */}
+            Always present so account access stays discoverable from the sidebar. */}
         <NavLink
           to="/account"
           data-active={accountRouteActive ? "true" : undefined}
@@ -341,7 +341,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           aria-label={
             accountStatus.signedIn
               ? `ADE account — ${accountLabel}`
-              : "Sign in to ADE"
+              : "Continue to ADE"
           }
           title={accountLabel}
         >

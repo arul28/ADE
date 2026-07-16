@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// ACCOUNT subsection for the connection settings screen. Signed out, it shows a
-/// quiet sign-in prompt; signed in, it shows the identity card plus "Your
+/// quiet account prompt; signed in, it shows the identity card plus "Your
 /// machines" from the directory Worker. It sits above the local MACHINE pairing
 /// rows so the two ways to reach a machine — your account, or direct pairing —
 /// read as one connections surface. Hidden entirely when no Clerk key is wired.
@@ -18,7 +18,7 @@ struct AccountConnectionsSection: View {
         VStack(alignment: .leading, spacing: 12) {
           SettingsSectionHeader(
             label: "ACCOUNT",
-            hint: account.isSignedIn ? "Your machines, from anywhere" : "Sign in to find your machines"
+            hint: account.isSignedIn ? "Your machines, from anywhere" : "Continue to find your machines"
           )
 
           switch account.phase {
@@ -45,7 +45,7 @@ struct AccountConnectionsSection: View {
   }
 }
 
-// MARK: - Sign-in prompt (signed out)
+// MARK: - Account prompt (signed out)
 
 struct AccountSignInPromptCard: View {
   let onSignIn: () -> Void
@@ -61,7 +61,7 @@ struct AccountSignInPromptCard: View {
           .glassEffect(in: .rect(cornerRadius: 11))
 
         VStack(alignment: .leading, spacing: 3) {
-          Text("Sign in to ADE")
+          Text("Continue to ADE")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
           Text("See every machine on your account and connect with one tap.")
@@ -73,17 +73,17 @@ struct AccountSignInPromptCard: View {
       }
 
       Button(action: onSignIn) {
-        Text("Sign in")
+        Text("Continue")
           .font(.subheadline.weight(.semibold))
           .frame(maxWidth: .infinity)
-          .padding(.vertical, 11)
+          .frame(minHeight: 44)
       }
       .buttonStyle(.glassProminent)
       .tint(ADEColor.accent)
     }
     .adeGlassCard()
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Sign in to ADE to see your machines")
+    .accessibilityLabel("Continue to ADE to see your machines")
   }
 }
 

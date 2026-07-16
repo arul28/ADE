@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  AppleLogo,
   ArrowRight,
   CircleNotch,
   DesktopTower,
   DeviceMobile,
-  EnvelopeSimple,
   GithubLogo,
-  GoogleLogo,
   Laptop,
   ShieldCheck,
   SignOut,
@@ -98,7 +95,7 @@ const sectionLabelStyle: CSSProperties = {
 // Signed-out: the rich sign-in card.
 // ---------------------------------------------------------------------------
 
-function SignInCard({
+export function SignInCard({
   configured,
   onSignedIn,
 }: {
@@ -110,21 +107,15 @@ function SignInCard({
   });
   const busy = phase === "starting" || phase === "awaiting";
 
-  const secondary: Array<{ label: string; icon: JSX.Element }> = [
-    { label: "Email", icon: <EnvelopeSimple size={15} weight="regular" /> },
-    { label: "Apple", icon: <AppleLogo size={15} weight="fill" /> },
-    { label: "Google", icon: <GoogleLogo size={15} weight="bold" /> },
-  ];
-
   return (
     <div style={cardStyle({ padding: 28, maxWidth: 440, width: "100%" })}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center", alignItems: "center" }}>
         <img src="./logo.png" alt="ADE" style={{ height: 26, opacity: 0.95 }} draggable={false} />
         <div style={{ fontFamily: SANS_FONT, fontSize: 19, fontWeight: 700, color: COLORS.textPrimary, marginTop: 6 }}>
-          Sign in to ADE
+          Continue to ADE
         </div>
         <div style={{ fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.5, color: COLORS.textSecondary, maxWidth: 320 }}>
-          One identity for your machines, mobile, and web sessions — so they find each other wherever you are.
+          Choose a sign-in method in your browser. If you're new, your ADE account is created automatically.
         </div>
       </div>
 
@@ -147,7 +138,7 @@ function SignInCard({
         >
           <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
           <span>
-            Account sign-in isn't set up on this machine yet. You can still pair machines, phones, and web
+            Account access isn't set up on this machine yet. You can still pair machines, phones, and web
             clients from <strong style={{ color: COLORS.textPrimary }}>Connections</strong>.
           </span>
         </div>
@@ -170,35 +161,11 @@ function SignInCard({
             }),
           }}
         >
-          {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <GithubLogo size={17} weight="fill" />}
-          Continue with GitHub
+          {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
+          Continue in browser
         </button>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, color: COLORS.textDim }}>
-          <div style={{ flex: 1, height: 1, background: COLORS.borderMuted }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>or continue with</span>
-          <div style={{ flex: 1, height: 1, background: COLORS.borderMuted }} />
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          {secondary.map((option) => (
-            <button
-              key={option.label}
-              type="button"
-              disabled={busy || !configured}
-              onClick={() => void beginLogin()}
-              style={outlineButton({
-                height: 38,
-                gap: 6,
-                fontSize: 12,
-                opacity: busy || !configured ? 0.55 : 1,
-                cursor: busy || !configured ? "not-allowed" : "pointer",
-              })}
-            >
-              {option.icon}
-              {option.label}
-            </button>
-          ))}
+        <div style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, textAlign: "center", color: COLORS.textMuted }}>
+          The browser page offers the sign-in methods enabled for ADE.
         </div>
       </div>
 
@@ -218,7 +185,7 @@ function SignInCard({
         >
           <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
             <CircleNotch size={14} weight="bold" className="animate-spin" />
-            Finish signing in in your browser…
+            Finish in your browser…
           </span>
           <button
             type="button"

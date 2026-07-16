@@ -75,7 +75,7 @@ describe("TabNav", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("link", { name: "Sign in to ADE" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Continue to ADE" }).getAttribute("href")).toBe(
       "/account",
     );
   });
