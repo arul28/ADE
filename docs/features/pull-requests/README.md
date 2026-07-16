@@ -49,7 +49,7 @@ runtime. In packaged / installed builds the desktop window is
 runtime-bound, so the ADE daemon owns the `prPollingService` instance
 (created, started, and disposed in `apps/ade-cli/src/bootstrap.ts`)
 whose ticks emit the PR events consumers render as `prs-updated`; the
-daemon also starts the automation ingress relay poll there, which feeds
+    daemon also starts the automation ingress relay subscriber/drain loop there, which feeds
 `prService.ingestGithubWebhook` for webhook-driven freshness (see
 [automations](../automations/README.md#runtime-ownership)). Without
 this the desktop main process no longer hosts the loop in production,

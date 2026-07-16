@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
+import { WebSocket, type ClientOptions, type RawData } from "ws";
 import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -60,10 +61,44 @@ type AutomationIngressServiceArgs = {
   // (enforced at construction).
   ingressCursorStore?: AutomationIngressCursorStore | null;
   pollIntervalMs?: number;
+  /** Test seam; production uses the repo's established Node `ws` client. */
+  webSocketFactory?: (url: string, options: ClientOptions) => WebSocket;
+  /** Test seam for reconnect jitter. */
+  random?: () => number;
 };
 
 const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
 const GITHUB_RELAY_POLL_TIMEOUT_MS = 20_000;
+const GITHUB_RELAY_PAGE_LIMIT = 100;
+export const GITHUB_RELAY_MIN_POLL_INTERVAL_MS = 30_000;
+export const GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS = 5 * 60_000;
+export const GITHUB_RELAY_SUBSCRIPTION_CONNECT_TIMEOUT_MS = 20_000;
+export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS = 1_000;
+export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS = 60_000;
+
+export function computeGithubRelaySubscriptionBackoffMs(
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const ceiling = Math.min(
+    GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS,
+    GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt),
+  );
+  return Math.floor(random() * ceiling);
+}
+
+function rawDataToText(raw: RawData): string {
+  if (typeof raw === "string") return raw;
+  if (Buffer.isBuffer(raw)) return raw.toString("utf8");
+  if (Array.isArray(raw)) return Buffer.concat(raw).toString("utf8");
+  return Buffer.from(raw as ArrayBuffer).toString("utf8");
+}
+
+type GithubRelaySubscriptionTarget = {
+  key: string;
+  repo: GitHubRepoRef;
+  url: string;
+};
 
 function safeCompareSignature(expected: string, actual: string): boolean {
   const a = Buffer.from(expected, "utf8");
@@ -282,6 +317,18 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;
+  let pollRerunRequested = false;
+  let pollAbortController: AbortController | null = null;
+  let started = false;
+  let stopped = false;
+  let subscriptionSocket: WebSocket | null = null;
+  let subscriptionTargetKey: string | null = null;
+  let subscriptionRepo: string | null = null;
+  let subscriptionReconnectTimer: NodeJS.Timeout | null = null;
+  let subscriptionConnectTimer: NodeJS.Timeout | null = null;
+  let subscriptionReconnectAttempt = 0;
+  let subscriptionConnected = false;
+  let subscriptionLoggedState: "connected" | "disconnected" | null = null;
   // When the hosted relay needs a GitHub App user token that the user has not
   // granted yet, that is an idle state, not an error: skip polling for a
   // while and log the transition once instead of warning every tick.
@@ -495,26 +542,213 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
   };
 
+  const regularPollIntervalMs = Math.max(
+    GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
+    Math.floor(args.pollIntervalMs ?? 60_000),
+  );
+
+  const rearmPollTimer = (): void => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (!started || stopped) return;
+    const intervalMs = subscriptionConnected
+      ? Math.max(regularPollIntervalMs, GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS)
+      : regularPollIntervalMs;
+    pollTimer = setInterval(() => {
+      void pollGithubRelayOnce();
+    }, intervalMs);
+    pollTimer.unref?.();
+  };
+
+  const clearSubscriptionReconnectTimer = (): void => {
+    if (!subscriptionReconnectTimer) return;
+    clearTimeout(subscriptionReconnectTimer);
+    subscriptionReconnectTimer = null;
+  };
+
+  const clearSubscriptionConnectTimer = (): void => {
+    if (!subscriptionConnectTimer) return;
+    clearTimeout(subscriptionConnectTimer);
+    subscriptionConnectTimer = null;
+  };
+
+  const setSubscriptionConnected = (connected: boolean): void => {
+    if (subscriptionConnected === connected) return;
+    subscriptionConnected = connected;
+    rearmPollTimer();
+    const state = connected ? "connected" : "disconnected";
+    if (subscriptionLoggedState === state) return;
+    subscriptionLoggedState = state;
+    args.logger.info("automations.github_relay_subscription_state", {
+      state,
+      repo: subscriptionRepo,
+    });
+  };
+
+  const closeRelaySubscription = (clearTarget: boolean): void => {
+    clearSubscriptionConnectTimer();
+    const socket = subscriptionSocket;
+    subscriptionSocket = null;
+    setSubscriptionConnected(false);
+    if (clearTarget) {
+      clearSubscriptionReconnectTimer();
+      subscriptionTargetKey = null;
+      subscriptionRepo = null;
+      subscriptionReconnectAttempt = 0;
+    }
+    if (!socket) return;
+    try {
+      socket.close();
+    } catch {
+      // The socket may already be closing. Its listeners are generation-gated.
+    }
+  };
+
+  const disableRelaySubscription = (): void => {
+    closeRelaySubscription(true);
+  };
+
+  const scheduleSubscriptionReconnect = (): void => {
+    if (stopped || !started || subscriptionReconnectTimer || !subscriptionTargetKey) return;
+    const delayMs = computeGithubRelaySubscriptionBackoffMs(
+      subscriptionReconnectAttempt,
+      args.random,
+    );
+    subscriptionReconnectAttempt += 1;
+    subscriptionReconnectTimer = setTimeout(() => {
+      subscriptionReconnectTimer = null;
+      // A poll re-resolves config, repository, and fresh auth before opening the
+      // next socket. Opening the socket then triggers a second catch-up drain.
+      void pollGithubRelayOnce();
+    }, delayMs);
+    subscriptionReconnectTimer.unref?.();
+  };
+
+  const reconcileRelaySubscription = (
+    target: GithubRelaySubscriptionTarget,
+    headers: Record<string, string>,
+    tokenSource: "github-app-user-token" | "account-token",
+  ): void => {
+    if (!started || stopped) return;
+    if (subscriptionTargetKey !== target.key) {
+      closeRelaySubscription(true);
+      subscriptionTargetKey = target.key;
+      subscriptionRepo = `${target.repo.owner}/${target.repo.name}`;
+    }
+    if (subscriptionSocket) return;
+    clearSubscriptionReconnectTimer();
+    let socket: WebSocket;
+    try {
+      socket = args.webSocketFactory
+        ? args.webSocketFactory(target.url, { headers })
+        : new WebSocket(target.url, { headers });
+    } catch {
+      scheduleSubscriptionReconnect();
+      return;
+    }
+    subscriptionSocket = socket;
+    if (tokenSource === "github-app-user-token") {
+      auditHostedRelayAuthTokenUse("automations.github_hosted_relay_auth_token_used", {
+        origin: new URL(target.url).origin,
+        repo: `${target.repo.owner}/${target.repo.name}`,
+        tokenSource,
+        route: "subscribe",
+      });
+    }
+    subscriptionConnectTimer = setTimeout(() => {
+      if (subscriptionSocket !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+      try {
+        socket.terminate();
+      } catch {
+        // A concurrent close will schedule the same reconnect path.
+      }
+    }, GITHUB_RELAY_SUBSCRIPTION_CONNECT_TIMEOUT_MS);
+    subscriptionConnectTimer.unref?.();
+
+    socket.on("open", () => {
+      if (subscriptionSocket !== socket) return;
+      clearSubscriptionConnectTimer();
+      clearSubscriptionReconnectTimer();
+      subscriptionReconnectAttempt = 0;
+      setSubscriptionConnected(true);
+      // The durable cursor may have advanced while the socket was unavailable.
+      void pollGithubRelayOnce();
+    });
+    socket.on("message", (raw: RawData) => {
+      if (subscriptionSocket !== socket) return;
+      try {
+        const frame = JSON.parse(rawDataToText(raw)) as unknown;
+        if (isRecord(frame) && frame.t === "github_delivery") {
+          void pollGithubRelayOnce();
+        }
+      } catch {
+        // Wake-up frames are hints only; malformed/unknown frames are ignored.
+      }
+    });
+    socket.on("error", () => {
+      // `close` owns the state transition and reconnect. Keeping this listener
+      // prevents EventEmitter error escalation without logging every attempt.
+    });
+    socket.on("close", () => {
+      if (subscriptionSocket !== socket) return;
+      subscriptionSocket = null;
+      clearSubscriptionConnectTimer();
+      setSubscriptionConnected(false);
+      scheduleSubscriptionReconnect();
+    });
+  };
+
+  const enterHostedAuthPending = (message: string): void => {
+    hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
+    disableRelaySubscription();
+    if (!hostedAuthPendingLogged) {
+      hostedAuthPendingLogged = true;
+      args.logger.info("automations.github_relay_auth_pending", { error: message });
+    }
+    updateGithubRelayStatus({
+      healthy: false,
+      status: "disabled",
+      lastPolledAt: new Date().toISOString(),
+      lastError: message,
+    });
+  };
+
   const pollGithubRelay = async () => {
     const config = buildGithubRelayConfig();
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
     const accountAccessToken = args.getAccountAccessToken
-      ? await args.getAccountAccessToken().catch(() => null)
+      ? (await args.getAccountAccessToken().catch(() => null))?.trim() || null
       : null;
-    // Skip before the "polling" status write so the "disabled" + auth-error
-    // status reported at cooldown entry stays accurate for the whole window.
-    if (config.configured && !useLegacyProjectRoute && !accountAccessToken && Date.now() < hostedAuthPendingUntilMs) return;
+    // Account auth may become available during the GitHub-token cooldown, so
+    // it is checked first. Without either credential, neither HTTP nor socket
+    // attempts run until the same five-minute retry window expires.
+    if (config.configured && !useLegacyProjectRoute && !accountAccessToken && Date.now() < hostedAuthPendingUntilMs) {
+      disableRelaySubscription();
+      return;
+    }
     updateGithubRelayStatus({
       configured: config.configured,
       apiBaseUrl: config.apiBaseUrl,
       remoteProjectId: config.remoteProjectId,
       status: config.configured ? "polling" : "disabled",
     });
-    if (!config.configured) return;
+    if (!config.configured) {
+      disableRelaySubscription();
+      return;
+    }
     try {
-      const cursor = getIngressCursor("github-relay");
+      const initialCursor = getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
       const legacyAuthToken = gitHubRelayAuthorizationToken(config);
+      if (useLegacyProjectRoute) {
+        disableRelaySubscription();
+      } else if (subscriptionTargetKey && !subscriptionTargetKey.startsWith(`${baseUrl}|`)) {
+        // Close the old relay immediately even if repository detection for the
+        // new config later fails.
+        disableRelaySubscription();
+      }
       const repo = useLegacyProjectRoute ? null : await args.githubService?.detectRepo();
       const eventsUrl = useLegacyProjectRoute
         ? new URL(`${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`)
@@ -522,6 +756,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           ? new URL(`${baseUrl}/github/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/events`)
           : null;
       if (!eventsUrl) {
+        disableRelaySubscription();
         updateGithubRelayStatus({
           configured: true,
           apiBaseUrl: config.apiBaseUrl,
@@ -532,27 +767,18 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         });
         return;
       }
-      if (cursor) eventsUrl.searchParams.set("after", cursor);
+      if (!useLegacyProjectRoute) {
+        eventsUrl.searchParams.set("order", "asc");
+        eventsUrl.searchParams.set("limit", String(GITHUB_RELAY_PAGE_LIMIT));
+      }
+
       let githubAppUserToken: string | null = null;
       if (!useLegacyProjectRoute) {
         try {
-          githubAppUserToken = (await args.githubService?.getAppUserTokenForRelay()) ?? null;
+          githubAppUserToken = ((await args.githubService?.getAppUserTokenForRelay()) ?? "").trim() || null;
         } catch (error) {
-          if (accountAccessToken) {
-            githubAppUserToken = null;
-          } else {
-            hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
-            const message = error instanceof Error ? error.message : String(error);
-            if (!hostedAuthPendingLogged) {
-              hostedAuthPendingLogged = true;
-              args.logger.info("automations.github_relay_auth_pending", { error: message });
-            }
-            updateGithubRelayStatus({
-              healthy: false,
-              status: "disabled",
-              lastPolledAt: new Date().toISOString(),
-              lastError: message,
-            });
+          if (!accountAccessToken) {
+            enterHostedAuthPending(error instanceof Error ? error.message : String(error));
             return;
           }
         }
@@ -561,7 +787,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         ? null
         : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
       if (hostedAuth && !hostedAuth.ok && !accountAccessToken) {
-        throw new Error(hostedAuth.error);
+        enterHostedAuthPending(hostedAuth.error);
+        return;
       }
       hostedAuthPendingUntilMs = 0;
       hostedAuthPendingLogged = false;
@@ -573,6 +800,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
         throw new Error("GitHub auth is required for relay polling.");
       }
+      const requestHeaders: Record<string, string> = {
+        accept: "application/json",
+        ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+        ...(accountAccessToken && !useLegacyProjectRoute
+          ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken }
+          : {}),
+      };
       if (hostedAuth?.ok && repo) {
         auditHostedRelayAuthTokenUse("automations.github_hosted_relay_auth_token_used", {
           origin: new URL(baseUrl).origin,
@@ -581,81 +815,113 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           route: "events",
         });
       }
+      if (repo) {
+        const subscriptionUrl = new URL(
+          `${baseUrl}/github/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/subscribe`,
+        );
+        if (subscriptionUrl.protocol === "https:") subscriptionUrl.protocol = "wss:";
+        else if (subscriptionUrl.protocol === "http:") subscriptionUrl.protocol = "ws:";
+        reconcileRelaySubscription(
+          {
+            key: `${baseUrl}|${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`,
+            repo,
+            url: subscriptionUrl.toString(),
+          },
+          requestHeaders,
+          hostedAuth?.ok ? "github-app-user-token" : "account-token",
+        );
+      }
       updateGithubRelayStatus({
         configured: true,
         apiBaseUrl: config.apiBaseUrl,
         remoteProjectId: useLegacyProjectRoute ? config.remoteProjectId : repo ? `${repo.owner}/${repo.name}` : null,
         status: "polling",
       });
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
-      const response = await fetch(
-        eventsUrl.toString(),
-        {
-          headers: {
-            accept: "application/json",
-            ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
-            ...(accountAccessToken && !useLegacyProjectRoute
-              ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken }
-              : {}),
-          },
-          signal: controller.signal,
-        }
-      ).finally(() => clearTimeout(timeout));
-      if (!response.ok) {
-        throw new Error(`GitHub relay poll failed (${response.status})`);
-      }
-      const payload = await response.json() as {
-        events?: Array<Record<string, unknown>>;
-        nextCursor?: unknown;
-        cursorExpired?: unknown;
-      };
-      const events = Array.isArray(payload.events) ? [...payload.events].reverse() : [];
-      let lastSeenCursor = cursor;
+
+      let pageCursor = initialCursor;
+      let lastSeenCursor = initialCursor;
       let lastDeliveryAt: string | null = null;
-      for (const event of events) {
-        const eventId = typeof event.eventId === "string" ? event.eventId : "";
-        const eventCursor = typeof event.cursor === "string" && event.cursor ? event.cursor : null;
-        if (!eventId || (eventCursor && eventCursor === cursor)) continue;
-        const githubEvent = typeof event.githubEvent === "string" ? event.githubEvent : "pull_request";
-        const summary = typeof event.summary === "string" ? event.summary : `GitHub ${githubEvent} event`;
-        const rawPayload = isRecord(event.payload) ? event.payload : event;
-        lastDeliveryAt = String(event.createdAt ?? new Date().toISOString());
-        const ingested = await args.prService?.ingestGithubWebhook({
-          eventName: githubEvent,
-          deliveryId: eventId,
-          payload: rawPayload,
-        }).catch((error) => {
-          args.logger.warn("automations.github_relay_pr_ingest_failed", {
-            githubEvent,
-            eventId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
+      while (true) {
+        const pageUrl = new URL(eventsUrl);
+        if (pageCursor) pageUrl.searchParams.set("after", pageCursor);
+        else pageUrl.searchParams.delete("after");
+        const controller = new AbortController();
+        pollAbortController = controller;
+        const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
+        timeout.unref?.();
+        const response = await fetch(pageUrl.toString(), {
+          headers: requestHeaders,
+          signal: controller.signal,
+        }).finally(() => {
+          clearTimeout(timeout);
+          if (pollAbortController === controller) pollAbortController = null;
         });
-        // Same as the local-webhook path: a relay-delivered PR change should
-        // refresh the poller immediately instead of waiting for its next tick.
-        if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
-          args.onPrStateIngested?.();
+        if (!response.ok) {
+          throw new Error(`GitHub relay poll failed (${response.status})`);
         }
-        await args.automationService?.dispatchIngressTrigger({
-          source: "github-relay",
-          eventKey: eventId,
-          triggerType: "github-webhook",
-          eventName: githubEvent,
-          summary,
-          cursor: eventCursor ?? eventId,
-          keywords: summary.split(/\s+/g).filter(Boolean),
-          rawPayload,
-        });
-        lastSeenCursor = eventCursor ?? eventId;
-      }
-      const responseCursor = typeof payload.nextCursor === "string" && payload.nextCursor
-        ? payload.nextCursor
-        : null;
-      if (responseCursor) lastSeenCursor = responseCursor;
-      if (lastSeenCursor && lastSeenCursor !== cursor) {
-        setIngressCursor({ source: "github-relay", cursor: lastSeenCursor });
+        const payload = await response.json() as {
+          events?: Array<Record<string, unknown>>;
+          nextCursor?: unknown;
+          cursorExpired?: unknown;
+          hasMore?: unknown;
+        };
+        const events = Array.isArray(payload.events)
+          ? useLegacyProjectRoute ? [...payload.events].reverse() : payload.events
+          : [];
+        let pageLastCursor = pageCursor;
+        for (const event of events) {
+          const eventId = typeof event.eventId === "string" ? event.eventId : "";
+          const eventCursor = typeof event.cursor === "string" && event.cursor ? event.cursor : null;
+          if (!eventId) throw new Error("GitHub relay returned an event without an eventId.");
+          if (eventCursor && eventCursor === pageCursor) continue;
+          const githubEvent = typeof event.githubEvent === "string" ? event.githubEvent : "pull_request";
+          const summary = typeof event.summary === "string" ? event.summary : `GitHub ${githubEvent} event`;
+          const rawPayload = isRecord(event.payload) ? event.payload : event;
+          lastDeliveryAt = String(event.createdAt ?? new Date().toISOString());
+          const ingested = await args.prService?.ingestGithubWebhook({
+            eventName: githubEvent,
+            deliveryId: eventId,
+            payload: rawPayload,
+          }).catch((error) => {
+            args.logger.warn("automations.github_relay_pr_ingest_failed", {
+              githubEvent,
+              eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+          });
+          // Same as the local-webhook path: a relay-delivered PR change should
+          // refresh the poller immediately instead of waiting for its next tick.
+          if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
+            args.onPrStateIngested?.();
+          }
+          await args.automationService?.dispatchIngressTrigger({
+            source: "github-relay",
+            eventKey: eventId,
+            triggerType: "github-webhook",
+            eventName: githubEvent,
+            summary,
+            cursor: eventCursor ?? eventId,
+            keywords: summary.split(/\s+/g).filter(Boolean),
+            rawPayload,
+          });
+          pageLastCursor = eventCursor ?? eventId;
+        }
+        const responseCursor = typeof payload.nextCursor === "string" && payload.nextCursor
+          ? payload.nextCursor
+          : null;
+        if (responseCursor) pageLastCursor = responseCursor;
+        // Commit only after every event in this page has completed. A failed
+        // page is replayed from its previous durable cursor on the next drain.
+        if (pageLastCursor && pageLastCursor !== pageCursor) {
+          setIngressCursor({ source: "github-relay", cursor: pageLastCursor });
+        }
+        lastSeenCursor = pageLastCursor;
+        if (useLegacyProjectRoute || payload.hasMore !== true) break;
+        if (!pageLastCursor || pageLastCursor === pageCursor) {
+          throw new Error("GitHub relay pagination did not advance its cursor.");
+        }
+        pageCursor = pageLastCursor;
       }
       updateGithubRelayStatus({
         healthy: true,
@@ -666,6 +932,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         lastError: null,
       });
     } catch (error) {
+      if (stopped && error instanceof Error && error.name === "AbortError") return;
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -679,8 +946,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   };
 
   const pollGithubRelayOnce = async () => {
-    if (pollInFlight) return await pollInFlight;
-    pollInFlight = pollGithubRelay().finally(() => {
+    if (pollInFlight) {
+      pollRerunRequested = true;
+      return await pollInFlight;
+    }
+    pollInFlight = (async () => {
+      do {
+        pollRerunRequested = false;
+        await pollGithubRelay();
+      } while (pollRerunRequested && !stopped);
+    })().finally(() => {
       pollInFlight = null;
     });
     return await pollInFlight;
@@ -688,6 +963,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
   return {
     async start() {
+      if (started && !stopped) return;
+      started = true;
+      stopped = false;
       // The local webhook server exists to receive automation webhooks; in
       // PR-freshness-only mode (no automation service) only the relay poll runs.
       if (!server && args.automationService) {
@@ -711,11 +989,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           lastError: null,
         });
       }
-      if (!pollTimer) {
-        pollTimer = setInterval(() => {
-          void pollGithubRelayOnce();
-        }, Math.max(30_000, Math.floor(args.pollIntervalMs ?? 60_000)));
-      }
+      rearmPollTimer();
       await pollGithubRelayOnce();
     },
 
@@ -734,15 +1008,26 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       await pollGithubRelayOnce();
     },
 
-    dispose() {
+    stop() {
+      stopped = true;
+      started = false;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
+      clearSubscriptionReconnectTimer();
+      clearSubscriptionConnectTimer();
+      pollAbortController?.abort();
+      pollAbortController = null;
+      closeRelaySubscription(true);
       if (server) {
         server.close();
         server = null;
       }
+    },
+
+    dispose() {
+      this.stop();
     },
   };
 }
