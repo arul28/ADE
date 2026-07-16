@@ -1,4 +1,5 @@
 import net from "node:net";
+import { parseRpcUrlAuthToken, withRpcAuthParam } from "../rpcAuth";
 
 type PendingRequest = {
   method: string;
@@ -32,6 +33,7 @@ export class JsonRpcClient {
   constructor(
     private readonly socket: net.Socket,
     private readonly defaultTimeoutMs = 120_000,
+    private readonly authToken: string | null = null,
   ) {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     socket.on("error", (error) => this.handleSocketClosed(error));
@@ -56,7 +58,9 @@ export class JsonRpcClient {
       };
       const onConnect = () => {
         cleanup();
-        resolve(new JsonRpcClient(socket));
+        resolve(
+          new JsonRpcClient(socket, undefined, parseRpcUrlAuthToken(socketPath)),
+        );
       };
       const onError = (error: Error) => {
         cleanup();
@@ -81,11 +85,12 @@ export class JsonRpcClient {
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
+    const authedParams = withRpcAuthParam(params, this.authToken);
     const payload = {
       jsonrpc: "2.0",
       id,
       method,
-      ...(params !== undefined ? { params } : {}),
+      ...(authedParams !== undefined ? { params: authedParams } : {}),
     };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {

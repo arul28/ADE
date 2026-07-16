@@ -57,6 +57,8 @@ import {
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import {
+  JsonRpcError,
+  JsonRpcErrorCode,
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
@@ -64,6 +66,13 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "./jsonrpc";
+import {
+  ADE_RPC_AUTH_PARAM,
+  generateRpcAuthToken,
+  parseRpcUrlAuthToken,
+  safeRpcAuthTokenEquals,
+  withRpcAuthParam,
+} from "./rpcAuth";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import {
   isLaunchProfile,
@@ -12690,6 +12699,7 @@ class SocketJsonRpcClient {
   private constructor(
     private readonly socket: net.Socket,
     private readonly timeoutMs: number,
+    private readonly authToken: string | null,
   ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
     socket.on("error", (error) =>
@@ -12706,18 +12716,23 @@ class SocketJsonRpcClient {
     label = "ADE endpoint",
   ): Promise<SocketJsonRpcClient> {
     const socket = await connectSocket(socketPath, timeoutMs, label);
-    return new SocketJsonRpcClient(socket, timeoutMs);
+    return new SocketJsonRpcClient(
+      socket,
+      timeoutMs,
+      parseRpcUrlAuthToken(socketPath),
+    );
   }
 
   request(method: string, params?: unknown): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
+    const authedParams = withRpcAuthParam(params, this.authToken);
     const payload: JsonRpcRequest = {
       jsonrpc: "2.0",
       id,
       method,
-      ...(params !== undefined ? { params } : {}),
+      ...(authedParams !== undefined ? { params: authedParams } : {}),
     };
     const body = `${JSON.stringify(payload)}\n`;
     return new Promise((resolve, reject) => {
@@ -12738,10 +12753,11 @@ class SocketJsonRpcClient {
 
   notify(method: string, params?: unknown): void {
     if (this.closedError) return;
+    const authedParams = withRpcAuthParam(params, this.authToken);
     const payload: JsonRpcRequest = {
       jsonrpc: "2.0",
       method,
-      ...(params !== undefined ? { params } : {}),
+      ...(authedParams !== undefined ? { params: authedParams } : {}),
     };
     this.socket.write(`${JSON.stringify(payload)}\n`, "utf8");
   }
@@ -12934,10 +12950,52 @@ async function startHeadlessRpcSocketServer(args: {
   };
 }
 
+// CONTRACT: every request reaching the TCP listener must carry the per-boot
+// bearer token in its params. The unix socket relies on 0600 file permissions,
+// but 127.0.0.1 TCP is reachable by every local user, so the token is the only
+// boundary there. Mirrors desktopBridgeServer.ts (built-in browser bridge).
+function withRpcAuthTokenGate(
+  createHandler: () => JsonRpcHandler & { dispose?: () => void },
+  authToken: string,
+): () => JsonRpcHandler & { dispose?: () => void } {
+  return () => {
+    const handler = createHandler();
+    const wrapped: JsonRpcHandler & { dispose?: () => void } = async (
+      request,
+    ) => {
+      const params = isRecord(request.params) ? { ...request.params } : null;
+      const provided =
+        params && typeof params[ADE_RPC_AUTH_PARAM] === "string"
+          ? (params[ADE_RPC_AUTH_PARAM] as string).trim()
+          : "";
+      if (!params || !safeRpcAuthTokenEquals(provided, authToken)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "ADE RPC TCP authentication failed.",
+        );
+      }
+      delete params[ADE_RPC_AUTH_PARAM];
+      return handler({ ...request, params });
+    };
+    if (handler.dispose) {
+      wrapped.dispose = () => handler.dispose!();
+    }
+    const notifiable = handler as NotifiableJsonRpcHandler;
+    if (typeof notifiable.setNotifier === "function") {
+      (wrapped as NotifiableJsonRpcHandler).setNotifier = (notify) =>
+        notifiable.setNotifier!(notify);
+    }
+    return wrapped;
+  };
+}
+
 async function startHeadlessRpcTcpServer(args: {
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<{ url: string; stop: () => void }> {
-  const serverState = createHeadlessRpcServer(args.createHandler);
+  const authToken = generateRpcAuthToken();
+  const serverState = createHeadlessRpcServer(
+    withRpcAuthTokenGate(args.createHandler, authToken),
+  );
   const { server } = serverState;
 
   const port = await new Promise<number>((resolve, reject) => {
@@ -12964,7 +13022,10 @@ async function startHeadlessRpcTcpServer(args: {
   });
 
   return {
-    url: `tcp://127.0.0.1:${port}`,
+    // The token rides in the URL so every existing ADE_RPC_URL consumer
+    // (child `ade` processes, the TUI's --socket flag) receives it without a
+    // second env var; parseRpcUrlAuthToken extracts it client-side.
+    url: `tcp://127.0.0.1:${port}?token=${authToken}`,
     stop: () => stopHeadlessRpcServer(serverState),
   };
 }
@@ -19140,6 +19201,7 @@ export {
   resolveRoots,
   runCli,
   startHeadlessRpcSocketServer,
+  startHeadlessRpcTcpServer,
   summarizeExecution,
   unwrapToolResult,
 };
