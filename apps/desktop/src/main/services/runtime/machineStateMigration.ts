@@ -199,8 +199,8 @@ export function runMachineStateMigration(args: MachineStateMigrationArgs): Machi
     if (!fs.existsSync(path.join(project.rootPath, ".ade"))) continue;
     try {
       projectRegistry.add(project.rootPath, {
-        catalogVisibility: "system",
-        registrationSource: "runtime-auto",
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       });
     } catch {
       // Ignore projects that disappeared or became unreadable during startup.

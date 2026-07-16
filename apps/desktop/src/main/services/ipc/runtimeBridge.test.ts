@@ -1167,6 +1167,8 @@ describe("registerRuntimeBridge", () => {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
         githubAuthHeader: `basic ${expectedBasic}`,
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
@@ -1211,6 +1213,8 @@ describe("registerRuntimeBridge", () => {
       {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
@@ -1251,6 +1255,8 @@ describe("registerRuntimeBridge", () => {
       {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
