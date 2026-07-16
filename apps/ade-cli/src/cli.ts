@@ -13344,6 +13344,7 @@ Usage:
       kind: "execute",
       label: "sync pair-device",
       machineOnly: true,
+      machineAutoStart: true,
       steps: [{ key: "result", method: "sync.authorizeSshPairing", params: request }],
     };
   }

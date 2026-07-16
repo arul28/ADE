@@ -656,6 +656,65 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("disconnects a cached last-good Relay connection when its account lease expires", async () => {
+    const storage = new MemoryStorage();
+    const cachedRelayEndpoint = "wss://cached-relay.example/connect/machine-key";
+    const localEnvironment = await makeEnvironment(storage, {
+      envId: "cached-last-good-relay-env",
+      accountOwnerUserId: null,
+      relayUrl: null,
+      machineKeyUrl: null,
+      lastGoodEndpoint: cachedRelayEndpoint,
+      explicitWssEndpoints: [],
+      addressCandidates: [],
+      port: 0,
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      expect(socket.url).toBe(cachedRelayEndpoint);
+      if (envelope.type === "hello") {
+        expect(envelope.payload).toMatchObject({
+          auth: { relayAccountToken: "relay-account-token" },
+        });
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(localEnvironment.envId, signedInRelayAccess);
+
+    const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
+      environment: localEnvironment,
+      endpoint: client.getStatus().endpoint,
+      relayAccess: signedInRelayAccess,
+    });
+    expect(expectedOwnerUserId).toBe("account-user-1");
+
+    const result = await reconcileActiveAccountLease({
+      accountClient: {
+        getAccessToken: async () => {
+          throw new Error("ADE account session expired.");
+        },
+        getSnapshot: () => ({
+          state: "auth_expired",
+          userId: null,
+          email: null,
+          name: null,
+          machines: [],
+          relayBaseUrls: [],
+          message: "Your ADE account session expired. Sign in again.",
+        }),
+      },
+      syncClient: client,
+      expectedOwnerUserId: expectedOwnerUserId!,
+    });
+
+    expect(result.state).toBe("revoked");
+    expect(client.getStatus().state).toBe("disconnected");
+    expect((await client.listEnvironments()).map((environment) => environment.envId)).toEqual([
+      "cached-last-good-relay-env",
+    ]);
+    client.dispose();
+  });
+
   it("keeps a local pairing connected through Relay during a transient directory outage", async () => {
     const storage = new MemoryStorage();
     const localEnvironment = await makeEnvironment(storage, {

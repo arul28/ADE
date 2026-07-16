@@ -83,6 +83,24 @@ final class SSHBootstrapTests: XCTestCase {
     XCTAssertEqual(command.components(separatedBy: "sync pair-device --json-stdin").count - 1, 2)
   }
 
+  func testPairingCommandLetsInstalledBinaryRecoverMissingOrStoppedRuntime() throws {
+    let command = SSHBootstrapService.pairingCommand
+    let firstPass = try XCTUnwrap(command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#))
+    let secondPass = try XCTUnwrap(
+      command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#, range: firstPass.upperBound..<command.endIndex)
+    )
+    let runningSocketPass = command[firstPass.lowerBound..<secondPass.lowerBound]
+    let installedBinaryPass = command[secondPass.lowerBound..<command.endIndex]
+
+    XCTAssertTrue(runningSocketPass.contains(#""$binary" --socket "$socket" sync pair-device --json-stdin"#))
+    XCTAssertFalse(installedBinaryPass.contains(#""$binary" --socket "$socket""#))
+    XCTAssertTrue(
+      installedBinaryPass.contains(
+        #"ADE_RUNTIME_SOCKET_PATH="$socket" "$binary" sync pair-device --json-stdin"#
+      )
+    )
+  }
+
   func testPairingCommandEmitsOnlySuccessfulFallbackOutput() {
     let command = SSHBootstrapService.pairingCommand
     let successfulOutputContract = #">"$output"; then cat "$output"; exit 0"#

@@ -1,5 +1,8 @@
 import type { AdeSyncClient } from "../sync/client";
-import { deriveBrowserSyncEndpoints } from "../sync/endpoints";
+import {
+  browserEndpointRequiresRelayAccess,
+  deriveBrowserSyncEndpoints,
+} from "../sync/endpoints";
 import type { WebClientEnvironmentRecord } from "../sync/envStore";
 import type { WebRelayAccess } from "../sync/relayPolicy";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "./client";
@@ -24,10 +27,13 @@ export function accountLeaseOwnerForActiveConnection(args: {
   const environmentOwnerUserId = args.environment.accountOwnerUserId?.trim() ?? "";
   if (environmentOwnerUserId) return environmentOwnerUserId;
   if (args.relayAccess.kind !== "signed_in" || !args.endpoint) return null;
-  const isKnownRelayEndpoint = deriveBrowserSyncEndpoints({
+  const requiresRelayLease = deriveBrowserSyncEndpoints({
     environment: args.environment,
-  }).some((candidate) => candidate.kind === "relay" && candidate.url === args.endpoint);
-  return isKnownRelayEndpoint ? args.relayAccess.userId.trim() || null : null;
+  }).some((candidate) => (
+    candidate.url === args.endpoint
+    && browserEndpointRequiresRelayAccess(candidate)
+  ));
+  return requiresRelayLease ? args.relayAccess.userId.trim() || null : null;
 }
 
 export async function reconcileActiveAccountLease(args: {

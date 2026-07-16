@@ -1,5 +1,8 @@
 import type { SyncPairingQrPayload } from "../../../shared/types/sync";
-import type { BrowserDialCandidate } from "./endpoints";
+import {
+  browserEndpointRequiresRelayAccess,
+  type BrowserDialCandidate,
+} from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 
 export type WebRelayAccess =
@@ -37,12 +40,6 @@ function relayAccessMatchesHost(
   return Boolean(expected && access.hostDeviceIds.some((deviceId) => normalized(deviceId) === expected));
 }
 
-function requiresRelayAuthorization(candidate: BrowserDialCandidate): boolean {
-  // An old lastGood-only WSS record has no trustworthy provenance. Treat it as
-  // Relay until an explicit direct endpoint or known relay URL classifies it.
-  return candidate.kind === "relay" || candidate.kind === "lastGood";
-}
-
 export function canUseRelayForEnvironment(
   environment: WebClientEnvironmentRecord,
   access: WebRelayAccess,
@@ -66,7 +63,7 @@ export function filterEnvironmentEndpoints(
   access: WebRelayAccess,
 ): BrowserDialCandidate[] {
   const relayAllowed = canUseRelayForEnvironment(environment, access);
-  return endpoints.filter((candidate) => !requiresRelayAuthorization(candidate) || relayAllowed);
+  return endpoints.filter((candidate) => !browserEndpointRequiresRelayAccess(candidate) || relayAllowed);
 }
 
 export function filterPairingEndpoints(
@@ -75,7 +72,7 @@ export function filterPairingEndpoints(
   access: WebRelayAccess,
 ): BrowserDialCandidate[] {
   const relayAllowed = canUseRelayForPairing(payload, access);
-  return endpoints.filter((candidate) => !requiresRelayAuthorization(candidate) || relayAllowed);
+  return endpoints.filter((candidate) => !browserEndpointRequiresRelayAccess(candidate) || relayAllowed);
 }
 
 export function requireDialableAuthorizedEndpoint(
@@ -83,7 +80,7 @@ export function requireDialableAuthorizedEndpoint(
   authorized: readonly BrowserDialCandidate[],
 ): void {
   if (authorized.some((candidate) => candidate.dialable)) return;
-  if (original.some((candidate) => requiresRelayAuthorization(candidate) && candidate.dialable)) {
+  if (original.some((candidate) => browserEndpointRequiresRelayAccess(candidate) && candidate.dialable)) {
     throw new WebRelayAuthRequiredError();
   }
   throw new Error("No direct browser connection is available for this Mac.");

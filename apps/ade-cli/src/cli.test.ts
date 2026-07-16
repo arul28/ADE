@@ -894,7 +894,7 @@ describe("ADE CLI", () => {
     ]);
   });
 
-  it("reads SSH pairing requests from bounded stdin and never from argv", () => {
+  it("reads SSH pairing requests only from stdin and allows socketless machine recovery", () => {
     const request = JSON.stringify({
       version: 1,
       device: {
@@ -934,6 +934,7 @@ describe("ADE CLI", () => {
       expect(plan).toMatchObject({
         label: "sync pair-device",
         machineOnly: true,
+        machineAutoStart: true,
         steps: [{
           key: "result",
           method: "sync.authorizeSshPairing",

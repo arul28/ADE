@@ -7,3 +7,7 @@
 # production-wiring findings so other generic API keys remain detectable.
 26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:21
 26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:26
+
+# Synthetic encrypted OpenSSH parser fixture. The current test constructs the
+# boundary at runtime; keep this exception scoped to its original PR commit.
+73f8acc461fd37996a95e4765007f2c794df13ee:apps/ios/ADETests/SSHBootstrapTests.swift:private-key:25

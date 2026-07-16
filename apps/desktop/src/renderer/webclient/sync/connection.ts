@@ -14,7 +14,10 @@ import type {
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
-import type { BrowserDialCandidate } from "./endpoints";
+import {
+  browserEndpointRequiresRelayAccess,
+  type BrowserDialCandidate,
+} from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof } from "./dpop";
 import {
@@ -128,10 +131,6 @@ function dataToText(data: unknown): string {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function usesRelayAccountProof(candidate: BrowserDialCandidate): boolean {
-  return candidate.kind === "relay" || candidate.kind === "lastGood";
 }
 
 function asMessageEvent(data: unknown): MessageEvent<string> {
@@ -358,7 +357,7 @@ export class SyncConnection {
       }, this.connectTimeoutMs);
 
       socket.onopen = () => {
-        void this.sendHello(environment, usesRelayAccountProof(candidate)).catch(reject);
+        void this.sendHello(environment, browserEndpointRequiresRelayAccess(candidate)).catch(reject);
       };
       socket.onmessage = (event) => {
         void this.handleMessage(asMessageEvent(event.data), {
@@ -421,7 +420,7 @@ export class SyncConnection {
       }, this.connectTimeoutMs * 2);
 
       socket.onopen = () => {
-        void this.getRelayAccountToken(usesRelayAccountProof(candidate)).then((relayAccountToken) => {
+        void this.getRelayAccountToken(browserEndpointRequiresRelayAccess(candidate)).then((relayAccountToken) => {
           const payload: SyncPairingRequestPayload = {
             code: args.pin,
             peer: args.peer,
@@ -447,7 +446,7 @@ export class SyncConnection {
             }
             pairedEnvironment = args.buildEnvironment(payload, endpoint);
             this.environment = pairedEnvironment;
-            void this.sendHello(pairedEnvironment, usesRelayAccountProof(candidate)).catch((error) => {
+            void this.sendHello(pairedEnvironment, browserEndpointRequiresRelayAccess(candidate)).catch((error) => {
               settled = true;
               clearTimeout(timeout);
               reject(error);

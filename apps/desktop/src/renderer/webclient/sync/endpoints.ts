@@ -13,6 +13,15 @@ export type BrowserDialCandidate = {
   source?: SyncAddressCandidate;
 };
 
+/**
+ * Returns whether dialing this endpoint consumes an ADE Relay account lease.
+ * Unknown cached WSS endpoints are intentionally treated as Relay until their
+ * direct provenance is explicitly stored.
+ */
+export function browserEndpointRequiresRelayAccess(candidate: BrowserDialCandidate): boolean {
+  return candidate.kind === "relay" || candidate.kind === "lastGood";
+}
+
 export type EndpointDerivationInput = {
   payload?: SyncPairingQrPayload | string | null;
   environment?: WebClientEnvironmentRecord | null;
