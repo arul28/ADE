@@ -18,8 +18,12 @@ vi.mock("./PrReviewThreadCard", () => ({
 }));
 
 vi.mock("./PrBotReviewCard", () => ({
-  PrBotReviewCard: ({ review }: { review: { reviewer: string } }) => (
-    <div data-testid="bot-review-card" data-reviewer={review.reviewer} />
+  PrBotReviewCard: ({ review, defaultOpen }: { review: { reviewer: string }; defaultOpen?: boolean }) => (
+    <div
+      data-testid="bot-review-card"
+      data-reviewer={review.reviewer}
+      data-default-open={defaultOpen ? "true" : "false"}
+    />
   ),
   detectBotProvider: (login: string) => (login.endsWith("[bot]") ? "coderabbit" : null),
 }));
@@ -431,6 +435,70 @@ describe("PrTimeline", () => {
     expect(virtualizerSpy).toHaveBeenCalled();
     const args = virtualizerSpy.mock.calls[0]![0] as { count: number };
     expect(args.count).toBe(500);
+  });
+
+  it("renders a bodyful bot review collapsed by default (no defaultOpen override)", () => {
+    const events: PrTimelineEvent[] = [
+      makeEvent({
+        id: "r1",
+        type: "review",
+        reviewId: "r1",
+        state: "commented",
+        isBot: true,
+        author: "greptile[bot]",
+        body: "## Greptile review\n" + "finding\n".repeat(40),
+      }),
+    ];
+    render(
+      <PrTimeline
+        events={events}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    const card = screen.getByTestId("bot-review-card");
+    // A late bot review must not dump its full body expanded at the thread end.
+    expect(card.getAttribute("data-default-open")).toBe("false");
+  });
+
+  it("collapses a long bot-authored issue comment behind a Show more affordance", () => {
+    const longBotComment: PrTimelineEvent = makeEvent({
+      id: "c-bot-long",
+      type: "issue_comment",
+      commentId: "c-bot-long",
+      isBot: true,
+      author: "ade[bot]",
+      body: "## ADE review\n" + "detail line\n".repeat(30),
+    });
+    const shortHumanComment: PrTimelineEvent = makeEvent({
+      id: "c-human",
+      type: "issue_comment",
+      commentId: "c-human",
+      isBot: false,
+      author: "alice",
+      body: "looks good to me",
+    });
+    render(
+      <PrTimeline
+        events={[longBotComment, shortHumanComment]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    // The long bot comment collapses (expand affordance present); the short human
+    // comment renders inline with no collapse control.
+    expect(screen.getByText("Show more")).toBeTruthy();
+    expect(screen.getAllByText("Show more")).toHaveLength(1);
   });
 
   it("keeps resolved review threads in the full overview thread", () => {

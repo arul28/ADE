@@ -156,6 +156,7 @@ import {
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
 declare const __ADE_VERSION__: string | undefined;
@@ -1196,8 +1197,8 @@ export async function createAdeRuntime(args: {
   // GitHub relay poll feeds prService.ingestGithubWebhook, which is how
   // webhook-driven PR state updates reach installed (non-source) runtimes.
   // Automation rule dispatch stays gated on automationService being present.
-  // The PR poller is constructed below; late-bind so webhook ingest can poke
-  // an immediate re-read instead of waiting out the next scheduled tick.
+  // The PR poller is constructed below; bind it before starting ingress so
+  // the ingress service's immediate startup poll can poke it.
   let prPollingServiceForIngress: { poke: () => void } | null = null;
   const automationIngressService = createAutomationIngressService({
     logger,
@@ -1212,11 +1213,6 @@ export async function createAdeRuntime(args: {
     // 30s halves worst-case webhook latency. Each poll is one request to our
     // own relay worker (no GitHub data cost); the service floors at 30s.
     pollIntervalMs: 30_000,
-  });
-  void automationIngressService.start().catch((error) => {
-    logger.warn("automations.ingress_start_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
   });
   const linearIngressService = automationService
     ? createLinearIngressService({
@@ -1379,6 +1375,11 @@ export async function createAdeRuntime(args: {
   });
   prPollingService.start();
   prPollingServiceForIngress = prPollingService;
+  void automationIngressService.start().catch((error) => {
+    logger.warn("automations.ingress_start_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   // Brain → Cloudflare push relay publisher. Owns push registration (from the
   // paired phone via `push.*` sync commands) and fans agent/PR state transitions
@@ -1659,11 +1660,14 @@ export async function createAdeRuntime(args: {
     backfillDelayMs: 5_000,
   });
   searchServiceHolder.current = searchService;
-  headlessLinearServices.prService?.setEventEmitter((event) => {
-    if (event.type === "prs-updated") {
-      for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
-    }
-  });
+  headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
+    emitPrEvent,
+    (event) => {
+      if (event.type === "prs-updated") {
+        for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
+      }
+    },
+  ));
   const agentChatImportedRefsSource = agentChatService;
   const chatImportedRefsProvider = agentChatImportedRefsSource
     ? async () => {

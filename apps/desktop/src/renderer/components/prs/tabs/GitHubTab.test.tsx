@@ -374,6 +374,108 @@ describe("GitHubTab", () => {
     expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
   });
 
+  function prsContext(prs: Array<Partial<PrWithConflicts> & { id: string }>) {
+    return {
+      prs,
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: false,
+      setViewerLogin: vi.fn(),
+    };
+  }
+
+  function renderTabEl(selectedPrId: string) {
+    return (
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={selectedPrId}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+          onOpenQueueView={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+  }
+
+  it("follows a selected PR into the merged bucket when its linked state transitions", async () => {
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr()],
+      externalPullRequests: [],
+    });
+    mockUsePrs.mockReturnValue(prsContext([
+      { id: "pr-open", state: "open", repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 101 },
+    ]));
+
+    const view = render(renderTabEl("pr-open"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+    });
+    // Starts on the open tab.
+    expect((screen.getByRole("button", { name: /^open/i }) as HTMLButtonElement).style.fontWeight).toBe("600");
+
+    // The linked ADE PR transitions open -> merged.
+    mockUsePrs.mockReturnValue(prsContext([
+      { id: "pr-open", state: "merged", repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 101 },
+    ]));
+    view.rerender(renderTabEl("pr-open"));
+
+    // The filter follows to merged and the selection is preserved (not stranded).
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: /^merged/i }) as HTMLButtonElement).style.fontWeight).toBe("600");
+    });
+    expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+  });
+
+  it("keeps a merged PR visible via an overlay row after it drops from the open-only snapshot", async () => {
+    const getSnap = window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>;
+    const openOnly: GitHubPrSnapshot = { ...snapshot, repoPullRequests: [makeGitHubPr()], externalPullRequests: [] };
+    getSnap.mockResolvedValue(openOnly);
+
+    let prsEventCb: ((event: { type: string }) => void) | undefined;
+    (window.ade.prs.onEvent as ReturnType<typeof vi.fn>).mockImplementation((cb: (event: { type: string }) => void) => {
+      prsEventCb = cb;
+      return () => {};
+    });
+
+    mockUsePrs.mockReturnValue(prsContext([
+      { id: "pr-open", state: "open", repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 101 },
+    ]));
+
+    render(renderTabEl("pr-open"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+    });
+    expect(screen.getByRole("button", { name: /#101 Open PR/i })).toBeTruthy();
+
+    // The PR merges AND drops out of the open-only snapshot.
+    mockUsePrs.mockReturnValue(prsContext([
+      { id: "pr-open", state: "merged", repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 101 },
+    ]));
+    getSnap.mockResolvedValue({ ...openOnly, repoPullRequests: [] });
+    await act(async () => {
+      prsEventCb?.({ type: "prs-updated" });
+      await Promise.resolve();
+    });
+
+    // The overlay keeps the row visible under merged with the selection intact.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /#101 Open PR/i })).toBeTruthy();
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+      expect((screen.getByRole("button", { name: /^merged/i }) as HTMLButtonElement).style.fontWeight).toBe("600");
+    });
+    // Merged count reflects the overlay row (1), not doubled.
+    expect(screen.getByRole("button", { name: /^merged/i }).textContent).toContain("1");
+  });
+
   it("restores each filter tab's selected PR when switching back", async () => {
     const user = userEvent.setup();
     renderTab();
