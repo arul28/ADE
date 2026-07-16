@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.28] - 2026-07-16
+
+### Added
+
+- Account page now shows the signed-in identity with a real profile picture, lists your Macs with this Mac pinned first, and supports removing a machine from your account.
+- Connections panel gained a persistent "This Mac" card that owns the pairing code and phone QR code, plus revoke-with-confirmation for paired phones and browsers.
+
 ### Changed
 
-- ADE Relay now follows account sign-in with no separate toggle; machines that previously disabled the relay are re-enabled by this release.
+- ADE Relay now follows account sign-in with no separate toggle; machines that previously disabled the relay are re-enabled by this release. Direct Wi-Fi/Tailscale routes remain preferred.
+- The hosted web client is account sign-in only; PIN pairing and the /pair route were removed (previously paired browsers keep working).
+- iOS connect flow now leads with account sign-in, followed by QR scanning and nearby discovery.
+- Sign-out asks for confirmation and states plainly that directly paired devices stay connected.
+
+### Removed
+
+- User-facing pairing links, manual address+PIN entry (desktop and iOS), the `ade sync relay` command, and the machine-list Share card. The current Mac no longer appears in its own remote-machine list.
 
 ## [1.2.27] - 2026-07-14
 
