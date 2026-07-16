@@ -33,3 +33,33 @@ export type ProjectSecretDeleteArgs = {
   name: string;
   confirmName?: string;
 };
+
+export type ProjectSecretEnvFile = {
+  fileName: string;
+  content: string;
+};
+
+export type ProjectSecretEnvEntry = {
+  name: string;
+  value: string;
+  exists: boolean;
+};
+
+export type ProjectSecretsImportPreview = {
+  fileName: string;
+  secrets: ProjectSecretEnvEntry[];
+};
+
+export type ProjectSecretsImportArgs = {
+  secrets: Array<Pick<ProjectSecretEnvEntry, "name" | "value">>;
+};
+
+export type ProjectSecretsImportResult = {
+  imported: string[];
+  replaced: string[];
+};
+
+export type ProjectSecretsExportResult = {
+  filePath: string;
+  secretCount: number;
+};

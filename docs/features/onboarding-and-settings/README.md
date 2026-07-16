@@ -71,12 +71,18 @@ Main process:
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.
+- `apps/desktop/src/main/services/secrets/projectSecretService.ts` and
+  `projectSecretEnv.ts` — encrypted project-secret CRUD plus bounded dotenv
+  parsing, selected batch import, and mode-`0600` export to the runtime
+  machine's Downloads folder.
 
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/config.ts` — central type module for
   the configuration schema (processes, stacks, tests, overlays, lane
   templates, port allocation, proxy, OAuth, integrations, AI).
+- `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
+  value, dotenv preview/import, and export request/result contracts.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
     applySuggestedConfig, complete, setDismissed)
@@ -84,6 +90,8 @@ Shared types and IPC:
     confirmTrust, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
+  - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
+    previewEnvImport, importEnv, exportEnv)
   - `ade.ai.*` and settings-specific channels per integration
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
@@ -93,8 +101,9 @@ Shared types and IPC:
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
-  `window.ade.projectConfig`, `window.ade.project`, plus the
-  integration-specific surfaces (`window.ade.github`, etc.).
+  `window.ade.projectConfig`, `window.ade.project`,
+  `window.ade.projectSecrets`, plus the integration-specific surfaces
+  (`window.ade.github`, etc.).
 
 Renderer — onboarding:
 
@@ -268,8 +277,19 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
   — Settings > Secrets. Lists project-scoped ADE secrets without values,
   adds/replaces secrets, reveals values on demand, copies them to the
-  clipboard, and deletes with inline confirmation. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`.
+  clipboard, and deletes with inline confirmation. The section can also open a
+  local Finder picker for a bounded dotenv file, show the extracted names and
+  values in a select-all/individual-selection review modal, atomically import
+  the selected rows, and export all secrets as a mode-`0600`
+  `ade-secrets.env` file in Downloads. Values are backed by
+  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. When the
+  active project is remote, only the Finder read happens on the controller Mac:
+  the bounded file content is parsed/imported by the active runtime and export
+  writes to Downloads on the remote project host.
+- `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
+  — dotenv import review dialog. Displays extracted names and plaintext values,
+  marks replacements, supports select all or individual selection, and saves
+  only the selected secrets.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
