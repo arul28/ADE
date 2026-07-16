@@ -28,7 +28,12 @@ import type {
   ProjectPathInspection,
   ProjectIcon,
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
@@ -3782,6 +3787,21 @@ contextBridge.exposeInMainWorld("ade", {
     delete: async (args: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> =>
       callProjectRuntimeActionOr("project_secret", "delete", { args }, () =>
         ipcRenderer.invoke(IPC.projectSecretsDelete, args),
+      ),
+    chooseEnvFile: async (): Promise<ProjectSecretsImportPreview | null> => {
+      const file = await ipcRenderer.invoke(IPC.projectSecretsChooseEnvFile) as ProjectSecretEnvFile | null;
+      if (!file) return null;
+      return callProjectRuntimeActionOr("project_secret", "previewEnvImport", { args: file }, () =>
+        ipcRenderer.invoke(IPC.projectSecretsPreviewEnvImport, file),
+      );
+    },
+    importEnv: async (args: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> =>
+      callProjectRuntimeActionOr("project_secret", "importEnv", { args }, () =>
+        ipcRenderer.invoke(IPC.projectSecretsImportEnv, args),
+      ),
+    exportEnv: async (): Promise<ProjectSecretsExportResult> =>
+      callProjectRuntimeActionOr("project_secret", "exportEnv", {}, () =>
+        ipcRenderer.invoke(IPC.projectSecretsExportEnv),
       ),
   },
   ai: {

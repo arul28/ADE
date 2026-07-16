@@ -8,7 +8,12 @@ import type {
   ProjectPathInspection,
   ProjectIcon,
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
@@ -909,6 +914,9 @@ declare global {
         get: (args: ProjectSecretGetArgs) => Promise<ProjectSecretValueResult>;
         set: (args: ProjectSecretSetArgs) => Promise<ProjectSecretSummary>;
         delete: (args: ProjectSecretDeleteArgs) => Promise<{ deleted: boolean; name: string }>;
+        chooseEnvFile: () => Promise<ProjectSecretsImportPreview | null>;
+        importEnv: (args: ProjectSecretsImportArgs) => Promise<ProjectSecretsImportResult>;
+        exportEnv: () => Promise<ProjectSecretsExportResult>;
       };
       ai: {
         getStatus: (args?: {
