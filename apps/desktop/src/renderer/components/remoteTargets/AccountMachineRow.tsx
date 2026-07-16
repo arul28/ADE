@@ -40,9 +40,11 @@ function accountMachineStatusLabel(
   machine: AdeAccountMachine,
   connectionState: ReturnType<typeof accountMachineConnectionState>,
 ): string {
-  if (connectionState === "unreachable") return "Setup needed on other Mac";
+  if (connectionState === "unreachable") {
+    return "Can't reach this Mac right now — make sure it's online and up to date.";
+  }
   if (machine.online) return "Ready to connect";
-  return relativeLastSeen(machine.lastSeenAt);
+  return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that Mac`;
 }
 
 export function AccountMachineRow({
@@ -78,12 +80,9 @@ export function AccountMachineRow({
                 }}
               />
               <span style={nameStyle}>{machine.name ?? "Unnamed machine"}</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: COLORS.textDim, fontFamily: SANS_FONT, fontSize: 10, flexShrink: 0 }}>
-                <Cloud size={11} weight="fill" />
-                account
-              </span>
             </div>
-            <div style={subTextStyle}>
+            <div style={{ ...subTextStyle, display: "flex", alignItems: "center", gap: 5 }}>
+              <Cloud size={12} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
               Connected to your ADE account
             </div>
             <div style={helperTextStyle}>
@@ -126,7 +125,7 @@ export function AccountMachineRow({
           </div>
           <div style={helperTextStyle}>
             {needsSetup
-              ? "On that Mac, open ADE and sign in to this same account. Then open Connections > Mobile and turn on Connect from anywhere."
+              ? "On that Mac, open ADE and sign in to this same ADE account. Once it's online and up to date, it appears here automatically."
               : "This Mac hasn't checked in recently. Open ADE on it, then try again."}
           </div>
           {!needsSetup && machine.reachableEndpoints.length > 0 ? (

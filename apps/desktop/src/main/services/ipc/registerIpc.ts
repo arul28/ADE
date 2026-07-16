@@ -9,6 +9,10 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import {
+  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
+  ACCOUNT_REMOVE_MACHINE_CHANNEL,
+} from "../../../shared/types/account";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
@@ -190,6 +194,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -1799,6 +1805,7 @@ export function registerIpc({
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
+    [ACCOUNT_REMOVE_MACHINE_CHANNEL]: new Set(["machineKey"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1942,6 +1949,19 @@ export function registerIpc({
         machineKey: "[redacted]",
         deviceId: "[redacted]",
         name: "[redacted]",
+      };
+    }
+    if (channel === ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
+        deviceId: "[redacted]",
+      };
+    }
+    if (channel === ACCOUNT_REMOVE_MACHINE_CHANNEL) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
       };
     }
     return result;
@@ -4760,18 +4780,6 @@ export function registerIpc({
     );
     if (runtimeResult.handled) return runtimeResult.result;
     return (await requireSyncService()).getCloudRelayStatus();
-  });
-
-  ipcMain.handle(IPC.syncSetCloudRelayEnabled, async (event, enabled: boolean): Promise<SyncCloudRelayStatus> => {
-    const normalized = enabled === true;
-    const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
-      event,
-      "sync.setCloudRelayEnabled",
-      { enabled: normalized },
-      (pool, rootPath) => pool.setSyncCloudRelayEnabledForRoot(rootPath, normalized),
-    );
-    if (runtimeResult.handled) return runtimeResult.result;
-    return await (await requireSyncService()).setCloudRelayEnabled(normalized);
   });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
@@ -8577,6 +8585,13 @@ export function registerIpc({
     return accountBridge.status();
   });
 
+  ipcMain.handle(
+    ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
+    async (): Promise<AdeAccountLocalMachineIdentity> => {
+      return runtimeBridge.getLocalMachineIdentity();
+    },
+  );
+
   ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
     return accountBridge.startLogin();
   });
@@ -8608,6 +8623,16 @@ export function registerIpc({
     IPC.accountPairMachine,
     async (_event, arg: { machineKey?: string }): Promise<AdeAccountMachinePairResult> => {
       return await accountBridge.pairMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    ACCOUNT_REMOVE_MACHINE_CHANNEL,
+    async (
+      _event,
+      arg: { machineKey?: string },
+    ): Promise<AdeAccountMachineRemovalResult> => {
+      return await accountBridge.removeMachine(arg?.machineKey ?? "");
     },
   );
 

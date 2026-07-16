@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  CaretRight,
   DesktopTower,
   DeviceMobile,
   Globe,
@@ -16,7 +15,14 @@ import type {
 } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
-import { SyncDevicesSection } from "../settings/SyncDevicesSection";
+import {
+  PhoneConnectionsTab,
+  ThisMacCard,
+  WebConnectionsTab,
+  useSyncConnections,
+  type RevokeConfirm,
+} from "../settings/SyncDevicesSection";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import {
   accountAvatarImage,
   accountInitials,
@@ -34,8 +40,8 @@ type ConnectionsPanelProps = {
 
 const TABS: Array<{ key: ConnectionsPanelTab; label: string; icon: typeof DesktopTower }> = [
   { key: "machines", label: "Machines", icon: DesktopTower },
-  { key: "mobile", label: "Mobile", icon: DeviceMobile },
-  { key: "web", label: "Web client", icon: Globe },
+  { key: "mobile", label: "Phone", icon: DeviceMobile },
+  { key: "web", label: "Web", icon: Globe },
 ];
 
 function tabStyle(active: boolean): CSSProperties {
@@ -74,22 +80,24 @@ function AccountHeader({
   const ringTint = providerTint(status, githubConnected);
   const [imgBroken, setImgBroken] = useState(false);
 
-  const title = status.signedIn
-    ? status.name ?? status.email ?? "Your ADE account"
-    : "Sign in to ADE";
+  // State-first title so the panel reads honestly at a glance.
+  const title = status.signedIn ? "Signed in to ADE" : "Not signed in";
   const subtitle = status.signedIn
     ? status.email ?? "Manage your account"
-    : "The easiest way to connect to your devices";
+    : "Sign in to connect your devices";
 
   return (
     <div
       style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) auto",
+        display: "flex",
         alignItems: "center",
+        gap: 10,
+        padding: "12px 12px 12px 16px",
         borderBottom: `1px solid ${COLORS.borderMuted}`,
       }}
     >
+      {/* Close is rendered first so it remains the panel's leading focus stop,
+          then ordered to the right for layout. */}
       <button
         type="button"
         className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
@@ -97,7 +105,7 @@ function AccountHeader({
         onClick={onClose}
         title="Close connections"
         aria-label="Close connections"
-        style={{ gridColumn: 2, gridRow: 1, marginRight: 12 }}
+        style={{ order: 3, flexShrink: 0, border: `1px solid ${COLORS.borderMuted}` }}
       >
         <X size={13} weight="regular" />
       </button>
@@ -105,19 +113,19 @@ function AccountHeader({
         type="button"
         onClick={onNavigate}
         style={{
+          order: 1,
           display: "flex",
           minWidth: 0,
+          flex: 1,
           alignItems: "center",
           gap: 11,
-          padding: "12px 16px",
+          padding: 0,
           border: "none",
           background: "transparent",
           cursor: "pointer",
           textAlign: "left",
-          gridColumn: 1,
-          gridRow: 1,
         }}
-        aria-label={status.signedIn ? "Open account" : "Sign in to ADE"}
+        aria-label={status.signedIn ? "Manage account" : "Sign in to ADE"}
       >
         <span style={{ flexShrink: 0 }}>
           {avatarImage && !imgBroken ? (
@@ -161,7 +169,27 @@ function AccountHeader({
             {subtitle}
           </span>
         </span>
-        <CaretRight size={15} weight="bold" color={COLORS.textDim} style={{ flexShrink: 0 }} />
+      </button>
+
+      <button
+        type="button"
+        onClick={onNavigate}
+        style={{
+          order: 2,
+          flexShrink: 0,
+          height: 28,
+          padding: "0 10px",
+          borderRadius: 8,
+          border: `1px solid ${COLORS.borderMuted}`,
+          background: "transparent",
+          color: COLORS.textSecondary,
+          fontFamily: SANS_FONT,
+          fontSize: 11.5,
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        Manage account
       </button>
     </div>
   );
@@ -179,6 +207,8 @@ export function ConnectionsPanel({
   const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const sync = useSyncConnections();
+  const { state: confirmState, confirmAsync, close: closeConfirm } = useConfirmDialog();
 
   useEffect(() => {
     setTab(initialTab);
@@ -223,14 +253,31 @@ export function ConnectionsPanel({
     });
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
 
+  const confirmRevoke = useCallback<RevokeConfirm>(
+    ({ name, connected }) =>
+      confirmAsync({
+        title: "Revoke access?",
+        message: connected
+          ? `${name} will be disconnected and lose access to this Mac until it connects again.`
+          : `${name} will lose access to this Mac until it connects again.`,
+        confirmLabel: "Revoke",
+        danger: true,
+      }),
+    [confirmAsync],
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 96px)" }}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
+      <div style={{ padding: "12px 12px 0" }}>
+        <ThisMacCard sync={sync} accountSignedIn={accountStatus.signedIn} />
+      </div>
+
       <div
         role="tablist"
         aria-label="Connections"
-        style={{ display: "flex", gap: 4, padding: "10px 12px 0" }}
+        style={{ display: "flex", gap: 4, padding: "12px 12px 0" }}
       >
         {TABS.map(({ key, label, icon: Icon }) => (
           <button
@@ -258,9 +305,20 @@ export function ConnectionsPanel({
             onAccountRequested={goToAccount}
           />
         ) : null}
-        {tab === "mobile" ? <SyncDevicesSection variant="phone" /> : null}
-        {tab === "web" ? <SyncDevicesSection variant="web" /> : null}
+        {tab === "mobile" ? (
+          <PhoneConnectionsTab sync={sync} confirmRevoke={confirmRevoke} />
+        ) : null}
+        {tab === "web" ? (
+          <WebConnectionsTab
+            sync={sync}
+            accountSignedIn={accountStatus.signedIn}
+            confirmRevoke={confirmRevoke}
+            onAccountRequested={goToAccount}
+          />
+        ) : null}
       </div>
+
+      <ConfirmDialog state={confirmState} onClose={closeConfirm} />
     </div>
   );
 }

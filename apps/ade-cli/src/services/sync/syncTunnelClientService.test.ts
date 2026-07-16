@@ -8,18 +8,16 @@ import {
 import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSharedSyncListener } from "./sharedSyncListener";
 
-// syncCloudRelayStore itself (enablement default/migration, identity mint, url
+// syncCloudRelayStore itself (legacy-field cleanup, identity mint, URL
 // derivation, signature builders) is covered in syncCloudRelayStore.test.ts.
 
-function fakeStore(enabled: boolean, relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
+function fakeStore(relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
   const identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
   return {
-    getConfig: () => ({ enabled, ...identity }),
-    isEnabled: () => enabled,
-    setEnabled: () => ({ enabled, ...identity }),
+    getConfig: () => identity,
     getMachineIdentity: () => identity,
     getRelayUrl: () => relayUrl,
-    setRelayUrl: () => ({ enabled, ...identity }),
+    setRelayUrl: () => identity,
     getRelayWssUrl: () => `wss://relay.example.com/connect/${identity.machineKey}`,
   } as unknown as SyncCloudRelayStore;
 }
@@ -60,22 +58,6 @@ describe("parseControlMessage", () => {
 });
 
 describe("createSyncTunnelClientService", () => {
-  it("is a no-op and reports disabled when the store is disabled", async () => {
-    const service = createSyncTunnelClientService({
-      getSyncPort: () => 12345,
-      getRelayBridgeProof: () => null,
-      configStore: fakeStore(false),
-    });
-    await service.start();
-    const status = service.getStatus();
-    expect(status.enabled).toBe(false);
-    expect(status.connected).toBe(false);
-    expect(status.activeTunnels).toBe(0);
-    expect(status.machineKey).toBe("a".repeat(32));
-    expect(status.relayUrl).toBe("https://relay.example.com");
-    await service.dispose();
-  });
-
   it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
@@ -100,7 +82,7 @@ describe("createSyncTunnelClientService", () => {
       getAccountLease: async () => signedIn && leaseValid
         ? { userId: "relay-owner" }
         : null,
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
     });
 
     try {
@@ -147,7 +129,7 @@ describe("createSyncTunnelClientService", () => {
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
       accountStatusPollMs: 5,
-      configStore: fakeStore(true),
+      configStore: fakeStore(),
     });
 
     try {
@@ -196,7 +178,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getExpectedLoopbackNonce: () => expectedNonce,
       getRelayBridgeProof: () => "e".repeat(43),
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
       loopbackProbe,
     });
 
@@ -259,7 +241,7 @@ describe("createSyncTunnelClientService", () => {
       getRelayBridgeProof: () => "e".repeat(43),
       getAccountLease: async () => leaseValid ? { userId: "relay-owner" } : null,
       accountStatusPollMs: 5,
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
       loopbackProbe: async (port) => {
         markProbeStarted?.();
         return await new Promise((resolve) => {
@@ -327,7 +309,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => syncPort,
       getExpectedLoopbackNonce: () => listener.getExpectedLoopbackNonce(),
       getRelayBridgeProof: () => listener.getRelayBridgeProof(),
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
     });
 
     try {

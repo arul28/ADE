@@ -17,14 +17,15 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import os from "node:os";
 import type {
   AccountAuthStatus,
-  AccountLoginPollResult,
   AccountLoginStartResult,
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProjectSecretService } from "../secrets/projectSecretService";
 import type { AccountMachineReconciliationResult } from "../remoteRuntime/remoteConnectionService";
 import type {
   AdeAccountMachinePairResult,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
+  AdeAccountLoginPoll,
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
@@ -118,10 +119,8 @@ function toAccountStatus(
     email: status.email,
     name: status.name,
     expiresAt: status.expiresAt,
-    // The merged daemon status does not yet carry provider/image; leave null so
-    // the renderer degrades to a GitHub-creds image and a monogram.
-    provider: null,
-    imageUrl: null,
+    provider: status.provider ?? null,
+    imageUrl: status.imageUrl ?? null,
     configured,
   };
 }
@@ -129,11 +128,12 @@ function toAccountStatus(
 export type AccountBridge = {
   status(): AdeAccountStatus;
   startLogin(): Promise<AccountLoginStartResult>;
-  pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
+  pollLogin(sessionId: string): Promise<AdeAccountLoginPoll>;
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
   pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult>;
+  removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
 };
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
@@ -185,7 +185,10 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           result.authStatus.signedIn ? result.authStatus.userId : null,
         );
       }
-      return result;
+      return {
+        ...result,
+        authStatus: toAccountStatus(result.authStatus, configured()),
+      };
     },
 
     cancelLogin: (sessionId: string) => service().cancelLogin(sessionId),
@@ -210,6 +213,10 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
 
     pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {
       return await directoryService().pairMachine(machineKey);
+    },
+
+    removeMachine: async (machineKey: string): Promise<AdeAccountMachineRemovalResult> => {
+      return await directoryService().deleteMachine(machineKey);
     },
   };
 }

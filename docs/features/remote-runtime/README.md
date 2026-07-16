@@ -5,15 +5,17 @@ machine. The remote project lives on that machine; lanes, PTYs, git, agent
 chat, and PR actions all run there. The local desktop is the controller — it
 spawns no project services of its own for a remote binding.
 
-The recommended transport is **paired**: pair the two ADE desktops with a PIN
-and device-bound DPoP credentials, then carry the full runtime JSON-RPC over
-the machine sync WebSocket. ADE tries direct LAN routes, then tailnet routes,
-then the configured cloud relay when both machines are signed in to the same
-ADE account. **SSH** remains the Advanced path and a fallback only for paired
+The recommended transport is **paired**: sign in on both desktops for PIN-less
+account-directory adoption, or pair a Nearby machine with its six-digit PIN.
+Both paths create device-bound DPoP credentials, then carry the full runtime
+JSON-RPC over the machine sync WebSocket. ADE tries direct LAN routes, then
+tailnet routes, then the cloud relay when both machines are signed in to the
+same ADE account. **SSH** remains the Advanced path and a fallback only for paired
 targets that came from an explicitly configured SSH route. It
 runs the same JSON-RPC over an SSH `exec` channel using `ade rpc --stdio` and
-can upload or start the remote runtime when needed. The relay is not an
-end-to-end encrypted tunnel; see the trust boundary in
+can upload or start the remote runtime when needed. The relay is a
+trusted-operator plaintext path, not an end-to-end encrypted tunnel; adding
+relay payload E2E encryption is planned security work. See the trust boundary in
 [Internal architecture](internal-architecture.md).
 
 ## Source file map
@@ -143,9 +145,9 @@ handoff that publishes the exact source commit, prepares or clones the
 destination project, creates or reuses the destination lane, and starts a new
 chat from a bounded portable capsule.
 
-Direct remote targets are account-independent. QR/link, Nearby, address/PIN,
-and SSH-created trust lives on this desktop and continues to connect after
-sign-out. Account-directory adoption is deliberately account-owned instead:
+Direct remote targets are account-independent. Trust created through Nearby +
+PIN or SSH lives on this desktop and continues to connect after sign-out.
+Account-directory adoption is deliberately account-owned instead:
 the target and paired DPoP credentials are tagged with the Clerk user id and
 removed when that user signs out or switches accounts, so a shared ADE install
 cannot expose another person's machines. Signing in never converts an existing
@@ -176,17 +178,18 @@ run a local repair against data owned by the remote machine. See
 
 ## Connect flow
 
-1. Open the Machines panel. ADE combines Bonjour and Tailscale discovery,
+1. Open **Connections > Machines**. When signed in, ADE loads the other Macs on
+   the same account. It also combines Bonjour and Tailscale discovery,
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
-2. Use **Pair** for the normal flow. Paste or scan the machine's pairing link or
-   code, enter its six-digit PIN, and let ADE save the machine identity, DPoP
-   key, and advertised direct/relay endpoints. A discovered machine with an
-   existing pairing is upgraded to a paired target automatically. LAN and
-   tailnet PIN pairing work without an account. Relay PIN pairing requires both
-   machines to be signed into the same ADE account; the account proof is
-   short-lived and is not saved with the pairing.
+2. Select a same-account Mac for the primary PIN-less flow; ADE adopts it over
+   the directory-verified Relay and saves the returned DPoP-bound credentials.
+   Without an account, choose **Find nearby Macs**, select a discovered LAN or
+   Tailscale machine, and enter the six-digit PIN shown on that Mac's **This
+   Mac** Connections card. There is no desktop pairing-link paste/scan or
+   manual address + PIN path. A discovered machine with an existing pairing is
+   upgraded to a paired target automatically.
 3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
    recently successful endpoint within each class. After authenticated
    `hello_ok`, it requires `features.rpcChannel === true`, opens the runtime
@@ -197,9 +200,10 @@ run a local repair against data owned by the remote machine. See
    when the proof belongs to the Clerk user currently signed in on the host.
    A missing or different account reports **Sign in to ADE** without spending
    the automatic-reconnect failure budget. Relay remains a trusted-operator
-   plaintext-readable path, not a confidential channel. A signed-out host does
-   not advertise or hold a Relay tunnel; it resumes automatically after
-   sign-in. Legacy shared bootstrap tokens are rejected over Relay even when
+   plaintext-readable path, not a confidential channel; end-to-end payload
+   encryption remains planned. A signed-out host does not advertise or hold a
+   Relay tunnel; it resumes automatically after sign-in. Legacy shared
+   bootstrap tokens are rejected over Relay even when
    they remain valid for an eligible direct reconnect.
 4. If paired dialing fails, or the remote runtime does not support the paired
    RPC channel, ADE silently falls back to SSH only when that paired target has
@@ -339,7 +343,14 @@ traffic always uses the paired sync WebSocket advertised on the LAN, through a
 Tailscale tailnet, or through the relay. Install Tailscale on the phone and the
 ADE machine for a direct route when they are not on the same local network.
 
-On desktop, **Connections > Mobile** is a runtime control, not a project control. It remains available while a window is bound to a remote project: `window.ade.sync.*` routes to the active runtime binding, so a local/no-project window manages the local machine brain while a remote-bound window manages the remote machine's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, the **This Mac** card and **Connections > Phone** are runtime
+controls, not project controls. They remain available while a window is bound
+to a remote project: `window.ade.sync.*` routes to the active runtime binding,
+so a local/no-project window manages the local machine brain while a
+remote-bound window manages the remote machine's sync service. The pairing PIN
+manager lives on the This Mac card. The legacy in-process desktop sync host is
+disabled by default and can be re-enabled only for diagnostics with
+`ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 

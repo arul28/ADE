@@ -1503,10 +1503,9 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
-  // Cloud tunnel relay (phone → Cloudflare DO → this brain). On by default —
-  // the Settings kill-switch flips the shared store and the client follows.
-  // The store instance is shared with the sync service so the relay candidate
-  // in pairingConnectInfo and the tunnel client always agree on one config file.
+  // Cloud tunnel relay (phone → Cloudflare DO → this brain). The store
+  // instance is shared with the sync service so the relay candidate in
+  // pairingConnectInfo and the tunnel client use one machine identity.
   const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
   const { createSyncTunnelClientService, getSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
   const cloudRelayFilePath = path.join(
@@ -1551,7 +1550,7 @@ export async function createAdeRuntime(args: {
   // runtime or embedded fallback starting the tunnel would steal the relay
   // from `ade serve` and then fail every phone /connect (no sync port).
   const canHostRelayTunnel = resolvedArgs.syncRuntime?.sharedSyncListener != null;
-  if (canHostRelayTunnel && cloudRelayStore.isEnabled()) {
+  if (canHostRelayTunnel) {
     void syncTunnelClientService.start().catch((error) => {
       logger.warn("sync.tunnel_start_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -1618,18 +1617,6 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       syncTunnelClientService,
-      onCloudRelayEnabledChanged: (enabled) => {
-        // Same gate as startup: only the sync-hosting runtime may register
-        // the relay tunnel (see canHostRelayTunnel above).
-        if (enabled && !canHostRelayTunnel) return;
-        const action = enabled ? syncTunnelClientService.start() : syncTunnelClientService.stop();
-        void action.catch((error) => {
-          logger.warn("sync.tunnel_toggle_failed", {
-            enabled,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
     syncServiceForPtyEvents = syncService;

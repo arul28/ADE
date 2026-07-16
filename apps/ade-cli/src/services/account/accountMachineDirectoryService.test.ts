@@ -167,6 +167,43 @@ describe("AccountMachineDirectoryService", () => {
       .get("authorization")).toBe("Bearer refreshed-account-token");
   });
 
+  it("deletes a machine through the authenticated account directory route", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, machineKey: "mk/studio" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: true,
+        userId: "user",
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken: async () => "account-token",
+    }, {
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await expect(service.deleteMachine("  mk/studio  ")).resolves.toEqual({
+      ok: true,
+      machineKey: "mk/studio",
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [input, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(input).toBe("https://directory.example/account/machines/mk%2Fstudio");
+    expect(String(input)).not.toContain("account-token");
+    expect(init).toMatchObject({
+      method: "DELETE",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      redirect: "error",
+    });
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer account-token");
+  });
+
   it("uses the hosted directory when the machine override is blank", async () => {
     const prior = process.env.ADE_ACCOUNT_DIRECTORY_URL;
     process.env.ADE_ACCOUNT_DIRECTORY_URL = "   ";
@@ -379,10 +416,12 @@ describe("AccountMachineDirectoryService", () => {
 });
 
 describe("account machine registration publisher", () => {
-  it("publishes only health-validated direct and relay routes", () => {
+  it("publishes health-validated routes without honoring the legacy relay toggle bit", () => {
+    const snapshot = publisherSnapshot();
+    snapshot.routeHealth.relay.enabled = false;
     expect(buildAccountMachineRegistration({
       machineKey: "machine-studio",
-      snapshot: publisherSnapshot(),
+      snapshot,
     })).toEqual({
       machineKey: "machine-studio",
       deviceId: "device-studio",

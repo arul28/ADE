@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import {
+  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
+  ACCOUNT_REMOVE_MACHINE_CHANNEL,
+} from "../shared/types/account";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
@@ -226,6 +230,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -1302,7 +1308,6 @@ const MUTATING_SYNC_METHODS = new Set([
   "sync.clearRuntimeName",
   "sync.updateLocalDevice",
   "sync.setActiveLanePresence",
-  "sync.setCloudRelayEnabled",
   "modelPicker.setFavorites",
   "modelPicker.toggleFavorite",
   "modelPicker.pushRecent",
@@ -4107,10 +4112,6 @@ contextBridge.exposeInMainWorld("ade", {
     getCloudRelayStatus: async (): Promise<SyncCloudRelayStatus> =>
       callProjectRuntimeSyncOr("sync.getCloudRelayStatus", {}, () =>
         ipcRenderer.invoke(IPC.syncGetCloudRelayStatus),
-      ),
-    setCloudRelayEnabled: async (enabled: boolean): Promise<SyncCloudRelayStatus> =>
-      callProjectRuntimeSyncOr("sync.setCloudRelayEnabled", { enabled }, () =>
-        ipcRenderer.invoke(IPC.syncSetCloudRelayEnabled, enabled),
       ),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (
@@ -7620,8 +7621,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
+    getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>
+      ipcRenderer.invoke(ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL),
     pairMachine: (machineKey: string): Promise<AdeAccountMachinePairResult> =>
       ipcRenderer.invoke(IPC.accountPairMachine, { machineKey }),
+    removeMachine: (machineKey: string): Promise<AdeAccountMachineRemovalResult> =>
+      ipcRenderer.invoke(ACCOUNT_REMOVE_MACHINE_CHANNEL, { machineKey }),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

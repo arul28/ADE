@@ -305,6 +305,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -1024,7 +1026,6 @@ declare global {
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
-        setCloudRelayEnabled: (enabled: boolean) => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       agentTools: {
@@ -1985,7 +1986,9 @@ declare global {
         cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
         pairMachine: (machineKey: string) => Promise<AdeAccountMachinePairResult>;
+        removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

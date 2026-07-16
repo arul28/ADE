@@ -366,7 +366,7 @@ type SyncRemoteCommandServiceArgs = {
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   /** Issues a short-lived one-time grant for the desktop runtime channels. */
   issueRuntimeHostPairingGrant?: () => string;
-  /** Effective relay kill-switch state for the machine-level cloud tunnel. */
+  /** Whether the account-gated machine relay is currently available. */
   isCloudRelayEnabled?: () => boolean;
   logger: Logger;
 };

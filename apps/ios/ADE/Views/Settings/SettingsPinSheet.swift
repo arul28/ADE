@@ -21,7 +21,6 @@ struct SettingsPinSheet: View {
   private var setupRoute: PinSetupRoute {
     switch preset {
     case .discover(let host): return .host(host)
-    case .manual(let host, let port): return .manual(host: host, port: port)
     case .qr(let payload): return .qr(payload)
     }
   }
@@ -51,7 +50,7 @@ struct SettingsPinSheet: View {
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-          Text("On \(preset.hostDisplayName), open Connections in ADE, choose Mobile, and find the six-digit pairing code.")
+          Text("You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
 
@@ -161,18 +160,6 @@ struct SettingsPinSheet: View {
           siteId: selectedHost.siteId,
           candidateAddresses: routeCandidates,
           tailscaleAddress: selectedHost.tailscaleAddress
-        )
-
-      case .manual(let host, let port):
-        let tailscaleAddress = syncIsTailscaleRoute(host) ? host : nil
-        await syncService.pairAndConnect(
-          host: host,
-          port: port,
-          code: code,
-          hostIdentity: nil,
-          hostName: nil,
-          candidateAddresses: [host],
-          tailscaleAddress: tailscaleAddress
         )
 
       case .qr(let payload):

@@ -7,15 +7,6 @@ import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/acc
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
 export type SyncCloudRelayConfig = {
-  /**
-   * When false the tunnel client never claims or connects. Defaults to true
-   * (relay-everywhere, zero-config). Only an `enabled: false` accompanied by
-   * the `enabledSetByUser` file marker — i.e. the desktop kill-switch or
-   * `ade sync relay disable` was actually used — keeps the relay off:
-   * pre-default-on builds implicitly persisted `enabled: false` on first run,
-   * so an unmarked false is legacy default state, not a user choice.
-   */
-  enabled: boolean;
   /** Per-machine identifier phones dial through the relay (32 hex chars). */
   machineKey: string;
   /** HMAC secret shared with the relay for signed host/pipe upgrades. */
@@ -25,8 +16,9 @@ export type SyncCloudRelayConfig = {
 };
 
 type SyncCloudRelayFile = Partial<SyncCloudRelayConfig> & {
-  /** True once setEnabled() ran — distinguishes a chosen `false` from legacy. */
-  enabledSetByUser?: boolean;
+  /** Deprecated kill-switch fields are accepted only so old files are cleaned up. */
+  enabled?: unknown;
+  enabledSetByUser?: unknown;
 };
 
 /** Default relay base URL: env override wins, else the deployed worker. */
@@ -69,9 +61,9 @@ export function signRelayHmacHex(secret: string, base: string): string {
 export type SyncCloudRelayStore = ReturnType<typeof createSyncCloudRelayStore>;
 
 /**
- * Persists the tunnel-relay identity + enablement next to the other sync
- * secrets. machineKey/secret are minted lazily on first read (matching the
- * push-relay store's randomBytes sizing) and the file is chmod 600.
+ * Persists the tunnel-relay identity next to the other sync secrets.
+ * machineKey/secret are minted lazily on first read (matching the push-relay
+ * store's randomBytes sizing) and the file is chmod 600.
  */
 export function createSyncCloudRelayStore(args: { filePath: string }) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
@@ -81,10 +73,11 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
     return safeJsonParse<SyncCloudRelayFile>(fs.readFileSync(args.filePath, "utf8"), {});
   };
 
-  const write = (value: SyncCloudRelayConfig, enabledSetByUser: boolean): void => {
+  const write = (value: SyncCloudRelayConfig): void => {
     const fileValue: SyncCloudRelayFile = {
-      ...value,
-      ...(enabledSetByUser ? { enabledSetByUser: true } : {}),
+      machineKey: value.machineKey,
+      secret: value.secret,
+      ...(value.relayUrl ? { relayUrl: value.relayUrl } : {}),
     };
     // 0o600 at temp-file creation so the identity secret is never world-readable.
     writeTextAtomic(args.filePath, `${JSON.stringify(fileValue, null, 2)}\n`, { mode: 0o600 });
@@ -94,10 +87,6 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       // ignore chmod failures on platforms that don't support it
     }
   };
-
-  /** Effective enablement: honor `enabled` only when a user actually set it. */
-  const readEnabled = (raw: SyncCloudRelayFile): boolean =>
-    raw.enabledSetByUser === true ? raw.enabled !== false : true;
 
   // First-run identity mint via exclusive create (O_EXCL). If a concurrent
   // process already minted the identity, adopt the winner's rather than
@@ -114,14 +103,13 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
           && typeof raw.secret === "string" && raw.secret.length >= 32
         ) {
           return {
-            enabled: readEnabled(raw),
             machineKey: raw.machineKey,
             secret: raw.secret,
             relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
           };
         }
       }
-      write(config, false);
+      write(config);
       return config;
     }
   };
@@ -137,18 +125,16 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       ? raw.secret
       : randomBytes(24).toString("hex");
     const config: SyncCloudRelayConfig = {
-      // Default-on. `enabled: false` counts only when the user-set marker is
-      // present: pre-default-on builds wrote an implicit false on first run,
-      // so an unmarked false migrates to enabled.
-      enabled: readEnabled(raw),
       machineKey,
       secret,
       relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
     };
-    if (raw.machineKey !== machineKey || raw.secret !== secret) {
+    const hasDeprecatedKillSwitchFields = Object.prototype.hasOwnProperty.call(raw, "enabled")
+      || Object.prototype.hasOwnProperty.call(raw, "enabledSetByUser");
+    if (raw.machineKey !== machineKey || raw.secret !== secret || hasDeprecatedKillSwitchFields) {
       // Absent file → race-safe first mint; existing-but-repaired → plain write.
       if (!fs.existsSync(args.filePath)) return mintExclusive(config);
-      write(config, raw.enabledSetByUser === true);
+      write(config);
     }
     return config;
   };
@@ -156,18 +142,6 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
   return {
     getConfig(): SyncCloudRelayConfig {
       return load();
-    },
-
-    isEnabled(): boolean {
-      return load().enabled;
-    },
-
-    setEnabled(enabled: boolean): SyncCloudRelayConfig {
-      const next = { ...load(), enabled };
-      // A toggle/CLI call is an explicit choice — marked so a chosen `false`
-      // survives the default-on migration.
-      write(next, true);
-      return next;
     },
 
     getMachineIdentity(): { machineKey: string; secret: string } {
@@ -181,7 +155,7 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
 
     setRelayUrl(relayUrl: string | null): SyncCloudRelayConfig {
       const next = { ...load(), relayUrl: relayUrl?.trim() || undefined };
-      write(next, read().enabledSetByUser === true);
+      write(next);
       return next;
     },
 

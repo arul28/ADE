@@ -22,7 +22,6 @@ type Logger = {
 };
 
 export type SyncTunnelClientStatus = {
-  enabled: boolean;
   accountLeaseValid?: boolean;
   connected: boolean;
   activeTunnels: number;
@@ -105,11 +104,11 @@ function nowSeconds(): string {
 }
 
 /**
- * Brain-side tunnel client. When enabled, keeps a signed control WebSocket open
- * to the relay; for each `{t:"open", id}` it opens a dedicated pipe socket to
- * the relay and a local socket to the sync server, then pipes bytes 1:1. The
- * sync protocol passes through untouched. The control socket reconnects with
- * jittered exponential backoff.
+ * Brain-side tunnel client. While the sync host and account lease are valid,
+ * keeps a signed control WebSocket open to the relay; for each `{t:"open", id}`
+ * it opens a dedicated pipe socket to the relay and a local socket to the sync
+ * server, then pipes bytes 1:1. The sync protocol passes through untouched.
+ * The control socket reconnects with jittered exponential backoff.
  */
 export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncTunnelClientService {
   const log = args.logger ?? {};
@@ -374,7 +373,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const reconcileAccountEligibility = (): void => {
-    if (stopped || !started || !args.configStore.isEnabled()) return;
+    if (stopped || !started) return;
     if (!accountSignedIn()) {
       clearReconnect();
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
@@ -416,10 +415,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (started) return;
       started = true;
       stopped = false;
-      if (!args.configStore.isEnabled()) {
-        log.info?.("sync_tunnel.disabled");
-        return;
-      }
       accountStatusTimer = setInterval(
         () => { void refreshAccountLease(); },
         args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
@@ -445,17 +440,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       const currentPort = args.getSyncPort();
       const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
       const eligible = accountSignedIn();
-      const enabled = args.configStore.isEnabled();
       return {
-        enabled,
         accountLeaseValid: eligible,
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,
-        lastError: !enabled
-          ? null
-          : eligible
-            ? lastError
-            : RELAY_SIGN_IN_REQUIRED_MESSAGE,
+        lastError: eligible ? lastError : RELAY_SIGN_IN_REQUIRED_MESSAGE,
         relayBridgeValidated: eligible
           && currentPort != null
           && currentLoopbackNonce != null

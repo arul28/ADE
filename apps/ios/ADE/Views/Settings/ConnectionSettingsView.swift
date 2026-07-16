@@ -58,7 +58,6 @@ struct ConnectionSettingsView: View {
 
             SettingsPairingSection(
               snapshot: presentationModel.pairingSnapshot,
-              showsWebClientOption: !pairingOnly,
               presentedSheet: $presentedSheet
             )
           }
@@ -157,32 +156,14 @@ struct ConnectionSettingsView: View {
       .environmentObject(syncService)
       .presentationDetents([.medium, .large])
 
-    case .manual:
-      ManualEntrySheet { host, port in
-        presentedSheet = nil
-        pinPreset = .manual(host: host, port: port)
-      }
-      .presentationDetents([.medium])
-
     case .scan:
       SettingsPairingScannerSheet { payload in
         presentedSheet = nil
         routePairingQr(payload)
       }
 
-    case .link:
-      PairingLinkPasteSheet { value in
-        presentedSheet = nil
-        handleScannedPairingCode(value)
-      }
-      .presentationDetents([.medium])
-
     case .ssh:
       SSHPairingView(syncService: syncService)
-        .presentationDetents([.large])
-
-    case .webClient:
-      SettingsWebClientPairSheet(syncService: syncService)
         .presentationDetents([.large])
     }
   }

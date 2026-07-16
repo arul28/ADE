@@ -1831,29 +1831,6 @@ enum SyncChatCommandScope: Equatable {
   case personal
 }
 
-struct WebPairingInfo: Decodable, Equatable {
-  let pairingUrl: String
-  let code: String?
-  let pinConfigured: Bool
-  let machineName: String
-  let relayEnabled: Bool
-  let hasRelayCandidate: Bool
-}
-
-enum WebPairingPinState: Equatable {
-  case notConfigured
-  case configuredHidden
-  case visible(String)
-}
-
-extension WebPairingInfo {
-  var pinState: WebPairingPinState {
-    guard pinConfigured else { return .notConfigured }
-    let trimmedCode = code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmedCode.isEmpty ? .configuredHidden : .visible(trimmedCode)
-  }
-}
-
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.
@@ -4366,24 +4343,6 @@ final class SyncService: ObservableObject {
     )
   }
   #endif
-
-  func getWebPairingInfo() async -> WebPairingInfo? {
-    guard canSendLiveRequests(),
-          supportsRemoteAction("sync.getWebPairingInfo") else {
-      return nil
-    }
-
-    do {
-      return try await sendDecodableCommand(
-        action: "sync.getWebPairingInfo",
-        args: [:],
-        disconnectOnTimeout: false,
-        as: WebPairingInfo.self
-      )
-    } catch {
-      return nil
-    }
-  }
 
   /// Adopts pairing credentials handed off by the ADE App Clip (scan QR →
   /// pair before the full app is installed). The clip writes a one-shot blob

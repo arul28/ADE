@@ -724,7 +724,7 @@ type SyncHostServiceArgs = {
   requireDpop?: () => boolean;
   /**
    * Live cloud tunnel-relay connect URL (`wss://…/connect/<machineKey>`), or
-   * null when the relay is disabled. Advertised in `hello_ok` and
+   * null when the relay is unavailable. Advertised in `hello_ok` and
    * `brain_status` so already-paired phones learn the off-LAN route without
    * re-scanning a QR.
    */
@@ -993,7 +993,7 @@ export function buildSyncHostHelloOkPayload(args: {
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
     projects: args.projectCatalog.projects,
-    // Explicit null (relay disabled) must reach the wire: clients treat an
+    // Explicit null (relay unavailable) must reach the wire: clients treat an
     // ABSENT key as "older host — keep saved relay routes", and the brain
     // fallback handler never sends brain_status, so hello_ok is the only
     // clear signal on that path. Omit only when the caller didn't supply
@@ -5955,8 +5955,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     /**
      * Push a fresh `brain_status` to every connected peer. Used when a value
-     * it advertises changes outside the normal broadcast cadence (e.g. the
-     * cloud-relay kill-switch flips), so phones don't wait a full interval.
+     * it advertises changes outside the normal broadcast cadence, so phones
+     * don't wait a full interval.
      */
     broadcastBrainStatusNow(): void {
       broadcastBrainStatus();

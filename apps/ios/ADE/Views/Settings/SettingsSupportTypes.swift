@@ -2,27 +2,20 @@ import SwiftUI
 
 enum SettingsPairSheetRoute: Identifiable {
   case discover
-  case manual
   case scan
-  case link
   case ssh
-  case webClient
 
   var id: String {
     switch self {
     case .discover: return "discover"
-    case .manual: return "manual"
     case .scan: return "scan"
-    case .link: return "link"
     case .ssh: return "ssh"
-    case .webClient: return "webClient"
     }
   }
 }
 
 enum PinPreset: Identifiable {
   case discover(DiscoveredSyncHost)
-  case manual(host: String, port: Int)
   /// A new machine from a scanned pairing QR — the user still types the PIN,
   /// but the host/port/candidates (incl. relay) come from the payload.
   case qr(PairingQrPayload)
@@ -31,8 +24,6 @@ enum PinPreset: Identifiable {
     switch self {
     case .discover(let host):
       return "discover-\(host.id)"
-    case .manual(let host, let port):
-      return "manual-\(host)-\(port)"
     case .qr(let payload):
       return "qr-\(payload.hostIdentity.deviceId)-\(payload.port)"
     }
@@ -42,8 +33,6 @@ enum PinPreset: Identifiable {
     switch self {
     case .discover(let host):
       return host.hostName
-    case .manual(let host, _):
-      return host
     case .qr(let payload):
       return payload.hostIdentity.name
     }
@@ -57,15 +46,12 @@ enum PinPreset: Identifiable {
 /// preset so "Try again" can reopen the PIN sheet for the same machine.
 enum PinSetupRoute: Identifiable {
   case host(DiscoveredSyncHost)
-  case manual(host: String, port: Int)
   case qr(PairingQrPayload)
 
   var id: String {
     switch self {
     case .host(let host):
       return "pinsetup-\(host.id)"
-    case .manual(let host, let port):
-      return "pinsetup-manual-\(host)-\(port)"
     case .qr(let payload):
       return "pinsetup-qr-\(payload.hostIdentity.deviceId)-\(payload.port)"
     }
@@ -76,9 +62,6 @@ enum PinSetupRoute: Identifiable {
     switch self {
     case .host(let host):
       let trimmed = host.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
-      return trimmed.isEmpty ? "this machine" : trimmed
-    case .manual(let host, _):
-      let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
       return trimmed.isEmpty ? "this machine" : trimmed
     case .qr(let payload):
       let trimmed = payload.hostIdentity.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -91,8 +74,6 @@ enum PinSetupRoute: Identifiable {
     switch self {
     case .host(let host):
       return .discover(host)
-    case .manual(let host, let port):
-      return .manual(host: host, port: port)
     case .qr(let payload):
       return .qr(payload)
     }

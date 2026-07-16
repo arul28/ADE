@@ -284,7 +284,7 @@ describe("sync loopback collision recovery", () => {
     }
   });
 
-  // Regression for PR #816: when relay is enabled and the loopback listener is
+  // Regression for PR #816: when relay is participating and the loopback listener is
   // genuinely ADE-validated, but the relay bridge has NOT been validated against
   // the current sync port, the relay route must report a non-null reason (an
   // unhealthy/failing route) rather than swallowing it as a null lastError.
@@ -301,11 +301,9 @@ describe("sync loopback collision recovery", () => {
       const cloudRelayStore = createSyncCloudRelayStore({
         filePath: path.join(projectRoot, ".ade", "secrets", "sync", "cloud-relay.json"),
       });
-      cloudRelayStore.setEnabled(true);
       // Relay control is up, but the bridge has not been validated against the
       // live sync port — exactly the state that must surface as a failing route.
       const tunnelStatus: SyncTunnelClientStatus = {
-        enabled: true,
         connected: true,
         activeTunnels: 0,
         lastError: null,

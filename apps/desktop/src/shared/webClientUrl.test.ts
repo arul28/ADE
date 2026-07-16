@@ -18,21 +18,6 @@ const targets: Array<{ name: string; target: DeeplinkTarget }> = [
   { name: "linear issue", target: { kind: "linear-issue", issueIdentifier: "ADE-123", branch: "users/me/web" } },
 ];
 
-const connectInfo: SyncPairingConnectInfo = {
-  hostIdentity: {
-    deviceId: "device-123",
-    siteId: "site-abc",
-    name: "Arul's MacBook",
-    platform: "macOS",
-    deviceType: "desktop",
-  },
-  port: 8787,
-  addressCandidates: [
-    { host: "192.168.1.20", kind: "lan" },
-    { host: "100.64.0.1", kind: "tailscale" },
-  ],
-};
-
 describe("buildWebClientUrl", () => {
   it.each(targets)("builds the hosted web URL for $name targets", ({ target }) => {
     const webUrl = new URL(buildWebClientUrl(target));
@@ -59,8 +44,23 @@ describe("buildWebClientUrl", () => {
   });
 });
 
+const connectInfo: SyncPairingConnectInfo = {
+  hostIdentity: {
+    deviceId: "device-123",
+    siteId: "site-abc",
+    name: "Arul's MacBook",
+    platform: "macOS",
+    deviceType: "desktop",
+  },
+  port: 8787,
+  addressCandidates: [
+    { host: "192.168.1.20", kind: "lan" },
+    { host: "100.64.0.1", kind: "tailscale" },
+  ],
+};
+
 describe("buildWebClientPairUrl", () => {
-  it("builds an app.ade-app.dev pair URL that the pairing parser accepts", () => {
+  it("builds a pair URL that the pairing parser accepts (QR wire encoding)", () => {
     const payload = buildPairingQrPayload({ connectInfo });
     const webUrl = new URL(buildWebClientPairUrl(payload));
 

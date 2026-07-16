@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
+import {
+  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
+  ACCOUNT_REMOVE_MACHINE_CHANNEL,
+} from "../shared/types/account";
 
 describe("preload OAuth bridge", () => {
   beforeEach(() => {
@@ -75,6 +79,32 @@ describe("preload OAuth bridge", () => {
 
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC.lanesOAuthEvent, listener);
+  });
+
+  it("exposes local account identity and machine removal IPC", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.account.getLocalMachineIdentity();
+    await bridge.account.removeMachine("machine-a");
+
+    expect(invoke).toHaveBeenCalledWith(ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL);
+    expect(invoke).toHaveBeenCalledWith(ACCOUNT_REMOVE_MACHINE_CHANNEL, {
+      machineKey: "machine-a",
+    });
   });
 
   it("exposes per-window project tab session IPC", async () => {
