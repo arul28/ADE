@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -28,6 +29,8 @@ const remoteRuntimeMock = {
   streamEvents: vi.fn(),
   checkLocalWork: vi.fn(),
   disconnect: vi.fn(),
+  setAutoConnect: vi.fn(),
+  onConnectionSnapshotChanged: vi.fn(),
   getLocalPairingInfo: vi.fn(),
   parsePairingInput: vi.fn(),
   pairWithMachine: vi.fn(),
@@ -49,6 +52,7 @@ const accountMock = {
 };
 
 function installAdeMock(): void {
+  remoteRuntimeMock.onConnectionSnapshotChanged.mockReturnValue(() => {});
   remoteRuntimeMock.getSshHostKeyTrust.mockResolvedValue({ state: "trusted" });
   remoteRuntimeMock.getLocalPairingInfo.mockResolvedValue({
     url: "https://ade-app.dev/pair#payload",
@@ -324,6 +328,93 @@ describe("RemoteTargetList", () => {
       }),
     );
     expect(screen.getByText("Not connected")).toBeTruthy();
+  });
+
+  it("does not let an older event overwrite a local connection-setting snapshot", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+      autoConnect: false,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [{
+          target,
+          state: "idle",
+          arch: target.lastSeenArch,
+          version: target.runtimeBinaryVersion,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: null,
+          connectedAt: null,
+        }],
+        connectedCount: 0,
+        updatedAt: 10,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+    let emitSnapshot: ((snapshot: {
+      connections: Array<{
+        target: typeof target;
+        state: "idle";
+        arch: string;
+        version: string;
+        projects: never[];
+        lastError: null;
+        lastAttemptedAt: null;
+        connectedAt: null;
+      }>;
+      connectedCount: number;
+      updatedAt: number;
+    }) => void) | undefined;
+    remoteRuntimeMock.onConnectionSnapshotChanged.mockImplementation((listener) => {
+      emitSnapshot = listener;
+      return () => {};
+    });
+    const updatedTarget = { ...target, autoConnect: true };
+    remoteRuntimeMock.setAutoConnect.mockResolvedValue(updatedTarget);
+    vi.spyOn(Date, "now").mockReturnValue(20);
+
+    render(<RemoteTargetList />);
+
+    await screen.findByText("Mac Studio");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const checkbox = screen.getByRole("checkbox", {
+      name: /Reconnect automatically/,
+    }) as HTMLInputElement;
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(true));
+
+    act(() => {
+      emitSnapshot?.({
+        connections: [{
+          target,
+          state: "idle",
+          arch: target.lastSeenArch,
+          version: target.runtimeBinaryVersion,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: null,
+          connectedAt: null,
+        }],
+        connectedCount: 0,
+        updatedAt: 15,
+      });
+    });
+
+    expect(checkbox.checked).toBe(true);
   });
 
   it("does not disconnect when the disconnect confirmation callback rejects it", async () => {

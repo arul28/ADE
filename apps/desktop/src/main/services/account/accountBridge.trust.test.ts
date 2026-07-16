@@ -288,6 +288,26 @@ describe("shared account directory trust boundary", () => {
     expect(result.message).not.toContain("top-secret-bearer");
   });
 
+  it("maps directory authentication configuration failures to availability, not auth expiry", async () => {
+    const result = await fetchAccountMachines({
+      baseUrl: "https://directory.example",
+      accessToken: "valid-account-token",
+      fetchImpl: async () => new Response(
+        JSON.stringify({ error: "authentication unavailable" }),
+        {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    });
+
+    expect(result).toEqual({
+      state: "unavailable",
+      machines: [],
+      message: "Machine directory returned 503.",
+    });
+  });
+
   it("rejects a streamed directory response before it can grow without bound", async () => {
     const chunkBytes = 1024 * 1024;
     let emittedBytes = 0;

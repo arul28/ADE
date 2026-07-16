@@ -47,6 +47,7 @@ import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
   type SyncPeerDeviceType,
+  type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
@@ -62,6 +63,7 @@ import {
   AccountMachineDirectoryService,
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
+import { mapPlatform } from "./services/sync/syncProtocol";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -679,45 +681,110 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
-  const getMachineOnlySyncStatus = () => ({
-    mode: "standalone",
-    role: "brain",
-    connectedPeers: [],
-    routeHealth: {
-      listener: {
-        listenerBound: false,
-        loopbackAdeValidated: false,
+  const readMachineSyncIdentity = (fileName: string): string => {
+    try {
+      return fs.readFileSync(
+        path.join(resolveMachineAdeLayout().secretsDir, fileName),
+        "utf8",
+      ).trim();
+    } catch {
+      return "";
+    }
+  };
+
+  const getMachineOnlySyncStatus = (): SyncRoleSnapshot => {
+    const now = new Date().toISOString();
+    const localDevice: SyncRoleSnapshot["localDevice"] = {
+      deviceId: readMachineSyncIdentity("sync-device-id"),
+      siteId: readMachineSyncIdentity("sync-site-id"),
+      name: os.hostname(),
+      platform: mapPlatform(process.platform),
+      deviceType: "desktop",
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: os.hostname(),
+      lastPort: null,
+      tailscaleIp: null,
+      ipAddresses: [],
+      metadata: { hostname: os.hostname() },
+    };
+    return {
+      mode: "standalone",
+      role: "brain",
+      runtimeMode: "standalone",
+      runtimeRole: "host",
+      localDevice,
+      currentBrain: localDevice,
+      currentRuntime: localDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      runtimeName: null,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      tailnetDiscovery: {
+        state: "disabled",
+        serviceName: "svc:ade-sync",
+        servicePort: 8787,
+        target: null,
+        updatedAt: null,
+        error: "Tailnet discovery is waiting for an active sync project scope.",
+        stderr: null,
+      },
+      routeHealth: {
+        listener: {
+          listenerBound: false,
+          loopbackAdeValidated: false,
+          port: null,
+          lastFailureAt: null,
+          reason: "No active sync project scope.",
+          lastSuccessAt: null,
+        },
+        tailscale: {
+          enabled: false,
+          tailscalePublished: false,
+          tailscaleReachable: false,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: null,
+        },
+        relay: {
+          enabled: false,
+          relayControlConnected: false,
+          relayBridgeValidated: false,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: null,
+        },
+        accountDirectory: getAccountDirectoryHealth(),
+      },
+      client: {
+        state: "disconnected",
+        host: null,
         port: null,
-        lastFailureAt: null,
-        reason: "No active sync project scope.",
-        lastSuccessAt: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        latencyMs: null,
+        syncLag: null,
+        lastRemoteDbVersion: 0,
+        brainDeviceId: null,
+        hostDeviceId: null,
+        hostName: null,
+        error: null,
+        message: "No active sync project scope.",
+        savedDraft: null,
       },
-      tailscale: {
-        enabled: false,
-        tailscalePublished: false,
-        tailscaleReachable: false,
-        lastFailureAt: null,
-        reason: null,
-        lastSuccessAt: null,
+      transferReadiness: {
+        ready: false,
+        blockers: [],
+        survivableState: [],
       },
-      relay: {
-        enabled: false,
-        relayControlConnected: false,
-        relayBridgeValidated: false,
-        lastFailureAt: null,
-        reason: null,
-        lastSuccessAt: null,
-      },
-      accountDirectory: getAccountDirectoryHealth(),
-    },
-    transferReadiness: {
-      ready: false,
-      blockers: [],
-      survivableState: [],
-    },
-    survivableStateText: "No active sync project scope.",
-    blockingStateText: "Register or open a project to start machine sync.",
-  });
+      survivableStateText: "No active sync project scope.",
+      blockingStateText: "Register or open a project to start machine sync.",
+    };
+  };
 
   const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];

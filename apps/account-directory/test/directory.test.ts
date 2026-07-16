@@ -506,6 +506,23 @@ describe("Clerk JWKS authentication", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "missing bearer token" });
   });
+
+  it.each([
+    "CLERK_JWKS_URL",
+    "CLERK_ISSUER",
+    "CLERK_OAUTH_CLIENT_ID",
+  ] as const)("returns 503 when %s is not configured", async (key) => {
+    const env = makeEnv();
+    delete env[key];
+
+    const response = await handleRequest(
+      request("GET", "/account/machines", "opaque-bearer"),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "authentication unavailable" });
+  });
 });
 
 describe("device authorization bridge", () => {

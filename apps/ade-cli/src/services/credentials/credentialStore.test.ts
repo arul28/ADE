@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -62,6 +62,24 @@ describe("EncryptedFileCredentialStore", () => {
     reader.checkForChangesNow();
     expect(changes).toBe(1);
     unsubscribe();
+  });
+
+  it("isolates change-listener failures so sibling subscribers still run", () => {
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      credentialChangePollIntervalMs: null,
+    });
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const sibling = vi.fn();
+    reader.onDidChange(() => {
+      throw new Error("subscriber failed");
+    });
+    reader.onDidChange(sibling);
+
+    writer.setSync("account.session.v1", "session");
+
+    expect(() => reader.checkForChangesNow()).not.toThrow();
+    expect(sibling).toHaveBeenCalledTimes(1);
   });
 
   it("creates the secrets directory and files with private permissions", async () => {

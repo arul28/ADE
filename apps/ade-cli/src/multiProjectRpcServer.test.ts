@@ -8,6 +8,7 @@ import { createMultiProjectRpcRequestHandler } from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
@@ -1083,9 +1084,30 @@ describe("multi-project RPC server", () => {
       id: 2,
       method: "sync.getStatus",
       params: {},
-    }) as { routeHealth: { accountDirectory: unknown } };
+    }) as SyncRoleSnapshot;
 
     expect(status.routeHealth.accountDirectory).toEqual(accountDirectoryHealth);
+    expect(status).toMatchObject({
+      mode: "standalone",
+      role: "brain",
+      runtimeMode: "standalone",
+      runtimeRole: "host",
+      currentBrain: status.localDevice,
+      currentRuntime: status.localDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      runtimeName: null,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      client: {
+        state: "disconnected",
+        host: null,
+        port: null,
+      },
+    });
+    expect(status.localDevice.name).not.toBe("");
     expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     handler.dispose();
   });

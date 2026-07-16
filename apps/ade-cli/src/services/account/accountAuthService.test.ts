@@ -39,6 +39,13 @@ class MemoryCredentialStore implements SyncCredentialStore {
     this.values.delete(key);
   }
 
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    const values = Object.fromEntries(this.values);
+    if (updater(values) === false) return;
+    this.values.clear();
+    for (const [key, value] of Object.entries(values)) this.values.set(key, value);
+  }
+
   onDidChange(listener: () => void): () => void {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
@@ -1501,6 +1508,73 @@ describe("AccountAuthService refresh and sign-out", () => {
     expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
       refreshToken: "refresh-rotated-by-desktop",
     });
+  });
+
+  it("preserves a newer session written by another process while refresh succeeds", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const desktopAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 7_200_000) / 1000),
+    });
+    const desktopSession = storedSession({
+      accessToken: desktopAccessToken,
+      refreshToken: "refresh-rotated-by-desktop",
+      expiresAt: "2026-07-14T14:00:00.000Z",
+      obtainedAt: "2026-07-14T12:00:30.000Z",
+    });
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) {
+        store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(desktopSession));
+        return jsonResponse({});
+      }
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "refresh-from-stale-request",
+        expires_in: 3_600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(desktopAccessToken);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toEqual(desktopSession);
+  });
+
+  it("does not resurrect a session signed out by another process during refresh", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) {
+        store.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+        return jsonResponse({});
+      }
+      return jsonResponse({
+        access_token: jwt({ sub: "user_old" }),
+        refresh_token: "refresh-from-stale-request",
+        expires_in: 3_600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow("ADE is not signed in");
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
   });
 
   it("bounds userinfo enrichment and keeps token refresh best-effort", async () => {

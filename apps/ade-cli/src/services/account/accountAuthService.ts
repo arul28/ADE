@@ -651,7 +651,7 @@ export function createAccountAuthService(args: {
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
-  let refreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let refreshInFlight: Promise<AccountSessionRecord | null> | null = null;
   let envRefreshInFlight: Promise<string> | null = null;
   let envSession: AccountSessionRecord | null = null;
   let envSessionCredential: string | null = null;
@@ -737,6 +737,32 @@ export function createAccountAuthService(args: {
       args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
     }
     lastObservedSignedIn = record != null;
+  };
+
+  const persistRefreshedSessionIfCurrent = (
+    refreshed: AccountSessionRecord,
+    refreshSource: AccountSessionRecord,
+  ): boolean => {
+    const matchesRefreshSource = (candidate: AccountSessionRecord | null): boolean =>
+      candidate?.refreshToken === refreshSource.refreshToken
+      && candidate?.obtainedAt === refreshSource.obtainedAt;
+    const updateSync = args.credentialStore.updateSync;
+    if (!updateSync) {
+      if (!matchesRefreshSource(readSession())) return false;
+      persistSession(refreshed);
+      return true;
+    }
+
+    let persisted = false;
+    updateSync.call(args.credentialStore, (values) => {
+      const latest = parseStoredSession(values[ACCOUNT_SESSION_CREDENTIAL_KEY]);
+      if (!matchesRefreshSource(latest)) return false;
+      values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
+      persisted = true;
+      return true;
+    });
+    if (persisted) lastObservedSignedIn = true;
+    return persisted;
   };
 
   const finishPendingSession = (
@@ -1486,15 +1512,17 @@ export function createAccountAuthService(args: {
           throw new Error("ADE account session expired. Run `ade login` again.");
         }
         const refreshed = await buildSessionRecord(token, refreshRecord, undefined, config);
-        if (authEpoch === epochAtJoin) persistSession(refreshed);
-        return refreshed;
+        if (authEpoch !== epochAtJoin) return null;
+        return persistRefreshedSessionIfCurrent(refreshed, refreshRecord)
+          ? refreshed
+          : null;
       })().finally(() => {
         refreshInFlight = null;
       });
     }
 
     const refreshed = await refreshInFlight;
-    if (authEpoch !== epochAtJoin) {
+    if (authEpoch !== epochAtJoin || !refreshed) {
       return getAccessToken();
     }
     return refreshed.accessToken;

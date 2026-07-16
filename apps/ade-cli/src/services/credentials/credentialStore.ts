@@ -16,6 +16,8 @@ export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
   setSync(key: string, value: string): void;
   deleteSync(key: string): void;
+  /** Atomically update the complete synchronous store when supported. */
+  updateSync?(updater: (values: Record<string, string>) => boolean | void): void;
   /** Best-effort cross-process notification that persisted credentials changed. */
   onDidChange?(listener: () => void): () => void;
   /** Result of the most recent synchronous credential-file read. */
@@ -172,7 +174,12 @@ class CredentialFileStatWatcher {
     }
     if (isSameCredentialFileStat(current, this.previous)) return;
     this.previous = current;
-    this.listener();
+    try {
+      this.listener();
+    } catch {
+      // Credential observers are best-effort; one subscriber must not stop
+      // the watcher or prevent sibling subscribers from seeing the change.
+    }
   }
 
   dispose(): void {
@@ -749,6 +756,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       if (!(normalized in values)) return;
       delete values[normalized];
       this.writeAll(values);
+    });
+  }
+
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    this.withLock(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      const shouldWrite = updater(values);
+      if (shouldWrite !== false) this.writeAll(values);
     });
   }
 

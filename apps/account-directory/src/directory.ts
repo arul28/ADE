@@ -194,11 +194,16 @@ function readBearerToken(request: Request): string | null {
 }
 
 export async function verifyCallerToken(token: string, env: Env): Promise<string> {
-  const issuer = env.CLERK_ISSUER.trim();
-  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!issuer || !oauthClientId) throw new CallerTokenValidationError("authentication unavailable");
+  const jwksUrl = typeof env.CLERK_JWKS_URL === "string" ? env.CLERK_JWKS_URL.trim() : "";
+  const issuer = typeof env.CLERK_ISSUER === "string" ? env.CLERK_ISSUER.trim() : "";
+  const oauthClientId = typeof env.CLERK_OAUTH_CLIENT_ID === "string"
+    ? env.CLERK_OAUTH_CLIENT_ID.trim()
+    : "";
+  if (!jwksUrl || !issuer || !oauthClientId) {
+    throw new CallerTokenValidationError("authentication unavailable");
+  }
 
-  const { payload } = await jwtVerify(token, getRemoteJwks(env.CLERK_JWKS_URL), {
+  const { payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
     issuer,
     algorithms: ["RS256"],
     clockTolerance: 5,
@@ -404,7 +409,12 @@ async function handleRequestCore(
   if (!route) return text("not found", 404);
   const authentication = await authenticate(request, env);
   if (!authentication.ok) {
-    return json({ error: authentication.reason }, { status: 401 });
+    return json(
+      { error: authentication.reason },
+      {
+        status: authentication.reason === "authentication unavailable" ? 503 : 401,
+      },
+    );
   }
   const userId = authentication.userId;
 
