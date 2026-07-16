@@ -4398,11 +4398,7 @@ export function registerIpc({
     const options: Electron.OpenDialogOptions = {
       title: "Import ADE secrets from .env",
       defaultPath: app.getPath("home"),
-      properties: ["openFile"],
-      filters: [
-        { name: "Environment files", extensions: ["env"] },
-        { name: "All files", extensions: ["*"] },
-      ],
+      properties: ["openFile", "showHiddenFiles"],
     };
     const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
     const selectedPath = result.canceled ? null : result.filePaths[0];
