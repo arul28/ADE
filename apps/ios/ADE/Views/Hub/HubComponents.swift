@@ -9,6 +9,9 @@ import SwiftUI
 struct HubTopBar: View {
   @EnvironmentObject private var syncService: SyncService
   let onAdd: () -> Void
+  var chatsAvailable: Bool = false
+  var chatsAttentionCount: Int = 0
+  var onOpenChats: () -> Void = {}
 
   var body: some View {
     HStack(spacing: 12) {
@@ -33,6 +36,20 @@ struct HubTopBar: View {
         syncService.settingsPresented = true
       }
       .accessibilityLabel("Settings")
+
+      // Chats live behind a top-bar icon (right of the gear) instead of a large
+      // card in the list (M13). A small badge surfaces chats awaiting input.
+      HubCircularButton(
+        systemImage: "bubble.left.and.bubble.right",
+        tint: chatsAvailable ? ADEColor.accent : ADEColor.textMuted,
+        badgeCount: chatsAvailable ? chatsAttentionCount : 0,
+        action: onOpenChats
+      )
+      .disabled(!chatsAvailable)
+      .accessibilityLabel(chatsAttentionCount > 0
+        ? "Chats, \(chatsAttentionCount) awaiting input"
+        : "Chats")
+      .accessibilityHint("Opens conversations that are not linked to a project.")
     }
     .padding(.horizontal, 16)
     .padding(.top, 6)
@@ -43,6 +60,7 @@ struct HubTopBar: View {
 private struct HubCircularButton: View {
   let systemImage: String
   let tint: Color
+  var badgeCount: Int = 0
   let action: () -> Void
 
   var body: some View {
@@ -53,6 +71,17 @@ private struct HubCircularButton: View {
         .frame(width: 38, height: 38)
         .background(ADEColor.cardBackground.opacity(0.72), in: Circle())
         .overlay(Circle().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+          if badgeCount > 0 {
+            Text("\(badgeCount)")
+              .font(.system(size: 10, weight: .bold).monospacedDigit())
+              .foregroundStyle(ADEColor.pageBackground)
+              .padding(.horizontal, 4)
+              .frame(minWidth: 15, minHeight: 15)
+              .background(ADEColor.warning, in: Capsule())
+              .offset(x: 3, y: -3)
+          }
+        }
     }
     .buttonStyle(.plain)
   }
@@ -84,16 +113,41 @@ struct HubConnectionPill: View {
     }
   }
 
+  /// Name of the project currently switching in, if any — drives the progress
+  /// crossfade in the chip during a switch.
+  private var switchingProjectName: String? {
+    guard syncService.isProjectSwitching else { return nil }
+    return syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
+  }
+
   var body: some View {
     Button {
       syncService.settingsPresented = true
     } label: {
-      HStack(spacing: 6) {
-        Circle().fill(tint).frame(width: 7, height: 7)
-        Text(label)
-          .font(.system(.caption, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
+      Group {
+        if let switching = switchingProjectName {
+          // Switch in flight: the chip shows progress and crossfades the
+          // opening project's name in (Extras).
+          HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Opening \(switching)…")
+              .font(.system(.caption, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+          }
+          .id("switching")
+          .transition(.opacity)
+        } else {
+          HStack(spacing: 6) {
+            Circle().fill(tint).frame(width: 7, height: 7)
+            Text(label)
+              .font(.system(.caption, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+          }
+          .id("machine")
+          .transition(.opacity)
+        }
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
@@ -101,86 +155,12 @@ struct HubConnectionPill: View {
       .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Machine connection: \(label)")
+    .animation(.easeInOut(duration: 0.25), value: switchingProjectName)
+    .accessibilityLabel(switchingProjectName.map { "Opening \($0)" } ?? "Machine connection: \(label)")
     .accessibilityHint("Opens connection settings.")
   }
 }
 
-/// Machine-scoped conversations live beside projects, not inside a synthetic
-/// project card. Keeping this entry prominent makes the no-project workflow
-/// discoverable while preserving the Hub as its single mobile entry point.
-struct HubPersonalChatsCard: View {
-  let count: Int
-  let attentionCount: Int
-  let isAvailable: Bool
-  let onOpen: () -> Void
-
-  private var accessibilityLabel: String {
-    guard isAvailable else { return "Chats, unavailable" }
-    let countLabel = "\(count) conversation\(count == 1 ? "" : "s")"
-    guard attentionCount > 0 else { return "Chats, \(countLabel)" }
-    return "Chats, \(countLabel), \(attentionCount) chat\(attentionCount == 1 ? "" : "s") need\(attentionCount == 1 ? "s" : "") your input"
-  }
-
-  var body: some View {
-    Button(action: onOpen) {
-      HStack(spacing: 14) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [ADEColor.accent.opacity(0.34), ADEColor.purpleAccent.opacity(0.18)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-          Image(systemName: "bubble.left.and.bubble.right.fill")
-            .font(.system(size: 19, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-        }
-        .frame(width: 46, height: 46)
-
-        VStack(alignment: .leading, spacing: 4) {
-          HStack(spacing: 7) {
-            Text("Chats")
-              .font(.system(.headline, design: .rounded).weight(.bold))
-              .foregroundStyle(ADEColor.textPrimary)
-            if attentionCount > 0 {
-              Text("\(attentionCount)")
-                .font(.caption2.bold().monospacedDigit())
-                .foregroundStyle(ADEColor.pageBackground)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(ADEColor.warning, in: Capsule())
-            }
-          }
-          Text(isAvailable
-            ? (count == 0 ? "Ask anything — no project needed" : "\(count) conversation\(count == 1 ? "" : "s") · no project needed")
-            : "Update ADE on this machine to enable chats")
-            .font(.system(.caption, design: .rounded))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-
-        Spacer(minLength: 8)
-        Image(systemName: isAvailable ? "chevron.right" : "arrow.triangle.2.circlepath")
-          .font(.system(size: 13, weight: .bold))
-          .foregroundStyle(isAvailable ? ADEColor.textMuted : ADEColor.warning)
-      }
-      .padding(14)
-      .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.accent.opacity(isAvailable ? 0.32 : 0.14), lineWidth: 1)
-      )
-      .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .disabled(!isAvailable)
-    .accessibilityLabel(accessibilityLabel)
-    .accessibilityHint(isAvailable ? "Opens conversations that are not linked to a project." : "Update ADE on the paired machine to enable chats.")
-  }
-}
 
 // MARK: - Project card
 
@@ -815,76 +795,88 @@ struct HubEmptyProjectsCard: View {
 
 struct HubNoMachineState: View {
   @EnvironmentObject private var syncService: SyncService
+  var onConnectSuccess: () -> Void = {}
 
   var body: some View {
-    VStack(spacing: 0) {
-      Image("BrandMark")
-        .resizable()
-        .renderingMode(.original)
-        .interpolation(.high)
-        .aspectRatio(contentMode: .fit)
-        .frame(maxWidth: 280)
-        .frame(height: 142)
-        .frame(maxWidth: .infinity)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
-        .padding(.top, 88)
-        .accessibilityLabel("ADE")
+    GeometryReader { geometry in
+      ScrollView {
+        VStack(spacing: 0) {
+          Image("BrandMark")
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: 280)
+            .frame(height: 142)
+            .frame(maxWidth: .infinity)
+            .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
+            .padding(.top, 88)
+            .accessibilityLabel("ADE")
 
-      HStack(spacing: 8) {
-        Circle().fill(statusDotColor).frame(width: 8, height: 8)
-        Image(systemName: "desktopcomputer")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text(statusText)
-          .font(.system(.footnote, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-      .padding(.top, 30)
-
-      if syncService.tailscaleOffHintVisible {
-        ADETailscaleOffHintCard()
-          .padding(.top, 22)
-      }
-
-      Spacer(minLength: 40)
-
-      VStack(spacing: 12) {
-        if hasSavedMachine {
-          Button {
-            Task { await syncService.reconnectIfPossible(userInitiated: true) }
-          } label: {
-            primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
-          }
-          .buttonStyle(.plain)
-
-          Button {
-            syncService.settingsPresented = true
-          } label: {
-            Text("Connection settings")
-              .font(.system(.footnote, design: .rounded).weight(.semibold))
+          HStack(spacing: 8) {
+            Circle().fill(statusDotColor).frame(width: 8, height: 8)
+            Image(systemName: "desktopcomputer")
+              .font(.system(size: 13, weight: .semibold))
               .foregroundStyle(ADEColor.textSecondary)
-              .frame(minHeight: 44)
-              .contentShape(Rectangle())
+            Text(statusText)
+              .font(.system(.footnote, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
           }
-          .buttonStyle(.plain)
-        } else {
-          Button {
-            syncService.settingsPresented = true
-          } label: {
-            primaryButtonLabel(symbol: "link", title: "Connect Machine")
+          .padding(.horizontal, 14)
+          .padding(.vertical, 10)
+          .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
+          .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+          .padding(.top, 30)
+
+          if syncService.tailscaleOffHintVisible {
+            ADETailscaleOffHintCard()
+              .padding(.top, 22)
           }
-          .buttonStyle(.plain)
+
+          // Between the no-machine badge and the Connect button: one-tap cards for
+          // machines that are online right now — on your account or previously
+          // paired — so a phone can jump back in without opening Settings (M4).
+          HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
+            .padding(.top, 22)
+
+          Spacer(minLength: 40)
+
+          VStack(spacing: 12) {
+            if hasSavedMachine {
+              Button {
+                Task { await syncService.reconnectIfPossible(userInitiated: true) }
+              } label: {
+                primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
+              }
+              .buttonStyle(.plain)
+
+              Button {
+                syncService.settingsPresented = true
+              } label: {
+                Text("Connection settings")
+                  .font(.system(.footnote, design: .rounded).weight(.semibold))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .frame(minHeight: 44)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            } else {
+              Button {
+                syncService.settingsPresented = true
+              } label: {
+                primaryButtonLabel(symbol: "link", title: "Connect Machine")
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          .padding(.bottom, 56)
         }
+        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .top)
+        .padding(.horizontal, 22)
       }
-      .padding(.bottom, 56)
+      .scrollIndicators(.hidden)
     }
-    .frame(maxWidth: 520)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .padding(.horizontal, 22)
   }
 
   /// A machine is "saved" when a pairing credential still exists for it —

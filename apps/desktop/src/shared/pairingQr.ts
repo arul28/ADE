@@ -15,6 +15,16 @@ import type {
 export const PAIRING_QR_URL_BASE = "https://ade-app.dev/pair";
 export const PAIRING_QR_PAYLOAD_VERSION = 3 as const;
 
+/**
+ * Additive v3 payload fields understood by the current QR codec. Keep this as
+ * an intersection rather than changing the shared wire type: older callers
+ * can continue treating the payload as `SyncPairingQrPayload`, while current
+ * scanners receive the optional host-PIN hint.
+ */
+export type PairingQrPayload = SyncPairingQrPayload & {
+  pinConfigured?: boolean;
+};
+
 const ADDRESS_CANDIDATE_KINDS: SyncAddressCandidateKind[] = ["lan", "saved", "tailscale", "loopback", "relay"];
 const MAX_PAIRING_QR_PAYLOAD_BYTES = 8 * 1024;
 
@@ -51,7 +61,8 @@ export function buildPairingQrPayload(args: {
   relayUrl?: string | null;
   claimToken?: string | null;
   runtimeHostGrant?: string | null;
-}): SyncPairingQrPayload {
+  pinConfigured?: boolean;
+}): PairingQrPayload {
   return {
     version: PAIRING_QR_PAYLOAD_VERSION,
     hostIdentity: args.connectInfo.hostIdentity,
@@ -60,10 +71,11 @@ export function buildPairingQrPayload(args: {
     ...(args.relayUrl ? { relayUrl: args.relayUrl } : {}),
     ...(args.claimToken ? { claimToken: args.claimToken } : {}),
     ...(args.runtimeHostGrant ? { runtimeHostGrant: args.runtimeHostGrant } : {}),
+    ...(typeof args.pinConfigured === "boolean" ? { pinConfigured: args.pinConfigured } : {}),
   };
 }
 
-export function encodePairingQrUrl(payload: SyncPairingQrPayload): string {
+export function encodePairingQrUrl(payload: PairingQrPayload): string {
   return `${PAIRING_QR_URL_BASE}#${base64UrlEncodeUtf8(JSON.stringify(payload))}`;
 }
 
@@ -121,7 +133,7 @@ function parseAddressCandidates(value: unknown): SyncAddressCandidate[] {
  * understands are present, the scan works — that is the forward-compat story
  * for old apps scanning new QRs.
  */
-export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
+export function parsePairingQrUrl(raw: string): PairingQrPayload | null {
   const trimmed = raw.trim();
   if (!trimmed || trimmed.length > MAX_PAIRING_QR_PAYLOAD_BYTES) return null;
 
@@ -158,6 +170,9 @@ export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
   const relayUrl = readString(parsed, "relayUrl");
   const claimToken = readString(parsed, "claimToken");
   const runtimeHostGrant = readString(parsed, "runtimeHostGrant");
+  const pinConfigured = typeof parsed.pinConfigured === "boolean"
+    ? parsed.pinConfigured
+    : undefined;
   return {
     version: PAIRING_QR_PAYLOAD_VERSION,
     hostIdentity,
@@ -166,6 +181,7 @@ export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
     ...(relayUrl && /^wss:\/\//i.test(relayUrl) ? { relayUrl } : {}),
     ...(claimToken ? { claimToken } : {}),
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
+    ...(typeof pinConfigured === "boolean" ? { pinConfigured } : {}),
   };
 }
 

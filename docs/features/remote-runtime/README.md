@@ -47,6 +47,20 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   turn an online account machine into the same paired-machine credential record
   and paired-only remote target; account credentials are not retained as an
   alternate transport.
+- `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
+  producer side: the host publishes its own directory row so a same-account
+  desktop or CLI can adopt it. Only currently validated routes are advertised —
+  a `lan` endpoint per live LAN address (a saved `lastHost` that matches the
+  current LAN/Tailscale set is now classified as `lan`/`tailscale` rather than
+  the opaque `saved` kind, so LAN endpoints publish correctly instead of being
+  dropped), a `tailnet` endpoint per reachable Tailscale address, and a `relay`
+  endpoint once the tunnel bridge is validated. Bridge validation is now
+  proactive (`syncTunnelClientService.validateCurrentBridge`, run on
+  control-open and on listener-ready), so the relay endpoint appears in the
+  directory as soon as the machine is signed in and its listener is confirmed —
+  it no longer waits for an external client to open the first relay tunnel.
+  The published machine name is channel-suffixed (`<name> · Beta` / `<name> ·
+  Alpha`, stable left bare) so two channels on one Mac are distinguishable rows.
 - `apps/ade-cli/src/tuiClient/remoteLauncher.ts` and `remoteBridge.ts` —
   `ade code remote` target resolution, legacy account-target migration,
   paired/SSH launch ordering, bounded cancellation, project/session selection,

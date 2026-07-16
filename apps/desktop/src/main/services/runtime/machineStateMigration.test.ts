@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import {
   MACHINE_STATE_MIGRATION_MARKER,
   markMachineStateMigrationComplete,
@@ -81,7 +82,8 @@ describe("machine state migration", () => {
       `${JSON.stringify({ phoneB: { name: "Phone B" } })}\n`,
       "utf8",
     );
-    const add = vi.fn();
+    const projectRegistry = new ProjectRegistry(layout);
+    const add = vi.spyOn(projectRegistry, "add");
 
     const result = runMachineStateMigration({
       layout,
@@ -90,7 +92,7 @@ describe("machine state migration", () => {
         { rootPath: projectB, displayName: "B", lastOpenedAt: "2026-05-10T00:00:01.000Z" },
         { rootPath: missingAdeProject, displayName: "Missing", lastOpenedAt: "2026-05-10T00:00:02.000Z" },
       ],
-      projectRegistry: { add },
+      projectRegistry,
     });
 
     expect(result).toMatchObject({ didRun: true, shouldShowNotice: true });
@@ -101,9 +103,27 @@ describe("machine state migration", () => {
       phoneA: { name: "Phone A" },
       phoneB: { name: "Phone B" },
     });
-    expect(add).toHaveBeenCalledWith(projectA);
-    expect(add).toHaveBeenCalledWith(projectB);
+    expect(add).toHaveBeenCalledWith(projectA, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    expect(add).toHaveBeenCalledWith(projectB, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
     expect(add).not.toHaveBeenCalledWith(missingAdeProject);
+    expect(projectRegistry.listRecent()).toEqual([
+      expect.objectContaining({
+        rootPath: projectA,
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      }),
+      expect.objectContaining({
+        rootPath: projectB,
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      }),
+    ]);
     expect(fs.existsSync(path.join(layout.adeDir, MACHINE_STATE_MIGRATION_MARKER))).toBe(false);
   });
 
@@ -113,6 +133,8 @@ describe("machine state migration", () => {
     const alphaLayout = makeLayout(path.join(root, ".ade-alpha"));
     const projectA = makeProject(root, "project-a");
     const projectB = makeProject(root, "project-b");
+    fs.mkdirSync(path.join(projectA, ".git"));
+    fs.mkdirSync(path.join(projectB, ".git"));
     fs.mkdirSync(stableLayout.adeDir, { recursive: true });
     fs.writeFileSync(
       stableLayout.projectsPath,
@@ -146,14 +168,21 @@ describe("machine state migration", () => {
     });
 
     expect(result).toMatchObject({ didRun: true, shouldShowNotice: true });
-    expect(add).toHaveBeenCalledWith(projectA);
-    expect(add).toHaveBeenCalledWith(projectB);
+    expect(add).toHaveBeenCalledWith(projectA, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    expect(add).toHaveBeenCalledWith(projectB, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
   });
 
   it("exposes machine registry projects as startup recents", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-migration-"));
     const layout = makeLayout(path.join(root, ".ade"));
     const projectRoot = makeProject(root, "project-a");
+    fs.mkdirSync(path.join(projectRoot, ".git"));
     fs.mkdirSync(layout.adeDir, { recursive: true });
     fs.writeFileSync(
       layout.projectsPath,

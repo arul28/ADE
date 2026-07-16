@@ -42,6 +42,7 @@ export type RosterProjectRecord = {
   rootPath: string;
   displayName: string;
   lastOpenedAt: number;
+  catalogVisibility: "recent" | "system";
 };
 
 export type RosterProjectRegistry = {
@@ -485,14 +486,20 @@ export function createForeignChatTranscriptResolver(args: {
 }
 
 /**
- * Build the all-projects chat roster: every registered project's lanes + work
- * sessions (agent chats, chat-owned shell rows, and standalone CLI sessions —
- * live or ended), sourced cheaply from disk, with live status overlaid for any
- * already-booted scope. Projects are sorted most-recently-opened first.
+ * Build the all-projects chat roster: every recent project plus the host's own
+ * project's lanes + work sessions (agent chats, chat-owned shell rows, and
+ * standalone CLI sessions — live or ended), sourced cheaply from disk, with
+ * live status overlaid for any already-booted scope. Projects are sorted
+ * most-recently-opened first.
  */
 export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promise<SyncRosterProject[]> {
   const records = args.projectRegistry
     .list()
+    .filter(
+      (record) =>
+        record.catalogVisibility === "recent" ||
+        record.projectId === args.hostProjectId,
+    )
     .slice()
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
 

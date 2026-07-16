@@ -77,6 +77,8 @@ export type AccountAuthStatus = {
   imageUrl?: string | null;
 };
 
+export type AccountSessionReadState = "available" | "missing" | "unreadable";
+
 export type AccountLoginStartResult = {
   sessionId: string;
   authorizeUrl: string;
@@ -146,16 +148,31 @@ type TokenResponse = {
   expiresInSec: number;
 };
 
+class AccountTokenRequestError extends Error {
+  constructor(
+    message: string,
+    readonly oauthErrorCode: string | null,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "AccountTokenRequestError";
+  }
+}
+
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
   startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
+  /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
+  getSessionReadState(): AccountSessionReadState;
   getAccessToken(): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
+  /** Notification emitted after a local or externally persisted sign-in. */
+  onSignedIn(listener: () => void): () => void;
   dispose(): void;
 };
 
@@ -248,7 +265,8 @@ function accessTokenExpiresAt(token: string): string | null {
   const payload = decodeJwtPayload(token);
   const exp = payload?.exp;
   if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) return null;
-  return new Date(Math.trunc(exp * 1000)).toISOString();
+  const expiresAt = new Date(Math.trunc(exp * 1000));
+  return Number.isFinite(expiresAt.getTime()) ? expiresAt.toISOString() : null;
 }
 
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
@@ -504,10 +522,11 @@ async function postTokenForm(args: {
   });
   const payload = asRecord(await response.json().catch(() => ({})));
   if (!response.ok) {
+    const oauthErrorCode = readNonEmptyString(payload.error);
     const message = readNonEmptyString(payload.error_description)
-      ?? readNonEmptyString(payload.error)
+      ?? oauthErrorCode
       ?? `ADE account token request failed (${response.status}).`;
-    throw new Error(message);
+    throw new AccountTokenRequestError(message, oauthErrorCode, response.status);
   }
   const accessToken = readNonEmptyString(payload.access_token);
   const expiresInSec = readPositiveNumber(payload.expires_in);
@@ -523,12 +542,15 @@ async function postTokenForm(args: {
 }
 
 function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
+  const expiresAt = record
+    ? accessTokenExpiresAt(record.accessToken) ?? record.expiresAt
+    : null;
   return {
     signedIn: Boolean(record?.accessToken),
     userId: record?.userId ?? null,
     email: record?.email ?? null,
     name: record?.name ?? null,
-    expiresAt: record?.expiresAt ?? null,
+    expiresAt,
     source: record ? record.authSource ?? "loopback" : null,
     ...(record?.provider ? { provider: record.provider } : {}),
     ...(record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
@@ -629,13 +651,16 @@ export function createAccountAuthService(args: {
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
-  let refreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let refreshInFlight: Promise<AccountSessionRecord | null> | null = null;
   let envRefreshInFlight: Promise<string> | null = null;
   let envSession: AccountSessionRecord | null = null;
   let envSessionCredential: string | null = null;
   let envRefreshToken: string | null = null;
   let envCredentialEpoch = 0;
   let authEpoch = 0;
+  let sessionReadState: AccountSessionReadState = "missing";
+  let lastObservedSignedIn: boolean | null = null;
+  const signedInListeners = new Set<() => void>();
 
   const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
@@ -676,12 +701,32 @@ export function createAccountAuthService(args: {
 
   const readSession = (): AccountSessionRecord | null => {
     try {
-      return parseStoredSession(args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY));
+      const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+      const session = parseStoredSession(stored);
+      sessionReadState = stored == null
+        ? args.credentialStore.getLastReadState?.() === "unreadable"
+          ? "unreadable"
+          : "missing"
+        : session
+          ? "available"
+          : "unreadable";
+      return session;
     } catch (error) {
+      sessionReadState = "unreadable";
       logger.warn("account.session_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  };
+
+  const notifySignedIn = (): void => {
+    for (const listener of signedInListeners) {
+      try {
+        listener();
+      } catch {
+        // Account persistence has already succeeded. Observers are best-effort.
+      }
     }
   };
 
@@ -691,6 +736,33 @@ export function createAccountAuthService(args: {
     } else {
       args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
     }
+    lastObservedSignedIn = record != null;
+  };
+
+  const persistRefreshedSessionIfCurrent = (
+    refreshed: AccountSessionRecord,
+    refreshSource: AccountSessionRecord,
+  ): boolean => {
+    const matchesRefreshSource = (candidate: AccountSessionRecord | null): boolean =>
+      candidate?.refreshToken === refreshSource.refreshToken
+      && candidate?.obtainedAt === refreshSource.obtainedAt;
+    const updateSync = args.credentialStore.updateSync;
+    if (!updateSync) {
+      if (!matchesRefreshSource(readSession())) return false;
+      persistSession(refreshed);
+      return true;
+    }
+
+    let persisted = false;
+    updateSync.call(args.credentialStore, (values) => {
+      const latest = parseStoredSession(values[ACCOUNT_SESSION_CREDENTIAL_KEY]);
+      if (!matchesRefreshSource(latest)) return false;
+      values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
+      persisted = true;
+      return true;
+    });
+    if (persisted) lastObservedSignedIn = true;
+    return persisted;
   };
 
   const finishPendingSession = (
@@ -773,12 +845,17 @@ export function createAccountAuthService(args: {
   ): Promise<AccountSessionRecord> => {
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
+    const claimedExpiresAt = accessTokenExpiresAt(token.accessToken);
     const userinfo = await fetchUserinfoProfile(token, oauthConfig);
     return {
       accessToken: token.accessToken,
       refreshToken: token.refreshToken ?? previous?.refreshToken ?? null,
       tokenType: token.tokenType,
-      expiresAt: new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
+      // The access-token claim is authoritative when it is present. OAuth
+      // expires_in can describe a broader session lifetime than the JWT that
+      // is actually sent to the directory.
+      expiresAt: claimedExpiresAt
+        ?? new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
       obtainedAt: new Date(obtainedAtMs).toISOString(),
       userId: claims.userId ?? userinfo?.userId ?? previous?.userId ?? null,
       email: claims.email ?? userinfo?.email ?? previous?.email ?? null,
@@ -857,6 +934,7 @@ export function createAccountAuthService(args: {
       }
       persistSession(record);
       authEpoch += 1;
+      notifySignedIn();
       finishPendingSession(session, "signed_in", null);
       logger.info("account.login_completed");
       respondHtml(response, 200, SUCCESS_HTML);
@@ -1226,6 +1304,7 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record);
     authEpoch += 1;
+    notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");
     return {
@@ -1378,7 +1457,8 @@ export function createAccountAuthService(args: {
     if (!record?.accessToken) {
       throw new Error("ADE is not signed in. Run `ade login` to sign in.");
     }
-    const expiresAtMs = Date.parse(record.expiresAt);
+    const claimedExpiresAt = accessTokenExpiresAt(record.accessToken);
+    const expiresAtMs = Date.parse(claimedExpiresAt ?? record.expiresAt);
     if (Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
       return record.accessToken;
     }
@@ -1389,28 +1469,60 @@ export function createAccountAuthService(args: {
     const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
       refreshInFlight = (async () => {
-        const config = record.oauthConfig
-          ? normalizeOAuthConfig(record.oauthConfig)
-          : normalizeOAuthConfig(await args.getOAuthConfig());
-        const token = await postTokenForm({
-          fetchImpl,
-          tokenUrl: `${config.issuer}/oauth/token`,
-          body: {
-            grant_type: "refresh_token",
-            refresh_token: record.refreshToken!,
-            client_id: config.clientId,
-          },
-        });
-        const refreshed = await buildSessionRecord(token, record, undefined, config);
-        if (authEpoch === epochAtJoin) persistSession(refreshed);
-        return refreshed;
+        let refreshRecord = record;
+        let token: TokenResponse | null = null;
+        let config: AccountOAuthConfig | null = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          config = refreshRecord.oauthConfig
+            ? normalizeOAuthConfig(refreshRecord.oauthConfig)
+            : normalizeOAuthConfig(await args.getOAuthConfig());
+          try {
+            token = await postTokenForm({
+              fetchImpl,
+              tokenUrl: `${config.issuer}/oauth/token`,
+              body: {
+                grant_type: "refresh_token",
+                refresh_token: refreshRecord.refreshToken!,
+                client_id: config.clientId,
+              },
+            });
+            break;
+          } catch (error) {
+            if (
+              attempt > 0
+              || !(error instanceof AccountTokenRequestError)
+              || error.oauthErrorCode !== "invalid_grant"
+            ) {
+              throw error;
+            }
+            // The desktop and brain share this credential. If the peer won a
+            // rotating refresh-token exchange, retry once with the newer
+            // persisted token instead of treating the session as expired.
+            const latest = readSession();
+            if (
+              !latest?.refreshToken
+              || latest.refreshToken === refreshRecord.refreshToken
+            ) {
+              throw error;
+            }
+            refreshRecord = latest;
+          }
+        }
+        if (!token || !config) {
+          throw new Error("ADE account session expired. Run `ade login` again.");
+        }
+        const refreshed = await buildSessionRecord(token, refreshRecord, undefined, config);
+        if (authEpoch !== epochAtJoin) return null;
+        return persistRefreshedSessionIfCurrent(refreshed, refreshRecord)
+          ? refreshed
+          : null;
       })().finally(() => {
         refreshInFlight = null;
       });
     }
 
     const refreshed = await refreshInFlight;
-    if (authEpoch !== epochAtJoin) {
+    if (authEpoch !== epochAtJoin || !refreshed) {
       return getAccessToken();
     }
     return refreshed.accessToken;
@@ -1468,6 +1580,19 @@ export function createAccountAuthService(args: {
     return getStatus();
   };
 
+  let credentialChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  lastObservedSignedIn = getStatus().signedIn;
+  const unsubscribeCredentialChanges = args.credentialStore.onDidChange?.(() => {
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = setTimeout(() => {
+      credentialChangeTimer = null;
+      const signedIn = getStatus().signedIn;
+      if (signedIn && lastObservedSignedIn === false) notifySignedIn();
+      lastObservedSignedIn = signedIn;
+    }, 25);
+    credentialChangeTimer.unref?.();
+  }) ?? (() => {});
+
   const dispose = (): void => {
     for (const session of pendingSessions.values()) {
       clearTimeout(session.expiryTimer);
@@ -1475,6 +1600,10 @@ export function createAccountAuthService(args: {
     }
     pendingSessions.clear();
     pendingDeviceSessions.clear();
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = null;
+    unsubscribeCredentialChanges();
+    signedInListeners.clear();
   };
 
   return {
@@ -1483,10 +1612,15 @@ export function createAccountAuthService(args: {
     startDeviceLogin,
     pollDeviceLogin,
     getStatus,
+    getSessionReadState: () => sessionReadState,
     getAccessToken,
     createToken,
     cancelLogin,
     signOut,
+    onSignedIn: (listener: () => void) => {
+      signedInListeners.add(listener);
+      return () => signedInListeners.delete(listener);
+    },
     dispose,
   };
 }

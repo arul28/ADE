@@ -22,7 +22,6 @@ import UIKit
 struct DictationMicButton: View {
   @Binding var draft: String
 
-  @AppStorage("ade.voiceInput.enabled") private var voiceInputEnabled = true
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// App-level dictation singleton. Observing it (instead of owning a private
@@ -53,9 +52,11 @@ struct DictationMicButton: View {
     self.onRecordingChange = onRecordingChange
   }
 
-  /// Whether the mic should be shown at all: feature flag + platform support.
+  /// Whether the mic should be shown at all. Gated purely on on-device
+  /// transcription support now that voice input is always available when the
+  /// platform can transcribe (the Settings opt-in toggle was removed).
   private var isVisible: Bool {
-    voiceInputEnabled && SpeechDictationService.isAvailable
+    SpeechDictationService.isAvailable
   }
 
   /// True when *this* composer is the one currently driving the mic.

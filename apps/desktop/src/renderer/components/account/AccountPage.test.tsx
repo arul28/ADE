@@ -212,6 +212,23 @@ describe("AccountPage signed-in", () => {
     expect(screen.getByRole("button", { name: /Options for Studio/ })).toBeTruthy();
   });
 
+  it("portals the machine menu and manages focus through Escape", async () => {
+    renderPage();
+    await screen.findByText("Studio");
+
+    const trigger = screen.getByRole("button", { name: /Options for Studio/ });
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu");
+    // Portaled directly under document.body, outside the scrolling account column.
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe("fixed");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("menuitem")));
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
   it("removes another Mac only after confirmation", async () => {
     renderPage();
     await screen.findByText("Studio");
@@ -242,6 +259,38 @@ describe("AccountPage signed-in", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+  });
+
+  it("falls back to a monogram when the account avatar image fails to load", async () => {
+    statusRef.current = {
+      signedIn: true,
+      configured: true,
+      userId: "user_1",
+      email: "ada@example.com",
+      name: "Ada Lovelace",
+      expiresAt: null,
+      provider: "google",
+      imageUrl: "https://img.clerk.com/broken-avatar.png",
+    };
+    const { container } = render(
+      <MemoryRouter initialEntries={["/account"]}>
+        <Routes>
+          <Route path="/account" element={<AccountPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByText("Ada Lovelace");
+
+    const avatar = container.querySelector('img[src="https://img.clerk.com/broken-avatar.png"]');
+    expect(avatar).toBeTruthy();
+    // No monogram while the image is presumed loading.
+    expect(screen.queryByText("AL")).toBeNull();
+
+    fireEvent.error(avatar as HTMLImageElement);
+
+    // The broken image is replaced by the initials monogram.
+    expect(container.querySelector('img[src="https://img.clerk.com/broken-avatar.png"]')).toBeNull();
+    expect(screen.getByText("AL")).toBeTruthy();
   });
 
   it("opens the Connections panel from the single Manage connections button", async () => {

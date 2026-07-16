@@ -195,7 +195,8 @@ Account connection and entry points:
   This Mac card owns the PIN manager and internal phone QR.
 - `apps/desktop/src/shared/pairingQr.ts` - smart pairing URL
   `https://ade-app.dev/pair#<base64url(JSON)>`; the fragment carries host
-  identity, port, address candidates, and optional relay URL, never the PIN.
+  identity, port, address candidates, an optional relay URL, and an additive
+  optional `pinConfigured` hint (the `PairingQrPayload` type) — never the PIN.
   This remains internal wire encoding for the phone's system-camera/App Clip
   flow, not a user-facing browser pairing link.
 - `apps/desktop/src/shared/webClientUrl.ts` - canonical
@@ -209,8 +210,13 @@ Account connection and entry points:
 - `apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx` and
   `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` /
   `SessionContextMenu.tsx` - desktop "Open in web" entry points.
-- `apps/web/src/app/pages/PairPage.tsx` - compatibility hash-forward for the
-  internal smart-QR URL; the hosted client scrubs `/pair` and enters sign-in.
+- `apps/web/src/app/pages/PairPage.tsx` - marketing-site landing for the smart-QR
+  URL. It no longer hash-forwards to the hosted client; the only visitors who
+  reach this HTML opened the QR URL on a device **without** the ADE app, so the
+  page reads nothing from `window.location` (there is no fragment to copy or
+  forward) and simply points them at the iPhone app, with a secondary "open the
+  web client instead" link. Separately, the hosted client's own `/pair` route is
+  scrubbed by `WebClientRoot` and drops into sign-in.
 - `apps/web/scripts/check-entities.mjs` - dependency-free TypeScript-AST guard
   run by the marketing-site build. It rejects unsupported named HTML entities
   in JSX text, expressions, and attributes before they can ship as literal UI
@@ -484,11 +490,12 @@ Entry points:
 - Desktop lanes: "Open in web" in `LaneContextMenu.tsx`.
 - Desktop sessions: "Open in web" in `TerminalsPage.tsx` /
   `SessionContextMenu.tsx`.
-- Compatibility smart-QR URL: `apps/web/src/app/pages/PairPage.tsx` preserves
-  the fragment during its handoff, but the hosted client retires `/pair` by
-  scrubbing the payload and entering the normal sign-in flow. The
-  `https://ade-app.dev/pair#...` form is internal phone QR/App Clip encoding,
-  not a browser pairing link.
+- Smart-QR URL landing: `apps/web/src/app/pages/PairPage.tsx` is an app-first
+  fallback. It does not forward the fragment anywhere — it points a browser
+  visitor at the iPhone app (secondary "open the web client instead" link) — and
+  the hosted client separately retires its own `/pair` route by scrubbing the
+  payload and entering the normal sign-in flow. The `https://ade-app.dev/pair#...`
+  form is internal phone QR/App Clip encoding, not a browser pairing link.
 
 ## Deploy and ops
 

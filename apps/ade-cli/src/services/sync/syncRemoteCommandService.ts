@@ -4075,7 +4075,7 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
       const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
         candidate.kind === "relay" && candidate.host.trim().length > 0);
       return {
-        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo, pinConfigured })),
         code: code ?? null,
         pinConfigured,
         machineName: connectInfo.hostIdentity.name,
@@ -4110,6 +4110,7 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
         pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({
           connectInfo,
           runtimeHostGrant: issueGrant(),
+          pinConfigured,
         })),
         code: code ?? null,
         pinConfigured,

@@ -147,7 +147,7 @@ Older `ade runtime ...` and `ade sync pin ...` command aliases remain available 
 
 ## Project registry
 
-The ADE brain owns a per-machine project catalog at `$ADE_HOME/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL.
+The ADE brain owns a per-machine project catalog at `$ADE_HOME/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL. Each record also has a `catalogVisibility` (`recent` vs `system`) and a `registrationSource`: explicit commands (`ade projects add`, `ade init`) register as `recent`/`cli-explicit`, while runtime auto-registration (an agent attaching to run a project-scoped command) registers as `system`/`runtime-auto` so it does not surface as a recent project. `ade projects list --text` shows a `visibility` column so all rows, including `system` ones, are visible to the operator.
 
 Manage the registry through typed CLI commands:
 

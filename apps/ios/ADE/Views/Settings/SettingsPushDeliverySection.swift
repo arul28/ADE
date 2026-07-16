@@ -15,6 +15,9 @@ struct SettingsPushDeliverySnapshot: Equatable {
     var lastError: String?
     var relayRefreshError: String?
     var canRefreshRelayStatus = false
+    /// Whether this device is paired to a machine. Notifications can't be
+    /// enabled until it is, so the enable affordance stays disabled while false.
+    var isPaired = false
 
     var liveActivityTokenPresent = false
 
@@ -39,6 +42,10 @@ struct SettingsPushDeliverySection: View {
     /// Observed for instant toggle / prefs feedback (the snapshot is throttled).
     @ObservedObject var pushService: PushNotificationService
 
+    /// The low-level delivery diagnostics are collapsed by default (M8) — most
+    /// users only care about the toggles above.
+    @State private var showsDiagnostics = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SettingsSectionHeader(
@@ -46,6 +53,125 @@ struct SettingsPushDeliverySection: View {
                 hint: "Remote notifications and Live Activities"
             )
 
+            enableNotificationsControl
+
+            VStack(spacing: 8) {
+                PushToggleRow(
+                    symbol: "bell.badge",
+                    title: "Notifications",
+                    subtitle: "Approvals, replies, and failures",
+                    isOn: notificationsBinding
+                )
+                PushToggleRow(
+                    symbol: "square.stack.3d.up",
+                    title: "Live Activities",
+                    subtitle: "Agent runs on the Lock Screen",
+                    isOn: liveActivitiesBinding
+                )
+                PushToggleRow(
+                    symbol: "moon",
+                    title: "Quiet hours",
+                    subtitle: pushService.prefs.quietHoursEnabled
+                        ? "\(pushService.prefs.quietHoursStart)–\(pushService.prefs.quietHoursEnd) · \(Self.shortTimezone(pushService.prefs.quietHoursTimezone))"
+                        : "Mute pushes on a schedule",
+                    isOn: quietHoursBinding
+                )
+
+                if pushService.prefs.quietHoursEnabled {
+                    quietHoursPickers
+                }
+            }
+
+            DisclosureGroup(isExpanded: $showsDiagnostics) {
+                diagnosticsContent
+                    .padding(.top, 8)
+            } label: {
+                Label("Delivery diagnostics", systemImage: "stethoscope")
+                    .font(.subheadline)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            .tint(ADEColor.textSecondary)
+        }
+        .task {
+            await pushService.refreshNotificationSettings()
+            await pushService.refreshStatus()
+        }
+    }
+
+    // MARK: - Enable notifications affordance
+
+    @ViewBuilder
+    private var enableNotificationsControl: some View {
+        let permissionStatus = pushService.permissionStatus
+        if !snapshot.isPaired {
+            // Nothing to register with until a Mac is paired: show the affordance
+            // disabled with a reason rather than a button that can't succeed (M8).
+            VStack(alignment: .leading, spacing: 6) {
+                enableNotificationsButton(label: "Enable notifications", enabled: false, action: {})
+                Text("Pair a Mac to enable notifications")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textMuted)
+                    .padding(.horizontal, 4)
+            }
+        } else if permissionStatus == .notDetermined || permissionStatus == .denied {
+            enableNotificationsButton(
+                label: permissionStatus == .denied ? "Turn on in iOS Settings" : "Enable notifications",
+                enabled: true
+            ) {
+                if permissionStatus == .denied {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } else {
+                    Task { await pushService.enableIfPaired() }
+                }
+            }
+        }
+    }
+
+    private func enableNotificationsButton(
+        label: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "bell.badge.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(ADEColor.purpleAccent)
+                Text(label)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ADEColor.textPrimary)
+                Spacer(minLength: 8)
+                if enabled {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ADEColor.purpleAccent.opacity(0.55))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(ADEColor.purpleAccent.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(ADEScaleButtonStyle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+    }
+
+    // MARK: - Diagnostics (collapsed by default)
+
+    @ViewBuilder
+    private var diagnosticsContent: some View {
+        VStack(spacing: 10) {
             VStack(spacing: 10) {
                 SettingsDetailRow(
                     symbol: statusSymbol,
@@ -113,37 +239,6 @@ struct SettingsPushDeliverySection: View {
                 }
             }
 
-            if snapshot.needsPermissionPrompt {
-                permissionPromptButton
-            }
-
-            VStack(spacing: 8) {
-                PushToggleRow(
-                    symbol: "bell.badge",
-                    title: "Notifications",
-                    subtitle: "Approvals, replies, and failures",
-                    isOn: notificationsBinding
-                )
-                PushToggleRow(
-                    symbol: "square.stack.3d.up",
-                    title: "Live Activities",
-                    subtitle: "Agent runs on the Lock Screen",
-                    isOn: liveActivitiesBinding
-                )
-                PushToggleRow(
-                    symbol: "moon",
-                    title: "Quiet hours",
-                    subtitle: pushService.prefs.quietHoursEnabled
-                        ? "\(pushService.prefs.quietHoursStart)–\(pushService.prefs.quietHoursEnd) · \(Self.shortTimezone(pushService.prefs.quietHoursTimezone))"
-                        : "Mute pushes on a schedule",
-                    isOn: quietHoursBinding
-                )
-
-                if pushService.prefs.quietHoursEnabled {
-                    quietHoursPickers
-                }
-            }
-
             refreshButton
 
             if let inlineStatusMessage {
@@ -151,49 +246,9 @@ struct SettingsPushDeliverySection: View {
                     .font(.caption)
                     .foregroundStyle(inlineStatusTint)
                     .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .task { await pushService.refreshStatus() }
-    }
-
-    // MARK: - Permission prompt
-
-    @ViewBuilder
-    private var permissionPromptButton: some View {
-        Button {
-            if snapshot.permissionStatus == .denied {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            } else {
-                Task { await pushService.enableIfPaired() }
-            }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "bell.badge.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(ADEColor.purpleAccent)
-                Text(snapshot.permissionStatus == .denied ? "Turn on in iOS Settings" : "Enable notifications")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ADEColor.textPrimary)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ADEColor.purpleAccent.opacity(0.55))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(ADEColor.purpleAccent.opacity(0.10))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
-            )
-        }
-        .buttonStyle(ADEScaleButtonStyle())
     }
 
     // MARK: - Quiet hours pickers

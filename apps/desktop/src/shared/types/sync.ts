@@ -219,6 +219,51 @@ export type SyncTailnetDiscoveryStatus = {
   stderr: string | null;
 };
 
+export type SyncAccountDirectoryState =
+  | "published"
+  | "sync_disabled"
+  | "no_active_sync_scope"
+  | "snapshot_failed"
+  | "machine_key_unavailable"
+  | "missing_pairing_connect_info"
+  | "not_host"
+  | "account_signed_out"
+  | "token_unreadable"
+  | "invalid_directory_url"
+  | "http_error"
+  | "timeout"
+  | "transport_error";
+
+/** Last account-directory publisher outcome for this machine brain. */
+export type SyncAccountDirectoryHealth = {
+  state: SyncAccountDirectoryState;
+  skipReason: string | null;
+  directoryOrigin: string | null;
+  lastAttemptAt: number | null;
+  lastSuccessAt: number | null;
+  lastHttpStatus: number | null;
+  lastHttpReason: string | null;
+  reachableEndpointCount: number;
+};
+
+export function createSyncAccountDirectoryHealth(
+  state: SyncAccountDirectoryState,
+  skipReason: string | null,
+  overrides: Partial<Omit<SyncAccountDirectoryHealth, "state" | "skipReason">> = {},
+): SyncAccountDirectoryHealth {
+  return {
+    state,
+    skipReason,
+    directoryOrigin: null,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastHttpStatus: null,
+    lastHttpReason: null,
+    reachableEndpointCount: 0,
+    ...overrides,
+  };
+}
+
 export type SyncRouteHealth = {
   listener: {
     listenerBound: boolean;
@@ -244,6 +289,7 @@ export type SyncRouteHealth = {
     reason: string | null;
     lastSuccessAt: string | null;
   };
+  accountDirectory: SyncAccountDirectoryHealth;
 };
 
 export type SyncRoleSnapshot = {

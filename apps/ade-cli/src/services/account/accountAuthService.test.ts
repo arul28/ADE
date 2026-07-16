@@ -12,6 +12,8 @@ import {
 
 class MemoryCredentialStore implements SyncCredentialStore {
   readonly values = new Map<string, string>();
+  private readonly changeListeners = new Set<() => void>();
+  readState: "available" | "missing" | "unreadable" = "available";
 
   async get(key: string): Promise<string | null> {
     return this.getSync(key);
@@ -35,6 +37,26 @@ class MemoryCredentialStore implements SyncCredentialStore {
 
   deleteSync(key: string): void {
     this.values.delete(key);
+  }
+
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    const values = Object.fromEntries(this.values);
+    if (updater(values) === false) return;
+    this.values.clear();
+    for (const [key, value] of Object.entries(values)) this.values.set(key, value);
+  }
+
+  onDidChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  notifyExternalChange(): void {
+    for (const listener of this.changeListeners) listener();
+  }
+
+  getLastReadState() {
+    return this.readState;
   }
 }
 
@@ -70,7 +92,52 @@ function storedSession(overrides: Partial<AccountSessionRecord> = {}): AccountSe
 const activeServices: AccountAuthService[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const service of activeServices.splice(0)) service.dispose();
+});
+
+describe("AccountAuthService persisted session notifications", () => {
+  it("preserves an unreadable credential-file diagnosis when the account key is absent", () => {
+    const store = new MemoryCredentialStore();
+    store.readState = "unreadable";
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus().signedIn).toBe(false);
+    expect(service.getSessionReadState()).toBe("unreadable");
+  });
+
+  it("detects a sign-in persisted by another process", async () => {
+    vi.useFakeTimers();
+    const store = new MemoryCredentialStore();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    const listener = vi.fn();
+    service.onSignedIn(listener);
+
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({ expiresAt: "2026-07-14T13:00:00.000Z" })),
+    );
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(service.getStatus().signedIn).toBe(true);
+
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AccountAuthService CLERK_ISSUER scheme enforcement", () => {
@@ -182,6 +249,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
       fetchImpl,
     });
     activeServices.push(service);
+    const onSignedIn = vi.fn();
+    service.onSignedIn?.(onSignedIn);
 
     expect(service.getStatus()).toEqual({
       signedIn: false,
@@ -191,6 +260,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       expiresAt: null,
       source: null,
     });
+    expect(service.getSessionReadState?.()).toBe("missing");
     const start = await service.startLogin();
     const authorizeUrl = new URL(start.authorizeUrl);
     const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
@@ -199,6 +269,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const html = await callback.text();
 
     expect(callback.status).toBe(200);
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
     expect(html).toContain("You can close this tab — signed in to ADE");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [tokenUrl, init] = fetchImpl.mock.calls[0]!;
@@ -215,6 +286,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
     });
 
     const persisted = JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!) as AccountSessionRecord;
+    expect(service.getStatus().signedIn).toBe(true);
+    expect(service.getSessionReadState?.()).toBe("available");
     expect(persisted).toMatchObject({
       accessToken,
       refreshToken: "refresh-123",
@@ -1249,6 +1322,73 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
 });
 
 describe("AccountAuthService refresh and sign-out", () => {
+  it("prefers the access-token JWT expiry over a later stored session expiry", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const staleAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs - 60_000) / 1000),
+    });
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: staleAccessToken,
+      expiresAt: "2026-07-15T12:00:00.000Z",
+    })));
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> =>
+      input.endsWith("/oauth/userinfo")
+        ? jsonResponse({})
+        : jsonResponse({
+            access_token: refreshedAccessToken,
+            refresh_token: "refresh-new",
+            expires_in: 86_400,
+          }));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus().expiresAt).toBe("2026-07-14T11:59:00.000Z");
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: refreshedAccessToken,
+      refreshToken: "refresh-new",
+      expiresAt: "2026-07-14T13:00:00.000Z",
+    });
+  });
+
+  it("never returns an expired JWT whose stored expiry is still in the future", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const staleAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs - 60_000) / 1000),
+    });
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: staleAccessToken,
+      refreshToken: null,
+      expiresAt: "2026-07-15T12:00:00.000Z",
+    })));
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus().expiresAt).toBe("2026-07-14T11:59:00.000Z");
+    await expect(service.getAccessToken()).rejects.toThrow(/account session expired/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("refreshes inside the two-minute skew and retains identity plus a non-rotated refresh token", async () => {
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
     const store = new MemoryCredentialStore();
@@ -1287,6 +1427,154 @@ describe("AccountAuthService refresh and sign-out", () => {
       imageUrl: "https://images.example/refreshed.png",
       expiresAt: "2026-07-15T12:00:00.000Z",
     });
+  });
+
+  it("re-reads a refresh token rotated by another process and retries once", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+      expiresAt: "2026-07-15T12:00:00.000Z",
+    })));
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const refreshTokens: string[] = [];
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+      const refreshToken = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+      refreshTokens.push(refreshToken);
+      if (refreshToken === "refresh-old") {
+        store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+          accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs + 1_800_000) / 1000) }),
+          refreshToken: "refresh-rotated-by-desktop",
+          expiresAt: "2026-07-15T12:00:00.000Z",
+        })));
+        return jsonResponse({ error: "invalid_grant" }, 400);
+      }
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "refresh-final",
+        expires_in: 86_400,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(refreshTokens).toEqual(["refresh-old", "refresh-rotated-by-desktop"]);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: refreshedAccessToken,
+      refreshToken: "refresh-final",
+      expiresAt: "2026-07-14T13:00:00.000Z",
+    });
+  });
+
+  it("does not retry non-invalid_grant failures with a concurrently changed token", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+      expiresAt: "2026-07-15T12:00:00.000Z",
+    })));
+    const refreshTokens: string[] = [];
+    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit): Promise<Response> => {
+      const refreshToken = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+      refreshTokens.push(refreshToken);
+      store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+        refreshToken: "refresh-rotated-by-desktop",
+      })));
+      return jsonResponse({
+        error: "server_error",
+        error_description: "temporarily unavailable",
+      }, 503);
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow("temporarily unavailable");
+    expect(refreshTokens).toEqual(["refresh-old"]);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      refreshToken: "refresh-rotated-by-desktop",
+    });
+  });
+
+  it("preserves a newer session written by another process while refresh succeeds", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const desktopAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 7_200_000) / 1000),
+    });
+    const desktopSession = storedSession({
+      accessToken: desktopAccessToken,
+      refreshToken: "refresh-rotated-by-desktop",
+      expiresAt: "2026-07-14T14:00:00.000Z",
+      obtainedAt: "2026-07-14T12:00:30.000Z",
+    });
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) {
+        store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(desktopSession));
+        return jsonResponse({});
+      }
+      return jsonResponse({
+        access_token: refreshedAccessToken,
+        refresh_token: "refresh-from-stale-request",
+        expires_in: 3_600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(desktopAccessToken);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toEqual(desktopSession);
+  });
+
+  it("does not resurrect a session signed out by another process during refresh", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) {
+        store.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+        return jsonResponse({});
+      }
+      return jsonResponse({
+        access_token: jwt({ sub: "user_old" }),
+        refresh_token: "refresh-from-stale-request",
+        expires_in: 3_600,
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow("ADE is not signed in");
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
   });
 
   it("bounds userinfo enrichment and keeps token refresh best-effort", async () => {

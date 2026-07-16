@@ -105,7 +105,7 @@ function stableRegistryProjectsForChannelHome(layout: MachineAdeLayout): RecentP
   const stableLayout = stableLayoutForChannelHome(layout);
   if (!stableLayout || !fs.existsSync(stableLayout.projectsPath)) return [];
   try {
-    return new ProjectRegistry(stableLayout).list().map((project) => ({
+    return new ProjectRegistry(stableLayout).listRecent().map((project) => ({
       rootPath: project.rootPath,
       displayName: project.displayName,
       lastOpenedAt: new Date(project.lastOpenedAt).toISOString(),
@@ -115,18 +115,46 @@ function stableRegistryProjectsForChannelHome(layout: MachineAdeLayout): RecentP
   }
 }
 
-export function readMachineRegistryRecentProjects(layout: MachineAdeLayout): RecentProject[] {
+export function readMachineRegistryRecentProjects(
+  layout: MachineAdeLayout,
+  legacyRecentProjects: RecentProject[] = [],
+): RecentProject[] {
   const projects = [
-    ...registryProjectsAsRecent(layout),
+    ...registryProjectsAsRecent(layout, legacyRecentProjects),
     ...stableRegistryProjectsForChannelHome(layout),
   ];
   return uniqueProjects(projects);
 }
 
-function registryProjectsAsRecent(layout: MachineAdeLayout): RecentProject[] {
-  if (!fs.existsSync(layout.projectsPath)) return [];
+function registryProjectsAsRecent(
+  layout: MachineAdeLayout,
+  legacyRecentProjects: RecentProject[],
+): RecentProject[] {
   try {
-    return new ProjectRegistry(layout).list().map((project) => ({
+    const registry = new ProjectRegistry(layout, {
+      legacyRecentProjectRoots: legacyRecentProjects
+        .filter((project) => !project.remote)
+        .map((project) => project.rootPath),
+    });
+    registry.list();
+    for (const project of legacyRecentProjects) {
+      if (project.remote) continue;
+      const existing = registry.findByRootPath(project.rootPath);
+      if (existing) {
+        registry.setCatalogVisibilityByRootPath(
+          project.rootPath,
+          "recent",
+          "desktop",
+        );
+        continue;
+      }
+      if (!fs.existsSync(path.join(project.rootPath, ".git"))) continue;
+      registry.add(project.rootPath, {
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      });
+    }
+    return registry.listRecent().map((project) => ({
       rootPath: project.rootPath,
       displayName: project.displayName,
       lastOpenedAt: new Date(project.lastOpenedAt).toISOString(),
@@ -156,7 +184,7 @@ export function runMachineStateMigration(args: MachineStateMigrationArgs): Machi
 
   const migrationProjects = uniqueProjects([
     ...args.recentProjects,
-    ...readMachineRegistryRecentProjects(args.layout),
+    ...readMachineRegistryRecentProjects(args.layout, args.recentProjects),
   ]);
   const hadExistingUserState =
     migrationProjects.length > 0 || fs.existsSync(args.layout.secretsDir);
@@ -170,7 +198,10 @@ export function runMachineStateMigration(args: MachineStateMigrationArgs): Machi
   for (const project of migrationProjects) {
     if (!fs.existsSync(path.join(project.rootPath, ".ade"))) continue;
     try {
-      projectRegistry.add(project.rootPath);
+      projectRegistry.add(project.rootPath, {
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      });
     } catch {
       // Ignore projects that disappeared or became unreadable during startup.
     }

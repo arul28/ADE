@@ -15,6 +15,15 @@ struct SettingsPinSheet: View {
   @State private var pin: String = ""
   @State private var isSubmitting = false
   @State private var localError: String?
+  /// True when this machine has no pairing code configured — shown as a friendly
+  /// message instead of the keypad (proactively from the QR payload/discovery
+  /// hint, or reactively after the host answers `pin_not_set`).
+  @State private var noPairingCode = false
+  /// Bumped to shake the digit boxes when the host rejects an entered code.
+  @State private var shakeTrigger: CGFloat = 0
+  /// Briefly true after a successful connect so a checkmark beat plays before
+  /// the sheet dismisses.
+  @State private var didConnect = false
 
   /// The "Set a PIN" route for this machine, carried so the parent can offer
   /// "Try again" back into this PIN sheet.
@@ -25,11 +34,21 @@ struct SettingsPinSheet: View {
     }
   }
 
+  /// Whether the paired machine already told us (via QR payload or discovery)
+  /// that no pairing code is configured — used to open straight into the
+  /// "no code set" message rather than the keypad.
+  private var presetSaysNoPairingCode: Bool {
+    switch preset {
+    case .discover(let host): return host.pairingPinConfigured == false
+    case .qr(let payload): return payload.pinConfigured == false
+    }
+  }
+
   var body: some View {
     NavigationStack {
       VStack(alignment: .leading, spacing: 18) {
         VStack(alignment: .leading, spacing: 4) {
-          Text("Enter pairing PIN")
+          Text(noPairingCode ? "No pairing code set" : "Enter pairing PIN")
             .font(.title2.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("Connecting to \(preset.hostDisplayName)")
@@ -38,28 +57,26 @@ struct SettingsPinSheet: View {
             .lineLimit(1)
         }
 
-        HStack(spacing: 8) {
-          ForEach(0..<6, id: \.self) { index in
-            PinDigitBox(
-              digit: digit(at: index),
-              isActive: !isSubmitting && index == cursorIndex
-            )
+        if noPairingCode {
+          noPairingCodeCard
+          // Escape hatch: a PIN may have been set on that Mac *after* its QR was
+          // scanned (or after discovery reported no code). Let the user flip back
+          // to the keypad and try a code anyway instead of dead-ending here.
+          Button {
+            withAnimation(.easeInOut(duration: 0.2)) { noPairingCode = false }
+          } label: {
+            Text("Enter code anyway")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(maxWidth: .infinity)
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
           }
+          .buttonStyle(.plain)
+          .accessibilityHint("Shows the keypad in case a pairing code was set after this Mac was scanned.")
+        } else {
+          pinEntry
         }
-        .frame(maxWidth: .infinity)
-        .accessibilityLabel("Pairing PIN")
-        .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
-
-          Text("You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textSecondary)
-
-        PinKeypad(
-          isDisabled: isSubmitting,
-          onDigit: appendDigit,
-          onDelete: deleteDigit
-        )
-        .padding(.top, 2)
 
         if let error = localError {
           Text(error)
@@ -70,37 +87,7 @@ struct SettingsPinSheet: View {
 
         Spacer(minLength: 0)
 
-        HStack(spacing: 10) {
-          Button {
-            if isSubmitting {
-              syncService.disconnect(clearCredentials: false)
-            }
-            dismiss()
-          } label: {
-            Text("Cancel")
-              .font(.subheadline.weight(.semibold))
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 10)
-          }
-          .buttonStyle(.glass)
-
-          Button {
-            submit()
-          } label: {
-            HStack {
-              if isSubmitting {
-                ProgressView().controlSize(.small)
-              }
-              Text("Connect")
-                .font(.subheadline.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.purpleAccent)
-          .disabled(!isComplete || isSubmitting)
-        }
+        footerButtons
       }
       .padding(.horizontal, 20)
       .padding(.vertical, 24)
@@ -108,13 +95,120 @@ struct SettingsPinSheet: View {
       .adeNavigationGlass()
       .navigationBarTitleDisplayMode(.inline)
       .interactiveDismissDisabled(isSubmitting)
+      .overlay {
+        if didConnect { ConnectSuccessBeat() }
+      }
       .onAppear {
-        // Proactive: if the machine already told us (via discovery) that it has
-        // no pairing PIN, skip the keypad and go straight to the friendly
-        // "Set a PIN" screen — no point asking for a PIN that can't exist.
-        if case .discover(let host) = preset, host.pairingPinConfigured == false {
-          onNeedsPinSetup(setupRoute)
+        // Proactive: if the machine already told us (via discovery or the
+        // scanned payload) that it has no pairing code, skip the keypad and
+        // show the "set one on that Mac" message — no point asking for a code
+        // that can't exist.
+        if presetSaysNoPairingCode { noPairingCode = true }
+      }
+    }
+  }
+
+  // MARK: - Keypad entry
+
+  @ViewBuilder
+  private var pinEntry: some View {
+    HStack(spacing: 8) {
+      ForEach(0..<6, id: \.self) { index in
+        PinDigitBox(
+          digit: digit(at: index),
+          isActive: !isSubmitting && index == cursorIndex
+        )
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .modifier(PinShakeEffect(animatableData: shakeTrigger))
+    .accessibilityLabel("Pairing PIN")
+    .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
+
+    Text("You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.")
+      .font(.footnote)
+      .foregroundStyle(ADEColor.textSecondary)
+
+    PinKeypad(
+      isDisabled: isSubmitting,
+      onDigit: appendDigit,
+      onDelete: deleteDigit
+    )
+    .padding(.top, 2)
+  }
+
+  // MARK: - No pairing code message (M10)
+
+  private var noPairingCodeCard: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: "key.slash")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
+        .frame(width: 30, height: 30)
+        .background(ADEColor.warning.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      Text("That Mac has no pairing code set — set one in ADE on that Mac.")
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.75)
+    )
+    .accessibilityElement(children: .combine)
+  }
+
+  // MARK: - Footer
+
+  @ViewBuilder
+  private var footerButtons: some View {
+    HStack(spacing: 10) {
+      Button {
+        if isSubmitting {
+          isSubmitting = false
+          syncService.disconnect(clearCredentials: false)
         }
+        dismiss()
+      } label: {
+        Text("Cancel")
+          .font(.subheadline.weight(.semibold))
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 10)
+      }
+      .buttonStyle(.glass)
+
+      if noPairingCode {
+        Button {
+          onNeedsPinSetup(setupRoute)
+        } label: {
+          Text("How to set one")
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.purpleAccent)
+      } else {
+        Button {
+          submit()
+        } label: {
+          HStack {
+            if isSubmitting {
+              ProgressView().controlSize(.small)
+            }
+            Text("Connect")
+              .font(.subheadline.weight(.semibold))
+          }
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 10)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.purpleAccent)
+        .disabled(!isComplete || isSubmitting)
       }
     }
   }
@@ -132,6 +226,8 @@ struct SettingsPinSheet: View {
     guard !isSubmitting, pin.count < 6 else { return }
     localError = nil
     pin.append(digit)
+    // Auto-submit the moment the sixth digit lands — no separate Connect tap.
+    if pin.count == 6 { submit() }
   }
 
   private func deleteDigit() {
@@ -181,20 +277,33 @@ struct SettingsPinSheet: View {
 
       guard isSubmitting else { return }
       if syncService.connectionState == .connected {
-        ADEHaptics.medium()
+        // Success beat: haptic + a brief checkmark before the sheet dismisses.
+        ADEHaptics.success()
         isSubmitting = false
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { didConnect = true }
+        try? await Task.sleep(nanoseconds: 620_000_000)
         dismiss()
-      } else if syncService.lastPairingErrorCode == SyncService.pairingPinNotSetCode {
-        // Reactive fallback (for machines that don't advertise PIN state): the
-        // host has no PIN set, so route to the friendly "Set a PIN" screen
-        // instead of a dead-end red error.
+      } else if syncService.lastPairingFailure == .pinNotSet
+                  || syncService.lastPairingErrorCode == SyncService.pairingPinNotSetCode {
+        // The host has no pairing code — swap the keypad for the friendly
+        // "set one on that Mac" message (M10) rather than a dead-end red error.
+        ADEHaptics.warning()
         isSubmitting = false
-        onNeedsPinSetup(setupRoute)
+        pin = ""
+        withAnimation(.easeInOut(duration: 0.2)) { noPairingCode = true }
+      } else if syncService.lastPairingFailure == .invalidPin {
+        // Wrong code: shake the boxes and say where the real one lives.
+        ADEHaptics.error()
+        isSubmitting = false
+        localError = "That code didn't match — it's shown in ADE on that Mac."
+        pin = ""
+        withAnimation(.default) { shakeTrigger += 1 }
       } else {
         ADEHaptics.error()
         isSubmitting = false
         localError = syncService.lastError ?? "Incorrect PIN."
         pin = ""
+        withAnimation(.default) { shakeTrigger += 1 }
       }
     }
   }
@@ -401,16 +510,20 @@ private struct PinKeypad: View {
   let onDigit: (String) -> Void
   let onDelete: () -> Void
 
-  private let rows = [
+  private let digitRows = [
     ["1", "2", "3"],
     ["4", "5", "6"],
     ["7", "8", "9"],
   ]
 
   var body: some View {
-    VStack(spacing: 8) {
-      ForEach(rows, id: \.self) { row in
-        HStack(spacing: 8) {
+    // One 3-column grid so every key lines up on a single set of column
+    // guides: 0 sits under the middle column (below 2/5/8) and delete under
+    // the right column (below 3/6/9), with an invisible placeholder holding
+    // the left column.
+    Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+      ForEach(digitRows, id: \.self) { row in
+        GridRow {
           ForEach(row, id: \.self) { digit in
             PinKeyButton(title: digit, isDisabled: isDisabled) {
               onDigit(digit)
@@ -418,10 +531,10 @@ private struct PinKeypad: View {
           }
         }
       }
-
-      HStack(spacing: 8) {
+      GridRow {
         Color.clear
           .frame(maxWidth: .infinity, minHeight: 48)
+          .accessibilityHidden(true)
 
         PinKeyButton(title: "0", isDisabled: isDisabled) {
           onDigit("0")
@@ -447,6 +560,37 @@ private struct PinKeypad: View {
         .accessibilityLabel("Delete digit")
       }
     }
+  }
+}
+
+/// Horizontal shake used to signal a rejected pairing code. `animatableData`
+/// is bumped by an integer each time, driving a short damped wobble.
+private struct PinShakeEffect: GeometryEffect {
+  var animatableData: CGFloat
+  var travel: CGFloat = 8
+  var shakes: CGFloat = 3
+
+  func effectValue(size: CGSize) -> ProjectionTransform {
+    let translation = travel * sin(animatableData * .pi * shakes)
+    return ProjectionTransform(CGAffineTransform(translationX: translation, y: 0))
+  }
+}
+
+/// A brief centered checkmark shown after a successful connect. Purely a
+/// success "beat" — the presenting sheet dismisses immediately after.
+struct ConnectSuccessBeat: View {
+  var body: some View {
+    ZStack {
+      Circle()
+        .fill(ADEColor.success.opacity(0.16))
+        .frame(width: 92, height: 92)
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: 56, weight: .semibold))
+        .foregroundStyle(ADEColor.success)
+        .shadow(color: ADEColor.success.opacity(0.4), radius: 16)
+    }
+    .transition(.scale(scale: 0.6).combined(with: .opacity))
+    .accessibilityLabel("Connected")
   }
 }
 

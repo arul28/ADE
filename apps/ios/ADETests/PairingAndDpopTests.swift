@@ -27,6 +27,7 @@ final class PairingAndDpopTests: XCTestCase {
     // Relay candidate carries a full wss:// URL in `host`.
     XCTAssertEqual(payload.addressCandidates[2], PairingQrAddressCandidate(host: "wss://relay.ade-app.dev/connect/machinekey123", kind: "relay"))
     XCTAssertEqual(payload.relayUrl, "wss://relay.ade-app.dev/connect/machinekey123")
+    XCTAssertNil(payload.pinConfigured)
   }
 
   func testParsesBareFragmentPayload() throws {
@@ -48,6 +49,20 @@ final class PairingAndDpopTests: XCTestCase {
     let json = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"relayUrl":"ws://relay.ade-app.dev/x"}"#
     let payload = try XCTUnwrap(PairingQrPayload.parse(json))
     XCTAssertNil(payload.relayUrl)
+  }
+
+  func testParsesOptionalLiteralPinConfiguredHint() throws {
+    let configured = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"pinConfigured":true}"#
+    let notConfigured = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"pinConfigured":false}"#
+    let absent = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[]}"#
+    let invalid = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"pinConfigured":"false"}"#
+    let numeric = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"pinConfigured":1}"#
+
+    XCTAssertEqual(try XCTUnwrap(PairingQrPayload.parse(configured)).pinConfigured, true)
+    XCTAssertEqual(try XCTUnwrap(PairingQrPayload.parse(notConfigured)).pinConfigured, false)
+    XCTAssertNil(try XCTUnwrap(PairingQrPayload.parse(absent)).pinConfigured)
+    XCTAssertNil(try XCTUnwrap(PairingQrPayload.parse(invalid)).pinConfigured)
+    XCTAssertNil(try XCTUnwrap(PairingQrPayload.parse(numeric)).pinConfigured)
   }
 
   func testRejectsOlderVersion() {
@@ -76,6 +91,14 @@ final class PairingAndDpopTests: XCTestCase {
     let payload = try XCTUnwrap(PairingQrPayload.parse(json))
     XCTAssertEqual(payload.hostIdentity.platform, "unknown")
     XCTAssertEqual(payload.hostIdentity.deviceType, "unknown")
+  }
+
+  func testPairingFailureCodesMapPinNotSetToTypedState() {
+    XCTAssertEqual(SyncPairingFailureCode(hostCode: "pin_not_set"), .pinNotSet)
+    XCTAssertEqual(SyncPairingFailureCode(hostCode: "invalid_pin"), .invalidPin)
+    XCTAssertEqual(SyncPairingFailureCode(hostCode: "new_host_code"), .other("new_host_code"))
+    XCTAssertNil(SyncPairingFailureCode(hostCode: nil))
+    XCTAssertEqual(SyncPairingFailureCode.pinNotSet.hostCode, "pin_not_set")
   }
 
   // MARK: - DPoP challenge + signature

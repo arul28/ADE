@@ -128,12 +128,16 @@ export function MachinePicker({
     return (
       <ScreenShell
         title="Sign in to ADE"
-        subtitle="Sign in to connect this browser to your Macs, wherever they are."
+        subtitle="Sign in to open your Macs in the browser."
       >
         {account.state === "loading" ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>Checking your account…</div>
         ) : signInAvailable ? (
-          <button type="button" style={primaryButton({ justifySelf: "start", height: 38 })} onClick={onSignIn}>
+          <button
+            type="button"
+            style={primaryButton({ justifySelf: "stretch", height: 44, fontSize: 14, padding: "0 20px" })}
+            onClick={onSignIn}
+          >
             {account.state === "auth_expired" ? "Sign in again" : "Sign in"}
           </button>
         ) : (

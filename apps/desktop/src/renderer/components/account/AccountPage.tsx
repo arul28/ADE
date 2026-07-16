@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -48,9 +49,11 @@ import {
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
+import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
 const MACHINES_REFRESH_MS = 30_000;
+const ACCOUNT_MENU_WIDTH = 200;
 
 type AccountBridge = {
   listMachines: () => Promise<AdeAccountMachinesResult>;
@@ -388,6 +391,7 @@ function YourMacsCard() {
   const [loading, setLoading] = useState(true);
   const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -451,6 +455,33 @@ function YourMacsCard() {
   }, [result?.machines, isThisMac]);
 
   const onlineCount = machines.filter((m) => m.online).length;
+
+  // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
+  // stack behind, the cards that follow this one (mirrors the TabNav pattern).
+  const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
+  const menuItemRef = useRef<HTMLButtonElement | null>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
+  const openMenuMachine = useMemo(
+    () => machines.find((m) => m.machineKey === openMenuKey) ?? null,
+    [machines, openMenuKey],
+  );
+  const closeMenu = useCallback(() => {
+    const trigger = menuTriggerRef.current;
+    setOpenMenuKey(null);
+    setMenuAnchor(null);
+    menuTriggerRef.current = null;
+    if (trigger?.isConnected) trigger.focus();
+  }, []);
+  const openMenu = useCallback((machineKey: string, anchorEl: HTMLElement) => {
+    const rect = anchorEl.getBoundingClientRect();
+    menuTriggerRef.current = anchorEl;
+    setMenuAnchor({ x: rect.right - ACCOUNT_MENU_WIDTH, y: rect.bottom + 4 });
+    setOpenMenuKey(machineKey);
+  }, []);
+
+  useEffect(() => {
+    if (openMenuKey) menuItemRef.current?.focus();
+  }, [openMenuKey]);
 
   let summary: string;
   if (loading && !result) summary = "Checking your Macs…";
@@ -593,70 +624,24 @@ function YourMacsCard() {
                 {thisMac ? (
                   <span style={{ width: 26, flexShrink: 0 }} />
                 ) : (
-                  <span style={{ position: "relative", flexShrink: 0 }}>
-                    <button
-                      type="button"
-                      aria-label={`Options for ${machine.name ?? "this Mac"}`}
-                      onClick={() => setOpenMenuKey(menuOpen ? null : machine.machineKey)}
-                      style={{
-                        ...outlineButton({ height: 26, width: 26, padding: 0 }),
-                        border: "none",
-                        background: menuOpen ? COLORS.hoverBg : "transparent",
-                        color: COLORS.textMuted,
-                      }}
-                    >
-                      <DotsThreeVertical size={16} weight="bold" />
-                    </button>
-                    {menuOpen ? (
-                      <>
-                        <div
-                          onClick={() => setOpenMenuKey(null)}
-                          style={{ position: "fixed", inset: 0, zIndex: 40 }}
-                        />
-                        <div
-                          role="menu"
-                          style={{
-                            position: "absolute",
-                            top: 30,
-                            right: 0,
-                            zIndex: 41,
-                            minWidth: 190,
-                            padding: 4,
-                            borderRadius: RADII.md,
-                            background: COLORS.cardBgSolid,
-                            border: `1px solid ${COLORS.outlineBorder}`,
-                            boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              setOpenMenuKey(null);
-                              setRemoveError(null);
-                              setPendingRemoval(machine);
-                            }}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              width: "100%",
-                              padding: "8px 10px",
-                              borderRadius: RADII.sm,
-                              border: "none",
-                              background: "transparent",
-                              color: COLORS.danger,
-                              fontFamily: SANS_FONT,
-                              fontSize: 12.5,
-                              textAlign: "left",
-                              cursor: "pointer",
-                            }}
-                          >
-                            Remove from account…
-                          </button>
-                        </div>
-                      </>
-                    ) : null}
-                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Options for ${machine.name ?? "this Mac"}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={(event) =>
+                      menuOpen ? closeMenu() : openMenu(machine.machineKey, event.currentTarget)
+                    }
+                    style={{
+                      ...outlineButton({ height: 26, width: 26, padding: 0 }),
+                      flexShrink: 0,
+                      border: "none",
+                      background: menuOpen ? COLORS.hoverBg : "transparent",
+                      color: COLORS.textMuted,
+                    }}
+                  >
+                    <DotsThreeVertical size={16} weight="bold" />
+                  </button>
                 )}
               </div>
             );
@@ -706,6 +691,69 @@ function YourMacsCard() {
           ) : null}
         </div>
       ) : null}
+
+      {openMenuKey && openMenuMachine && menuAnchor
+        ? createPortal(
+            <>
+              <div
+                onClick={closeMenu}
+                style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+              />
+              <div
+                ref={menuRef}
+                role="menu"
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeMenu();
+                }}
+                style={{
+                  position: "fixed",
+                  left: menuPosition?.left ?? menuAnchor.x,
+                  top: menuPosition?.top ?? menuAnchor.y,
+                  visibility: menuPosition ? "visible" : "hidden",
+                  zIndex: 9999,
+                  width: ACCOUNT_MENU_WIDTH,
+                  padding: 4,
+                  borderRadius: RADII.md,
+                  background: COLORS.cardBgSolid,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
+                }}
+              >
+                <button
+                  ref={menuItemRef}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const machine = openMenuMachine;
+                    closeMenu();
+                    setRemoveError(null);
+                    setPendingRemoval(machine);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    width: "100%",
+                    padding: "8px 10px",
+                    borderRadius: RADII.sm,
+                    border: "none",
+                    background: "transparent",
+                    color: COLORS.danger,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12.5,
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                >
+                  Remove from account…
+                </button>
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
 
       {pendingRemoval ? (
         <ConfirmSheet
@@ -793,6 +841,7 @@ export function AccountPage() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [avatarBroken, setAvatarBroken] = useState(false);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
   const backRef = useRef<HTMLButtonElement>(null);
 
@@ -815,6 +864,11 @@ export function AccountPage() {
   const avatarImage = accountAvatarImage(status, githubStatus?.userLogin ?? null);
   const ringTint = providerTint(status, githubConnected);
   const providerCaption = accountProviderCaption(status);
+
+  // A new avatar URL deserves a fresh load attempt after a prior one failed.
+  useEffect(() => {
+    setAvatarBroken(false);
+  }, [avatarImage]);
 
   const handleSignedIn = useCallback(() => {
     void refresh();
@@ -894,13 +948,14 @@ export function AccountPage() {
             {/* Identity header */}
             <div style={cardStyle({ display: "flex", alignItems: "center", gap: 16 })}>
               <span style={{ flexShrink: 0 }}>
-                {avatarImage ? (
+                {avatarImage && !avatarBroken ? (
                   <img
                     src={avatarImage}
                     alt=""
                     width={52}
                     height={52}
                     draggable={false}
+                    onError={() => setAvatarBroken(true)}
                     style={{
                       width: 52,
                       height: 52,

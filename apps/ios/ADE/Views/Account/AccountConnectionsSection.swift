@@ -31,7 +31,8 @@ struct AccountConnectionsSection: View {
                 confirmSignOut = true
               }
             }
-            AccountMachinesList(onConnect: onConnectMachine)
+            // Machines now live in the dedicated CONNECTIONS section below, so
+            // this card stays a pure "account identity" surface (M5).
           case .loading:
             ADESkeletonView(height: 64, cornerRadius: 16)
           default:
@@ -282,78 +283,18 @@ struct AccountMachineRow: View {
   let machine: AccountMachine
   let onConnect: (AccountMachine) -> Void
 
-  private var deviceSymbol: String {
-    switch (machine.deviceType ?? machine.platform ?? "").lowercased() {
-    case let value where value.contains("phone") || value.contains("ios"): return "iphone"
-    case let value where value.contains("pad"): return "ipad"
-    case let value where value.contains("mac") || value.contains("desktop"): return "desktopcomputer"
-    default: return "laptopcomputer"
-    }
-  }
-
-  private var subtitle: String {
-    var parts: [String] = []
-    if let route = machine.routeLabel { parts.append(route) }
-    parts.append(machine.online ? "Available now" : "Offline")
-    return parts.joined(separator: " · ")
-  }
-
   var body: some View {
     Button {
       onConnect(machine)
     } label: {
-      HStack(spacing: 14) {
-        Image(systemName: deviceSymbol)
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(machine.online ? ADEColor.success : ADEColor.textMuted)
-          .frame(width: 38, height: 38)
-          .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill((machine.online ? ADEColor.success : ADEColor.textMuted).opacity(0.14))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .strokeBorder((machine.online ? ADEColor.success : ADEColor.border).opacity(0.3), lineWidth: 0.6)
-          )
-
-        VStack(alignment: .leading, spacing: 3) {
-          HStack(spacing: 6) {
-            Text(machine.displayName)
-              .font(.body.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            ADEStatusPill(
-              text: machine.online ? "ONLINE" : "OFFLINE",
-              tint: machine.online ? ADEColor.success : ADEColor.textMuted
-            )
-          }
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-
-        Spacer(minLength: 8)
-
-        HStack(spacing: 4) {
-          Text("Connect")
-            .font(.caption.weight(.semibold))
-          Image(systemName: "chevron.right")
-            .font(.system(size: 11, weight: .bold))
-        }
-        .foregroundStyle(ADEColor.accent)
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 13)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .fill(ADEColor.surfaceBackground.opacity(0.5))
-      )
-      .glassEffect(in: .rect(cornerRadius: 16))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+      MachineRowView(
+        deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
+        title: machine.displayName,
+        routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
+        online: machine.online,
+        statusPill: machine.online ? .online : .offline,
+        affordance: .connect,
+        surface: .row
       )
     }
     .buttonStyle(ADEScaleButtonStyle())

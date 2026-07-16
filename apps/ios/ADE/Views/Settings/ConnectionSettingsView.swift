@@ -27,54 +27,65 @@ struct ConnectionSettingsView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 18) {
-          // ACCOUNT subsection: identity + account machines (directory Worker),
-          // shown above the local pairing so both routes to a machine read as
-          // one connections surface. Self-hides when no Clerk key is wired.
-          if !pairingOnly {
+          if pairingOnly {
+            // Pairing-only entry point (from the no-account gate): connection
+            // status + the pair actions, nothing else.
+            VStack(alignment: .leading, spacing: 12) {
+              SettingsSectionHeader(label: "MAC", hint: "Your Mac connection")
+
+              SettingsConnectionHeader(
+                snapshot: presentationModel.connectionSnapshot,
+                onDisconnect: { syncService.disconnect() },
+                onReconnect: {
+                  Task { await syncService.reconnectIfPossible(userInitiated: true) }
+                }
+              )
+
+              SettingsPairingSection(
+                snapshot: presentationModel.pairingSnapshot,
+                presentedSheet: $presentedSheet
+              )
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+          } else {
+            // Settings IA (M5): account card → connection status → connections
+            // (machines list, then the ways to add one).
+
+            // 1. Account card (identity / sign-in). Self-hides with no Clerk key.
             AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
               .padding(.horizontal, 16)
               .padding(.top, 4)
-          }
 
-          // One "MACHINE" subsection: header → connection status card → pair
-          // actions, so the whole machine area reads as a single group.
-          VStack(alignment: .leading, spacing: 12) {
-            SettingsSectionHeader(
-              label: "MAC",
-              hint: "Your Mac connection"
-            )
+            // 2. Connection status.
+            VStack(alignment: .leading, spacing: 12) {
+              SettingsSectionHeader(label: "CONNECTION", hint: "Your current Mac connection")
 
-            SettingsConnectionHeader(
-              snapshot: presentationModel.connectionSnapshot,
-              onDisconnect: {
-                syncService.disconnect()
-              },
-              onReconnect: {
-                Task {
-                  await syncService.reconnectIfPossible(userInitiated: true)
+              SettingsConnectionHeader(
+                snapshot: presentationModel.connectionSnapshot,
+                onDisconnect: { syncService.disconnect() },
+                onReconnect: {
+                  Task { await syncService.reconnectIfPossible(userInitiated: true) }
                 }
-              }
-            )
-
-            SettingsPairingSection(
-              snapshot: presentationModel.pairingSnapshot,
-              presentedSheet: $presentedSheet
-            )
-          }
+              )
+            }
             .padding(.horizontal, 16)
-            .padding(.top, 4)
 
-          if !pairingOnly {
+            // 3. Connections: your machines (top 3 + See all), then how to add.
+            VStack(alignment: .leading, spacing: 16) {
+              SettingsMachinesSection(syncService: syncService)
+
+              SettingsPairingSection(
+                snapshot: presentationModel.pairingSnapshot,
+                presentedSheet: $presentedSheet
+              )
+            }
+            .padding(.horizontal, 16)
+
             SettingsAppearanceSection()
               .padding(.horizontal, 16)
 
             SettingsUsageQuotaSection(syncService: syncService)
-              .padding(.horizontal, 16)
-
-            SettingsVoiceInputSection()
-              .padding(.horizontal, 16)
-
-            SettingsAnalyticsSection()
               .padding(.horizontal, 16)
 
             SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
@@ -354,6 +365,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     snapshot.lastError = diagnostics.lastError
     snapshot.relayRefreshError = push.relayRefreshError
     snapshot.canRefreshRelayStatus = boundService?.canSendPushCommands == true
+    snapshot.isPaired = boundService?.hasPairedHost == true
     snapshot.liveActivityTokenPresent = diagnostics.liveActivityPushToStartTokenSuffix != nil
     if let relay = push.relayStatus {
       snapshot.relayResolved = true
@@ -548,6 +560,280 @@ private func mobileUsageSettingsRelativeTime(_ iso: String?) -> String {
 private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
   guard let date = mobileUsageSettingsDate(iso) else { return "soon" }
   return date.formatted(date: .abbreviated, time: .shortened)
+}
+
+// MARK: - Machines section (M5 / M14)
+
+/// The CONNECTIONS machine list: a unified, deduplicated roster of the Macs a
+/// phone can reach — machines on the signed-in account plus previously-paired
+/// machines — ranked current → online → offline. Shows the top three inline
+/// with a "See all machines" sheet for the rest. Offline machines render grayed
+/// and non-tappable (desktop-style). A failed connect surfaces inline on the
+/// tapped row (M14) rather than in a separate lower banner.
+struct SettingsMachinesSection: View {
+  let syncService: SyncService
+  @ObservedObject private var account = AccountService.shared
+
+  @State private var seeAllPresented = false
+  @State private var connectingId: String?
+  @State private var rowErrors: [String: String] = [:]
+
+  struct Entry: Identifiable {
+    enum Kind {
+      case account(AccountMachine)
+      case saved(DiscoveredSyncHost)
+    }
+    let id: String
+    let name: String
+    let routeHint: String
+    let online: Bool
+    let isCurrent: Bool
+    let kind: Kind
+  }
+
+  private var isConnected: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
+  private var currentIdentity: String? {
+    let value = syncService.activeHostProfile?.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (value?.isEmpty == false) ? value : nil
+  }
+
+  private var currentHostName: String? {
+    let value = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (value?.isEmpty == false) ? value : nil
+  }
+
+  private var entries: [Entry] {
+    var result: [Entry] = []
+    var seen = Set<String>()
+
+    let accountEntries = account.machines.map { machine in
+      let current = if let currentIdentity, let deviceId = machine.deviceId {
+        isConnected && deviceId.caseInsensitiveCompare(currentIdentity) == .orderedSame
+      } else {
+        false
+      }
+      return (
+        key: (machine.deviceId ?? machine.machineKey).lowercased(),
+        entry: Entry(
+          id: "account-\(machine.id)",
+          name: machine.displayName,
+          routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
+          online: machine.online,
+          isCurrent: current,
+          kind: .account(machine)
+        )
+      )
+    }
+
+    // Reachable account routes are preferred, but stale directory rows must
+    // not hide a currently-discovered saved route for the same Mac.
+    for candidate in accountEntries where candidate.entry.online || candidate.entry.isCurrent {
+      guard seen.insert(candidate.key).inserted else { continue }
+      result.append(candidate.entry)
+    }
+
+    let live = syncService.discoveredHosts
+    for host in syncService.savedReconnectHosts {
+      let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let key = identity.flatMap { $0.isEmpty ? nil : $0.lowercased() }
+        ?? "name:\(host.hostName.lowercased())"
+      guard seen.insert(key).inserted else { continue }
+      let online = live.contains { sameSyncHost(host, $0) }
+      let identityMatches = if let currentIdentity, let identity {
+        currentIdentity.caseInsensitiveCompare(identity) == .orderedSame
+      } else {
+        false
+      }
+      let nameMatchesWithoutStableIdentity = currentIdentity == nil
+        && identity == nil
+        && currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame
+      let current = isConnected && (identityMatches || nameMatchesWithoutStableIdentity)
+      result.append(Entry(
+        id: "saved-\(host.id)",
+        name: host.hostName,
+        routeHint: machineStatusHint(online: online),
+        online: online,
+        isCurrent: current,
+        kind: .saved(host)
+      ))
+    }
+
+    for candidate in accountEntries where !candidate.entry.online && !candidate.entry.isCurrent {
+      guard seen.insert(candidate.key).inserted else { continue }
+      result.append(candidate.entry)
+    }
+
+    return result.sorted { lhs, rhs in
+      if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
+      if lhs.online != rhs.online { return lhs.online }
+      return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+  }
+
+  var body: some View {
+    let all = entries
+    VStack(alignment: .leading, spacing: 12) {
+      SettingsSectionHeader(label: "MACHINES", hint: "Macs you can connect to")
+
+      if all.isEmpty {
+        Text("No machines yet. Add one below.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(14)
+          .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.5))
+      } else {
+        VStack(spacing: 8) {
+          ForEach(all.prefix(3)) { entry in
+            machineRow(entry)
+          }
+        }
+
+        if all.count > 3 {
+          Button {
+            seeAllPresented = true
+          } label: {
+            HStack(spacing: 6) {
+              Text("See all machines")
+                .font(.subheadline.weight(.semibold))
+              Text("\(all.count)")
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .foregroundStyle(ADEColor.textMuted)
+              Spacer(minLength: 0)
+              Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(ADEColor.accent)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 4)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+    }
+    .task { await account.loadMachines() }
+    .sheet(isPresented: $seeAllPresented) {
+      allMachinesSheet
+    }
+  }
+
+  private var allMachinesSheet: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(spacing: 8) {
+          ForEach(entries) { entry in
+            machineRow(entry)
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+      }
+      .adeScreenBackground()
+      .adeNavigationGlass()
+      .navigationTitle("All machines")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { seeAllPresented = false }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func machineRow(_ entry: Entry) -> some View {
+    let isConnecting = connectingId == entry.id
+    let tappable = entry.online && !entry.isCurrent && connectingId == nil
+
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        connect(entry)
+      } label: {
+        MachineRowView(
+          deviceSymbol: deviceSymbol(entry),
+          title: entry.name,
+          routeHint: entry.routeHint,
+          online: entry.online,
+          statusPill: entry.isCurrent ? .connected : (entry.online ? .online : .offline),
+          affordance: rowAffordance(entry, isConnecting: isConnecting),
+          surface: .row
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+      }
+      .buttonStyle(ADEScaleButtonStyle())
+      .disabled(!tappable)
+      // Offline machines gray out (desktop-style) and can't be tapped.
+      .opacity(entry.online || entry.isCurrent ? 1 : 0.5)
+      .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : (entry.online ? "online" : "offline"))")
+      .accessibilityHint(tappable ? "Connect." : "")
+
+      if let error = rowErrors[entry.id] {
+        Text(error)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 12)
+          .padding(.top, 6)
+      }
+    }
+  }
+
+  private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
+    if isConnecting { return .connecting }
+    if entry.isCurrent { return .connected }
+    return entry.online ? .connect : .none
+  }
+
+  private func deviceSymbol(_ entry: Entry) -> String {
+    switch entry.kind {
+    case .account(let machine):
+      return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
+    case .saved:
+      return machineDeviceSymbol(deviceType: nil, platform: nil)
+    }
+  }
+
+  private func connect(_ entry: Entry) {
+    guard connectingId == nil else { return }
+    connectingId = entry.id
+    rowErrors[entry.id] = nil
+    Task { @MainActor in
+      switch entry.kind {
+      case .account(let machine):
+        guard let session = await AccountService.shared.pairingSession() else {
+          connectingId = nil
+          rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your Mac."
+          return
+        }
+        let connected = await syncService.pairWithAccountMachine(
+          machine,
+          accountToken: session.token,
+          authorization: session.authorization
+        )
+        connectingId = nil
+        if connected {
+          ADEHaptics.success()
+        } else {
+          ADEHaptics.error()
+          rowErrors[entry.id] = syncService.lastError ?? "ADE could not connect to that Mac. Try again."
+        }
+
+      case .saved(let host):
+        await syncService.reconnect(toSavedHost: host)
+        connectingId = nil
+        if syncService.connectionState == .connected || syncService.connectionState == .syncing {
+          ADEHaptics.success()
+        } else {
+          ADEHaptics.error()
+          rowErrors[entry.id] = syncService.lastError ?? "ADE could not reconnect to \(host.hostName)."
+        }
+      }
+    }
+  }
 }
 
 private struct SettingsAuroraBackground: View {

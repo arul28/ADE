@@ -198,6 +198,7 @@ export type AdeRuntimeSyncOptions = {
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
   /**
    * Brain-level websocket listener shared by every project scope's sync host
    * so connected phones survive hosted-project switches. Owned (created and
@@ -1517,8 +1518,8 @@ export async function createAdeRuntime(args: {
   // ONE tunnel client per machine (keyed by the config file): per-scope
   // instances would re-register the same machineKey with the relay on every
   // project open and churn the connection paired phones dial through.
-  const syncTunnelClientService = getSharedSyncTunnelClientService(cloudRelayFilePath, () =>
-    createSyncTunnelClientService({
+  const syncTunnelClientService = getSharedSyncTunnelClientService(cloudRelayFilePath, () => {
+    const service = createSyncTunnelClientService({
       logger,
       configStore: cloudRelayStore,
       getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
@@ -1544,7 +1545,16 @@ export async function createAdeRuntime(args: {
           return null;
         }
       },
-    }));
+    });
+    resolvedArgs.syncRuntime?.sharedSyncListener?.onLoopbackValidated(() => {
+      void service.validateCurrentBridge().catch((error) => {
+        logger.warn("sync.tunnel_bridge_validation_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    return service;
+  });
   // Only the runtime that actually hosts phone sync (owns the brain-level
   // shared listener) may register the relay tunnel. The relay DO keeps ONE
   // host socket per machineKey (last wins), so a headless one-shot CLI
@@ -1568,6 +1578,7 @@ export async function createAdeRuntime(args: {
       usageTrackingService,
       productAnalyticsService,
       logger,
+      getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
       accountAuthService,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,

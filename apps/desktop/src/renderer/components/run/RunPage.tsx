@@ -853,6 +853,14 @@ function WelcomeScreen() {
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const applyRemoteSnapshot = useCallback(
+    (snapshot: RemoteRuntimeConnectionSnapshot) => {
+      setRemoteSnapshot((current) =>
+        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
+      );
+    },
+    [],
+  );
   // Keys hidden by a pending deferred forget (committed only after the undo
   // window expires). Reconnect/open state is keyed the same way.
   const [pendingForgetKeys, setPendingForgetKeys] = useState<Set<string>>(
@@ -887,20 +895,18 @@ function WelcomeScreen() {
     void remoteRuntime
       .getConnectionSnapshot()
       .then((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       })
-      .catch(() => {
-        if (!cancelled) setRemoteSnapshot(null);
-      });
+      .catch(() => {});
     const unsubscribe =
       remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       }) ?? (() => {});
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [applyRemoteSnapshot]);
 
   useEffect(
     () => () => {

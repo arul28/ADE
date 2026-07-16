@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaretLeft,
   CaretRight,
@@ -107,6 +107,15 @@ export function RemoteTargetList({
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const latestConnectionSnapshotUpdatedAtRef = useRef(0);
+  const nextLocalConnectionSnapshotUpdatedAt = useCallback(() => {
+    const updatedAt = Math.max(
+      Date.now(),
+      latestConnectionSnapshotUpdatedAtRef.current,
+    ) + 1;
+    latestConnectionSnapshotUpdatedAtRef.current = updatedAt;
+    return updatedAt;
+  }, []);
   const [discoveredMachines, setDiscoveredMachines] = useState<
     RemoteRuntimeDiscoveredMachine[]
   >([]);
@@ -185,7 +194,16 @@ export function RemoteTargetList({
       const next = snapshot
         ? snapshot.connections.map((entry) => entry.target)
         : await window.ade.remoteRuntime.listTargets();
-      if (snapshot) setConnectionSnapshot(snapshot);
+      if (
+        snapshot &&
+        snapshot.updatedAt < latestConnectionSnapshotUpdatedAtRef.current
+      ) {
+        return;
+      }
+      if (snapshot) {
+        latestConnectionSnapshotUpdatedAtRef.current = snapshot.updatedAt;
+        setConnectionSnapshot(snapshot);
+      }
       setTargets(next);
       setSelectedId((current) => current ?? next[0]?.id ?? null);
       setError(null);
@@ -208,6 +226,10 @@ export function RemoteTargetList({
     if (!window.ade.remoteRuntime.onConnectionSnapshotChanged) return;
     const unsubscribe = window.ade.remoteRuntime.onConnectionSnapshotChanged(
       (snapshot) => {
+        if (snapshot.updatedAt < latestConnectionSnapshotUpdatedAtRef.current) {
+          return;
+        }
+        latestConnectionSnapshotUpdatedAtRef.current = snapshot.updatedAt;
         setConnectionSnapshot(snapshot);
         setTargets(snapshot.connections.map((entry) => entry.target));
         setSelectedId(
@@ -378,7 +400,7 @@ export function RemoteTargetList({
             connectedCount: connections.filter(
               (entry) => entry.state === "connected",
             ).length,
-            updatedAt: Date.now(),
+            updatedAt: nextLocalConnectionSnapshotUpdatedAt(),
           };
         });
         setSelectedId(result.target.id);
@@ -400,7 +422,7 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [ensureHostKeyTrust, onConnected, targets],
+    [ensureHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
   );
 
   const trustAndConnect = useCallback(async () => {
@@ -550,7 +572,7 @@ export function RemoteTargetList({
             connectedCount: connections.filter(
               (entry) => entry.state === "connected",
             ).length,
-            updatedAt: Date.now(),
+            updatedAt: nextLocalConnectionSnapshotUpdatedAt(),
           };
         });
         setError(null);
@@ -561,7 +583,7 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [onDisconnectRequested, targets],
+    [nextLocalConnectionSnapshotUpdatedAt, onDisconnectRequested, targets],
   );
 
   const removeTarget = useCallback(
@@ -606,7 +628,7 @@ export function RemoteTargetList({
             connections: current.connections.map((entry) => (
               entry.target.id === updated.id ? { ...entry, target: updated } : entry
             )),
-            updatedAt: Date.now(),
+            updatedAt: nextLocalConnectionSnapshotUpdatedAt(),
           }
         : current);
       setError(null);
@@ -615,7 +637,7 @@ export function RemoteTargetList({
     } finally {
       setBusyId(null);
     }
-  }, []);
+  }, [nextLocalConnectionSnapshotUpdatedAt]);
 
   const connectedCount =
     connectionSnapshot?.connectedCount ?? (connected ? 1 : 0);
