@@ -41,6 +41,10 @@ import {
   type AdeAccountStatus,
 } from "../../lib/account";
 import { useAccountLogin } from "../../lib/accountLogin";
+import {
+  formatMachineEndpoint,
+  relativeLastSeenPhrase,
+} from "../remoteTargets/remoteMachineModel";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
@@ -89,24 +93,17 @@ function writeDismissed(key: string): void {
   }
 }
 
-function relativeLastSeen(lastSeenAt: number | null): string {
-  if (!lastSeenAt) return "Never seen";
-  const deltaMs = Date.now() - lastSeenAt;
-  if (deltaMs < 60_000) return "just now";
-  const minutes = Math.floor(deltaMs / 60_000);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 function machineRouteHint(machine: AdeAccountMachine): string | null {
   const endpoint = machine.reachableEndpoints[0];
   if (!endpoint) return null;
+  // Beginners never need the relay URL; the word is enough.
   if (endpoint.kind === "relay") return "Relay";
-  const host = endpoint.host ?? endpoint.url ?? "";
-  return host ? `${endpoint.kind} · ${host}` : endpoint.kind;
+  return formatMachineEndpoint(endpoint);
+}
+
+function lastSeenLabel(lastSeenAt: number | null): string {
+  const phrase = relativeLastSeenPhrase(lastSeenAt);
+  return phrase ? `Last seen ${phrase}` : "Never seen";
 }
 
 const sectionLabelStyle: CSSProperties = {
@@ -535,7 +532,7 @@ function YourMacsCard() {
               ? null
               : machine.online
                 ? machineRouteHint(machine) ?? "Online"
-                : `Last seen ${relativeLastSeen(machine.lastSeenAt)}`;
+                : lastSeenLabel(machine.lastSeenAt);
             return (
               <div
                 key={machine.machineKey}

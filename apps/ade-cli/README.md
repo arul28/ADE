@@ -197,7 +197,7 @@ sync.forgetDevice
 sync.getTransferReadiness sync.transferBrainToLocal
 sync.getPin   sync.setPin   sync.clearPin
 sync.setActiveLanePresence
-sync.getCloudRelayStatus  sync.setCloudRelayEnabled
+sync.getCloudRelayStatus
 sync.getRequireDpop       sync.setRequireDpop
 sync.authorizeSshPairing
 ```
@@ -416,9 +416,6 @@ ade --socket browser authorize --tab tab-id --text                # native human
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
-ade sync relay status --text                       # internet route for devices signed into the same ADE account
-ade sync relay enable                              # re-enable after a disable (relay is on by default; headless brains have no Settings UI)
-ade sync relay disable                             # kill-switch: never route sync through the relay
 ade sync security status --text                    # machine sync security posture (require-DPoP)
 ade sync security require-dpop on                  # reject paired hellos from devices without a Secure Enclave key
 ade sync web --text                                # print the browser web-client pairing link + code (app.ade-app.dev)

@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
-import {
-  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
-  ACCOUNT_REMOVE_MACHINE_CHANNEL,
-} from "../shared/types/account";
 
 describe("preload OAuth bridge", () => {
   beforeEach(() => {
@@ -101,8 +97,8 @@ describe("preload OAuth bridge", () => {
     await bridge.account.getLocalMachineIdentity();
     await bridge.account.removeMachine("machine-a");
 
-    expect(invoke).toHaveBeenCalledWith(ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL);
-    expect(invoke).toHaveBeenCalledWith(ACCOUNT_REMOVE_MACHINE_CHANNEL, {
+    expect(invoke).toHaveBeenCalledWith(IPC.accountGetLocalMachineIdentity);
+    expect(invoke).toHaveBeenCalledWith(IPC.accountRemoveMachine, {
       machineKey: "machine-a",
     });
   });

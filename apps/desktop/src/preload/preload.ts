@@ -1,9 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
-import {
-  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
-  ACCOUNT_REMOVE_MACHINE_CHANNEL,
-} from "../shared/types/account";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
@@ -7622,11 +7618,11 @@ contextBridge.exposeInMainWorld("ade", {
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
     getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>
-      ipcRenderer.invoke(ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL),
+      ipcRenderer.invoke(IPC.accountGetLocalMachineIdentity),
     pairMachine: (machineKey: string): Promise<AdeAccountMachinePairResult> =>
       ipcRenderer.invoke(IPC.accountPairMachine, { machineKey }),
     removeMachine: (machineKey: string): Promise<AdeAccountMachineRemovalResult> =>
-      ipcRenderer.invoke(ACCOUNT_REMOVE_MACHINE_CHANNEL, { machineKey }),
+      ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

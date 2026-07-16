@@ -9,10 +9,6 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
-import {
-  ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
-  ACCOUNT_REMOVE_MACHINE_CHANNEL,
-} from "../../../shared/types/account";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
@@ -1805,7 +1801,7 @@ export function registerIpc({
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
-    [ACCOUNT_REMOVE_MACHINE_CHANNEL]: new Set(["machineKey"]),
+    [IPC.accountRemoveMachine]: new Set(["machineKey"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1951,14 +1947,14 @@ export function registerIpc({
         name: "[redacted]",
       };
     }
-    if (channel === ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL) {
+    if (channel === IPC.accountGetLocalMachineIdentity) {
       return {
         ...record,
         machineKey: "[redacted]",
         deviceId: "[redacted]",
       };
     }
-    if (channel === ACCOUNT_REMOVE_MACHINE_CHANNEL) {
+    if (channel === IPC.accountRemoveMachine) {
       return {
         ...record,
         machineKey: "[redacted]",
@@ -8586,7 +8582,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(
-    ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL,
+    IPC.accountGetLocalMachineIdentity,
     async (): Promise<AdeAccountLocalMachineIdentity> => {
       return runtimeBridge.getLocalMachineIdentity();
     },
@@ -8627,7 +8623,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(
-    ACCOUNT_REMOVE_MACHINE_CHANNEL,
+    IPC.accountRemoveMachine,
     async (
       _event,
       arg: { machineKey?: string },

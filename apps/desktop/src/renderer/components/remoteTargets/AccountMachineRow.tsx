@@ -4,6 +4,8 @@ import { accountMachineConnectionState } from "../../../shared/accountDirectory"
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import {
+  formatMachineEndpoint,
+  relativeLastSeenPhrase,
   type AccountMachineRow as AccountMachineRowModel,
   type MachineSection,
 } from "./remoteMachineModel";
@@ -19,21 +21,9 @@ type AccountMachineRowProps = {
   onConnect: (machine: AdeAccountMachine) => void;
 };
 
-function endpointLabel(endpoint: AdeAccountMachine["reachableEndpoints"][number]): string {
-  const detail = endpoint.host ?? endpoint.url ?? "";
-  return detail ? `${endpoint.kind} · ${detail}` : endpoint.kind;
-}
-
 function relativeLastSeen(lastSeenAt: number | null): string {
-  if (!lastSeenAt) return "Never seen";
-  const deltaMs = Date.now() - lastSeenAt;
-  const minutes = Math.floor(deltaMs / 60_000);
-  if (minutes < 1) return "Seen moments ago";
-  if (minutes < 60) return `Last seen ${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Last seen ${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `Last seen ${days}d ago`;
+  const phrase = relativeLastSeenPhrase(lastSeenAt);
+  return phrase ? `Last seen ${phrase}` : "Never seen";
 }
 
 function accountMachineStatusLabel(
@@ -135,7 +125,7 @@ export function AccountMachineRow({
               </div>
               {machine.reachableEndpoints.map((endpoint, index) => (
                 <div key={`${endpoint.kind}-${index}`} style={subTextStyle}>
-                  {endpointLabel(endpoint)}
+                  {formatMachineEndpoint(endpoint)}
                 </div>
               ))}
             </div>

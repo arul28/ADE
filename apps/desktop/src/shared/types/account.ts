@@ -5,11 +5,6 @@
 /** Which identity provider signed this account in, when known. */
 export type AdeAccountProvider = "github" | "google" | "apple" | "email";
 
-/** Account IPC channels kept beside their token-free payload contracts. */
-export const ACCOUNT_GET_LOCAL_MACHINE_IDENTITY_CHANNEL =
-  "ade.account.getLocalMachineIdentity";
-export const ACCOUNT_REMOVE_MACHINE_CHANNEL = "ade.account.removeMachine";
-
 /**
  * Token-free account status surfaced to the renderer. Mirrors the daemon
  * `account.status` shape; `provider`/`imageUrl` are optional because an issuer
