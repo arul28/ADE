@@ -15,6 +15,10 @@ import type {
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
 import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
 import { WEB_CLIENT_BASE_URL, buildWebClientPairUrl } from "../../../shared/webClientUrl";
+import {
+  isLocalReleaseBuildOutputError,
+  isProjectRegistrationRequiredError,
+} from "../../../shared/runtimeErrors";
 import { openExternalUrl } from "../../lib/openExternal";
 import { SettingsToggle } from "./settingsSectionUi";
 import {
@@ -203,6 +207,16 @@ function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
   }
 }
 
+function connectionLoadGuidance(error: string): string {
+  if (isLocalReleaseBuildOutputError(error)) {
+    return "Install this ADE build in Applications, reopen it, then try again.";
+  }
+  if (isProjectRegistrationRequiredError(error)) {
+    return "Open a project in ADE, then try again.";
+  }
+  return "Restart ADE, then try again.";
+}
+
 export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesVariant } = {}) {
   const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
   const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
@@ -330,15 +344,35 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
     setNotice("Tailnet discovery retry started.");
   }), [runAction]);
 
+  const retryInitialLoad = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void refresh()
+      .catch((refreshError) => {
+        setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+      })
+      .finally(() => setLoading(false));
+  }, [refresh]);
+
   if (loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
   }
   if (error && !status) {
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ ...helperTextStyle, color: COLORS.danger }}>
-          ADE couldn't load connection details. Make sure the ADE background service is running, then try again.
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
+          Couldn't load connection details
         </div>
+        <div style={{ ...helperTextStyle, fontFamily: SANS_FONT }}>
+          {connectionLoadGuidance(error)}
+        </div>
+        <button
+          type="button"
+          onClick={retryInitialLoad}
+          style={outlineButton({ width: "fit-content", height: 30, padding: "0 11px" })}
+        >
+          Try again
+        </button>
         <details style={detailBlockStyle}>
           <summary style={detailSummaryStyle}>Technical details</summary>
           <div style={{ ...helperTextStyle, marginTop: 8, overflowWrap: "anywhere" }}>{error}</div>

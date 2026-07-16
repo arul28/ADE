@@ -1,0 +1,53 @@
+---
+title: "ADE Relay"
+description: "Connect to your ADE machines over the internet when a direct connection is not available."
+icon: "tower-broadcast"
+---
+
+ADE Relay is ADE's internet fallback. It helps your phone, another Mac, or the web client reach your machine when they cannot connect directly.
+
+You need to sign in because Relay uses ADE-hosted infrastructure. Both devices must be signed in to the same ADE account.
+
+## When ADE uses Relay
+
+ADE chooses the connection for you:
+
+1. It first tries a direct connection, such as your local network or tailnet.
+2. If those routes are unavailable and both devices are signed in, it tries ADE Relay.
+3. If you are signed out, ADE tells you when Relay is the missing connection option.
+
+You do not need Relay to use ADE on one Mac. Direct pairing can also work without an account when your devices can reach each other.
+
+## Connect with Relay
+
+<Steps>
+  <Step title="Sign in on your machine">
+    Open ADE and sign in to your account.
+  </Step>
+  <Step title="Sign in on your other device">
+    Use the same ADE account on your phone, another Mac, or the web client.
+  </Step>
+  <Step title="Choose your machine">
+    Your account's machines appear automatically. ADE tries the best available connection, including Relay when needed.
+  </Step>
+</Steps>
+
+<Note>
+Relay is a transport, not cloud storage, and it does not store your ADE project state. Relay traffic is not end-to-end encrypted, however, so the Relay operator can read traffic while it passes through ADE-hosted infrastructure. Direct LAN and Tailscale connections do not pass through Relay.
+</Note>
+
+## If Relay is unavailable
+
+- Confirm both devices are signed in to the same ADE account.
+- Keep ADE running on the machine you want to reach.
+- Open **Connections** and try the machine again. ADE shows the connection route that failed and the next action to take.
+- If you prefer not to use Relay, connect over the same local network, Tailscale, or an SSH setup you configured yourself.
+
+<CardGroup cols={2}>
+  <Card title="iOS companion" icon="mobile-screen" href="/tools/ios-companion">
+    Connect ADE Mobile to your Mac.
+  </Card>
+  <Card title="Remote machines" icon="server" href="/tools/remote-machines">
+    Connect to a development machine over SSH.
+  </Card>
+</CardGroup>

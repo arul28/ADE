@@ -9,6 +9,7 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
@@ -1680,11 +1681,6 @@ export function registerIpc({
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
     return await action(localRuntimeConnectionPool, rootPath);
-  };
-
-  const isSyncServiceUnavailableError = (error: unknown): boolean => {
-    const message = error instanceof Error ? error.message : String(error);
-    return /Sync service is not available|Register a project first/i.test(message);
   };
 
   const tryRuntimeSync = async <T>(

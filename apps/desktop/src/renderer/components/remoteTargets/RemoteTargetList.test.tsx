@@ -752,7 +752,7 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.queryByText("Arul's Mac Studio")).toBeNull();
     expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
-    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+    expect(screen.queryByText("Nearby machines are already saved.")).toBeNull();
   });
 
   it("matches saved Bonjour machines by SSH default port instead of the ADE service port", async () => {
@@ -806,7 +806,7 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.queryByText("studio.local:8787")).toBeNull();
     expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
-    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+    expect(screen.queryByText("Nearby machines are already saved.")).toBeNull();
   });
 
   it("keeps the saved connected state without surfacing raw tailnet peers as setup choices", async () => {

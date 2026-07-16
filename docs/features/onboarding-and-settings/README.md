@@ -130,14 +130,19 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx`
   — process-launch gate. New installations show the welcome card before
   account choice; returning signed-out launches show account choice directly.
-  Continuing without an account is supported, and renderer reloads or extra
-  windows in the same desktop process do not repeat the choice. Directly paired
-  machines stay saved across account sign-out; account-directory targets and
-  their paired credentials are owner-tagged and removed with that account.
+  The signed-out surface keeps one direct sign-in/create-account action, a
+  short ADE Relay requirement link, and **Continue without an account**. Its
+  top strip is draggable even though the normal shell header is not mounted.
+  Renderer reloads or extra windows in the same desktop process do not repeat
+  the choice. Directly paired machines stay saved across account sign-out;
+  account-directory targets and their paired credentials are owner-tagged and
+  removed with that account.
 - `apps/desktop/src/renderer/components/account/AccountPage.tsx` — optional
-  account status/sign-in/out and account-machine directory. It routes pairing
-  work back to the beginner-facing Connections panel rather than owning a
-  second machine-connection flow.
+  account status/sign-in/out and account-machine directory. The signed-out page
+  receives an explicit in-app return route from the sidebar or Connections and
+  falls back safely to `/work` when opened directly. It routes pairing work
+  back to the beginner-facing Connections panel rather than owning a second
+  machine-connection flow.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -152,7 +157,8 @@ Renderer — onboarding:
   with the guided-tour renderer.
 - `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
   of internal/public doc URLs that `DidYouKnow`, `HelpMenu`, and
-  glossary surfaces link to.
+  glossary surfaces link to, including the public ADE Relay explainer used by
+  account sign-in surfaces.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   single lightweight card covering personality and work-style setup.
   Model selection and Linear are deferred to the CTO Settings sheet.

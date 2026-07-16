@@ -73,7 +73,8 @@ describe("LaunchGate", () => {
     render(<LaunchGate><div>Application</div></LaunchGate>);
 
     expect(await screen.findByRole("button", { name: /continue without an account/i })).toBeTruthy();
-    expect(screen.getByText("Use ADE on this Mac without an account. To connect another device later, open Connections.")).toBeTruthy();
+    expect(screen.queryByText(/Use ADE on this Mac without an account/i)).toBeNull();
+    expect(screen.getByTestId("launch-gate-drag-region").getAttribute("data-app-region")).toBe("drag");
     expect(screen.queryByText("Application")).toBeNull();
     expect(captureAnalytics).toHaveBeenCalledWith({
       event: "ade_screen_viewed",

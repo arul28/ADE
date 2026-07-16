@@ -119,13 +119,17 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const githubConnected = Boolean(githubStatus?.connected);
   const avatarImage = accountAvatarImage(accountStatus, githubLogin);
   const accountRingTint = providerTint(accountStatus, githubConnected);
-  const accountLabel =
-    accountStatus.name?.trim() ||
-    accountStatus.email?.trim() ||
-    githubLogin ||
-    (accountStatus.signedIn ? "Account" : "Continue");
+  const accountLabel = accountStatus.signedIn
+    ? accountStatus.name?.trim() ||
+      accountStatus.email?.trim() ||
+      githubLogin ||
+      "Account"
+    : "Signed out";
   const accountRouteActive =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
+  const accountReturnTo = accountRouteActive
+    ? "/work"
+    : `${location.pathname}${location.search}${location.hash}`;
 
   useEffect(() => {
     setAvatarBroken(false);
@@ -336,12 +340,13 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
             Always present so account access stays discoverable from the sidebar. */}
         <NavLink
           to="/account"
+          state={{ returnTo: accountReturnTo }}
           data-active={accountRouteActive ? "true" : undefined}
           className="ade-shell-sidebar-item group relative flex w-full cursor-pointer items-center transition-colors duration-100"
           aria-label={
             accountStatus.signedIn
               ? `ADE account — ${accountLabel}`
-              : "Continue to ADE"
+              : "ADE account — signed out"
           }
           title={accountLabel}
         >

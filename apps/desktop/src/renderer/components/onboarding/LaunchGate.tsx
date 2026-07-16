@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { SignInCard } from "../account/AccountPage";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -88,11 +88,21 @@ export function LaunchGate({ children }: LaunchGateProps) {
         justifyContent: "center",
         overflow: "auto",
         padding: 24,
-        background:
-          "radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 42%), var(--color-bg)",
+        background: COLORS.pageBg,
         color: COLORS.textPrimary,
       }}
     >
+      <div
+        data-testid="launch-gate-drag-region"
+        data-app-region="drag"
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          inset: "0 0 auto",
+          height: 44,
+          WebkitAppRegion: "drag",
+        } as CSSProperties}
+      />
       <WelcomeVideoGate
         onVisibilityChange={(visible, nextChecking) => {
           setWelcomeVisible(visible);
@@ -124,23 +134,12 @@ export function LaunchGate({ children }: LaunchGateProps) {
               cursor: "pointer",
               fontFamily: SANS_FONT,
               fontSize: 12.5,
+              WebkitAppRegion: "no-drag",
             }}
           >
             Continue without an account
             <ArrowRight size={13} weight="bold" />
           </button>
-          <div
-            style={{
-              maxWidth: 380,
-              textAlign: "center",
-              color: COLORS.textMuted,
-              fontFamily: SANS_FONT,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-            }}
-          >
-            Use ADE on this Mac without an account. To connect another device later, open Connections.
-          </div>
         </div>
       ) : null}
     </div>

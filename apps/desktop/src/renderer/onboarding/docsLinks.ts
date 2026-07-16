@@ -41,6 +41,7 @@ export const docs = {
   proof: `${DOCS_BASE}/proof`,
   deeplinks: `${DOCS_BASE}/deeplinks`,
   iosSimulator: `${DOCS_BASE}/tools/ios-simulator`,
+  adeRelay: `${DOCS_BASE}/tools/ade-relay`,
   syncMultiDevice: `${DOCS_BASE}/sync-and-multi-device`,
   settingsGeneral: `${DOCS_BASE}/configuration/settings`,
   prsOverview: `${DOCS_BASE}/tools/pull-requests`,

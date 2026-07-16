@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
@@ -731,6 +732,7 @@ function createShortIpcCache<T>(
     },
   };
 }
+
 
 // Soft cap to keep keyed caches from growing unboundedly across long desktop
 // sessions when callers use high-cardinality keys (image paths, session ids,
@@ -1547,8 +1549,7 @@ async function callProjectRuntimeSyncOr<T>(
   try {
     localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/Sync service is not available|Register a project first/i.test(message)) {
+    if (!isSyncServiceUnavailableError(error)) {
       throw error;
     }
     // A packaged desktop can temporarily use a project-capable isolated

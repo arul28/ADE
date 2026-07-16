@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
+  ArrowLeft,
   ArrowRight,
   CircleNotch,
   DesktopTower,
   DeviceMobile,
   GithubLogo,
   Laptop,
-  ShieldCheck,
+  Question,
   SignOut,
   Sparkle,
   Users,
@@ -39,8 +40,24 @@ import {
 } from "../../lib/account";
 import { useAccountLogin } from "../../lib/accountLogin";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import { openExternalUrl } from "../../lib/openExternal";
+import { docs } from "../../onboarding/docsLinks";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
+
+function accountReturnRoute(state: unknown): string {
+  if (!state || typeof state !== "object" || !("returnTo" in state)) return "/work";
+  const returnTo = (state as { returnTo?: unknown }).returnTo;
+  if (
+    typeof returnTo !== "string" ||
+    !returnTo.startsWith("/") ||
+    returnTo.startsWith("//") ||
+    /^\/account(?:[/?#]|$)/.test(returnTo)
+  ) {
+    return "/work";
+  }
+  return returnTo;
+}
 
 function firstName(name: string | null): string {
   return name?.trim().split(/\s+/)[0] ?? "there";
@@ -108,115 +125,146 @@ export function SignInCard({
   const busy = phase === "starting" || phase === "awaiting";
 
   return (
-    <div style={cardStyle({ padding: 28, maxWidth: 440, width: "100%" })}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center", alignItems: "center" }}>
-        <img src="./logo.png" alt="ADE" style={{ height: 26, opacity: 0.95 }} draggable={false} />
-        <div style={{ fontFamily: SANS_FONT, fontSize: 19, fontWeight: 700, color: COLORS.textPrimary, marginTop: 6 }}>
-          Continue to ADE
+    <div
+      style={{
+        display: "flex",
+        width: "100%",
+        maxWidth: 440,
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 14,
+      }}
+    >
+      <img src="./logo.png" alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
+      <div
+        style={cardStyle({
+          padding: 28,
+          width: "100%",
+          borderRadius: RADII.lg,
+          background: COLORS.cardBgSolid,
+          backdropFilter: "none",
+          WebkitBackdropFilter: "none",
+        })}
+      >
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 19, fontWeight: 700, color: COLORS.textPrimary }}>
+            Sign in to ADE
+          </div>
         </div>
-        <div style={{ fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.5, color: COLORS.textSecondary, maxWidth: 320 }}>
-          Choose a sign-in method in your browser. If you're new, your ADE account is created automatically.
-        </div>
-      </div>
 
-      {!configured ? (
-        <div
-          style={{
-            marginTop: 20,
-            display: "flex",
-            gap: 8,
-            alignItems: "flex-start",
-            padding: "10px 12px",
-            borderRadius: RADII.md,
-            background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-warning) 26%, transparent)",
-            color: COLORS.textSecondary,
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>
-            Account access isn't set up on this machine yet. You can still pair machines, phones, and web
-            clients from <strong style={{ color: COLORS.textPrimary }}>Connections</strong>.
-          </span>
-        </div>
-      ) : null}
-
-      <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 12 }}>
-        <button
-          type="button"
-          disabled={busy || !configured}
-          onClick={() => void beginLogin()}
-          style={{
-            ...primaryButton({
-              height: 44,
-              fontSize: 14,
+        {!configured ? (
+          <div
+            style={{
+              marginTop: 20,
+              display: "flex",
               gap: 8,
-              background: "#24292f",
-              color: "#ffffff",
-              opacity: busy || !configured ? 0.55 : 1,
-              cursor: busy || !configured ? "not-allowed" : "pointer",
-            }),
-          }}
-        >
-          {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
-          Continue in browser
-        </button>
-        <div style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, textAlign: "center", color: COLORS.textMuted }}>
-          The browser page offers the sign-in methods enabled for ADE.
-        </div>
-      </div>
+              alignItems: "flex-start",
+              padding: "10px 12px",
+              borderRadius: RADII.md,
+              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-warning) 26%, transparent)",
+              color: COLORS.textSecondary,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>Account sign-in isn't available in this build.</span>
+          </div>
+        ) : null}
 
-      {phase === "awaiting" ? (
-        <div
-          style={{
-            marginTop: 16,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-            padding: "9px 12px",
-            borderRadius: RADII.md,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.borderMuted}`,
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-            <CircleNotch size={14} weight="bold" className="animate-spin" />
-            Finish in your browser…
-          </span>
+        <div style={{ marginTop: 22 }}>
           <button
             type="button"
-            onClick={cancel}
-            style={{ ...outlineButton({ height: 26, fontSize: 11, padding: "0 10px" }) }}
+            disabled={busy || !configured}
+            onClick={() => void beginLogin()}
+            style={{
+              ...primaryButton({
+                width: "100%",
+                height: 44,
+                fontSize: 14,
+                gap: 8,
+                opacity: busy || !configured ? 0.55 : 1,
+                cursor: busy || !configured ? "not-allowed" : "pointer",
+                WebkitAppRegion: "no-drag",
+              }),
+            }}
           >
-            Cancel
+            {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
+            Sign in or create account
           </button>
+          <div
+            style={{
+              marginTop: 10,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 5,
+              color: COLORS.textMuted,
+              fontFamily: SANS_FONT,
+              fontSize: 11.5,
+            }}
+          >
+            <span>Sign in to use ADE Relay</span>
+            <button
+              type="button"
+              aria-label="Learn about ADE Relay"
+              title="Learn about ADE Relay"
+              onClick={() => openExternalUrl(docs.adeRelay)}
+              style={{
+                display: "inline-flex",
+                width: 18,
+                height: 18,
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 0,
+                border: 0,
+                borderRadius: "50%",
+                background: "transparent",
+                color: COLORS.textMuted,
+                cursor: "pointer",
+                WebkitAppRegion: "no-drag",
+              }}
+            >
+              <Question size={13} weight="bold" />
+            </button>
+          </div>
         </div>
-      ) : null}
 
-      {error ? (
-        <div style={{ marginTop: 14, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
-          {error}
-        </div>
-      ) : null}
+        {phase === "awaiting" ? (
+          <div
+            style={{
+              marginTop: 16,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              padding: "9px 12px",
+              borderRadius: RADII.md,
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.borderMuted}`,
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
+              <CircleNotch size={14} weight="bold" className="animate-spin" />
+              Finish signing in in your browser…
+            </span>
+            <button
+              type="button"
+              onClick={cancel}
+              style={{ ...outlineButton({ height: 26, fontSize: 11, padding: "0 10px" }) }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : null}
 
-      <div
-        style={{
-          marginTop: 20,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 7,
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          color: COLORS.textMuted,
-        }}
-      >
-        <ShieldCheck size={14} weight="regular" />
-        Local pairing works without an account.
+        {error ? (
+          <div style={{ marginTop: 14, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
+            {error}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -420,6 +468,7 @@ function SessionsCard({ onSignOut, signingOut }: { onSignOut: () => void; signin
 
 export function AccountPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { status, refresh } = useAccountStatus();
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -477,6 +526,10 @@ export function AccountPage() {
     setRepoBridgeDismissed(true);
   }, []);
 
+  const goBack = useCallback(() => {
+    navigate(accountReturnRoute(location.state), { replace: true });
+  }, [location.state, navigate]);
+
   const showRepoBridge = useMemo(
     () => status.signedIn && !githubConnected && !repoBridgeDismissed,
     [status.signedIn, githubConnected, repoBridgeDismissed],
@@ -496,9 +549,27 @@ export function AccountPage() {
         }}
       >
         {!status.signedIn ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
-            <SignInCard configured={status.configured !== false} onSignedIn={handleSignedIn} />
-          </div>
+          <>
+            <button
+              type="button"
+              onClick={goBack}
+              style={{
+                ...outlineButton({
+                  alignSelf: "flex-start",
+                  height: 30,
+                  padding: "0 9px",
+                  background: "transparent",
+                  border: "none",
+                }),
+              }}
+            >
+              <ArrowLeft size={14} weight="bold" />
+              Back
+            </button>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
+              <SignInCard configured={status.configured !== false} onSignedIn={handleSignedIn} />
+            </div>
+          </>
         ) : (
           <>
             {justSignedIn ? (

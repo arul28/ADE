@@ -956,9 +956,7 @@ export function RemoteTargetList({
 
         {!loading && totalRows === 0 && !addMode && !loadingDiscovered ? (
           <div style={helperTextStyle}>
-            {discoveredMachines.length > 0
-              ? "Nearby machines are already saved."
-              : "No Macs yet. Choose Add machine, or Share to connect this Mac from another device."}
+            No Macs yet. Choose Add machine, or Share to connect this Mac from another device.
           </div>
         ) : null}
         {loadingDiscovered ? (
@@ -971,12 +969,6 @@ export function RemoteTargetList({
           >
             Scanning nearby machines…
           </div>
-        ) : null}
-        {!loadingDiscovered &&
-        targets.length > 0 &&
-        totalRows === targets.length &&
-        discoveredMachines.length > 0 ? (
-          <div style={helperTextStyle}>Nearby machines are already saved.</div>
         ) : null}
       </div>
     </div>

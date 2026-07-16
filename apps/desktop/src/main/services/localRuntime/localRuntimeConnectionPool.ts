@@ -33,6 +33,7 @@ import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
+import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
 
 type LocalRuntimeConnection = {
   client: RuntimeRpcClient;
@@ -78,8 +79,6 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
-const LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE =
-  "This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE.";
 const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "chat.listSessions",
   "layout.get",

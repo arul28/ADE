@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretRight,
   DesktopTower,
   DeviceMobile,
   Globe,
   UserCircle,
+  X,
 } from "@phosphor-icons/react";
 import type { CSSProperties } from "react";
 import type {
@@ -58,7 +59,15 @@ function tabStyle(active: boolean): CSSProperties {
   };
 }
 
-function AccountHeader({ githubStatus, onNavigate }: { githubStatus?: GitHubStatus | null; onNavigate: () => void }) {
+function AccountHeader({
+  githubStatus,
+  onNavigate,
+  onClose,
+}: {
+  githubStatus?: GitHubStatus | null;
+  onNavigate: () => void;
+  onClose: () => void;
+}) {
   const { status } = useAccountStatus();
   const githubConnected = Boolean(githubStatus?.connected);
   const avatarImage = accountAvatarImage(status, githubStatus?.userLogin ?? null);
@@ -70,70 +79,91 @@ function AccountHeader({ githubStatus, onNavigate }: { githubStatus?: GitHubStat
     : "Sign in to ADE";
   const subtitle = status.signedIn
     ? status.email ?? "Manage your account"
-    : "The easiest way to find your other Macs";
+    : "The easiest way to connect to your devices";
 
   return (
-    <button
-      type="button"
-      onClick={onNavigate}
+    <div
       style={{
-        display: "flex",
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) auto",
         alignItems: "center",
-        gap: 11,
-        width: "100%",
-        padding: "12px 16px",
-        border: "none",
         borderBottom: `1px solid ${COLORS.borderMuted}`,
-        background: "transparent",
-        cursor: "pointer",
-        textAlign: "left",
       }}
-      aria-label={status.signedIn ? "Open account" : "Sign in to ADE"}
     >
-      <span style={{ flexShrink: 0 }}>
-        {avatarImage && !imgBroken ? (
-          <img
-            src={avatarImage}
-            alt=""
-            width={30}
-            height={30}
-            draggable={false}
-            onError={() => setImgBroken(true)}
-            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)` }}
-          />
-        ) : status.signedIn ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 30,
-              height: 30,
-              borderRadius: "50%",
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 700,
-              color: COLORS.textPrimary,
-              background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
-              boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-            }}
-          >
-            {accountInitials(status)}
+      <button
+        type="button"
+        className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+        data-variant="ghost"
+        onClick={onClose}
+        title="Close connections"
+        aria-label="Close connections"
+        style={{ gridColumn: 2, gridRow: 1, marginRight: 12 }}
+      >
+        <X size={13} weight="regular" />
+      </button>
+      <button
+        type="button"
+        onClick={onNavigate}
+        style={{
+          display: "flex",
+          minWidth: 0,
+          alignItems: "center",
+          gap: 11,
+          padding: "12px 16px",
+          border: "none",
+          background: "transparent",
+          cursor: "pointer",
+          textAlign: "left",
+          gridColumn: 1,
+          gridRow: 1,
+        }}
+        aria-label={status.signedIn ? "Open account" : "Sign in to ADE"}
+      >
+        <span style={{ flexShrink: 0 }}>
+          {avatarImage && !imgBroken ? (
+            <img
+              src={avatarImage}
+              alt=""
+              width={30}
+              height={30}
+              draggable={false}
+              onError={() => setImgBroken(true)}
+              style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)` }}
+            />
+          ) : status.signedIn ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 30,
+                height: 30,
+                borderRadius: "50%",
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                fontWeight: 700,
+                color: COLORS.textPrimary,
+                background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
+                boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)`,
+              }}
+            >
+              {accountInitials(status)}
+            </span>
+          ) : (
+            <UserCircle size={30} weight="regular" color={COLORS.textMuted} />
+          )}
+        </span>
+        <span style={{ minWidth: 0, flex: 1 }}>
+          <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {title}
           </span>
-        ) : (
-          <UserCircle size={30} weight="regular" color={COLORS.textMuted} />
-        )}
-      </span>
-      <span style={{ minWidth: 0, flex: 1 }}>
-        <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {title}
+          <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {subtitle}
+          </span>
         </span>
-        <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {subtitle}
-        </span>
-      </span>
-      <CaretRight size={15} weight="bold" color={COLORS.textDim} style={{ flexShrink: 0 }} />
-    </button>
+        <CaretRight size={15} weight="bold" color={COLORS.textDim} style={{ flexShrink: 0 }} />
+      </button>
+    </div>
   );
 }
 
@@ -144,6 +174,7 @@ export function ConnectionsPanel({
   onRemoveRequested,
 }: ConnectionsPanelProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { status: accountStatus } = useAccountStatus();
   const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
@@ -187,12 +218,14 @@ export function ConnectionsPanel({
 
   const goToAccount = useCallback(() => {
     onClose();
-    navigate("/account");
-  }, [navigate, onClose]);
+    navigate("/account", {
+      state: { returnTo: `${location.pathname}${location.search}${location.hash}` },
+    });
+  }, [location.hash, location.pathname, location.search, navigate, onClose]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 96px)" }}>
-      <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} />
+      <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div
         role="tablist"

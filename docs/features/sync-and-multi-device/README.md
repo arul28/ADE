@@ -220,14 +220,26 @@ Runtime support files outside `services/sync/`:
 Desktop pairing UI:
 
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the single
-  top-bar Connections surface with Machines, Mobile, and Web client tabs.
+  top-bar Connections surface with Machines, Mobile, and Web client tabs. The
+  panel owns its header close control and passes the current in-app route to the
+  Account page so signed-out users can return to the exact surface they left.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants. When a configured PIN is available
   only as its at-rest PBKDF2 hash after a runtime restart, the web pairing card
   can generate and set a new six-digit PIN instead of leaving copy disabled.
+  Initial-load failures show a short recovery action while keeping the raw
+  message under **Technical details**: missing project registration asks the
+  user to open a project, a non-installed local release build asks for an
+  Applications install/relaunch, and other sync-service failures ask for an ADE
+  restart.
+- `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
+  messages and predicates shared by the local-runtime pool, main IPC fallback,
+  preload routing, and the Connections recovery copy. Keep these predicates
+  aligned rather than duplicating message regexes at each boundary.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` — the Connections
-  control, connected summary, dialog ownership, and external requests that open
-  a specific tab. Browser peers are identified by `deviceType === "browser"`.
+  control, connected summary, dialog portal/focus ownership, and external
+  requests that open a specific tab. Browser peers are identified by
+  `deviceType === "browser"`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`
   and `apps/desktop/src/renderer/components/app/TopBar.test.tsx` — focused
   pairing variants, hidden-PIN generation, QR/copy interactions, web-peer chip,

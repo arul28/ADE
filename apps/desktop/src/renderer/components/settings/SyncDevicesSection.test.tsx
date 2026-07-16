@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SyncDevicesSection } from "./SyncDevicesSection";
+import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -225,5 +226,34 @@ describe("SyncDevicesSection", () => {
     act(() => vi.advanceTimersByTime(600));
 
     expect(screen.getByText("Copied")).toBeTruthy();
+  });
+
+  it("explains how to recover when a local release build is not installed", async () => {
+    installAdeMock(makeHostSnapshot());
+    const getStatus = globalThis.window.ade.sync.getStatus as ReturnType<typeof vi.fn>;
+    getStatus.mockRejectedValue(new Error(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE));
+
+    render(<SyncDevicesSection variant="web" />);
+
+    expect(await screen.findByText("Couldn't load connection details")).toBeTruthy();
+    expect(screen.getByText("Install this ADE build in Applications, reopen it, then try again.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("distinguishes a missing project from an unavailable sync service", async () => {
+    installAdeMock(makeHostSnapshot());
+    const getStatus = globalThis.window.ade.sync.getStatus as ReturnType<typeof vi.fn>;
+    getStatus.mockRejectedValue(new Error("Sync service is not available."));
+
+    const { rerender } = render(<SyncDevicesSection variant="web" />);
+
+    expect(await screen.findByText("Restart ADE, then try again.")).toBeTruthy();
+    expect(screen.queryByText("Open a project in ADE, then try again.")).toBeNull();
+
+    getStatus.mockRejectedValue(new Error("Sync service is not available. Register a project first."));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    rerender(<SyncDevicesSection variant="web" />);
+
+    expect(await screen.findByText("Open a project in ADE, then try again.")).toBeTruthy();
   });
 });

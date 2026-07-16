@@ -75,9 +75,10 @@ describe("TabNav", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("link", { name: "Continue to ADE" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "ADE account — signed out" }).getAttribute("href")).toBe(
       "/account",
     );
+    expect(screen.getByText("Signed out")).toBeTruthy();
   });
 
   it("keeps Chats available and active without a project", () => {

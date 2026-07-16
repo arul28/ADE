@@ -2394,15 +2394,6 @@ export function TopBar({
                 onClick={(event) => event.stopPropagation()}
                 onKeyDown={handleConnectionsPanelKeyDown}
               >
-                <button
-                  type="button"
-                  className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
-                  data-variant="ghost"
-                  onClick={closeConnections}
-                  title="Close connections"
-                >
-                  <X size={13} weight="regular" />
-                </button>
                 <ConnectionsPanel
                   initialTab={connectionsTab}
                   onClose={closeConnections}
