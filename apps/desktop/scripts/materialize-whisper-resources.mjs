@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
@@ -45,9 +46,21 @@ const universalDarwinArchs = ["arm64", "x86_64"];
 const MODEL_BASENAME = "ggml-base.en.bin";
 // HuggingFace-hosted ggml model (whisper.cpp official). Overridable via env so
 // release CI can repoint to a mirror without code changes.
-const MODEL_URL =
-  process.env.ADE_WHISPER_MODEL_URL?.trim() ||
+const DEFAULT_MODEL_URL =
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+// Pinned SHA-256 of the artifact served by DEFAULT_MODEL_URL. Matches the Git
+// LFS pointer at https://huggingface.co/ggerganov/whisper.cpp/raw/main/ggml-base.en.bin
+// (`oid sha256:...`). This ships inside the packaged app, so the download MUST
+// be verified or the build must die.
+const DEFAULT_MODEL_SHA256 =
+  "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+const MODEL_URL = process.env.ADE_WHISPER_MODEL_URL?.trim() || DEFAULT_MODEL_URL;
+// When MODEL_URL is overridden (e.g. a release mirror), the pinned hash no
+// longer applies automatically; the override must bring its own expected hash
+// via ADE_WHISPER_MODEL_SHA256 or the script refuses to download.
+const MODEL_SHA256 =
+  process.env.ADE_WHISPER_MODEL_SHA256?.trim().toLowerCase() ||
+  (MODEL_URL === DEFAULT_MODEL_URL ? DEFAULT_MODEL_SHA256 : null);
 
 // Per-platform whisper.cpp CLI binary download URLs. These are intentionally
 // left as env-overridable placeholders: whisper.cpp does not publish a single
@@ -60,9 +73,16 @@ function whisperBinarySpecForHost() {
     ? "darwin-universal"
     : `${platform}-${arch}`;
   const exeSuffix = platform === "win32" ? ".exe" : "";
-  const envKey = `ADE_WHISPER_CLI_URL_${target.replace(/-/g, "_").toUpperCase()}`;
+  const targetKey = target.replace(/-/g, "_").toUpperCase();
+  const envKey = `ADE_WHISPER_CLI_URL_${targetKey}`;
   const url = process.env[envKey]?.trim() || process.env.ADE_WHISPER_CLI_URL?.trim() || null;
-  return { target, url, fileName: `whisper-cli${exeSuffix}` };
+  // Whisper CLI URLs are supplied entirely via env, so the expected SHA-256
+  // must be supplied alongside them; there is no default to pin.
+  const sha256 =
+    process.env[`ADE_WHISPER_CLI_SHA256_${targetKey}`]?.trim().toLowerCase() ||
+    process.env.ADE_WHISPER_CLI_SHA256?.trim().toLowerCase() ||
+    null;
+  return { target, targetKey, url, sha256, fileName: `whisper-cli${exeSuffix}` };
 }
 
 function isUniversalDarwinBuild() {
@@ -189,6 +209,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function sha256OfFile(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+// Verify-or-die: these artifacts ship inside the packaged (notarized) app, so
+// a downloaded file that does not match its expected SHA-256 must never be
+// kept. Deletes the file and throws on mismatch.
+async function assertFileSha256(filePath, expectedSha256, label) {
+  const expected = expectedSha256.toLowerCase();
+  const actual = await sha256OfFile(filePath);
+  if (actual !== expected) {
+    await fs.rm(filePath, { force: true });
+    throw new Error(
+      `SHA-256 mismatch for ${label}: expected ${expected}, got ${actual}. ` +
+        "Refusing to package the unverified download.",
+    );
+  }
+  console.log(`[whisper-resources] Verified SHA-256 for ${label}: ${actual}`);
+}
+
 // Retry the whole download (redirects included) on transient network failures.
 // Non-retryable errors (e.g. HTTP 404) throw immediately.
 async function downloadWithRetry(url, destinationPath) {
@@ -220,8 +264,15 @@ async function materializeModel() {
     console.log(`[whisper-resources] Model already present: ${modelPath}`);
     return;
   }
+  if (!MODEL_SHA256) {
+    throw new Error(
+      "ADE_WHISPER_MODEL_URL overrides the default model URL, so the pinned checksum does not apply. " +
+        `Set ADE_WHISPER_MODEL_SHA256 to the expected SHA-256 of ${MODEL_BASENAME} at that URL.`,
+    );
+  }
   console.log(`[whisper-resources] Downloading ${MODEL_BASENAME} from ${redactUrl(MODEL_URL)}`);
   await downloadWithRetry(MODEL_URL, modelPath);
+  await assertFileSha256(modelPath, MODEL_SHA256, MODEL_BASENAME);
   console.log(`[whisper-resources] Downloaded model -> ${modelPath}`);
 }
 
@@ -373,8 +424,16 @@ async function materializeBinary() {
     return;
   }
   if (spec.url) {
+    if (!spec.sha256) {
+      throw new Error(
+        `A whisper-cli download URL is configured for ${spec.target}, but no expected checksum was provided. ` +
+          `Set ADE_WHISPER_CLI_SHA256_${spec.targetKey} (or ADE_WHISPER_CLI_SHA256) ` +
+          "to the SHA-256 of that binary.",
+      );
+    }
     console.log(`[whisper-resources] Downloading whisper.cpp CLI for ${spec.target} from ${redactUrl(spec.url)}`);
     await downloadWithRetry(spec.url, binaryPath);
+    await assertFileSha256(binaryPath, spec.sha256, spec.fileName);
     if (process.platform !== "win32") {
       await fs.chmod(binaryPath, 0o755);
     }
