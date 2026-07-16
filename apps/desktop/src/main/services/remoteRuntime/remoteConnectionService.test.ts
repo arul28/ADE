@@ -659,6 +659,35 @@ describe("RemoteConnectionService", () => {
     });
   });
 
+  it("keeps auto-connect disabled after a manual Connect succeeds", async () => {
+    let persisted = { ...target("saved", 1_700_000_000), autoConnect: false };
+    const registry = {
+      list: vi.fn(() => [persisted]),
+      get: vi.fn(() => persisted),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => {
+        persisted = { ...persisted, ...patch };
+        return persisted;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (savedTarget: RemoteRuntimeTarget) =>
+        connectResult(savedTarget),
+      ),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+
+    await expect(
+      service.connect(persisted.id, { explicit: true }),
+    ).resolves.toMatchObject({ target: { autoConnect: false } });
+    expect(persisted.autoConnect).toBe(false);
+    expect(registry.update).not.toHaveBeenCalledWith(persisted.id, {
+      autoConnect: true,
+      manuallyDisconnectedAt: null,
+    });
+  });
+
   it("disconnects the pool even when persisting the manual marker fails", () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

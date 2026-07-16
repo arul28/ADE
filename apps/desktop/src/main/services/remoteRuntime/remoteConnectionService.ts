@@ -637,9 +637,11 @@ export class RemoteConnectionService {
           "Remote target was disconnected before ADE finished connecting.",
         );
       }
+      // A first successful connection enables future reconnects. Once the
+      // user disables that preference, Connect must not silently restore it.
       const shouldPersistAutoConnect =
-        result.target.autoConnect !== true
-        || (explicit && result.target.manuallyDisconnectedAt != null);
+        target.lastConnectedAt == null ||
+        (explicit && result.target.manuallyDisconnectedAt != null);
       const connectedResult =
         shouldPersistAutoConnect
           ? {
