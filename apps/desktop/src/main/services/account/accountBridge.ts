@@ -11,26 +11,27 @@
 import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
+  resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import os from "node:os";
 import type {
   AccountAuthStatus,
-  AccountLoginPollResult,
   AccountLoginStartResult,
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProjectSecretService } from "../secrets/projectSecretService";
 import type { AccountMachineReconciliationResult } from "../remoteRuntime/remoteConnectionService";
 import type {
   AdeAccountMachinePairResult,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
+  AdeAccountLoginPoll,
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
-  officialAccountDirectoryUrlForIssuer,
   parseTrustedAccountDirectoryBaseUrl,
 } from "../../../shared/accountDirectory";
 
@@ -91,21 +92,21 @@ export function parseTrustedDirectoryBaseUrl(
  * Trust model: the bearer is the MACHINE's account token (machine-scoped
  * infrastructure), so where it is sent must be controlled by the machine owner
  * alone. A machine-level `ADE_ACCOUNT_DIRECTORY_URL` env override may select a
- * self-hosted directory; otherwise ADE uses its compiled Cloudflare Worker
- * origin. Per-project secrets are deliberately NOT consulted, so an opened
- * project can never redirect the token to a host it controls. The selected
- * value is passed through `parseTrustedDirectoryBaseUrl`, so the token is only
- * ever attached to a trusted https (or loopback) origin.
+ * self-hosted directory; otherwise ADE maps the active project's official
+ * Clerk issuer to its compiled Cloudflare Worker origin. Project configuration
+ * can select an official issuer but cannot provide an arbitrary directory host.
+ * The selected value is passed through `parseTrustedDirectoryBaseUrl`, so the
+ * token is only ever attached to a trusted https (or loopback) origin.
  */
 function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
   const machineOverride = process.env.ADE_ACCOUNT_DIRECTORY_URL;
   if (machineOverride?.trim()) {
     return parseTrustedAccountDirectoryBaseUrl(machineOverride);
   }
-  const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER")
-    ?? process.env.CLERK_ISSUER?.trim()
-    ?? DEFAULT_ADE_CLERK_ISSUER;
-  return officialAccountDirectoryUrlForIssuer(issuer);
+  return resolveOfficialAccountDirectoryBaseUrl({
+    env: process.env,
+    projectRoots: projectRoot ? [projectRoot] : [],
+  });
 }
 
 function toAccountStatus(
@@ -118,10 +119,8 @@ function toAccountStatus(
     email: status.email,
     name: status.name,
     expiresAt: status.expiresAt,
-    // The merged daemon status does not yet carry provider/image; leave null so
-    // the renderer degrades to a GitHub-creds image and a monogram.
-    provider: null,
-    imageUrl: null,
+    provider: status.provider ?? null,
+    imageUrl: status.imageUrl ?? null,
     configured,
   };
 }
@@ -129,11 +128,12 @@ function toAccountStatus(
 export type AccountBridge = {
   status(): AdeAccountStatus;
   startLogin(): Promise<AccountLoginStartResult>;
-  pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
+  pollLogin(sessionId: string): Promise<AdeAccountLoginPoll>;
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
   pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult>;
+  removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
 };
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
@@ -185,7 +185,10 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           result.authStatus.signedIn ? result.authStatus.userId : null,
         );
       }
-      return result;
+      return {
+        ...result,
+        authStatus: toAccountStatus(result.authStatus, configured()),
+      };
     },
 
     cancelLogin: (sessionId: string) => service().cancelLogin(sessionId),
@@ -203,13 +206,15 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
-      return result.state === "auth_expired"
-        ? { ...result, message: "Your ADE account session expired. Sign in again." }
-        : result;
+      return result;
     },
 
     pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {
       return await directoryService().pairMachine(machineKey);
+    },
+
+    removeMachine: async (machineKey: string): Promise<AdeAccountMachineRemovalResult> => {
+      return await directoryService().deleteMachine(machineKey);
     },
   };
 }

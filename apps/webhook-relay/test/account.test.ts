@@ -1,8 +1,6 @@
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { handleRequest, verifyAccountToken, type RelayEnv } from "../src/relay";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { clearGitHubRepoAuthCacheForTests, handleRequest, verifyAccountToken, type RelayEnv } from "../src/relay";
 
 type RepositoryRow = {
   repository_key: string;
@@ -252,7 +250,6 @@ const ISSUER = "https://clerk.test";
 const OAUTH_CLIENT_ID = "client_ade";
 const SECONDARY_ISSUER = "https://clerk.production.test";
 const SECONDARY_OAUTH_CLIENT_ID = "client_ade_production";
-let jwksServer: Server;
 let jwksUrl = "";
 let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
 
@@ -261,25 +258,11 @@ beforeAll(async () => {
   signingKey = keyPair.privateKey;
   const publicJwk = await exportJWK(keyPair.publicKey);
   const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "account-test", use: "sig" }] };
-  jwksServer = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(jwks));
-  });
-  await new Promise<void>((resolve, reject) => {
-    jwksServer.once("error", reject);
-    jwksServer.listen(0, "127.0.0.1", resolve);
-  });
-  const address = jwksServer.address() as AddressInfo;
-  jwksUrl = `http://127.0.0.1:${address.port}/jwks`;
-});
-
-afterAll(async () => {
-  await new Promise<void>((resolve, reject) => {
-    jwksServer.close((error) => error ? reject(error) : resolve());
-  });
+  jwksUrl = `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
 });
 
 afterEach(() => {
+  clearGitHubRepoAuthCacheForTests();
   vi.unstubAllGlobals();
 });
 

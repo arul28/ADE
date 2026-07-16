@@ -39,7 +39,7 @@ Attached clients and native surfaces:
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` binds paired-client consent, surface, and project identity at the host boundary. `syncHostService.ts` keeps consent peer-scoped, and `syncRemoteCommandService.ts` exposes only the runtime-scoped analytics commands.
 - `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's affirmative choice in browser storage and reasserts it on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
-- `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, and direct transport. `SettingsAnalyticsSection.swift` owns the durable preference, while `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
+- `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, default-on behavior, and direct transport. There is no native analytics preference or consent prompt. `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
 
 Build and operations:
@@ -79,7 +79,7 @@ Daily usage summaries report coarse totals and only the top coarse provider and 
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate anonymous installation identity and separate `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention.
 
-iOS requires an affirmative preference before capture. Its restart-safe ceiling is 20 events per UTC day, with event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Foreground duplicate screens and feature outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
+iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in and Settings opt-out have been removed. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
@@ -94,7 +94,7 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 ## Consent and kill switches
 
 - Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
-- Native iOS, hosted web, and the public marketing site require an affirmative first-run choice before capture.
+- Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site still require an affirmative first-run choice before capture.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
 - Tests disable analytics automatically.
 - Missing or invalid configuration disables capture without affecting ADE startup.
@@ -150,7 +150,7 @@ Every `/test` run must read this file and review the branch for analytics applic
 
 - meaningful new behavior uses the existing taxonomy or includes an explicit reason analytics is not applicable;
 - no arbitrary values or forbidden content can cross the sanitizer;
-- consent and opt-out behavior remain intact on every touched surface;
+- each surface's configured default and disable behavior remain intact;
 - worst-case event volume is bounded by durable daily, per-event, and deduplication controls;
 - high-frequency mechanics are measured through local aggregation, not raw events;
 - public project tokens are the only credentials shipped to clients;

@@ -48,6 +48,16 @@ handler accepts `{ sessionId, laneId? }`, selects the lane when present,
 focuses the target chat, opens its Work tab, and stores it as the active
 selected session.
 
+`useWorkLaneDeleteProgress` also makes this page the Work-owned consumer of
+lane deletion state. While Work is active it subscribes to streamed delete
+progress and lane lifecycle events, and it hydrates `lanes.listDeleteProgress`
+so a delete started on another tab remains visible after returning to Work.
+When teardown finishes, it invalidates the session-list cache and refreshes
+both Work sessions and lightweight lane metadata. The active lane's content
+and tools are covered by a blocking status overlay until refresh succeeds;
+refresh failures retry twice with bounded backoff, then clear the stale
+progress and surface a sticky error toast rather than leaving Work disabled.
+
 It also owns the sidebar's multi-select state:
 
 - `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.
@@ -93,9 +103,18 @@ Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
-actions are available from the session sidebar: color changes and copy/reveal
-run inline, while manage/adopt/batch/split actions route through the Lanes tab
+actions are available from the session sidebar. Color changes and copy/reveal
+run inline. **Manage lane** opens the shared `ManageLaneDialog` in a portal over
+Work, leaving the route, selected session, and Work layout unchanged when the
+dialog closes; direct adopt, batch, and split actions continue through Lanes-tab
 deeplinks.
+
+The pane reads `laneDeleteProgressByLaneId` from the shared app store. In
+`by-lane` mode the matching lane header becomes non-interactive and shows a
+spinner with `Deleting`, `Deleted`, or `Deleted with warnings`. Every matching
+`SessionCard` receives a `disabledReason`, so the lane's chats and CLI sessions
+are dimmed and blocked in all three organization modes, not only beneath the
+lane-group header.
 
 In `by-lane` mode, any session whose `laneId` is not in the current
 lanes list is still rendered under its own sticky "orphan lane" group
@@ -171,6 +190,10 @@ Three rows:
 Hover actions include the info button. Ended agent CLI sessions are
 continued from the transcript surface by typing into the lightweight
 composer; the card itself does not expose a separate continuation action.
+
+When `disabledReason` is set, the card disables selection, dragging, and its
+context menu, lowers opacity, and renders a centered spinner/status overlay.
+This is used while the card's owning lane is being deleted.
 
 The selected card adds a left accent border and elevated background.
 Cards in the multi-selection set (`isMultiSelected`) reuse the same

@@ -39,24 +39,25 @@ function friendlyPairError(error: unknown): string {
 
 type PairMachineFormProps = {
   defaultDeviceName: string;
-  initialInput?: string | null;
+  /** The canonical pairing URL synthesized from the discovered nearby machine. */
+  initialInput: string | null;
   busy?: boolean;
   /** Runs after pairing succeeds; parent connects on the returned target id. */
   onPaired: (targetId: string) => void | Promise<void>;
 };
 
 /**
- * Pair tab: paste a pairing link, enter the 6-digit PIN, and connect. The link
- * is validated live via parsePairingInput so the machine name shows before the
- * user commits.
+ * First-time pairing with a nearby Mac: ADE discovered it on the network and
+ * synthesized its pairing URL internally, so the user only confirms the machine
+ * and types the 6-digit code shown in ADE on that Mac. There is no manual link
+ * or address entry — nearby discovery is the only entry point.
  */
 export function PairMachineForm({
   defaultDeviceName,
-  initialInput = null,
+  initialInput,
   busy = false,
   onPaired,
 }: PairMachineFormProps) {
-  const [rawInput, setRawInput] = useState(initialInput ?? "");
   const [parsed, setParsed] = useState<RemoteRuntimeParsedPairingInput | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
@@ -65,11 +66,7 @@ export function PairMachineForm({
   const [error, setError] = useState<string | null>(null);
   const deviceName = defaultDeviceName.trim() || "This Mac";
 
-  const trimmedInput = rawInput.trim();
-
-  useEffect(() => {
-    if (initialInput) setRawInput(initialInput);
-  }, [initialInput]);
+  const trimmedInput = initialInput?.trim() ?? "";
 
   useEffect(() => {
     if (!trimmedInput) {
@@ -80,40 +77,37 @@ export function PairMachineForm({
     }
     let cancelled = false;
     setParsing(true);
-    const handle = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const result = await window.ade.remoteRuntime.parsePairingInput(trimmedInput);
-          if (cancelled) return;
-          setParsed(result);
-          setParseError(null);
-        } catch (err) {
-          if (cancelled) return;
-          setParsed(null);
-          setParseError(
-            extractError(err).replace(/^Error:\s*/i, "").trim() ||
-              "That doesn't look like a valid pairing link.",
-          );
-        } finally {
-          if (!cancelled) setParsing(false);
-        }
-      })();
-    }, 250);
+    void (async () => {
+      try {
+        const result = await window.ade.remoteRuntime.parsePairingInput(trimmedInput);
+        if (cancelled) return;
+        setParsed(result);
+        setParseError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setParsed(null);
+        setParseError(
+          extractError(err).replace(/^Error:\s*/i, "").trim() ||
+            "That doesn't look like a valid pairing target.",
+        );
+      } finally {
+        if (!cancelled) setParsing(false);
+      }
+    })();
     return () => {
       cancelled = true;
-      window.clearTimeout(handle);
     };
   }, [trimmedInput]);
 
   const pinValid = /^\d{6}$/.test(pin.trim());
   const canSubmit = useMemo(
     () => Boolean(parsed) && pinValid && !busy && !submitting,
-    [parsed, pinValid, deviceName, busy, submitting],
+    [parsed, pinValid, busy, submitting],
   );
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || !trimmedInput) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -133,24 +127,10 @@ export function PairMachineForm({
   return (
     <form onSubmit={(event) => void handleSubmit(event)} style={{ display: "grid", gap: 12 }}>
       <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
-        {initialInput
-          ? "ADE found this Mac nearby. On that Mac, open Connections and choose Share, then enter its 6-digit code."
-          : "On the other Mac, open Connections and choose Share. Paste its link here, then enter the 6-digit code."}
+        You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.
       </div>
       <div style={{ display: "grid", gap: 6 }}>
-        <span style={LABEL_STYLE}>{initialInput ? "Nearby Mac" : "Pairing link"}</span>
-        {!initialInput ? (
-          <input
-            aria-label="Pairing link"
-            value={rawInput}
-            onChange={(event) => setRawInput(event.target.value)}
-            placeholder="Paste the link from the other Mac"
-            style={fieldStyle}
-            disabled={busy || submitting}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        ) : null}
+        <span style={LABEL_STYLE}>Nearby Mac</span>
         {parsing ? (
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5 }}>
             Checking…
@@ -190,9 +170,7 @@ export function PairMachineForm({
           />
         </label>
         <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.4 }}>
-          {initialInput
-            ? "This confirms that you can see the code on the other Mac."
-            : "This code is shown beside the pairing link."}
+          This confirms that you can see the code on the other Mac.
         </div>
       </div>
 

@@ -38,18 +38,21 @@ export function buildAddressCandidates(
     candidates.push({ host: normalized, kind });
   };
   const preferredSavedHost = normalizeHost(localDevice.lastHost);
-  const preferredSavedHostIsCurrent = preferredSavedHost != null && (
-    localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
-    || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
-    || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
-  );
-  if (preferredSavedHostIsCurrent) {
-    append(localDevice.lastHost, "saved");
+  const preferredSavedHostKind: SyncAddressCandidate["kind"] | null = preferredSavedHost == null
+    ? null
+    : localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
+      ? "lan"
+      : normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
+        || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
+        ? "tailscale"
+        : "saved";
+  if (preferredSavedHostKind && preferredSavedHostKind !== "saved") {
+    append(localDevice.lastHost, preferredSavedHostKind);
   }
   for (const lanAddress of localDevice.ipAddresses) {
     append(lanAddress, "lan");
   }
-  if (!preferredSavedHostIsCurrent) {
+  if (preferredSavedHostKind === "saved") {
     append(localDevice.lastHost, "saved");
   }
   append(tailscaleDnsNameFromDevice(localDevice), "tailscale");

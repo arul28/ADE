@@ -7,19 +7,21 @@ import {
 } from "./syncTunnelClientService";
 import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSharedSyncListener } from "./sharedSyncListener";
+import {
+  buildAccountMachineRegistration,
+  type AccountMachineRegistrationSnapshot,
+} from "../account/accountMachinePublisherService";
 
-// syncCloudRelayStore itself (enablement default/migration, identity mint, url
+// syncCloudRelayStore itself (legacy-field cleanup, identity mint, URL
 // derivation, signature builders) is covered in syncCloudRelayStore.test.ts.
 
-function fakeStore(enabled: boolean, relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
+function fakeStore(relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
   const identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
   return {
-    getConfig: () => ({ enabled, ...identity }),
-    isEnabled: () => enabled,
-    setEnabled: () => ({ enabled, ...identity }),
+    getConfig: () => identity,
     getMachineIdentity: () => identity,
     getRelayUrl: () => relayUrl,
-    setRelayUrl: () => ({ enabled, ...identity }),
+    setRelayUrl: () => identity,
     getRelayWssUrl: () => `wss://relay.example.com/connect/${identity.machineKey}`,
   } as unknown as SyncCloudRelayStore;
 }
@@ -60,20 +62,106 @@ describe("parseControlMessage", () => {
 });
 
 describe("createSyncTunnelClientService", () => {
-  it("is a no-op and reports disabled when the store is disabled", async () => {
-    const service = createSyncTunnelClientService({
-      getSyncPort: () => 12345,
-      getRelayBridgeProof: () => null,
-      configStore: fakeStore(false),
+  it("publishes Relay when control connects before a non-default shared listener", async () => {
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
     });
-    await service.start();
-    const status = service.getStatus();
-    expect(status.enabled).toBe(false);
-    expect(status.connected).toBe(false);
-    expect(status.activeTunnels).toBe(0);
-    expect(status.machineKey).toBe("a".repeat(32));
-    expect(status.relayUrl).toBe("https://relay.example.com");
-    await service.dispose();
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const connections: string[] = [];
+    relay.on("connection", (_socket, request) => {
+      connections.push(request.url ?? "");
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const machineKey = "a".repeat(32);
+    const relayUrl = `wss://relay.example.com/connect/${machineKey}`;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => listener.getPort(),
+      getExpectedLoopbackNonce: () => listener.getExpectedLoopbackNonce(),
+      getRelayBridgeProof: () => listener.getRelayBridgeProof(),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+    listener.onLoopbackValidated(() => {
+      void service.validateCurrentBridge();
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().connected).toBe(true);
+      });
+      expect(service.getStatus().relayBridgeValidated).toBe(false);
+
+      const syncPort = await listener.ensureListening([0]);
+      expect(syncPort).not.toBe(8787);
+      await vi.waitFor(() => {
+        expect(service.getStatus()).toMatchObject({
+          connected: true,
+          relayBridgeValidated: true,
+          validatedPort: syncPort,
+        });
+      });
+
+      const tunnelStatus = service.getStatus();
+      const listenerStatus = listener.getLoopbackValidationStatus();
+      const snapshot = {
+        role: "brain",
+        runtimeRole: "host",
+        runtimeName: "Studio",
+        pairingConnectInfo: {
+          hostIdentity: {
+            deviceId: "device-studio",
+            siteId: "site-studio",
+            name: "Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+          },
+          port: syncPort,
+          addressCandidates: [{ kind: "relay", host: relayUrl }],
+        },
+        routeHealth: {
+          listener: {
+            listenerBound: true,
+            loopbackAdeValidated: listenerStatus.loopbackAdeValidated,
+            port: syncPort,
+            lastFailureAt: listenerStatus.lastFailureAt,
+            reason: listenerStatus.reason,
+            lastSuccessAt: listenerStatus.lastSuccessAt,
+          },
+          tailscale: {
+            enabled: false,
+            tailscalePublished: false,
+            tailscaleReachable: false,
+            lastFailureAt: null,
+            reason: "Tailscale is unavailable.",
+            lastSuccessAt: null,
+          },
+          relay: {
+            enabled: true,
+            relayControlConnected: tunnelStatus.connected,
+            relayBridgeValidated: tunnelStatus.relayBridgeValidated,
+            lastFailureAt: tunnelStatus.lastFailureAt,
+            reason: tunnelStatus.lastError,
+            lastSuccessAt: tunnelStatus.lastSuccessAt,
+          },
+        },
+      } satisfies AccountMachineRegistrationSnapshot;
+      expect(buildAccountMachineRegistration({ machineKey, snapshot })?.reachableEndpoints).toEqual([
+        { kind: "relay", url: relayUrl },
+      ]);
+      // The Relay never sent an external {t:"open"}; only its control socket exists.
+      expect(connections).toHaveLength(1);
+      expect(connections[0]).not.toContain("/pipe/");
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await listener.close();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
   });
 
   it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
@@ -100,7 +188,7 @@ describe("createSyncTunnelClientService", () => {
       getAccountLease: async () => signedIn && leaseValid
         ? { userId: "relay-owner" }
         : null,
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
     });
 
     try {
@@ -147,7 +235,7 @@ describe("createSyncTunnelClientService", () => {
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
       accountStatusPollMs: 5,
-      configStore: fakeStore(true),
+      configStore: fakeStore(),
     });
 
     try {
@@ -196,7 +284,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getExpectedLoopbackNonce: () => expectedNonce,
       getRelayBridgeProof: () => "e".repeat(43),
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
       loopbackProbe,
     });
 
@@ -259,7 +347,7 @@ describe("createSyncTunnelClientService", () => {
       getRelayBridgeProof: () => "e".repeat(43),
       getAccountLease: async () => leaseValid ? { userId: "relay-owner" } : null,
       accountStatusPollMs: 5,
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
       loopbackProbe: async (port) => {
         markProbeStarted?.();
         return await new Promise((resolve) => {
@@ -327,7 +415,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => syncPort,
       getExpectedLoopbackNonce: () => listener.getExpectedLoopbackNonce(),
       getRelayBridgeProof: () => listener.getRelayBridgeProof(),
-      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
     });
 
     try {

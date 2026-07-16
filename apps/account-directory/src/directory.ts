@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from "jose";
 import {
   handleDeviceAuthorizationRequest,
   type DeviceAuthorizationRequestOptions,
@@ -62,6 +62,22 @@ type AccountRoute =
 
 export const DEFAULT_ONLINE_WINDOW_MS = 90_000;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+type CallerTokenFailureReason =
+  | "authentication unavailable"
+  | "invalid audience"
+  | "invalid issuer"
+  | "invalid token"
+  | "missing bearer token"
+  | "missing token subject"
+  | "token expired";
+
+class CallerTokenValidationError extends Error {
+  constructor(readonly reason: CallerTokenFailureReason) {
+    super(reason);
+    this.name = "CallerTokenValidationError";
+  }
+}
 
 function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -178,27 +194,55 @@ function readBearerToken(request: Request): string | null {
 }
 
 export async function verifyCallerToken(token: string, env: Env): Promise<string> {
-  const issuer = env.CLERK_ISSUER.trim();
-  const oauthClientId = env.CLERK_OAUTH_CLIENT_ID.trim();
-  if (!issuer || !oauthClientId) throw new Error("Clerk authentication is not configured");
+  const jwksUrl = typeof env.CLERK_JWKS_URL === "string" ? env.CLERK_JWKS_URL.trim() : "";
+  const issuer = typeof env.CLERK_ISSUER === "string" ? env.CLERK_ISSUER.trim() : "";
+  const oauthClientId = typeof env.CLERK_OAUTH_CLIENT_ID === "string"
+    ? env.CLERK_OAUTH_CLIENT_ID.trim()
+    : "";
+  if (!jwksUrl || !issuer || !oauthClientId) {
+    throw new CallerTokenValidationError("authentication unavailable");
+  }
 
-  const { payload } = await jwtVerify(token, getRemoteJwks(env.CLERK_JWKS_URL), {
+  const { payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
     issuer,
     algorithms: ["RS256"],
     clockTolerance: 5,
   });
-  if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
-  if (!isAllowedCallerToken(payload, oauthClientId)) throw new Error("Token audience is not allowed");
+  if (typeof payload.sub !== "string" || !payload.sub.trim()) {
+    throw new CallerTokenValidationError("missing token subject");
+  }
+  if (!isAllowedCallerToken(payload, oauthClientId)) {
+    throw new CallerTokenValidationError("invalid audience");
+  }
   return payload.sub;
 }
 
-async function authenticate(request: Request, env: Env): Promise<string | null> {
+function callerTokenFailureReason(error: unknown): CallerTokenFailureReason {
+  if (error instanceof CallerTokenValidationError) return error.reason;
+  if (error instanceof errors.JWTExpired) return "token expired";
+  if (error instanceof errors.JWTClaimValidationFailed) {
+    if (error.claim === "exp") return "token expired";
+    if (error.claim === "iss") return "invalid issuer";
+    if (error.claim === "aud") return "invalid audience";
+  }
+  return "invalid token";
+}
+
+type CallerAuthenticationResult =
+  | { ok: true; userId: string }
+  | { ok: false; reason: CallerTokenFailureReason };
+
+async function authenticate(
+  request: Request,
+  env: Env,
+): Promise<CallerAuthenticationResult> {
   const token = readBearerToken(request);
-  if (!token) return null;
+  if (!token) return { ok: false, reason: "missing bearer token" };
   try {
-    return await verifyCallerToken(token, env);
-  } catch {
-    return null;
+    return { ok: true, userId: await verifyCallerToken(token, env) };
+  } catch (error) {
+    // Return only a fixed classification, never JOSE details or token claims.
+    return { ok: false, reason: callerTokenFailureReason(error) };
   }
 }
 
@@ -363,8 +407,16 @@ async function handleRequestCore(
 
   const route = routeAccount(url.pathname);
   if (!route) return text("not found", 404);
-  const userId = await authenticate(request, env);
-  if (!userId) return json({ error: "unauthorized" }, { status: 401 });
+  const authentication = await authenticate(request, env);
+  if (!authentication.ok) {
+    return json(
+      { error: authentication.reason },
+      {
+        status: authentication.reason === "authentication unavailable" ? 503 : 401,
+      },
+    );
+  }
+  const userId = authentication.userId;
 
   if (route.kind === "register") return await handleRegister(request, env, userId);
   if (route.kind === "list") return await handleList(request, env, userId);

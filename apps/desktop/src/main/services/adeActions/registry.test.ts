@@ -251,6 +251,11 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
   });
 
+  it("keeps plaintext project secret export CTO-only", () => {
+    expect(isCtoOnlyAdeAction("project_secret", "exportEnv")).toBe(true);
+    expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
+  });
+
 });
 
 describe("ADE_ACTION_ALLOWLIST shape", () => {

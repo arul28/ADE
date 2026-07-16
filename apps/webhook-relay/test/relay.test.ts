@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deriveProjectRelayAccessToken, handleRequest, signGitHubWebhookBody, type RelayEnv } from "../src/relay";
+import {
+  clearGitHubRepoAuthCacheForTests,
+  deriveProjectRelayAccessToken,
+  handleRequest,
+  signGitHubWebhookBody,
+  type RelayEnv,
+} from "../src/relay";
+import { RepoEventsDurableObject } from "../src/repoEventsDurableObject";
 
 type StoredEvent = {
   event_seq: number;
@@ -119,14 +126,15 @@ class FakeD1Database {
     let rows = repoScoped
       ? this.events.filter((event) => event.repository_full_name?.toLowerCase() === String(scope))
       : this.events.filter((event) => event.project_id === scope);
-    let limit = Number(values[1]);
+    let limit = Number(values.at(-1));
     if (sql.includes("rowid >")) {
-      const [, eventSeq, requestedLimit] = values;
+      const eventSeq = values.at(-2);
       rows = rows.filter((event) => event.event_seq > Number(eventSeq));
-      limit = Number(requestedLimit);
     }
     return [...rows]
-      .sort((left, right) => right.event_seq - left.event_seq)
+      .sort((left, right) => sql.includes("order by rowid asc")
+        ? left.event_seq - right.event_seq
+        : right.event_seq - left.event_seq)
       .slice(0, limit)
       .map((event) => ({
         event_seq: event.event_seq,
@@ -216,13 +224,22 @@ function githubAuthHeaders(token = "ghp_repo_token"): Record<string, string> {
 function makeEnv(): RelayEnv & { DB: FakeD1Database } {
   return {
     DB: new FakeD1Database(),
+    REPO_EVENTS: {
+      idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+      get: () => ({
+        fetch: async () => new Response(null, { status: 202 }),
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace,
     GITHUB_WEBHOOK_SECRET: "github-secret",
     RELAY_ACCESS_TOKEN: "relay-token",
   } as unknown as RelayEnv & { DB: FakeD1Database };
 }
 
 afterEach(() => {
+  vi.useRealTimers();
+  clearGitHubRepoAuthCacheForTests();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 async function generateTestPrivateKeyPem(): Promise<string> {
@@ -359,6 +376,88 @@ describe("webhook relay", () => {
     }));
   });
 
+  it("keeps the committed webhook successful when the repo wake-up fails", async () => {
+    const env = makeEnv();
+    const notifyFetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    const idFromName = vi.fn((name: string) => ({ name }) as unknown as DurableObjectId);
+    env.REPO_EVENTS = {
+      idFromName,
+      get: vi.fn(() => ({ fetch: notifyFetch }) as unknown as DurableObjectStub),
+    } as unknown as DurableObjectNamespace;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const response = await handleRequest(
+      await signedWebhookRequest({ repository: { full_name: "Owner/Repo" } }),
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    expect(env.DB.events).toHaveLength(1);
+    expect(idFromName).toHaveBeenCalledWith("owner/repo");
+    expect(notifyFetch).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("github_repo_notify_failed"));
+  });
+
+  it("slims check_run reports while preserving every field ADE consumes", async () => {
+    const env = makeEnv();
+    const body = {
+      action: "completed",
+      repository: {
+        full_name: "owner/repo",
+        name: "repo",
+        owner: { login: "owner", avatar_url: "https://avatars.example/owner" },
+      },
+      installation: { id: 123, repository_selection: "selected" },
+      organization: { login: "acme", avatar_url: "https://avatars.example/org" },
+      enterprise: { slug: "acme-enterprise", avatar_url: "https://avatars.example/enterprise" },
+      sender: { login: "octocat", avatar_url: "https://avatars.example/sender" },
+      check_run: {
+        id: 987,
+        name: "build",
+        head_sha: "abc123",
+        status: "completed",
+        conclusion: "success",
+        details_url: "https://github.example/checks/987",
+        pull_requests: [{ number: 42, base: { repo: { full_name: "owner/repo" } } }],
+        output: {
+          title: "Build output",
+          summary: "A long markdown summary",
+          text: "A very long log body",
+          annotations: [{ path: "src/index.ts", message: "warning" }],
+        },
+      },
+    };
+
+    const response = await handleRequest(
+      await signedWebhookRequest(body, {
+        "x-github-event": "check_run",
+        "x-github-delivery": "check-run-1",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    const stored = JSON.parse(env.DB.events[0]!.payload_json) as Record<string, any>;
+    expect(stored).toEqual(expect.objectContaining({
+      action: "completed",
+      repository: body.repository,
+      installation: body.installation,
+      check_run: expect.objectContaining({
+        id: 987,
+        name: "build",
+        head_sha: "abc123",
+        status: "completed",
+        conclusion: "success",
+        details_url: "https://github.example/checks/987",
+        pull_requests: body.check_run.pull_requests,
+      }),
+    }));
+    expect(stored.check_run.output).toBeUndefined();
+    expect(stored.organization).toBeUndefined();
+    expect(stored.enterprise).toBeUndefined();
+    expect(stored.sender).toBeUndefined();
+  });
+
   it("lists events after a cursor for ADE polling", async () => {
     const env = makeEnv();
     const first = await handleRequest(await signedWebhookRequest({ repository: { full_name: "owner/repo" } }), env);
@@ -427,6 +526,97 @@ describe("webhook relay", () => {
     const payload = await response.json() as { events: Array<{ eventId: string }>; nextCursor: string };
     expect(payload.events.map((event) => event.eventId)).toEqual(["delivery-2"]);
     expect(payload.nextCursor).toBe("seq:3");
+  });
+
+  it("drains a 150-event repo burst in ascending cursor pages without gaps", async () => {
+    const env = makeEnv();
+    for (let index = 1; index <= 150; index += 1) {
+      env.DB.run("insert into github_events", [
+        "github-app",
+        `delivery-${index}`,
+        "check_run",
+        `delivery-${index}`,
+        "owner/repo",
+        123,
+        `GitHub check_run ${index}`,
+        JSON.stringify({
+          action: "completed",
+          repository: { full_name: "owner/repo" },
+          check_run: { id: index, name: "build", head_sha: `sha-${index}`, pull_requests: [] },
+        }),
+        new Date(1_750_000_000_000 + index).toISOString(),
+      ]);
+    }
+    const fetchMock = stubRepoAccess();
+    vi.stubGlobal("fetch", fetchMock);
+
+    let cursor = "seq:0";
+    let hasMore = true;
+    const received: Array<{ id: string; cursor: string }> = [];
+    while (hasMore) {
+      const url = new URL("https://relay.example.com/github/repos/owner/repo/events");
+      url.searchParams.set("after", cursor);
+      url.searchParams.set("order", "asc");
+      url.searchParams.set("limit", "100");
+      const response = await handleRequest(new Request(url, { headers: githubAuthHeaders() }), env);
+      expect(response.status).toBe(200);
+      const page = await response.json() as {
+        events: Array<{ eventId: string; cursor: string }>;
+        nextCursor: string;
+        hasMore: boolean;
+      };
+      received.push(...page.events.map((event) => ({ id: event.eventId, cursor: event.cursor })));
+      cursor = page.nextCursor;
+      hasMore = page.hasMore;
+    }
+
+    expect(received.map((event) => event.id)).toEqual(
+      Array.from({ length: 150 }, (_, index) => `delivery-${index + 1}`),
+    );
+    expect(received.map((event) => event.cursor)).toEqual(
+      Array.from({ length: 150 }, (_, index) => `seq:${index + 1}`),
+    );
+    expect(cursor).toBe("seq:150");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses positive repo authorization for polls and subscriptions but never caches denials", async () => {
+    const env = makeEnv();
+    const subscriptionFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const idFromName = vi.fn((name: string) => ({ name }) as unknown as DurableObjectId);
+    env.REPO_EVENTS = {
+      idFromName,
+      get: vi.fn(() => ({ fetch: subscriptionFetch }) as unknown as DurableObjectStub),
+    } as unknown as DurableObjectNamespace;
+    const authorizedFetch = stubRepoAccess();
+    vi.stubGlobal("fetch", authorizedFetch);
+
+    const poll = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events", { headers: githubAuthHeaders() }),
+      env,
+    );
+    const subscribe = await handleRequest(
+      new Request("https://relay.example.com/github/repos/OWNER/Repo/subscribe", {
+        headers: { ...githubAuthHeaders(), upgrade: "websocket" },
+      }),
+      env,
+    );
+
+    expect(poll.status).toBe(200);
+    expect(subscribe.status).toBe(204);
+    expect(authorizedFetch).toHaveBeenCalledTimes(1);
+    expect(idFromName).toHaveBeenCalledWith("owner/repo");
+    expect(subscriptionFetch).toHaveBeenCalledTimes(1);
+
+    clearGitHubRepoAuthCacheForTests();
+    const deniedFetch = stubRepoAccessDenied();
+    vi.stubGlobal("fetch", deniedFetch);
+    const deniedRequest = () => new Request("https://relay.example.com/github/repos/owner/repo/events", {
+      headers: githubAuthHeaders("ghp_denied"),
+    });
+    expect((await handleRequest(deniedRequest(), env)).status).toBe(403);
+    expect((await handleRequest(deniedRequest(), env)).status).toBe(403);
+    expect(deniedFetch).toHaveBeenCalledTimes(2);
   });
 
   it("refuses repo events when the token is valid but denied access to the repo", async () => {
@@ -1150,5 +1340,155 @@ describe("webhook relay", () => {
     expect(limited.status).toBe(200);
     const limitedBody = await limited.json() as { deliveries: Array<{ guid: string | null }> };
     expect(limitedBody.deliveries.map((delivery) => delivery.guid)).toEqual(["g-1"]);
+  });
+});
+
+class FakeRepoEventsSocket {
+  attachment: unknown = null;
+  sent: Array<string | ArrayBuffer> = [];
+  closed: { code: number; reason: string } | null = null;
+
+  serializeAttachment(value: unknown): void {
+    this.attachment = value;
+  }
+
+  deserializeAttachment(): unknown {
+    return this.attachment;
+  }
+
+  send(value: string | ArrayBuffer): void {
+    this.sent.push(value);
+  }
+
+  close(code: number, reason: string): void {
+    this.closed = { code, reason };
+  }
+}
+
+class FakeRepoEventsStorage {
+  readonly values = new Map<string, unknown>();
+  alarm: number | null = null;
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+
+  async put(key: string, value: unknown): Promise<void> {
+    this.values.set(key, value);
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key);
+  }
+
+  async getAlarm(): Promise<number | null> {
+    return this.alarm;
+  }
+
+  async setAlarm(time: number): Promise<void> {
+    this.alarm = time;
+  }
+
+  async transaction<T>(callback: (transaction: FakeRepoEventsStorage) => Promise<T>): Promise<T> {
+    return await callback(this);
+  }
+}
+
+function makeRepoEventsState() {
+  const storage = new FakeRepoEventsStorage();
+  const sockets: FakeRepoEventsSocket[] = [];
+  const accepted: Array<{ socket: FakeRepoEventsSocket; tags: string[] }> = [];
+  const autoResponses: unknown[] = [];
+  return {
+    storage,
+    sockets,
+    accepted,
+    autoResponses,
+    state: {
+      storage,
+      setWebSocketAutoResponse: (pair: unknown) => autoResponses.push(pair),
+      acceptWebSocket: (socket: FakeRepoEventsSocket, tags: string[]) => {
+        accepted.push({ socket, tags });
+        sockets.push(socket);
+      },
+      getWebSockets: (tag?: string) => tag === "subscriber" || tag == null ? sockets : [],
+    } as unknown as DurableObjectState,
+  };
+}
+
+describe("RepoEventsDurableObject", () => {
+  it("accepts hibernating subscriptions with heartbeat auto-response and a four-hour expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    const now = Date.now();
+    const client = new FakeRepoEventsSocket();
+    const server = new FakeRepoEventsSocket();
+    class FakeAutoResponsePair {
+      constructor(readonly request: string, readonly response: string) {}
+    }
+    vi.stubGlobal("WebSocketRequestResponsePair", FakeAutoResponsePair);
+    vi.stubGlobal("WebSocketPair", class {
+      0 = client;
+      1 = server;
+    });
+    vi.stubGlobal("Response", class {
+      readonly status: number;
+      readonly webSocket: unknown;
+
+      constructor(_body?: unknown, init: { status?: number; webSocket?: unknown } = {}) {
+        this.status = init.status ?? 200;
+        this.webSocket = init.webSocket;
+      }
+    });
+    const fixture = makeRepoEventsState();
+    const object = new RepoEventsDurableObject(fixture.state);
+
+    const response = await object.fetch(new Request(
+      "https://repo-events.internal/subscribe?repo=Owner%2FRepo",
+      { headers: { upgrade: "websocket" } },
+    ));
+
+    expect(response.status).toBe(101);
+    expect((response as unknown as { webSocket: unknown }).webSocket).toBe(client);
+    expect(fixture.autoResponses).toEqual([
+      expect.objectContaining({ request: "ping", response: "pong" }),
+    ]);
+    expect(fixture.accepted).toEqual([{ socket: server, tags: ["subscriber", "repo:owner/repo"] }]);
+    expect(server.attachment).toEqual({ expiresAt: now + 4 * 60 * 60_000 });
+    expect(fixture.storage.alarm).toBe(now + 4 * 60 * 60_000);
+  });
+
+  it("coalesces notifications into one frame and closes expired subscribers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+    vi.stubGlobal("WebSocketRequestResponsePair", class {
+      constructor(readonly request: string, readonly response: string) {}
+    });
+    const fixture = makeRepoEventsState();
+    const live = new FakeRepoEventsSocket();
+    live.attachment = { expiresAt: Date.now() + 10_000 };
+    const expired = new FakeRepoEventsSocket();
+    expired.attachment = { expiresAt: Date.now() - 1 };
+    fixture.sockets.push(live, expired);
+    const object = new RepoEventsDurableObject(fixture.state);
+
+    const notify = () => object.fetch(new Request("https://repo-events.internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo: "owner/repo" }),
+    }));
+    expect((await notify()).status).toBe(202);
+    const firstAlarm = fixture.storage.alarm;
+    expect((await notify()).status).toBe(202);
+    expect(fixture.storage.alarm).toBe(firstAlarm);
+
+    // Cloudflare clears the fired alarm before invoking alarm().
+    fixture.storage.alarm = null;
+    await object.alarm();
+
+    expect(live.sent).toEqual([JSON.stringify({ t: "github_delivery", repo: "owner/repo" })]);
+    expect(expired.sent).toEqual([]);
+    expect(expired.closed).toEqual({ code: 4401, reason: "subscription expired" });
+    expect(fixture.storage.alarm).toBe((live.attachment as { expiresAt: number }).expiresAt);
   });
 });

@@ -178,7 +178,7 @@ export class BrowserAccountClient {
       relayBaseUrls: config?.relayBaseUrls ?? trustedAccountRelayBaseUrls(),
       message: config
         ? null
-        : "Account sign-in isn't configured for this web client. Direct pairing is still available.",
+        : "Account sign-in isn't configured for this web client.",
     };
   }
 

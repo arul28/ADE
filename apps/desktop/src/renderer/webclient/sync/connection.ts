@@ -7,8 +7,6 @@ import type {
   SyncHelloOkPayload,
   SyncHelloPayload,
   SyncHelloErrorPayload,
-  SyncPairingRequestPayload,
-  SyncPairingResultPayload,
   SyncPeerMetadata,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
@@ -78,15 +76,6 @@ export type SyncConnectionEvents = {
   brainStatus: SyncBrainStatusPayload;
   close: { code: number; reason: string };
   error: Error;
-};
-
-export type PairAndConnectArgs = {
-  endpoints: BrowserDialCandidate[];
-  peer: SyncPeerMetadata;
-  pin: string;
-  dpopPublicKey: string;
-  relayAccountTokenProvider?: () => Promise<string>;
-  buildEnvironment: (result: SyncPairingResultPayload, endpoint: string) => WebClientEnvironmentRecord;
 };
 
 export type AccountPairAndConnectArgs = {
@@ -217,25 +206,6 @@ export class SyncConnection {
     this.shouldReconnect = true;
     this.consecutiveAuthFailures = 0;
     await this.connectWithCandidates(environment, endpoints);
-  }
-
-  async pairAndConnect(args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
-    this.disconnect({ reconnect: false, code: 1000, reason: "Pairing" });
-    this.relayAccountTokenProvider = args.relayAccountTokenProvider ?? null;
-    this.endpoints = args.endpoints;
-    this.consecutiveAuthFailures = 0;
-    const dialable = args.endpoints.filter((candidate) => candidate.dialable);
-    if (dialable.length === 0) throw new Error("No dialable sync endpoint is available.");
-    let lastError: Error | null = null;
-    for (const candidate of dialable) {
-      try {
-        return await this.pairOnEndpoint(candidate, args);
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        this.cleanupSocket();
-      }
-    }
-    throw lastError ?? new Error("Failed to pair with ADE machine.");
   }
 
   async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
@@ -401,91 +371,6 @@ export class SyncConnection {
     });
   }
 
-  private async pairOnEndpoint(candidate: BrowserDialCandidate, args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
-    const endpoint = candidate.url;
-    const socket = this.socketFactory(endpoint);
-    this.ws = socket;
-    this.shouldReconnect = true;
-    this.setStatus({ state: "connecting", endpoint, error: null });
-    let pairedEnvironment: WebClientEnvironmentRecord | null = null;
-    let settled = false;
-    return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Timed out pairing with ${endpoint}.`));
-        try {
-          socket.close(4000, "Pairing timeout");
-        } catch {
-          // ignore
-        }
-      }, this.connectTimeoutMs * 2);
-
-      socket.onopen = () => {
-        void this.getRelayAccountToken(browserEndpointRequiresRelayAccess(candidate)).then((relayAccountToken) => {
-          const payload: SyncPairingRequestPayload = {
-            code: args.pin,
-            peer: args.peer,
-            dpopPublicKey: args.dpopPublicKey,
-            ...(relayAccountToken ? { relayAccountToken } : {}),
-          };
-          socket.send(encodeEnvelopeText({ type: "pairing_request", requestId: "pairing", payload }));
-        }).catch((error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          reject(error);
-        });
-      };
-      socket.onmessage = (event) => {
-        void this.handleMessage(asMessageEvent(event.data), {
-          onPairingResult: (payload) => {
-            if (!payload.ok) {
-              settled = true;
-              clearTimeout(timeout);
-              reject(new Error(payload.error?.message ?? "Pairing failed."));
-              return;
-            }
-            pairedEnvironment = args.buildEnvironment(payload, endpoint);
-            this.environment = pairedEnvironment;
-            void this.sendHello(pairedEnvironment, browserEndpointRequiresRelayAccess(candidate)).catch((error) => {
-              settled = true;
-              clearTimeout(timeout);
-              reject(error);
-            });
-          },
-          onHelloOk: (payload) => {
-            if (!pairedEnvironment || settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            this.finishConnected(pairedEnvironment, endpoint, payload);
-            resolve({ environment: pairedEnvironment, helloOk: payload, endpoint });
-          },
-          onHelloError: (payload) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            reject(pairedEnvironment ? this.handleAuthFailure(pairedEnvironment, payload) : new Error(payload.message));
-          },
-        });
-      };
-      socket.onerror = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error(`WebSocket failed for ${endpoint}.`));
-        }
-      };
-      socket.onclose = (event) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error("Connection closed before pairing completed."));
-          return;
-        }
-        this.handleClose(event);
-      };
-    });
-  }
-
   private async pairWithAccountOnEndpoint(
     endpoint: string,
     args: AccountPairAndConnectArgs,
@@ -624,7 +509,6 @@ export class SyncConnection {
     callbacks: {
       onHelloOk?: (payload: SyncHelloOkPayload) => void;
       onHelloError?: (payload: SyncHelloErrorPayload) => void;
-      onPairingResult?: (payload: SyncPairingResultPayload) => void;
     } = {},
   ): Promise<void> {
     const envelope = await decodeEnvelopeText(event.data);
@@ -633,8 +517,6 @@ export class SyncConnection {
       callbacks.onHelloOk?.(envelope.payload as SyncHelloOkPayload);
     } else if (envelope.type === "hello_error") {
       callbacks.onHelloError?.(envelope.payload as SyncHelloErrorPayload);
-    } else if (envelope.type === "pairing_result") {
-      callbacks.onPairingResult?.(envelope.payload as SyncPairingResultPayload);
     }
     this.routeEnvelope(envelope);
   }

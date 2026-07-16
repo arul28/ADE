@@ -8,7 +8,12 @@ import type {
   ProjectPathInspection,
   ProjectIcon,
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
@@ -305,6 +310,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -909,6 +916,9 @@ declare global {
         get: (args: ProjectSecretGetArgs) => Promise<ProjectSecretValueResult>;
         set: (args: ProjectSecretSetArgs) => Promise<ProjectSecretSummary>;
         delete: (args: ProjectSecretDeleteArgs) => Promise<{ deleted: boolean; name: string }>;
+        chooseEnvFile: () => Promise<ProjectSecretsImportPreview | null>;
+        importEnv: (args: ProjectSecretsImportArgs) => Promise<ProjectSecretsImportResult>;
+        exportEnv: () => Promise<ProjectSecretsExportResult>;
       };
       ai: {
         getStatus: (args?: {
@@ -1024,7 +1034,6 @@ declare global {
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
-        setCloudRelayEnabled: (enabled: boolean) => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       agentTools: {
@@ -1985,7 +1994,9 @@ declare global {
         cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
         pairMachine: (machineKey: string) => Promise<AdeAccountMachinePairResult>;
+        removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

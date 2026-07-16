@@ -263,6 +263,56 @@ describe("ChatGitToolbar", () => {
     expect(await screen.findByText("MERGED #333")).toBeTruthy();
   });
 
+  it("renders a projection-only PR badge without targeting its synthetic id for row refresh", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "gh:acme/ade#404",
+      unmapped: true,
+      laneId: "lane-1",
+      projectId: "project-1",
+      repoOwner: "acme",
+      repoName: "ade",
+      title: "Externally opened PR",
+      state: "merged",
+      checksStatus: "none",
+      reviewStatus: "none",
+      githubPrNumber: 404,
+      githubUrl: "https://github.com/acme/ade/pull/404",
+      githubNodeId: "PR_node404",
+      baseBranch: "main",
+      headBranch: "ui-audit",
+      additions: 0,
+      deletions: 0,
+      lastSyncedAt: "2026-07-16T12:00:00.000Z",
+      createdAt: "2026-07-16T11:00:00.000Z",
+      updatedAt: "2026-07-16T12:00:00.000Z",
+    });
+
+    function Harness() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <ChatGitToolbar
+          laneId="lane-1"
+          prPaneOpen={open}
+          onTogglePrPane={() => setOpen((value) => !value)}
+        />
+      );
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <Harness />
+      </MemoryRouter>,
+    );
+
+    const badge = await screen.findByText("MERGED #404");
+    fireEvent.click(badge.closest("button")!);
+
+    await waitFor(() => {
+      expect(window.ade.prs.getForLane).toHaveBeenCalledTimes(2);
+    });
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
   it("ignores stale toolbar live refresh results after switching lanes", async () => {
     const laneOnePr = {
       id: "pr-lane-1",

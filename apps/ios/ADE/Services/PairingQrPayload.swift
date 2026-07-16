@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 /// Address candidate carried in a scanned pairing QR. `kind == "relay"` entries
@@ -35,6 +36,9 @@ struct PairingQrPayload: Equatable {
   let relayUrl: String?
   /// Reserved for off-LAN pairing claims once the relay pairing flow ships.
   let claimToken: String?
+  /// Additive v3 hint. `nil` means the QR came from an older host; the live
+  /// pairing response remains authoritative if the host's PIN changes later.
+  let pinConfigured: Bool?
 
   /// Direct (LAN/Tailscale/saved/loopback) hosts, in payload order.
   var directCandidateHosts: [String] {
@@ -93,7 +97,8 @@ struct PairingQrPayload: Equatable {
       port: port,
       addressCandidates: parseAddressCandidates(object["addressCandidates"]),
       relayUrl: relayUrl.isEmptyOrNil ? nil : relayUrl,
-      claimToken: claimTokenRaw.isEmpty ? nil : claimTokenRaw
+      claimToken: claimTokenRaw.isEmpty ? nil : claimTokenRaw,
+      pinConfigured: readLiteralBool(object["pinConfigured"])
     )
   }
 
@@ -148,6 +153,14 @@ struct PairingQrPayload: Equatable {
       return parsed
     }
     return nil
+  }
+
+  private static func readLiteralBool(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) == CFBooleanGetTypeID() else {
+      return nil
+    }
+    return number.boolValue
   }
 
   private static func base64UrlDecodeUtf8(_ value: String) -> String? {

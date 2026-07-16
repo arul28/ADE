@@ -71,12 +71,18 @@ Main process:
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.
+- `apps/desktop/src/main/services/secrets/projectSecretService.ts` and
+  `projectSecretEnv.ts` — encrypted project-secret CRUD plus bounded dotenv
+  parsing, selected batch import, and mode-`0600` export to the runtime
+  machine's Downloads folder.
 
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/config.ts` — central type module for
   the configuration schema (processes, stacks, tests, overlays, lane
   templates, port allocation, proxy, OAuth, integrations, AI).
+- `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
+  value, dotenv preview/import, and export request/result contracts.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
     applySuggestedConfig, complete, setDismissed)
@@ -84,6 +90,8 @@ Shared types and IPC:
     confirmTrust, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck)
+  - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
+    previewEnvImport, importEnv, exportEnv)
   - `ade.ai.*` and settings-specific channels per integration
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
@@ -93,8 +101,9 @@ Shared types and IPC:
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
-  `window.ade.projectConfig`, `window.ade.project`, plus the
-  integration-specific surfaces (`window.ade.github`, etc.).
+  `window.ade.projectConfig`, `window.ade.project`,
+  `window.ade.projectSecrets`, plus the integration-specific surfaces
+  (`window.ade.github`, etc.).
 
 Renderer — onboarding:
 
@@ -268,8 +277,19 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
   — Settings > Secrets. Lists project-scoped ADE secrets without values,
   adds/replaces secrets, reveals values on demand, copies them to the
-  clipboard, and deletes with inline confirmation. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`.
+  clipboard, and deletes with inline confirmation. The section can also open a
+  local Finder picker for a bounded dotenv file, show the extracted names and
+  values in a select-all/individual-selection review modal, atomically import
+  the selected rows, and export all secrets as a mode-`0600`
+  `ade-secrets.env` file in Downloads. Values are backed by
+  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. When the
+  active project is remote, only the Finder read happens on the controller Mac:
+  the bounded file content is parsed/imported by the active runtime and export
+  writes to Downloads on the remote project host.
+- `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
+  — dotenv import review dialog. Displays extracted names and plaintext values,
+  marks replacements, supports select all or individual selection, and saves
+  only the selected secrets.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
@@ -285,17 +305,18 @@ Renderer — settings:
   disk-pressure monitor and `storageInsightsService` behind those IPCs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
   — shared multi-device sync management used by the focused
-  **Connections > Mobile** and **Connections > Web client** tabs. It
-  surfaces the phone-pairing PIN (set / clear / reveal, or generate a new
-  six-digit PIN when only the at-rest hash remains), the v3 smart pairing URL
-  with LAN / Tailscale / loopback / relay candidates, the web-client link and
-  QR, the bootstrap token for desktop peers, relay/discovery status, and the
-  per-device panels used to forget paired phones or revoke web clients.
+  **Connections > Phone** and **Connections > Web** tabs beneath a shared
+  **This Mac** card. The card owns the phone-pairing PIN (set / clear / reveal,
+  or generate a new six-digit PIN when only the at-rest hash remains) and the
+  internal phone QR encoding the v3 smart pairing URL with LAN / Tailscale /
+  loopback / relay candidates. The Phone tab explains QR + PIN and Nearby + PIN,
+  while the Web tab is account-sign-in only. It also surfaces the bootstrap
+  token for desktop peers, relay/discovery status, and the per-device panels
+  used to forget paired phones or revoke web clients.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` — the single top-bar Connections control and its
-  Machines, Mobile, and Web client tabs. Mobile includes the TestFlight install
-  action; Web client reports connected browser peers and exposes focused
-  browser pairing.
+  Machines, Phone, and Web tabs. The Web tab reports connected browser peers
+  and directs signed-out users to account sign-in.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget

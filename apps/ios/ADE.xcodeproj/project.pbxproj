@@ -124,6 +124,7 @@
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
+		E200000000000000000000A1 /* HubQuickConnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A1 /* HubQuickConnect.swift */; };
 		F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000002 /* PersonalChatsScreen.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
@@ -137,7 +138,6 @@
 		91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */; };
 		C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */; };
 		B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D40000000000000000A002 /* GlobalDictationPill.swift */; };
-		1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AttentionDrawerModel.swift */; };
 		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
@@ -183,7 +183,6 @@
 		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
 		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
-		F10000000000000000000007 /* SettingsWebClientPairSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsWebClientPairSheet.swift */; };
 		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
 		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
 		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
@@ -219,6 +218,7 @@
 		B1000000000000000000001E /* LaneColorPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001E /* LaneColorPalette.swift */; };
 		B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001F /* LaneColorSwatchPicker.swift */; };
 		C10000000000000000000001 /* ADEMobilePrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000011 /* ADEMobilePrimitives.swift */; };
+		C1000000000000000000B001 /* MachineRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1000000000000000000A001 /* MachineRowView.swift */; };
 		C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000012 /* ADECodeRenderingCache.swift */; };
 		E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003E /* WorkContextCompactDivider.swift */; };
 		E1000000000000000000003F /* WorkModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003F /* WorkModelCatalog.swift */; };
@@ -237,7 +237,6 @@
 		E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000004A /* SwiftTermSessionView.swift */; };
 		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
-		A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000012 /* SettingsAnalyticsSection.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -404,6 +403,7 @@
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
+		D200000000000000000000A1 /* HubQuickConnect.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubQuickConnect.swift; path = ADE/Views/Hub/HubQuickConnect.swift; sourceTree = "<group>"; };
 		F40000000000000000000002 /* PersonalChatsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PersonalChatsScreen.swift; path = ADE/Views/PersonalChats/PersonalChatsScreen.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
@@ -424,7 +424,6 @@
 		50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationMicButton.swift; path = ADE/Views/Components/DictationMicButton.swift; sourceTree = "<group>"; };
 		1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingPill.swift; path = ADE/Views/Components/RecordingPill.swift; sourceTree = "<group>"; };
 		B1D40000000000000000A002 /* GlobalDictationPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GlobalDictationPill.swift; path = ADE/Views/Components/GlobalDictationPill.swift; sourceTree = "<group>"; };
-		AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsVoiceInputSection.swift; path = ADE/Views/Settings/SettingsVoiceInputSection.swift; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		483C5F1818BAE74B19B84617 /* RemoteModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteModels.swift; path = ADE/Models/RemoteModels.swift; sourceTree = "<group>"; };
 		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
@@ -473,7 +472,6 @@
 		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
-		F20000000000000000000007 /* SettingsWebClientPairSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsWebClientPairSheet.swift; path = ADE/Views/Settings/SettingsWebClientPairSheet.swift; sourceTree = "<group>"; };
 		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
 		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
@@ -510,13 +508,13 @@
 		A1000000000000000000001F /* LaneColorSwatchPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorSwatchPicker.swift; path = ADE/Views/Lanes/LaneColorSwatchPicker.swift; sourceTree = "<group>"; };
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
-		A90000000000000000000012 /* SettingsAnalyticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAnalyticsSection.swift; path = ADE/Views/Settings/SettingsAnalyticsSection.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90200000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEWidgets/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90300000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEClip/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C9411193AF56B236BA32EFF5 /* ADEApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEApp.swift; path = ADE/App/ADEApp.swift; sourceTree = "<group>"; };
 		C10000000000000000000011 /* ADEMobilePrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEMobilePrimitives.swift; path = ADE/Views/Components/ADEMobilePrimitives.swift; sourceTree = "<group>"; };
+		C1000000000000000000A001 /* MachineRowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineRowView.swift; path = ADE/Views/Components/MachineRowView.swift; sourceTree = "<group>"; };
 		C10000000000000000000012 /* ADECodeRenderingCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADECodeRenderingCache.swift; path = ADE/Views/Components/ADECodeRenderingCache.swift; sourceTree = "<group>"; };
 		CCAB2414C359E971B780BF99 /* PreviewHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
@@ -596,6 +594,7 @@
 				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
+				C1000000000000000000A001 /* MachineRowView.swift */,
 				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
 				1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */,
 				B1D40000000000000000A002 /* GlobalDictationPill.swift */,
@@ -671,6 +670,7 @@
 				D20000000000000000000051 /* HubComponents.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
+				D200000000000000000000A1 /* HubQuickConnect.swift */,
 			);
 			name = Hub;
 			sourceTree = "<group>";
@@ -842,12 +842,9 @@
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
-				A90000000000000000000012 /* SettingsAnalyticsSection.swift */,
-				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
-				F20000000000000000000007 /* SettingsWebClientPairSheet.swift */,
 				C5A00000000000000000000B /* SSHPairingViewState.swift */,
 				C5A00000000000000000000C /* SSHPairingViewModel.swift */,
 				C5A00000000000000000000D /* SSHPairingView.swift */,
@@ -1321,11 +1318,11 @@
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
-				1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */,
 				D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */,
 				D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */,
 				D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */,
 				C10000000000000000000001 /* ADEMobilePrimitives.swift in Sources */,
+				C1000000000000000000B001 /* MachineRowView.swift in Sources */,
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
 				4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */,
@@ -1368,6 +1365,7 @@
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
+				E200000000000000000000A1 /* HubQuickConnect.swift in Sources */,
 				F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */,
 				B10000000000000000000002 /* LaneAttachSheet.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
@@ -1392,7 +1390,6 @@
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
 				B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */,
-				A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */,
 				B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */,
 				B10000000000000000000103 /* LaneActionsCard.swift in Sources */,
 				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,
@@ -1410,7 +1407,6 @@
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
 				F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */,
 				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
-				F10000000000000000000007 /* SettingsWebClientPairSheet.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,
 				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,

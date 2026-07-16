@@ -18,15 +18,20 @@ const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
-  SyncDevicesSection: ({ variant = "all" }: { variant?: string }) => (
-    <section data-testid="sync-devices-section" data-variant={variant}>
-      Sync devices panel
-      {variant === "web" ? (
-        <details>
-          <summary>Web clients summary</summary>
-          <button type="button">Hidden revoke</button>
-        </details>
-      ) : null}
+  useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
+  ThisMacCard: () => <div data-testid="this-mac-card">This Mac</div>,
+  PhoneConnectionsTab: () => (
+    <section data-testid="sync-devices-section" data-variant="phone">
+      Phone connections
+    </section>
+  ),
+  WebConnectionsTab: () => (
+    <section data-testid="sync-devices-section" data-variant="web">
+      Web connections
+      <details>
+        <summary>Web clients summary</summary>
+        <button type="button">Hidden revoke</button>
+      </details>
     </section>
   ),
 }));
@@ -538,7 +543,7 @@ describe("TopBar", () => {
 
     const connectionsButton = getConnectionsControl();
     fireEvent.click(connectionsButton);
-    const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+    const mobileTab = screen.getByRole("tab", { name: "Phone" });
     fireEvent.click(mobileTab);
 
     await act(async () => {
@@ -546,7 +551,7 @@ describe("TopBar", () => {
     });
 
     expect(screen.getByRole("dialog", { name: "Connections" })).toBeTruthy();
-    expect(screen.getByText("The easiest way to connect to your devices")).toBeTruthy();
+    expect(screen.getByText("Sign in to connect your devices")).toBeTruthy();
     expect(mobileTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
     expect(connectionsButton.getAttribute("aria-expanded")).toBe("true");
@@ -653,7 +658,7 @@ describe("TopBar", () => {
       expect(getStatus).not.toHaveBeenCalled();
 
       act(() => openConnectionsPanel("mobile"));
-      const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+      const mobileTab = screen.getByRole("tab", { name: "Phone" });
       await act(async () => {
         vi.advanceTimersByTime(0);
         await flushMicrotasks(2);
@@ -1097,7 +1102,7 @@ describe("TopBar", () => {
       const connectionsButton = screen.getByRole("button", { name: "Connections, connected" });
 
       fireEvent.click(connectionsButton);
-      const mobileTab = screen.getByRole("tab", { name: "Mobile" });
+      const mobileTab = screen.getByRole("tab", { name: "Phone" });
       fireEvent.click(mobileTab);
 
       expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
@@ -1123,7 +1128,7 @@ describe("TopBar", () => {
       await advancePhoneSyncStartupDelay();
 
       fireEvent.click(screen.getByRole("button", { name: "Connections, connected" }));
-      const webTab = screen.getByRole("tab", { name: "Web client" });
+      const webTab = screen.getByRole("tab", { name: "Web" });
       fireEvent.click(webTab);
 
       const section = screen.getByTestId("sync-devices-section");
@@ -1158,7 +1163,7 @@ describe("TopBar", () => {
       const connectionsButton = screen.getByRole("button", { name: "Connections, connected" });
       expect(connectionsButton.getAttribute("title")).toBe("Machines, mobile, and web clients");
       fireEvent.click(connectionsButton);
-      fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Web" }));
       expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("web");
     } finally {
       vi.useRealTimers();
@@ -1177,8 +1182,8 @@ describe("TopBar", () => {
     renderTopBarWithRouter();
 
     fireEvent.click(getConnectionsControl());
-    const mobileTab = screen.getByRole("tab", { name: "Mobile" });
-    const webTab = screen.getByRole("tab", { name: "Web client" });
+    const mobileTab = screen.getByRole("tab", { name: "Phone" });
+    const webTab = screen.getByRole("tab", { name: "Web" });
     fireEvent.click(mobileTab);
     expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
     expect(mobileTab.getAttribute("aria-selected")).toBe("true");
@@ -1194,7 +1199,7 @@ describe("TopBar", () => {
   it("traps focus on the visible web clients summary", () => {
     renderTopBarWithRouter();
     fireEvent.click(getConnectionsControl());
-    fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Web" }));
 
     const first = screen.getByTitle("Close connections");
     const summary = screen.getByText("Web clients summary");
@@ -1212,7 +1217,7 @@ describe("TopBar", () => {
 
     const connectionsButton = getConnectionsControl();
     fireEvent.click(connectionsButton);
-    fireEvent.click(screen.getByRole("tab", { name: "Web client" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Web" }));
     const dialog = screen.getByRole("dialog", { name: "Connections" });
 
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -1264,7 +1269,7 @@ describe("TopBar", () => {
       renderTopBarWithRouter();
 
       fireEvent.click(getConnectionsControl());
-      fireEvent.click(screen.getByRole("tab", { name: "Mobile" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Phone" }));
 
       expect(
         (await screen.findByTestId("sync-devices-section")).getAttribute("data-variant"),

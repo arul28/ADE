@@ -36,6 +36,159 @@ describe("ProjectRegistry", () => {
     spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
   });
 
+  it("migrates v1 records by desktop membership or Git-root existence", () => {
+    const homeDir = makeTempRoot("ade-project-registry-v2-");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    const desktopRecentRoot = path.join(homeDir, "offline-recent");
+    const gitRoot = path.join(homeDir, "smoke");
+    const nonGitRoot = path.join(homeDir, "important-project");
+    const missingRoot = path.join(homeDir, "missing-project");
+    fs.mkdirSync(path.join(gitRoot, ".git"), { recursive: true });
+    fs.mkdirSync(nonGitRoot, { recursive: true });
+    fs.mkdirSync(registryDir, { recursive: true });
+    const projectsPath = path.join(registryDir, "projects.json");
+    fs.writeFileSync(
+      projectsPath,
+      `${JSON.stringify({
+        version: 1,
+        projects: [desktopRecentRoot, gitRoot, nonGitRoot, missingRoot].map(
+          (rootPath, index) => ({
+            projectId: `legacy-${index}`,
+            rootPath,
+            displayName: path.basename(rootPath),
+            addedAt: index + 1,
+            lastOpenedAt: index + 10,
+            gitOriginUrl: null,
+          }),
+        ),
+      })}\n`,
+      "utf8",
+    );
+    const registry = new ProjectRegistry(
+      {
+        adeDir: registryDir,
+        projectsPath,
+        secretsDir: path.join(registryDir, "secrets"),
+        sockDir: path.join(registryDir, "sock"),
+        socketPath: path.join(registryDir, "sock", "ade.sock"),
+        desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+        binDir: path.join(registryDir, "bin"),
+        runtimeDir: path.join(registryDir, "runtime"),
+      },
+      { legacyRecentProjectRoots: [desktopRecentRoot] },
+    );
+
+    registry.list();
+
+    expect(registry.findByRootPath(desktopRecentRoot)).toMatchObject({
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    expect(registry.findByRootPath(gitRoot)).toMatchObject({
+      catalogVisibility: "recent",
+      registrationSource: "runtime-auto",
+    });
+    expect(registry.findByRootPath(nonGitRoot)).toMatchObject({
+      catalogVisibility: "system",
+    });
+    expect(registry.findByRootPath(missingRoot)).toMatchObject({
+      catalogVisibility: "system",
+    });
+    expect(JSON.parse(fs.readFileSync(projectsPath, "utf8"))).toMatchObject({
+      version: 2,
+    });
+  });
+
+  it("rejects an unknown registry version without rewriting it", () => {
+    const homeDir = makeTempRoot("ade-project-registry-future-");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    const projectsPath = path.join(registryDir, "projects.json");
+    fs.mkdirSync(registryDir, { recursive: true });
+    const futureRegistry = `${JSON.stringify({
+      version: 3,
+      projects: [{ rootPath: "/future", futureMetadata: "preserve-me" }],
+    })}\n`;
+    fs.writeFileSync(projectsPath, futureRegistry, "utf8");
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath,
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+
+    expect(() => registry.list()).toThrow("Unsupported project registry version: 3");
+    expect(fs.readFileSync(projectsPath, "utf8")).toBe(futureRegistry);
+  });
+
+  it("does not resurrect a forgotten project during system registration", () => {
+    const homeDir = makeTempRoot("ade-project-registry-forget-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    const visible = registry.add(projectRoot, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    registry.setCatalogVisibilityByRootPath(projectRoot, "system", "desktop");
+
+    const automatic = registry.add(projectRoot, {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
+
+    expect(visible.catalogVisibility).toBe("recent");
+    expect(automatic).toMatchObject({
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
+    expect(registry.listRecent()).toEqual([]);
+  });
+
+  it("does not rewrite the registry when catalog metadata already matches", () => {
+    const homeDir = makeTempRoot("ade-project-registry-noop-visibility-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    const registered = registry.add(projectRoot, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    const writeFileSync = vi.spyOn(fs, "writeFileSync");
+
+    const unchanged = registry.setCatalogVisibilityByRootPath(
+      projectRoot,
+      "recent",
+      "desktop",
+    );
+
+    expect(unchanged).toEqual(registered);
+    expect(writeFileSync).not.toHaveBeenCalled();
+  });
+
   it("rejects registering the user home directory", () => {
     const homeDir = makeTempRoot("ade-project-registry-home-");
     vi.spyOn(os, "homedir").mockReturnValue(homeDir);

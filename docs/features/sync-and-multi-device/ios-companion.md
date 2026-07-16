@@ -18,16 +18,16 @@ ADE Mobile connects to a **machine**, not to a desktop window. The
 machine is shown by its computer name, with LAN and Tailscale routes
 kept as connection details behind the row.
 
-1. On the computer, open **Connections > Mobile**, or run
-   `ade sync pin generate` from the CLI.
-2. On the phone, open Settings > Pairing and either scan the pairing QR
-   shown in ADE on the computer (a smart URL carrying machine identity,
-   port, and address candidates), choose the machine from Nearby
-   machines, or enter a machine address and port manually when discovery
-   is unavailable.
-3. Enter the 6-digit PIN. The phone receives a durable per-device
-   secret and stores it in Keychain, so future reconnects do not ask
-   for the PIN again.
+1. Sign in to the same ADE account on the phone and computer. This is the
+   primary path: the computer appears through the account directory and the
+   phone adopts it through Relay without a PIN.
+2. For a direct connection without an account, open the computer's
+   **Connections** panel. The **This Mac** card owns the pairing PIN and QR.
+   On the phone, scan that QR or choose the Mac from Nearby; there is no
+   pairing-link paste or manual address + PIN entry.
+3. Enter the 6-digit PIN for a new QR/Nearby pairing. The phone receives a
+   durable per-device secret and stores it in Keychain, so future reconnects
+   do not ask for the PIN again.
 4. Pick a project from the machine catalog. The machine keeps one sync
    listener on a stable port; switching projects swaps which project
    host owns the connection, and the user-facing model stays
@@ -35,7 +35,7 @@ kept as connection details behind the row.
 
 Every fresh signed-out launch shows the account choice before the app. Signing
 in is not required for local-first use: **Continue without an account** keeps
-QR/link, Nearby discovery, manual address + PIN, and SSH pairing available. If
+QR + PIN, Nearby + PIN, and the advanced SSH bootstrap available. If
 the phone already has a direct pairing, continuing resumes its ordinary saved
 reconnect without asking for the PIN again. A signed-in launch enters the app
 directly.
@@ -46,8 +46,8 @@ and DPoP key for direct reconnects, and adds a fresh in-memory account token to
 every later Relay hello. The token is never saved with the machine. Those
 profiles are tagged with the Clerk user id that created them. Signing out,
 switching accounts, or confirmed session loss removes only that account's
-profiles and Keychain pairing secrets. Machines paired directly by QR/link,
-Nearby, address + PIN, or SSH have no account owner and remain saved after
+profiles and Keychain pairing secrets. Machines paired directly by QR,
+Nearby, or SSH have no account owner and remain saved after
 sign-out.
 
 Pairing ownership and Relay eligibility are intentionally separate. A direct
@@ -221,6 +221,9 @@ apps/ios/
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
 │   │   │                            # ADERootTabBarHiddenPreferenceKey),
+│   │   │                            # MachineRowView (shared Mac row used by the
+│   │   │                            #   Settings account/machines lists and the
+│   │   │                            #   Hub quick-connect home; .row / .card looks),
 │   │   │                            # haptics, ADEMobilePrimitives (incl.
 │   │   │                            # ADEOptionButton for selection rows),
 │   │   │                            # dictation mic, recording pill, global
@@ -229,7 +232,10 @@ apps/ios/
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
 │   │   │                            # HubComponents (project/lane/chat cards,
-│   │   │                            #   HubNoMachineState), HubComposerDrawer
+│   │   │                            #   HubNoMachineState), HubQuickConnect
+│   │   │                            #   (HubQuickConnectSection — one-tap connect
+│   │   │                            #   cards for online account/paired machines
+│   │   │                            #   on the no-machine home), HubComposerDrawer
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
@@ -319,18 +325,23 @@ apps/ios/
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView, SettingsPairingSection,
+│   │   ├── Settings/                # ConnectionSettingsView (account card →
+│   │   │                            #   connection status → machines list → ways
+│   │   │                            #   to add one), SettingsMachinesSection
+│   │   │                            #   (reachable-machine list: top 3 + See all),
+│   │   │                            # SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
-│   │   │                            #   scanner), SettingsWebClientPairSheet
-│   │   │                            #   (pair a browser: QR + link + PIN via
-│   │   │                            #   sync.getWebPairingInfo),
+│   │   │                            #   scanner),
 │   │   │                            # SettingsConnectionHeader,
 │   │   │                            #   host compatibility warning banner,
 │   │   │                            #   full usage limits + refresh section,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
-│   │   │                            # SettingsVoiceInputSection, SSHPairingView
-│   │   │                            #   + view model/state
+│   │   │                            # SSHPairingView + view model/state
+│   │   │                            #   — SettingsVoiceInputSection and
+│   │   │                            #   SettingsAnalyticsSection were removed
+│   │   │                            #   (analytics is default-on; dictation has
+│   │   │                            #   no settings panel)
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
@@ -601,8 +612,9 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    phones — from `hello_ok` /
    `brain_status`'s `cloudRelayWssUrl`, persisted into the host
    profile's `savedRelayCandidates` (an explicit `cloudRelayWssUrl:
-   null` in `brain_status` means the operator flipped the machine's
-   relay kill-switch, and the phone clears its saved relay routes).
+   null` in `brain_status` means the host is not currently advertising Relay,
+   normally because it is signed out or its account lease is unavailable, and
+   the phone clears its saved relay routes).
    Relay candidates are eligible only when the profile's verified
    `relayAccountOwnerId` matches the currently signed-in account. ADE fetches a
    fresh account token in memory for every Relay attempt and adds it only to the
@@ -811,19 +823,28 @@ yet arrived in the catchup batch.
 
 ### PIN pairing flow
 
-1. User opens **Connections > Mobile** on the machine and sets or generates a
-   6-digit PIN. The runtime writes a PBKDF2 hash under `~/.ade/secrets`
+1. User opens the **This Mac** card in the machine's Connections panel and sets
+   or generates a 6-digit PIN. The runtime writes a PBKDF2 hash under `~/.ade/secrets`
    (chmod `0600`) and keeps the plaintext in process memory only while
    that runtime is alive, so a restarted machine can still verify
    pairings but cannot display/copy the digits.
-2. Phone opens Settings > Pairing, either scans the machine QR
+2. Phone opens Settings > Pairing and either scans the machine QR
    (`SettingsPairingScannerSheet` → `PairingQrPayload.parse`, a v3 smart
    URL carrying machine identity, port, and address candidates — never a
-   pairing code), discovers the machine on the network, or enters machine
-   address/port manually, then types the same PIN the user set.
+   pairing code) or discovers the machine on the network, then types the same
+   PIN the user set. The smart URL is internal QR wire encoding for the system
+   camera / App Clip, not a user-facing link. The payload may carry an additive
+   `pinConfigured` Boolean (`PairingQrPayload.pinConfigured`): when it is
+   `false` the host has no PIN set yet, so the phone can point the user at the
+   generate-a-PIN step on the **This Mac** card instead of a PIN prompt that
+   could only fail. A `nil` hint means the QR came from an older host and the
+   phone falls back to the live handshake result.
 3. Phone sends a `pairing_request` envelope with the PIN. The runtime's
    `syncPairingStore.pairPeer` validates against `syncPinStore`; the
-   failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`.
+   failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`. The
+   `pinConfigured` hint is advisory only — a host whose PIN was cleared after
+   the QR was minted still answers `pin_not_set` at pairing time, and that live
+   result wins.
 4. On success the runtime persists a per-device record and returns a
    secret. The phone stores it in Keychain and subsequent connections
    authenticate with the paired secret, not the PIN.
@@ -832,40 +853,14 @@ yet arrived in the catchup batch.
 the entry UX. If the user misreads the digits, the runtime applies
 per-IP rate limiting (5 failures → 10-minute cooldown).
 
-### Pair a browser
+### Browser access
 
-Settings > Pairing also carries a **Pair a browser** row
-(`SettingsPairingSection` → `SettingsPairSheetRoute.webClient`) that lets the
-phone hand the hosted browser web client
-(`../web-client/README.md`) everything it needs to pair with the same machine —
-without the operator having to open ADE on the computer.
-
-`SettingsWebClientPairSheet` fetches the machine's pairing details over the
-runtime-scoped `sync.getWebPairingInfo` remote command (gated on
-`supportsRemoteAction("sync.getWebPairingInfo")`, so it stays hidden against
-older hosts). The runtime returns a `WebPairingInfo`: the web-client pairing URL
-(`https://app.ade-app.dev/pair#<payload>`, built host-side with
-`buildWebClientPairUrl(buildPairingQrPayload(...))`), the current visible
-6-digit PIN when this runtime still has it (`code` / `pinConfigured`), the
-machine name, and relay reachability (`relayEnabled` / `hasRelayCandidate`).
-`pinConfigured == true` with `code == nil` means the hash exists but the
-plaintext is hidden after runtime restart; the sheet renders that state
-separately from "No pairing code set", says the existing PIN still pairs if the
-user knows it, and tells the user to generate or set a new PIN on the machine
-only if they need to display or copy one. The sheet renders a
-QR of the pairing URL, a copyable/shareable link, and the pairing code state as
-three separate panels — the payload carries machine identity, port, address
-candidates, and the relay URL, never the PIN, so the code is shown apart from
-the link.
-
-Because the browser is a hosted HTTPS page, it can only reach the machine over a
-`wss://` route: when the machine advertises no relay candidate the sheet warns
-that the browser may only work on the same network (or that no relay route is
-available yet). When no PIN is set it tells the user to set one in ADE on the
-computer; when a PIN is configured but hidden it says the existing PIN still
-pairs if known and tells the user to generate or set a new one only to
-display/copy it. This is the phone-side mirror of the desktop's
-**Connections > Web client** card.
+The iOS app no longer offers **Pair a browser**. New hosted-web connections are
+account-only: open the web client, sign in to the same ADE account as the Mac,
+and choose the Mac from the account directory. The deleted
+`SettingsWebClientPairSheet` and its QR/link/PIN flow are not compatibility
+entry points; only browser environments paired before this release keep their
+saved local/direct reconnect behavior.
 
 ### Background App Refresh
 
@@ -1194,7 +1189,7 @@ navigating so replication latency cannot produce a blank destination screen.
 | **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides only `run-shell` infrastructure rows and orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. Each session row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside the lane name. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop/TUI `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. This replaced the modal `WorkMentionsPickerSheet` and `WorkSlashCommandsSheet` (both deleted). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for identity/personality, live model/reasoning/Fast selection, read-only Linear status, memory via `cto.getMemory`, and re-run setup. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | Pairing — scan the QR (`SettingsPairingScannerSheet`), discover on network, or enter machine details manually — plus PIN entry (`SettingsPinSheet`), appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. |
 
 `WorkModelPickerSheet` shows the same Claude authentication affordance
 as desktop when Claude-family models are unavailable: a compact
@@ -1238,6 +1233,32 @@ terminal subscriptions bound to the previous project's session ids
 are dropped. Without this reset, the phone would resubscribe to stale
 ids after reconnect and either leak foreign chat events into the new
 project view or collide with newly-assigned session ids on the runtime.
+
+The switch is engineered to feel instant rather than blanking to a spinner:
+
+- **The catalog stays mounted.** `HubScreen` only falls back to
+  `HubConnectingCard` when there is genuinely nothing to show yet
+  (`!canShowProjects && hubProjectPresentations.isEmpty`). While a switch is in
+  flight the project list keeps rendering: the tapped row shows its own inline
+  spinner (`presentation.isSwitching`) and every other row is disabled and dimmed
+  to `0.55` opacity (`syncService.isProjectSwitching`), so the list never swaps
+  to a full-screen connecting state.
+- **Fast-path reconnect.** After the happy-eyeballs race, `SyncService` pins a
+  proven `lastSuccessfulAddress` + port to the front of the ranked endpoint list
+  when it is the first raced address, so the broader kind/health ranking can't
+  undo a fresh probe win. `hello_ok` is treated as the barrier: restorative
+  post-hello work (`restoreTrackedOpenLanesAfterReconnect`,
+  `refreshRemoteProjectCatalog`) is moved off the critical path into
+  `schedulePostHelloWork` so it no longer holds the reconnect caller — and
+  therefore the Hub transition — while those network refreshes run. Phase timing
+  is traced through `logProjectSwitchPhase` (`ADE_SYNC_TRACE project_switch`).
+- **Runtime prewarm.** The machine runtime opportunistically warms up to two
+  most-recently-used project scopes in the background after startup (see the
+  sync README's `prewarmRecentScopes`), so the scope the phone switches into is
+  frequently already open on the host.
+
+A successful quick-connect from the no-machine home fires a brief success beat
+(`ConnectSuccessBeat` + haptic) via `HubScreen.triggerConnectBeat`.
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the runtime
@@ -1468,7 +1489,7 @@ different machine's cached limits.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
-| Account launch gate + account machine directory | Implemented; signed-in launches enter directly, signed-out launches can sign in or continue with direct pairing |
+| Account launch gate + account machine directory | Implemented; sign-in is the primary PIN-less path, while signed-out launches can continue with QR + PIN, Nearby + PIN, or advanced SSH pairing |
 | Account-owned pairing and same-account Relay lifetime | Implemented; exact session-generation commit checks, owner-scoped deletion, fresh Relay token per connection |
 | SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
 | One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
@@ -1524,7 +1545,7 @@ different machine's cached limits.
 - **Account ownership and Relay ownership are different fields.**
   `accountOwnerId` decides whether sign-out deletes a saved profile;
   `relayAccountOwnerId` decides whether its Relay route may be used. Never make
-  a QR/link/Nearby/address/SSH profile account-owned just because the same Mac
+  a QR/Nearby/SSH profile account-owned just because the same Mac
   later appears in the account directory. On account loss, disconnect Relay
   and retry direct routes; delete only account-owned profiles. Treat transient
   account/directory failures as retryable, not as logout.

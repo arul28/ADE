@@ -329,11 +329,17 @@ describe("ade code remote launcher", () => {
   it("fails closed when an uncredentialed legacy account candidate cannot be verified", async () => {
     await expect(resolveRemoteTargetForLaunch(legacyAccountTarget(), {
       accountMachines: {
-        listMachines: async () => ({ state: "auth_expired", message: "expired", machines: [] }),
+        listMachines: async () => ({
+          state: "auth_expired",
+          message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid issuer",
+          machines: [],
+        }),
         pairListedMachine: vi.fn(),
       },
       registry: { get: () => null, remove: () => false },
-    })).rejects.toThrow(/will not silently downgrade.*to SSH.*explicit SSH user\/key/i);
+    })).rejects.toThrow(
+      /auth expired.*Reason: invalid issuer.*will not silently downgrade.*to SSH.*explicit SSH user\/key/i,
+    );
   });
 
   it("keeps a manual SSH target eligible when the account directory is unavailable", async () => {

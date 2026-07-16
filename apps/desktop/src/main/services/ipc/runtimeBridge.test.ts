@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
   OpenProjectBinding,
@@ -11,6 +14,7 @@ const ipcHandlers = vi.hoisted(
 const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
 const browserWindowFromId = vi.hoisted(() => vi.fn());
 const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
+const showOpenDialogMock = vi.hoisted(() => vi.fn());
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
 const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>(() => []));
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
@@ -51,7 +55,7 @@ vi.mock("electron", () => ({
     getSources: vi.fn(async () => []),
   },
   dialog: {
-    showOpenDialog: vi.fn(),
+    showOpenDialog: showOpenDialogMock,
   },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
@@ -113,7 +117,10 @@ vi.mock("../git/git", () => ({
   runGit: vi.fn(),
 }));
 
-import { registerRuntimeBridge } from "./runtimeBridge";
+import {
+  getOrCreateLocalAccountMachineIdentity,
+  registerRuntimeBridge,
+} from "./runtimeBridge";
 import { registerIpc } from "./registerIpc";
 
 const target: RemoteRuntimeTarget = {
@@ -206,6 +213,30 @@ describe("registerRuntimeBridge", () => {
       },
     });
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
+  });
+
+  it("reads stable local account identity from the relay and sync device stores", () => {
+    const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-account-identity-"));
+    try {
+      const first = getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "local-device-id",
+      });
+      const second = getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "should-not-replace-device-id",
+      });
+
+      expect(first).toEqual({
+        machineKey: expect.stringMatching(/^[a-f0-9]{32}$/),
+        deviceId: "local-device-id",
+      });
+      expect(second).toEqual(first);
+      expect(fs.readFileSync(path.join(secretsDir, "sync-device-id"), "utf8").trim())
+        .toBe("local-device-id");
+    } finally {
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+    }
   });
 
   it("reads local pairing info from the local runtime connection", async () => {
@@ -1136,6 +1167,8 @@ describe("registerRuntimeBridge", () => {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
         githubAuthHeader: `basic ${expectedBasic}`,
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
@@ -1180,6 +1213,8 @@ describe("registerRuntimeBridge", () => {
       {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
@@ -1220,6 +1255,8 @@ describe("registerRuntimeBridge", () => {
       {
         url: "https://github.com/example/ADE.git",
         parentDir: "/srv",
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
       },
       { retryOnConnectionError: false },
     );
@@ -1349,10 +1386,41 @@ describe("registerIpc sync bridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
     browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7 });
+    showOpenDialogMock.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows hidden dotenv variants in the import picker", async () => {
+    showOpenDialogMock.mockResolvedValue({ canceled: true, filePaths: [] });
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.projectSecretsChooseEnvFile)?.(eventForSender()),
+    ).resolves.toBeNull();
+
+    expect(showOpenDialogMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        properties: ["openFile", "showHiddenFiles"],
+      }),
+    );
+    expect(showOpenDialogMock.mock.calls[0]?.[1]).not.toHaveProperty("filters");
   });
 
   it("preserves browser actor identity and lease fields across renderer IPC parsing", async () => {

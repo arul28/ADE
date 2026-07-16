@@ -18,13 +18,13 @@ export function Masthead() {
           />
         </a>
 
-        <nav className="ml-auto flex shrink-0 items-center gap-3 text-[11px] uppercase tracking-[0.12em] sm:gap-5 sm:text-[12px] sm:tracking-[0.14em]">
+        <nav className="ml-auto flex shrink-0 items-center gap-3 text-[11px] uppercase tracking-[0.12em] sm:gap-4 sm:text-[12px] sm:tracking-[0.14em]">
           <a
             href={LINKS.docs}
             data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
             target="_blank"
             rel="noreferrer"
-            className="text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)]"
+            className="hidden text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)] sm:inline"
           >
             Docs
           </a>
@@ -33,27 +33,9 @@ export function Masthead() {
             data-ade-analytics-feature={MARKETING_FEATURES.VIEW_GITHUB}
             target="_blank"
             rel="noreferrer"
-            className="text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)]"
+            className="hidden text-[color:var(--color-cream-muted)] transition-colors hover:text-[color:var(--color-cream)] sm:inline"
           >
             GitHub
-          </a>
-          <a
-            href={LINKS.webClient}
-            data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
-          >
-            Web client <span aria-hidden>↗</span>
-          </a>
-          <a
-            href={LINKS.releasesLatest}
-            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
-          >
-            Mac <span aria-hidden>↓</span>
           </a>
           <a
             href={LINKS.testflight}
@@ -63,6 +45,29 @@ export function Masthead() {
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
           >
             iOS <span aria-hidden>↓</span>
+          </a>
+
+          {/* Twin primary CTAs — the web client carries the same weight as the
+              Mac download so a visitor can open ADE in the browser right now. */}
+          <a
+            href={LINKS.webClient}
+            data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-[2px] bg-[color:var(--color-cream)] px-3.5 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
+          >
+            <span className="sm:hidden">Web</span>
+            <span className="hidden sm:inline">Open web client</span>
+            <span aria-hidden>↗</span>
+          </a>
+          <a
+            href={LINKS.releasesLatest}
+            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-[2px] bg-[color:var(--color-cream)] px-3.5 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
+          >
+            Mac <span aria-hidden>↓</span>
           </a>
         </nav>
       </div>

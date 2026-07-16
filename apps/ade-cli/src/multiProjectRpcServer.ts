@@ -29,7 +29,10 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
+  SYSTEM_PROJECT_REGISTRATION,
   type ProjectId,
+  type ProjectRegistrationIntent,
+  type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
@@ -40,7 +43,12 @@ import {
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
-import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncAccountDirectoryHealth,
+  type SyncPeerDeviceType,
+  type SyncRoleSnapshot,
+} from "../../desktop/src/shared/types";
 import {
   callAccountAction,
   type AccountAuthService,
@@ -55,6 +63,7 @@ import {
   AccountMachineDirectoryService,
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
+import { mapPlatform } from "./services/sync/syncProtocol";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -76,6 +85,7 @@ export type MultiProjectRpcHandlerOptions = {
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
   accountAuthService?: AccountAuthService;
+  getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
@@ -93,6 +103,7 @@ const RUNTIME_METHODS = new Set([
   "machineInfo.get",
   "projects.list",
   "projects.add",
+  "projects.setCatalogVisibility",
   "projects.remove",
   "projects.touch",
   "projects.browseDirectories",
@@ -127,7 +138,6 @@ const RUNTIME_METHODS = new Set([
   "sync.getDesktopPairingInfo",
   "sync.setActiveLanePresence",
   "sync.getCloudRelayStatus",
-  "sync.setCloudRelayEnabled",
   "sync.getRequireDpop",
   "sync.setRequireDpop",
 ]);
@@ -421,6 +431,24 @@ function readProjectId(params: Record<string, unknown>): ProjectId | null {
     : null;
 }
 
+function readProjectRegistrationIntent(
+  params: Record<string, unknown>,
+): ProjectRegistrationIntent {
+  const catalogVisibility =
+    params.catalogVisibility === "recent" || params.catalogVisibility === "system"
+      ? params.catalogVisibility
+      : SYSTEM_PROJECT_REGISTRATION.catalogVisibility;
+  const registrationSource: ProjectRegistrationSource =
+    params.registrationSource === "desktop" ||
+    params.registrationSource === "mobile" ||
+    params.registrationSource === "cli-explicit" ||
+    params.registrationSource === "runtime-auto" ||
+    params.registrationSource === "test"
+      ? params.registrationSource
+      : SYSTEM_PROJECT_REGISTRATION.registrationSource;
+  return { catalogVisibility, registrationSource };
+}
+
 function omitProjectId(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -637,6 +665,125 @@ export function createMultiProjectRpcRequestHandler(
       );
     }
     return syncService;
+  };
+
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
+    try {
+      return options.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
+        "sync_disabled",
+        "Account-directory publishing is not enabled in this brain.",
+      );
+    } catch {
+      return createSyncAccountDirectoryHealth(
+        "transport_error",
+        "Account-directory publisher health is unavailable.",
+      );
+    }
+  };
+
+  const readMachineSyncIdentity = (fileName: string): string => {
+    try {
+      return fs.readFileSync(
+        path.join(resolveMachineAdeLayout().secretsDir, fileName),
+        "utf8",
+      ).trim();
+    } catch {
+      return "";
+    }
+  };
+
+  const getMachineOnlySyncStatus = (): SyncRoleSnapshot => {
+    const now = new Date().toISOString();
+    const localDevice: SyncRoleSnapshot["localDevice"] = {
+      deviceId: readMachineSyncIdentity("sync-device-id"),
+      siteId: readMachineSyncIdentity("sync-site-id"),
+      name: os.hostname(),
+      platform: mapPlatform(process.platform),
+      deviceType: "desktop",
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: os.hostname(),
+      lastPort: null,
+      tailscaleIp: null,
+      ipAddresses: [],
+      metadata: { hostname: os.hostname() },
+    };
+    return {
+      mode: "standalone",
+      role: "brain",
+      runtimeMode: "standalone",
+      runtimeRole: "host",
+      localDevice,
+      currentBrain: localDevice,
+      currentRuntime: localDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      runtimeName: null,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      tailnetDiscovery: {
+        state: "disabled",
+        serviceName: "svc:ade-sync",
+        servicePort: 8787,
+        target: null,
+        updatedAt: null,
+        error: "Tailnet discovery is waiting for an active sync project scope.",
+        stderr: null,
+      },
+      routeHealth: {
+        listener: {
+          listenerBound: false,
+          loopbackAdeValidated: false,
+          port: null,
+          lastFailureAt: null,
+          reason: "No active sync project scope.",
+          lastSuccessAt: null,
+        },
+        tailscale: {
+          enabled: false,
+          tailscalePublished: false,
+          tailscaleReachable: false,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: null,
+        },
+        relay: {
+          enabled: false,
+          relayControlConnected: false,
+          relayBridgeValidated: false,
+          lastFailureAt: null,
+          reason: null,
+          lastSuccessAt: null,
+        },
+        accountDirectory: getAccountDirectoryHealth(),
+      },
+      client: {
+        state: "disconnected",
+        host: null,
+        port: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        latencyMs: null,
+        syncLag: null,
+        lastRemoteDbVersion: 0,
+        brainDeviceId: null,
+        hostDeviceId: null,
+        hostName: null,
+        error: null,
+        message: "No active sync project scope.",
+        savedDraft: null,
+      },
+      transferReadiness: {
+        ready: false,
+        blockers: [],
+        survivableState: [],
+      },
+      survivableStateText: "No active sync project scope.",
+      blockingStateText: "Register or open a project to start machine sync.",
+    };
   };
 
   const trimmedEnvOrNull = (key: string): string | null => {
@@ -871,7 +1018,27 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return decorateProjectWithIcon(projectRegistry.add(rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(rootPath, readProjectRegistrationIntent(params)),
+      );
+    }
+
+    if (method === "projects.setCatalogVisibility") {
+      const rootPath =
+        typeof params.rootPath === "string" ? params.rootPath.trim() : "";
+      if (!rootPath) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.setCatalogVisibility requires rootPath.",
+        );
+      }
+      const registration = readProjectRegistrationIntent(params);
+      const project = projectRegistry.setCatalogVisibilityByRootPath(
+        rootPath,
+        registration.catalogVisibility,
+        registration.registrationSource,
+      );
+      return project ? decorateProjectWithIcon(project) : null;
     }
 
     if (method === "projects.remove") {
@@ -951,7 +1118,12 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().createLocalProject(
           readCreateProjectInput(params),
         );
-      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(
+          result.rootPath,
+          readProjectRegistrationIntent(params),
+        ),
+      );
     }
 
     if (method === "projects.clone") {
@@ -959,7 +1131,12 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().cloneRepository(
           readCloneProjectInput(params),
         );
-      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(
+          result.rootPath,
+          readProjectRegistrationIntent(params),
+        ),
+      );
     }
 
     if (method === "projects.listMyGitHubRepos") {
@@ -977,7 +1154,9 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getStatus") {
-      const syncService = await getSyncService();
+      const scope = await scopeRegistry.resolveActiveSyncHost();
+      const syncService = scope?.runtime.syncService ?? null;
+      if (!syncService) return getMachineOnlySyncStatus();
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,
@@ -1081,10 +1260,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.getCloudRelayStatus") {
       return (await getSyncService()).getCloudRelayStatus();
-    }
-
-    if (method === "sync.setCloudRelayEnabled") {
-      return await (await getSyncService()).setCloudRelayEnabled(params.enabled === true);
     }
 
     if (method === "sync.getRequireDpop") {

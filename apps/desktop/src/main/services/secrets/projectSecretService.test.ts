@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { formatProjectSecretEnv, parseProjectSecretEnv } from "./projectSecretEnv";
 import { createProjectSecretService } from "./projectSecretService";
 
 const tempRoots: string[] = [];
@@ -74,5 +75,100 @@ describe("createProjectSecretService", () => {
 
     expect(() => service.set({ name: "1BAD", value: "value" })).toThrow(/Secret names must start/);
     expect(() => service.set({ name: "BAD NAME", value: "value" })).toThrow(/Secret names must start/);
+  });
+
+  it("previews replacements and imports selected env values atomically", () => {
+    const service = createProjectSecretService(makeProjectRoot());
+    service.set({ name: "EXISTING", value: "old" });
+
+    expect(service.previewEnvImport({
+      fileName: "/Users/local/Downloads/.env.production",
+      content: "EXISTING=new\nNEW_SECRET='new value'\n",
+    })).toEqual({
+      fileName: ".env.production",
+      secrets: [
+        { name: "EXISTING", value: "new", exists: true },
+        { name: "NEW_SECRET", value: "new value", exists: false },
+      ],
+    });
+
+    expect(service.importEnv({
+      secrets: [
+        { name: "EXISTING", value: "new" },
+        { name: "NEW_SECRET", value: "new value" },
+      ],
+    })).toEqual({ imported: ["NEW_SECRET"], replaced: ["EXISTING"] });
+    expect(service.get({ name: "EXISTING" }).value).toBe("new");
+    expect(service.get({ name: "NEW_SECRET" }).value).toBe("new value");
+
+    expect(() => service.importEnv({
+      secrets: [
+        { name: "WILL_NOT_SAVE", value: "value" },
+        { name: "INVALID NAME", value: "value" },
+      ],
+    })).toThrow(/Secret names must start/);
+    expect(service.list().secrets.map((secret) => secret.name)).not.toContain("WILL_NOT_SAVE");
+  });
+
+  it("exports sorted dotenv files to a unique path in Downloads", () => {
+    const projectRoot = makeProjectRoot();
+    const downloadsDir = path.join(projectRoot, "Downloads");
+    const service = createProjectSecretService(projectRoot, { downloadsDir });
+    service.set({ name: "Z_LAST", value: "contains # hash" });
+    service.set({ name: "A_FIRST", value: "plain-value" });
+
+    const first = service.exportEnv();
+    const second = service.exportEnv();
+
+    expect(first).toEqual({ filePath: path.join(downloadsDir, "ade-secrets.env"), secretCount: 2 });
+    expect(second.filePath).toBe(path.join(downloadsDir, "ade-secrets (1).env"));
+    expect(fs.readFileSync(first.filePath, "utf8")).toBe("A_FIRST=plain-value\nZ_LAST='contains # hash'\n");
+    expect(fs.statSync(first.filePath).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("project secret .env formatting", () => {
+  it("parses common dotenv syntax and lets the last duplicate win", () => {
+    expect(parseProjectSecretEnv([
+      "# Project credentials",
+      "export API_KEY = first",
+      "QUOTED='value with # hash' # comment",
+      'ESCAPED="line\\nnext\\tcolumn"',
+      "API_KEY=last # replacement",
+    ].join("\n"))).toEqual([
+      { name: "API_KEY", value: "last" },
+      { name: "QUOTED", value: "value with # hash" },
+      { name: "ESCAPED", value: "line\nnext\tcolumn" },
+    ]);
+  });
+
+  it("round-trips exported values", () => {
+    const entries = [
+      { name: "PLAIN", value: "abc-123/example" },
+      { name: "HASH", value: "a value # with a hash" },
+      { name: "QUOTES", value: "both 'single' and \"double\"" },
+      { name: "MULTILINE", value: "first\nsecond" },
+      { name: "TRAILING_SLASH", value: "it's a slash \\" },
+    ];
+
+    expect(parseProjectSecretEnv(formatProjectSecretEnv(entries))).toEqual(entries);
+  });
+
+  it("parses multiline quoted dotenv values", () => {
+    expect(parseProjectSecretEnv('MULTILINE="first\nsecond"\nAFTER=value')).toEqual([
+      { name: "MULTILINE", value: "first\nsecond" },
+      { name: "AFTER", value: "value" },
+    ]);
+  });
+
+  it("rejects a large unterminated multiline value", () => {
+    const malformed = `BROKEN="${Array.from({ length: 10_000 }, () => "value").join("\n")}`;
+    expect(() => parseProjectSecretEnv(malformed)).toThrow(/unterminated quoted value on line 1/);
+  });
+
+  it("reports malformed and empty variables with line context", () => {
+    expect(() => parseProjectSecretEnv("GOOD=value\nnot-an-assignment")).toThrow(/line 2/);
+    expect(() => parseProjectSecretEnv("EMPTY=")).toThrow(/empty value on line 1/);
+    expect(() => parseProjectSecretEnv("# only comments")).toThrow(/does not contain any variables/);
   });
 });

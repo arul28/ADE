@@ -85,9 +85,10 @@ type SyncRemoteCommandPolicy = {
 The scope label matters because the brain serves **multiple projects**
 and one hidden personal-chat scope at once. `runtime`-scoped commands
 (machine-wide diagnostics, personal chats, project catalog reads, settings,
-and `sync.getWebPairingInfo` — the browser
-pairing URL / PIN / relay-availability read the iOS "Pair a browser"
-sheet calls) run without a project binding. `project`-scoped
+and local connection metadata) run without a project binding. The retired iOS
+**Pair a browser** sheet no longer calls `sync.getWebPairingInfo`; new hosted
+web connections start from account sign-in and the account machine directory.
+`project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
 project) require the brain to have an active project AND the caller to
 have bundled a matching `projectId` on the envelope. The brain enforces

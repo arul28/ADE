@@ -65,6 +65,31 @@ describe("pairingQr codec", () => {
     expect(parsed?.runtimeHostGrant).toBe("runtime-grant-xyz");
   });
 
+  it("round-trips an optional literal pinConfigured hint", () => {
+    const absent = parsePairingQrUrl(encodePairingQrUrl(buildPairingQrPayload({ connectInfo })));
+    const configured = parsePairingQrUrl(encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo,
+      pinConfigured: true,
+    })));
+    const notConfigured = parsePairingQrUrl(encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo,
+      pinConfigured: false,
+    })));
+
+    expect(absent?.pinConfigured).toBeUndefined();
+    expect(configured?.pinConfigured).toBe(true);
+    expect(notConfigured?.pinConfigured).toBe(false);
+  });
+
+  it("ignores a non-Boolean pinConfigured value", () => {
+    const payload = {
+      ...buildPairingQrPayload({ connectInfo }),
+      pinConfigured: "false",
+    } as unknown as Parameters<typeof encodePairingQrUrl>[0];
+
+    expect(parsePairingQrUrl(encodePairingQrUrl(payload))?.pinConfigured).toBeUndefined();
+  });
+
   it("drops a relayUrl that is not a wss:// URL", () => {
     const parsed = parsePairingQrUrl(
       encodePairingQrUrl(buildPairingQrPayload({ connectInfo, relayUrl: "http://evil.example" })),
@@ -84,6 +109,31 @@ describe("pairingQr codec", () => {
     expect(parsed?.hostIdentity.deviceId).toBe("device-123");
     // Unknown fields are ignored, not surfaced.
     expect((parsed as Record<string, unknown>).futureFeature).toBeUndefined();
+  });
+
+  it("keeps pinConfigured additive for an old parser", () => {
+    const url = encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo,
+      pinConfigured: false,
+    }));
+    const fragment = url.slice(url.indexOf("#") + 1)
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const padded = fragment + "=".repeat((4 - (fragment.length % 4)) % 4);
+    const decoded = JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as Record<string, unknown>;
+    const legacyPayload = {
+      version: decoded.version,
+      hostIdentity: decoded.hostIdentity,
+      port: decoded.port,
+      addressCandidates: decoded.addressCandidates,
+    };
+
+    expect(legacyPayload).toEqual({
+      version: PAIRING_QR_PAYLOAD_VERSION,
+      hostIdentity: connectInfo.hostIdentity,
+      port: connectInfo.port,
+      addressCandidates: connectInfo.addressCandidates,
+    });
   });
 
   it("accepts a bare base64url/JSON payload defensively", () => {

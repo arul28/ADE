@@ -993,14 +993,14 @@ describe("local runtime connection pool", () => {
     expect(createConnection).toHaveBeenCalledTimes(2);
     expect(firstClient.call).toHaveBeenCalledWith(
       "projects.add",
-      { rootPath },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
       { timeoutMs: 120_000 },
     );
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
-      { rootPath },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
       { timeoutMs: 120_000 },
     );
     expect(secondClient.call).toHaveBeenNthCalledWith(
@@ -1155,7 +1155,7 @@ describe("local runtime connection pool", () => {
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith(
       "projects.add",
-      { rootPath },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
       { timeoutMs: 120_000 },
     );
     expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
@@ -2386,7 +2386,7 @@ describe("local runtime connection pool", () => {
     });
   });
 
-  it("registers a foreground project without switching the mobile sync host", async () => {
+  it("registers foreground intent and demotes a forgotten project without switching the mobile sync host", async () => {
     const rootPath = path.resolve("/repo");
     const project = {
       projectId: "project-1",
@@ -2398,6 +2398,9 @@ describe("local runtime connection pool", () => {
     };
     const call = vi.fn(async (method: string) => {
       if (method === "projects.add") return project;
+      if (method === "projects.setCatalogVisibility") {
+        return { ...project, catalogVisibility: "system", registrationSource: "desktop" };
+      }
       throw new Error(`unexpected method ${method}`);
     });
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
@@ -2412,10 +2415,36 @@ describe("local runtime connection pool", () => {
       socketPath: "/tmp/ade.sock",
     });
 
+    await pool.ensureProject(rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    await pool.setProjectCatalogVisibility(rootPath, "system", "desktop");
     await pool.ensureProject(rootPath);
 
-    expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith("projects.add", { rootPath }, { timeoutMs: expect.any(Number) });
+    expect(call).toHaveBeenCalledTimes(3);
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "projects.add",
+      { rootPath, catalogVisibility: "recent", registrationSource: "desktop" },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "projects.setCatalogVisibility",
+      {
+        rootPath,
+        catalogVisibility: "system",
+        registrationSource: "desktop",
+      },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      3,
+      "projects.add",
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
+      { timeoutMs: expect.any(Number) },
+    );
     expect(call).not.toHaveBeenCalledWith("sync.switchHost", expect.anything());
   });
 

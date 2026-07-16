@@ -1,5 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
+import { createPrEventFanout } from "./prEventFanout";
+
+describe("createPrEventFanout", () => {
+  const event = {
+    type: "prs-updated" as const,
+    polledAt: "2026-07-16T00:00:00.000Z",
+    prs: [],
+  };
+
+  it.each([0, 1])("isolates a failure in sink %i while still calling both sinks", (failingSink) => {
+    const calls: string[] = [];
+    const runtimeSink = vi.fn(() => {
+      calls.push("runtime");
+      if (failingSink === 0) throw new Error("runtime failed");
+    });
+    const searchSink = vi.fn(() => {
+      calls.push("search");
+      if (failingSink === 1) throw new Error("search failed");
+    });
+    const emit = createPrEventFanout(runtimeSink, searchSink);
+
+    expect(() => emit(event)).not.toThrow();
+    expect(runtimeSink).toHaveBeenCalledWith(event);
+    expect(searchSink).toHaveBeenCalledWith(event);
+    expect(calls).toEqual(["runtime", "search"]);
+  });
+});
 
 describe("createEventBuffer", () => {
   it("pushes events and assigns monotonically increasing IDs", () => {

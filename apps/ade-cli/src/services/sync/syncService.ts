@@ -2,21 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
-import type {
-  SyncCloudRelayStatus,
-  SyncDesktopConnectionDraft,
-  SyncDeviceRuntimeState,
-  SyncGetStatusArgs,
-  SyncPairingConnectInfo,
-  SyncPeerDeviceType,
-  SyncPeerMetadata,
-  SyncPeerPlatform,
-  PersonalChatScopeContract,
-  SyncRouteHealth,
-  SyncRoleSnapshot,
-  SyncTailnetDiscoveryStatus,
-  SyncTransferBlocker,
-  SyncTransferReadiness,
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncCloudRelayStatus,
+  type SyncAccountDirectoryHealth,
+  type SyncDesktopConnectionDraft,
+  type SyncDeviceRuntimeState,
+  type SyncGetStatusArgs,
+  type SyncPairingConnectInfo,
+  type SyncPeerDeviceType,
+  type SyncPeerMetadata,
+  type SyncPeerPlatform,
+  type PersonalChatScopeContract,
+  type SyncRouteHealth,
+  type SyncRoleSnapshot,
+  type SyncTailnetDiscoveryStatus,
+  type SyncTransferBlocker,
+  type SyncTransferReadiness,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -98,6 +100,7 @@ type SyncServiceArgs = {
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
+  getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   projectId?: string | null;
@@ -171,8 +174,6 @@ type SyncServiceArgs = {
    */
   cloudRelayStore?: SyncCloudRelayStore;
   syncTunnelClientService?: Pick<SyncTunnelClientService, "getStatus"> | null;
-  /** Fired when the ADE relay kill-switch flips (start/stop tunnel). */
-  onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
@@ -573,8 +574,7 @@ export function createSyncService(args: SyncServiceArgs) {
     return status.signedIn && Boolean(status.userId?.trim());
   };
   const isCloudRelayUsable = (): boolean =>
-    cloudRelayStore.isEnabled()
-    && isRelayAccountSignedIn()
+    isRelayAccountSignedIn()
     && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true);
 
   const deviceRegistryService = createDeviceRegistryService({
@@ -1349,7 +1349,7 @@ export function createSyncService(args: SyncServiceArgs) {
           : tailscalePublished
             ? null
             : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
-      const relayConfigured = canHostPhonePairing && cloudRelayStore.isEnabled();
+      const relayConfigured = canHostPhonePairing;
       const relayAccountSignedIn = isRelayAccountSignedIn()
         && (tunnelStatus?.accountLeaseValid ?? true);
       const relayEnabled = relayConfigured && relayAccountSignedIn;
@@ -1368,6 +1368,18 @@ export function createSyncService(args: SyncServiceArgs) {
               : !relayBridgeValidated
                 ? tunnelStatus.lastError ?? `Relay bridge to 127.0.0.1:${listenerPort} has not been validated against the current sync port.`
                 : tunnelStatus.lastError;
+      let accountDirectory: SyncAccountDirectoryHealth;
+      try {
+        accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
+          "sync_disabled",
+          "Account-directory publishing is not enabled in this runtime.",
+        );
+      } catch {
+        accountDirectory = createSyncAccountDirectoryHealth(
+          "transport_error",
+          "Account-directory publisher health is unavailable.",
+        );
+      }
       const routeHealth: SyncRouteHealth = {
         listener: {
           listenerBound,
@@ -1399,6 +1411,7 @@ export function createSyncService(args: SyncServiceArgs) {
           reason: relayReason,
           lastSuccessAt: relayReason == null ? (tunnelStatus?.lastSuccessAt ?? null) : null,
         },
+        accountDirectory,
       };
       return {
         mode,
@@ -1626,7 +1639,6 @@ export function createSyncService(args: SyncServiceArgs) {
       const accountSignedIn = isRelayAccountSignedIn()
         && (tunnelStatus?.accountLeaseValid ?? true);
       return {
-        enabled: config.enabled,
         relayWssUrl: cloudRelayStore.getRelayWssUrl(),
         machineKey: config.machineKey,
         relayUrl: cloudRelayStore.getRelayUrl(),
@@ -1635,24 +1647,10 @@ export function createSyncService(args: SyncServiceArgs) {
         relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
         lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
-        lastError: !config.enabled
-          ? null
-          : accountSignedIn
-            ? tunnelStatus?.lastError ?? null
-            : "Sign in to ADE to use ADE Relay.",
+        lastError: accountSignedIn
+          ? tunnelStatus?.lastError ?? null
+          : "Sign in to ADE to use ADE Relay.",
       };
-    },
-
-    async setCloudRelayEnabled(enabled: boolean): Promise<SyncCloudRelayStatus> {
-      cloudRelayStore.setEnabled(enabled);
-      args.onCloudRelayEnabledChanged?.(enabled);
-      // Connected phones learn the flip from brain_status (cloudRelayWssUrl)
-      // without waiting for the next scheduled broadcast.
-      hostService?.broadcastBrainStatusNow?.();
-      // The relay candidate rides pairingConnectInfo, so republish status.
-      const snapshot = await service.getStatus();
-      args.onStatusChanged?.(snapshot);
-      return service.getCloudRelayStatus();
     },
 
     async setActiveLanePresence(laneIds: string[]): Promise<void> {
