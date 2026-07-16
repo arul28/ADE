@@ -257,6 +257,17 @@ export function SecretsSection() {
           .map(({ name: secretName, value: secretValue }) => ({ name: secretName, value: secretValue })),
       });
       const total = result.imported.length + result.replaced.length;
+      const changedNames = [...result.imported, ...result.replaced];
+      setVisibleNames((current) => {
+        const next = { ...current };
+        for (const changedName of changedNames) delete next[changedName];
+        return next;
+      });
+      setRevealedValues((current) => {
+        const next = { ...current };
+        for (const changedName of changedNames) delete next[changedName];
+        return next;
+      });
       setImportPreview(null);
       setSelectedImportNames(new Set());
       setMessage(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);

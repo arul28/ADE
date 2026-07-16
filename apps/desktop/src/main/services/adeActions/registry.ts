@@ -174,6 +174,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   analytics: ["setEnabled", "flush"],
   storage: ["cleanup"],
   search: ["rebuildIndex"],
+  project_secret: ["exportEnv"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
