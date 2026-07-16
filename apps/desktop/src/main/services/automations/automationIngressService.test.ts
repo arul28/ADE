@@ -232,13 +232,14 @@ describe("automationIngressService", () => {
 
   it("still ingests relay PR webhooks when the automations feature is unavailable", async () => {
     const cursors = new Map<string, string | null>();
+    const onPrStateIngested = vi.fn();
     const ingestGithubWebhook = vi.fn(async () => ({
       processed: true,
       duplicate: false,
       repoOwner: "arul28",
       repoName: "ADE",
       githubPrNumber: 687,
-      linkedPrIds: [],
+      linkedPrIds: ["pr-687"],
       reason: null,
     }));
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
@@ -270,6 +271,7 @@ describe("automationIngressService", () => {
         detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
+      onPrStateIngested,
       listRules: () => [],
       ingressCursorStore: {
         get: (source) => cursors.get(source) ?? null,
@@ -296,6 +298,7 @@ describe("automationIngressService", () => {
         pull_request: expect.objectContaining({ number: 687 }),
       }),
     }));
+    expect(onPrStateIngested).toHaveBeenCalledTimes(1);
     expect(cursors.get("github-relay")).toBe("seq:3");
     expect(service.getStatus()).toBeNull();
     expect(service.listRecentEvents()).toEqual([]);

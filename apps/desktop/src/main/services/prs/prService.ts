@@ -2291,6 +2291,7 @@ export function createPrService({
                  additions = ?,
                  deletions = ?,
                  last_synced_at = ?,
+                 created_at = ?,
                  updated_at = ?,
                  creation_strategy = coalesce(?, creation_strategy),
                  merge_conflicts = case when ? then ? else merge_conflicts end,
@@ -2313,6 +2314,7 @@ export function createPrService({
           summary.additions,
           summary.deletions,
           summary.lastSyncedAt,
+          summary.createdAt ?? existing.created_at,
           summary.updatedAt ?? now,
           summary.creationStrategy ?? null,
           hasMergeConflicts ? 1 : 0,
@@ -4410,7 +4412,7 @@ export function createPrService({
       // instead of stale clean/dirty status after GitHub times out.
       mergeConflicts,
       lastSyncedAt: nowIso(),
-      createdAt: row.created_at,
+      createdAt: asString(pr?.created_at).trim() || row.created_at,
       updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso(),
       creationStrategy: normalizePrCreationStrategy(row.creation_strategy)
     };
@@ -4418,7 +4420,8 @@ export function createPrService({
       updated.behindBaseBy = compare.behindBy;
     }
 
-    if (hasMaterialSummaryChange(row, updated)) {
+    const materiallyChanged = hasMaterialSummaryChange(row, updated);
+    if (materiallyChanged) {
       invalidateGithubSnapshotCache();
     }
     upsertRow(updated);
@@ -4434,6 +4437,35 @@ export function createPrService({
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+
+    if (materiallyChanged) {
+      db.run(
+        `
+          update github_pr_projections
+             set state = ?,
+                 is_draft = ?,
+                 title = ?,
+                 updated_at = ?,
+                 synced_at = ?
+           where project_id = ?
+             and lower(repo_owner) = lower(?)
+             and lower(repo_name) = lower(?)
+             and github_pr_number = ?
+        `,
+        [
+          updated.state,
+          updated.state === "draft" ? 1 : 0,
+          updated.title,
+          updated.updatedAt,
+          updated.lastSyncedAt,
+          projectId,
+          updated.repoOwner,
+          updated.repoName,
+          updated.githubPrNumber,
+        ],
+      );
+      emitPrsUpdated();
     }
 
     return updated;
@@ -5606,7 +5638,8 @@ export function createPrService({
     if (!locator.number) throw new Error("PR number missing.");
 
     const pr = await fetchPr(repo, locator.number);
-    const createdAt = nowIso();
+    const linkedAt = nowIso();
+    const createdAt = asString(pr?.created_at).trim() || linkedAt;
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
     const laneBranch = branchNameFromRef(lane.branchRef);
@@ -5679,7 +5712,7 @@ export function createPrService({
       deletions: Number(pr?.deletions ?? 0),
       lastSyncedAt: null,
       createdAt,
-      updatedAt: createdAt,
+      updatedAt: linkedAt,
       creationStrategy
     };
 
@@ -5698,7 +5731,7 @@ export function createPrService({
       prNumber: locator.number,
       githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
       closePrimaryOnMerge: false,
-      linkedAt: createdAt,
+      linkedAt,
     }).catch((error) => {
       logger.warn("prs.linear_pr_cards_publish_failed", {
         laneId: lane.id,
